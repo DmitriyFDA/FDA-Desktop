@@ -1,0 +1,1226 @@
+create or replace PACKAGE LM_IDCHANGE IS
+
+G_CON_PACKAGE CONSTANT LM_CONSTANT.ST_PROC_NAME := 'LM_IDCHANGE';
+
+/* ICE_001 : handle idchange report */
+PROCEDURE HDL_IDCHANGE_REPORT;
+/* ICE_002 : get message attributes */
+PROCEDURE GET_MESSAGE_ATTRIBUTES
+ (i_it_ice        IN lm_interface.g_it_ima
+ ,o_pty_id_cust  OUT lm_parties.id_cust%TYPE
+ ,o_event_time   OUT lm_package_events.event_time%TYPE
+ ,o_lic          OUT lm_packages.lic%TYPE
+ ,o_rt_bir       OUT lm_common.g_rt_bir
+ ,o_ims_id       OUT lm_ifc_messages.id%TYPE
+ );
+/* ICE_003 : Store incoming data */
+PROCEDURE STORE_INCOMING_DATA
+ (i_event_time     IN lm_package_events.event_time%TYPE
+ ,i_pty_id         IN lm_parties.id%TYPE
+ ,i_lic            IN lm_packages.lic%TYPE
+ ,i_rt_bir         IN lm_common.g_rt_bir
+ ,i_pss_id         IN lm_packages.pss_id%TYPE
+ ,i_ims_id         IN lm_ifc_messages.id%TYPE
+ ,i_msg_obsolete   IN BOOLEAN
+ ,io_rt_package    IN OUT LM_PACKAGES%ROWTYPE
+ );
+/* ICE_004 : Validate incoming data. */
+PROCEDURE VALIDATE_INCOMING_DATA
+ (i_pss_id        IN lm_packages.pss_id%TYPE
+ ,i_pid           IN lm_packages.pid%TYPE
+ ,i_event_time    IN lm_package_events.event_time%TYPE
+ ,i_ims_id        IN lm_ifc_messages.id%TYPE
+ ,i_pty_id_cust   IN lm_parties.id_cust%TYPE
+ ,o_pty_id       OUT lm_parties.id%TYPE
+ ,o_msg_obsolete OUT BOOLEAN
+ );
+/* ICE_005: Checks if the given destinations are the same */
+FUNCTION CHECK_DESTINATIONS_ICE
+ (i_pid             IN     lm_packages.pid%TYPE
+ ,io_it_destination IN OUT nt_stn_id_cust
+ ,o_pin_id             OUT lm_package_instructions.id%TYPE
+ ,o_it_pon_id          OUT lm_topology_administration.g_it_dst
+ )
+ RETURN BOOLEAN;
+/* ICE_006 : check instruction record */
+PROCEDURE CHECK_INSTRUCTION_RECORD
+ (i_rt_package IN lm_packages%ROWTYPE
+ ,i_rt_bir     IN lm_common.g_rt_bir
+ );
+END LM_IDCHANGE;
+/
+
+
+
+
+package body lm_idchange is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure hdl_idchange_report
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.hdl_idchange_report';
+
+   l_found                        boolean;
+   l_msg_obsolete                 boolean;
+   l_rt_package                   lm_packages%rowtype;
+   l_lic                          lm_packages.lic%type;
+   l_pss_id                       lm_package_statuses.id%type;
+   l_ims_id                       lm_ifc_messages.id%type;
+   l_event_time                   lm_package_events.event_time%type;
+   l_pty_id_cust                  lm_parties.id_cust%type;
+   l_pty_id                       lm_parties.id%type;
+   l_rt_bir                       lm_common.g_rt_bir;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   lm_idchange.get_message_attributes(i_it_ice       => lm_interface.g_it_message_content
+                                     ,o_pty_id_cust  => l_pty_id_cust
+                                     ,o_event_time   => l_event_time
+                                     ,o_lic          => l_lic
+                                     ,o_rt_bir       => l_rt_bir
+                                     ,o_ims_id       => l_ims_id
+                                     );
+
+   
+   l_found  := lm_pae_tapi_pck.pae_select_row_upd( i_pae_pid      => l_rt_bir.pid
+                                                 , o_rt_pae       => l_rt_package
+                                                 );
+
+   if not l_found
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_packagenotfound
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => l_rt_bir.pid
+                         , i_additional_data        => 'MessageId:' || l_ims_id
+                         );
+   end if;
+
+   
+   lm_idchange.validate_incoming_data( i_pss_id                  => l_rt_package.pss_id
+                                     , i_pid                     => l_rt_bir.pid
+                                     , i_event_time              => l_event_time
+                                     , i_ims_id                  => l_ims_id
+                                     , i_pty_id_cust             => l_pty_id_cust
+                                     , o_pty_id                  => l_pty_id
+                                     , o_msg_obsolete            => l_msg_obsolete
+                                     );
+   if not l_msg_obsolete
+   then
+      
+      lm_package_administration.check_local_identifier( i_pid               => l_rt_bir.pid
+                                                      , i_event_time        => l_event_time
+                                                      , i_lic               => l_lic
+                                                      , i_pty_id            => l_pty_id
+                                                      , o_pss_id            => l_pss_id
+                                                      );
+   end if;
+                                                   
+   
+   
+   
+   
+   lm_idchange.store_incoming_data(i_event_time     => l_event_time
+                                  ,i_pty_id         => l_pty_id
+                                  ,i_lic            => l_lic
+                                  ,i_rt_bir         => l_rt_bir
+                                  ,i_pss_id         => case l_rt_package.pss_id
+                                                          when lm_constant.g_con_pss_name_ghost
+                                                            then lm_constant.g_con_pss_name_ghost
+                                                          else
+                                                            l_pss_id
+                                                       end
+                                  ,i_ims_id         => l_ims_id
+                                  ,i_msg_obsolete   => l_msg_obsolete
+                                  ,io_rt_package    => l_rt_package
+                                 );
+
+   
+   if not l_msg_obsolete   
+   then
+      
+      lm_idchange.check_instruction_record (i_rt_package => l_rt_package
+                                           ,i_rt_bir     => l_rt_bir
+                                           );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_idchange_report;
+
+
+procedure get_message_attributes
+ (i_it_ice        in lm_interface.g_it_ima
+ ,o_pty_id_cust  out lm_parties.id_cust%type
+ ,o_event_time   out lm_package_events.event_time%type
+ ,o_lic          out lm_packages.lic%type
+ ,o_rt_bir       out lm_common.g_rt_bir
+ ,o_ims_id       out lm_ifc_messages.id%type
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant    lm_constant.st_proc_name := g_con_package||'.get_message_attributes';
+
+   l_dest_counter              number := 0;
+   l_screeninginfo_counter     number := 0;
+   l_carrier_counter           number := 0;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   o_rt_bir.destination   := nt_stn_id_cust();
+   o_rt_bir.screeninginfo := nt_screeninginfo();
+   o_rt_bir.carrier       := nt_carrier();
+
+   
+   for i in i_it_ice.first .. i_it_ice.last
+   loop
+      case i_it_ice( i ).attribute
+         when 'Header/Source/ProcessID'
+         then
+            o_pty_id_cust  := i_it_ice( i ).value;
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp => i_it_ice( i ).value );
+         when 'LIC'
+         then
+            o_lic  := i_it_ice( i ).value;
+         when 'BIR/Version'
+         then
+            o_rt_bir.version := i_it_ice( i ).value;
+         when 'BIR/VirtualBagIndicator'
+         then
+            o_rt_bir.virtual_bag_indicator := i_it_ice( i ).value;
+         when 'BIR/Carrier/ID'
+         then
+            l_carrier_counter := l_carrier_counter + 1;
+            o_rt_bir.carrier.extend;
+            
+            
+            o_rt_bir.carrier(l_carrier_counter) := new rt_carrier(i_id => i_it_ice( i ).value);
+         when 'BIR/Carrier/Type'
+         then
+            o_rt_bir.carrier(l_carrier_counter).type := i_it_ice( i ).value;
+         when 'BIR/PID'
+         then
+            o_rt_bir.pid := i_it_ice( i ).value;
+         when 'BIR/Destination'
+         then
+            l_dest_counter := l_dest_counter + 1;
+            o_rt_bir.destination.extend;
+            o_rt_bir.destination( l_dest_counter) := i_it_ice( i ).value;
+         when 'BIR/DestinationHandlingArea'
+         then
+            o_rt_bir.destination_handling_area  := i_it_ice( i ).value;
+         when 'BIR/BaggageIdentifier/BID'
+         then
+            o_rt_bir.bid  := i_it_ice( i ).value;
+         when 'BIR/BaggageIdentifier/BID_Extension'
+         then
+            o_rt_bir.bid_extension  := i_it_ice( i ).value;
+         when 'BIR/BaggageTag/LPC'
+         then
+            o_rt_bir.lpc := i_it_ice( i ).value;
+         when 'BIR/BaggageTag/LPC_Extension'
+         then
+            o_rt_bir.lpc_extension  := i_it_ice( i ).value;
+         when 'BIR/BaggageCharacteristics/PhysicalClass'
+         then
+            o_rt_bir.physical_class  := i_it_ice( i ).value;
+         when 'BIR/BaggageCharacteristics/Size/Length'
+         then
+            o_rt_bir.length  := i_it_ice( i ).value;
+         when 'BIR/BaggageCharacteristics/Size/Width'
+         then
+            o_rt_bir.width  := i_it_ice( i ).value;
+         when 'BIR/BaggageCharacteristics/Size/Height'
+         then
+            o_rt_bir.height := i_it_ice( i ).value;
+         when 'BIR/BaggageCharacteristics/Volume'
+         then
+            o_rt_bir.volume  := i_it_ice( i ).value;
+         when 'BIR/BaggageCharacteristics/Weight'
+         then
+            o_rt_bir.weight  := i_it_ice( i ).value;
+         when 'BIR/ScreeningInfo/ScreeningProcess/ID'
+         then
+            l_screeninginfo_counter := l_screeninginfo_counter + 1;
+            o_rt_bir.screeninginfo.extend;
+            
+            
+            o_rt_bir.screeninginfo(l_screeninginfo_counter) :=
+               new rt_screeninginfo(i_process_id => i_it_ice( i ).value);
+         when 'BIR/ScreeningInfo/ScreeningProcess/Name'
+         then
+            
+            
+            
+            
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).process_name  := i_it_ice( i ).value;
+         when 'BIR/ScreeningInfo/RequiredScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).required_screening_level := i_it_ice( i ).value;
+         when 'BIR/ScreeningInfo/ReachedScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).reached_screening_level  := i_it_ice( i ).value;
+         when 'BIR/ScreeningInfo/FailedScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).failed_screening_level  :=  i_it_ice( i ).value;
+         when 'BIR/ScreeningInfo/PseudoID'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).pseudo_id  :=  i_it_ice( i ).value;
+         when 'BIR/BagStatus'
+         then
+            o_rt_bir.bag_status  := i_it_ice( i ).value;
+         when 'BIR/PriorityIndicator'
+         then
+            o_rt_bir.priority_indicator  := i_it_ice( i ).value;
+         when 'BIR/FlightInformation/SegregationID/ProcessPlanIDName'
+         then
+            o_rt_bir.process_plan_id_name  := i_it_ice( i ).value;
+         when 'BIR/FlightInformation/SegregationID/ProductName'
+         then
+            o_rt_bir.product_name  := i_it_ice( i ).value;
+         when 'BIR/FlightInformation/Flight/Airline'
+         then
+            o_rt_bir.airline  := i_it_ice( i ).value;
+         when 'BIR/FlightInformation/Flight/FlightNumber'
+         then
+            o_rt_bir.flightnumber := i_it_ice( i ).value;
+         when 'BIR/FlightInformation/Flight/Date'
+         then
+            o_rt_bir.flightdate := i_it_ice( i ).value;
+         when 'BIR/FlightInformation/STD'
+         then
+            o_rt_bir.std := i_it_ice( i ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_ice( i ).value;
+         else
+            
+            if i_it_ice( i ).attribute not in ( 'Header/MessageTime'
+                                              , 'Header/Source/InstanceID'
+                                              , 'Header/Target/ProcessID'
+                                              , 'Header/Target/InstanceID'
+                                              , 'Header/OperatorID'
+                                              , 'BIR/AssignmentReason'
+                                              )
+            then
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: IDChangesReport; Attribute: '''
+                                                                   || i_it_ice( i ).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_ice( i ).value
+                                                                   || ''''
+                                     );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes;
+
+
+procedure store_incoming_data
+ (i_event_time     in lm_package_events.event_time%type
+ ,i_pty_id         in lm_parties.id%type
+ ,i_lic            in lm_packages.lic%type
+ ,i_rt_bir         in lm_common.g_rt_bir
+ ,i_pss_id         in lm_packages.pss_id%type
+ ,i_ims_id         in lm_ifc_messages.id%type
+ ,i_msg_obsolete   in boolean
+ ,io_rt_package    in out lm_packages%rowtype
+)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.store_incoming_data';
+
+   l_rows                   number;
+   l_pkv_order              number(4) := 0;
+   l_rt_package_event       lm_package_events%rowtype;
+   l_rt_haa                 lm_handling_areas%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   if i_rt_bir.destination_handling_area is not null
+   then
+      
+      if not lm_haa_tapi_pck.haa_select_row_uk1(i_haa_id_cust => i_rt_bir.destination_handling_area
+                                               ,o_rt_haa      => l_rt_haa
+                                               )
+      then
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_selectreturnednorecords
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_additional_data        => 'lm_handling_areas.id_cust: ''' || i_rt_bir.destination_handling_area || ''''
+                               );
+      end if;
+   end if;
+   
+   if not i_msg_obsolete
+   then
+      
+      if i_pss_id != lm_constant.g_con_pss_name_suspect
+      then
+         io_rt_package.lic       := i_lic;
+         io_rt_package.pty_id    := i_pty_id;
+      else
+         
+         io_rt_package.lic       := null;
+         io_rt_package.pty_id    := null;
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_packagesuspectupd
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_additional_data        => 'MessageId:' || i_ims_id ||
+                                                             ' PID: '     || io_rt_package.pid ||
+                                                             '; Party: '  || i_pty_id
+                               );
+      end if;
+
+      io_rt_package.pss_id           := i_pss_id;
+      io_rt_package.carrier          := i_rt_bir.carrier;
+      io_rt_package.date_modified    := lm_common.default_timestamp;
+      l_rows                         := lm_pae_tapi_pck.pae_update_row( i_pae_pid      => io_rt_package.pid
+                                                                      , io_rt_pae      => io_rt_package
+                                                                      );
+   end if;
+
+   
+   l_rt_package_event.id          := null;
+   l_rt_package_event.ete_id      := lm_constant.g_con_ete_name_id_changed;
+   l_rt_package_event.pid         := io_rt_package.pid;
+   l_rt_package_event.pty_id      := i_pty_id;
+   l_rt_package_event.lic         := i_lic;
+   l_rt_package_event.ims_id      := i_ims_id;
+   l_rt_package_event.event_time  := i_event_time;
+   l_rt_package_event.haa_id      := l_rt_haa.id;
+   lm_pet_tapi_pck.pet_insert_row( io_rt_pet => l_rt_package_event );
+
+   
+   lm_common.store_bir(i_rt_bir         => i_rt_bir
+                      ,i_pet_id         => l_rt_package_event.id
+                      ,i_pkv_order      => l_pkv_order
+                      ,i_nt_attr_except => nt_id_coll(lm_constant.g_con_pka_name_pid)
+                      );
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end store_incoming_data;
+
+
+procedure validate_incoming_data
+ (i_pss_id        in lm_packages.pss_id%type
+ ,i_pid           in lm_packages.pid%type
+ ,i_event_time    in lm_package_events.event_time%type
+ ,i_ims_id        in lm_ifc_messages.id%type
+ ,i_pty_id_cust   in lm_parties.id_cust%type
+ ,o_pty_id       out lm_parties.id%type
+ ,o_msg_obsolete out boolean
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.validate_incoming_data';
+
+   
+   cursor c_get_last_package_event
+    (i_pid        in lm_package_events.pid%type
+    ,i_event_time in lm_package_events.event_time%type
+    )
+   is
+   select pet.id
+   from   lm_package_events pet
+   where  pet.pid = i_pid
+   and    pet.event_time > i_event_time;
+
+   l_pet_id                 lm_package_events.id%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   if    i_pss_id = lm_constant.g_con_pss_name_closed
+      or i_pss_id = lm_constant.g_con_pss_name_missing
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_packageclosed
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_pid
+                         , i_additional_data        => 'MessageId:' || i_ims_id || ', PID:' || i_pid
+                         );
+   end if;
+
+   
+   
+   
+   open c_get_last_package_event( i_pid             => i_pid
+                                , i_event_time      => i_event_time);
+   fetch c_get_last_package_event
+   into  l_pet_id;
+   o_msg_obsolete  := c_get_last_package_event%found;
+   close c_get_last_package_event;
+
+   if o_msg_obsolete
+   then
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_obsoleteidchangereport
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_info_arguments         => 'PID "' || i_pid || '"'
+                            );
+   end if;
+
+   
+   o_pty_id := lm_lifesign.check_party(i_pty_id_cust     => i_pty_id_cust
+                                      ,i_pty_instance_id => null
+                                      );
+
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_get_last_package_event%isopen
+      then
+         close c_get_last_package_event;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end validate_incoming_data;
+
+
+function check_destinations_ice
+ (i_pid             in     lm_packages.pid%type
+ ,io_it_destination in out nt_stn_id_cust
+ ,o_pin_id             out lm_package_instructions.id%type
+ ,o_it_pon_id          out lm_topology_administration.g_it_dst
+ )
+return boolean
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.check_destinations_ice';
+
+   
+   cursor c_destinations_ice
+    (i_pae_id in lm_packages.pid%type
+    )
+   is
+   select ( select pon.id_cust
+            from   lm_physical_destinations pon
+            where  pon.id = pdn.pon_id
+          ) as id_cust
+   ,      pdn.pin_id as pin_id
+   ,      pdn.pon_id
+   from   lm_package_destinations pdn
+   
+   ,      lm_pin_active_of_package_v piev
+   where  pdn.pin_id =  piev.id
+   and    piev.pid = i_pae_id
+   order by pdn.pdn_order;
+
+   l_not_in_destination     boolean;
+   l_success                boolean := true;
+   l_destination_counter    number := 0;
+   l_rt_destination         c_destinations_ice%rowtype;
+   l_it_destination         nt_stn_id_cust := nt_stn_id_cust();
+   l_it_pon_id              lm_topology_administration.g_it_dst;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   open c_destinations_ice( i_pae_id      => i_pid );
+
+   l_destination_counter  := 0;
+   l_success              := true;
+
+   
+   <<outerloop1>>
+   loop
+      fetch c_destinations_ice
+      into  l_rt_destination;
+
+      exit when c_destinations_ice%notfound;
+
+      if c_destinations_ice%found
+      then
+         o_pin_id := l_rt_destination.pin_id;
+
+         l_destination_counter  := l_destination_counter + 1;
+
+         
+         l_not_in_destination := true;
+         <<innerloop1>>
+         for i in 1 .. io_it_destination.count
+         loop
+            if io_it_destination( i ) = l_rt_destination.id_cust
+            then
+              
+              l_not_in_destination := false;
+            end if;
+         end loop innerloop1;
+
+         
+         if l_not_in_destination
+         then
+           l_success        := false;
+         end if;
+         l_it_destination.extend;
+         l_it_destination( l_destination_counter )  := l_rt_destination.id_cust;
+         l_it_pon_id     ( l_destination_counter )  := l_rt_destination.pon_id;
+      end if;
+   end loop outerloop1;
+
+   close c_destinations_ice;
+
+   
+   if l_destination_counter = 0
+   then
+      
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_packagemismatchdata
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_notification
+                            , i_additional_data        => 'PID:' || i_pid
+                            );
+   
+   
+   elsif io_it_destination.count <> l_destination_counter
+   then
+      l_success  := false;
+   end if;
+
+   io_it_destination := l_it_destination;
+   o_it_pon_id       := l_it_pon_id;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_success;
+exception
+   when others
+   then
+      if c_destinations_ice%isopen
+      then
+         close c_destinations_ice;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_destinations_ice;
+
+
+procedure check_instruction_record
+ (i_rt_package in lm_packages%rowtype
+ ,i_rt_bir     in lm_common.g_rt_bir
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.check_instruction_record';
+
+   
+   
+   
+   
+   cursor c_task_attr_values(i_tin_id lm_task_instructions.id%type)
+   is
+   select tav.tae_id
+   ,      tav.value
+   from   lm_task_attribute_values tav
+   where  tav.tin_id = i_tin_id
+   order by tav.tav_order;
+   
+   cursor c_party_areas(i_pty_id lm_parties.id%type)
+   is
+   select scs.sct_id
+   ,      sct.ind_sync_bir
+   from   lm_system_component_statuses scs
+   ,      lm_system_components         sct
+   ,      lm_lifesign_parties          lpy
+   where  scs.lpy_id = lpy.id
+   and    scs.sct_id = sct.id
+   and    lpy.pty_id = i_pty_id;
+   
+   cursor c_tpev(i_pid lm_packages.pid%type)
+   is
+   select  tpev.id tin_id
+          ,tpev.sep_id
+   from lm_tin_active_of_package_v tpev
+   where tpev.pid = i_pid;
+   
+   l_found                      boolean;
+   l_screeninginstruction_found boolean;
+   l_send_pi_forced             boolean := false;
+   l_send_pi_mismatch           boolean := false;
+   l_it_pon_id                  lm_topology_administration.g_it_dst;
+   l_it_destination             nt_stn_id_cust := nt_stn_id_cust();
+   l_pin_id                     lm_package_instructions.id%type;
+   l_rt_pin                     lm_package_instructions%rowtype;
+   l_rt_haa                     lm_handling_areas%rowtype;
+   l_nt_psg                     nt_screeninginstruction := nt_screeninginstruction();
+   l_it_task_attr               lm_interface.g_it_ima;
+   l_destinations_msg           lm_constant.st_rt_value;
+   l_destinations_db            lm_constant.st_rt_value;
+   l_package_instruction        lm_common.g_rt_package_instruction;
+   l_pin_ims_id                 lm_package_instructions.ims_id%type;
+   l_num                        number;
+   l_viu_mess                   viu_info_logs.additional_data%type;
+   l_viu_db                     viu_info_logs.additional_data%type;
+   l_flight_nr                  lm_task_attribute_values.value%type;
+   l_sdd                        lm_task_attribute_values.value%type;
+   l_nt_screeninginfo           nt_screeninginfo := nt_screeninginfo();
+   l_rt_tpev                    c_tpev%rowtype;
+   l_rt_sep                     lm_segregation_groups%rowtype;
+      
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   
+   
+   
+   
+   for l_rt_party_areas in c_party_areas(i_pty_id => i_rt_package.pty_id)
+   loop
+      if c_party_areas%rowcount = 1
+      then
+         
+         if l_rt_party_areas.ind_sync_bir = lm_constant.g_con_yesno_yes
+         then
+            l_send_pi_forced := true;
+         end if;
+      else
+         
+         
+         if l_send_pi_forced   
+            or
+            l_rt_party_areas.ind_sync_bir = lm_constant.g_con_yesno_yes
+                               
+         then
+            
+            
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_multipleareasfound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_info_arguments         => i_rt_package.pty_id
+                                  );
+            
+            l_send_pi_forced := false;
+            exit;
+         end if;
+      end if;
+   end loop;
+   
+   l_it_destination := i_rt_bir.destination;
+   
+   
+   
+   l_send_pi_mismatch := not lm_idchange.check_destinations_ice( i_pid                  => i_rt_bir.pid
+                                                               , io_it_destination      => l_it_destination
+                                                               , o_pin_id               => l_pin_id
+                                                               , o_it_pon_id            => l_it_pon_id
+                                                               );
+
+   
+   l_found := lm_pin_tapi_pck.pin_select_row( i_pin_id => l_pin_id
+                                            , o_rt_pin => l_rt_pin
+                                            );
+  
+    
+   
+   
+   
+   l_found := lm_haa_tapi_pck.haa_select_row( i_haa_id => l_rt_pin.haa_id
+                                            , o_rt_haa => l_rt_haa
+                                            );
+   if (   i_rt_bir.destination_handling_area is null
+      and l_rt_pin.haa_id is not null
+      )
+   or (   i_rt_bir.destination_handling_area is not null
+      and l_rt_haa.id_cust <> i_rt_bir.destination_handling_area
+      )
+   then
+      l_send_pi_mismatch := true;
+   end if;
+
+   if i_rt_package.priority_indicator <> i_rt_bir.priority_indicator
+   then
+      l_send_pi_mismatch := true;
+   end if;
+
+   
+   
+   
+   
+   l_nt_psg := lm_package_administration.get_screeninginstruction(i_pid => i_rt_bir.pid);
+  
+   if  ( l_nt_psg.count > 0
+         and i_rt_bir.screeninginfo.count = 0
+       )
+   then
+      
+      l_send_pi_mismatch := true;
+   else
+      if (     l_nt_psg.count > 0
+           and i_rt_bir.screeninginfo.count > 0
+         )
+      then
+         for idx in l_nt_psg.first .. l_nt_psg.last
+         loop
+            
+            l_screeninginstruction_found := false;
+            for idy in i_rt_bir.screeninginfo.first .. i_rt_bir.screeninginfo.last
+            loop
+               if  l_nt_psg(idx).process_id = i_rt_bir.screeninginfo(idy).process_id
+               then
+                  l_screeninginstruction_found := true;
+                  
+                  if ( i_rt_bir.screeninginfo(idy).required_screening_level is null
+                       and l_nt_psg(idx).required_screening_level is not null
+                     )
+                  or ( l_nt_psg(idx).required_screening_level is not null
+                       and i_rt_bir.screeninginfo(idy).required_screening_level !=
+                           l_nt_psg(idx).required_screening_level
+                     )
+                  then
+                     l_send_pi_mismatch := true;
+                     l_viu_mess := l_viu_mess ||';'|| i_rt_bir.screeninginfo(idy).required_screening_level;
+                     l_viu_db   := l_viu_db   ||';'|| l_nt_psg(idx).required_screening_level;
+                  end if;
+               end if;
+            end loop;
+            if not l_screeninginstruction_found
+            then
+               
+               l_send_pi_mismatch := true;
+               l_viu_db  := l_viu_db   ||';'|| l_nt_psg(idx).required_screening_level;
+            end if;
+         end loop;
+      end if;
+   end if;
+
+   if l_send_pi_mismatch
+   then
+      
+      
+      select listagg(column_value, ', ') within group (order by column_value)
+      into   l_destinations_msg
+      from   table(l_it_destination);
+      
+      l_destinations_db := l_destinations_msg;
+      
+      
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_packagemismatchdata
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_notification
+                            , i_additional_data        =>    ' PID:'
+                                                          || i_rt_bir.pid
+                                                          || ' In database '
+                                                          || ' PriorityIndicator: '
+                                                          || i_rt_package.priority_indicator
+                                                          || ' RequiredScreeningLevel(s): '
+                                                          || l_viu_db
+                                                          || ' Destinations: '
+                                                          || l_destinations_db
+                                                          || ' Handling Area: '
+                                                          || l_rt_haa.id_cust
+                                                          || ' In message '
+                                                          || ' PriorityIndicator: '
+                                                          || i_rt_bir.priority_indicator
+                                                          || ' RequiredScreeningLevel(s): '
+                                                          || l_viu_mess
+                                                          || ' Destinations: '
+                                                          || l_destinations_msg
+                                                          || ' Handling Area: '
+                                                          || i_rt_bir.destination_handling_area
+                            );
+    end if;
+    
+    if  l_send_pi_mismatch or l_send_pi_forced
+    then
+      
+      lm_package_administration.store_package_instruction( i_pid            => i_rt_bir.pid
+                                                         , i_pty_id         => i_rt_package.pty_id
+                                                         , i_it_pon_id      => l_it_pon_id
+                                                         , i_haa_id         => l_rt_haa.id
+                                                         , o_rt_pin         => l_rt_pin
+                                                         );
+                                                         
+      
+      
+      
+      
+      
+      
+      
+
+      if l_it_destination.count > 0
+      then
+         for idx in l_it_destination.first .. l_it_destination.last
+         loop
+             l_package_instruction.instruction.it_pon_id_cust(idx) := l_it_destination(idx);
+         end loop;
+      end if;
+      l_package_instruction.instruction.destination_haa_id_cust := l_rt_haa.id_cust;
+      l_package_instruction.instruction.priority_indicator      := i_rt_package.priority_indicator;
+      l_package_instruction.instruction.release_group_id        := i_rt_package.rgp_id;
+      l_package_instruction.screeninginstruction                := l_nt_psg;
+
+      l_package_instruction.hlc_identification.bid              := i_rt_package.bid;
+      l_package_instruction.hlc_identification.bid_extension    := i_rt_package.bid_extension;
+      l_package_instruction.hlc_identification.lpc              := i_rt_package.lpc;
+      l_package_instruction.hlc_identification.lpc_extension    := i_rt_package.lpc_extension;
+      
+      open c_tpev( i_pid => i_rt_package.pid);
+      fetch c_tpev
+      into l_rt_tpev;
+      close c_tpev;
+      if l_rt_tpev.sep_id is not null
+      then
+         l_found := lm_sep_tapi_pck.sep_select_row(i_sep_id  => l_rt_tpev.sep_id
+                                                  ,o_rt_sep  => l_rt_sep);
+         l_package_instruction.flightinformation.process_plan_name := l_rt_sep.process_plan_name;
+         l_package_instruction.flightinformation.product_name      := l_rt_sep.product_name;
+      end if;
+      
+      
+      open c_task_attr_values( i_tin_id => l_rt_tpev.tin_id);
+      fetch c_task_attr_values bulk collect
+      into  l_it_task_attr;
+      close c_task_attr_values;
+
+      
+      for i in 1 .. l_it_task_attr.count
+      loop
+         case l_it_task_attr(i).attribute
+            when lm_constant.g_con_tae_name_flightnr
+            then
+               l_flight_nr := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_sdd
+            then
+               l_sdd := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_std
+            then
+               l_package_instruction.flightinformation.std := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_physical_class
+            then
+               l_package_instruction.recovery.physical_class := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_length
+            then
+               l_package_instruction.recovery.length := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_width
+            then
+               l_package_instruction.recovery.width := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_height
+            then
+               l_package_instruction.recovery.height := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_measuredvolume
+            then
+               l_package_instruction.recovery.measuredvolume := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_weight
+            then
+               l_package_instruction.recovery.weight := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_scr_proc_id
+            then
+               l_nt_screeninginfo.extend;
+               l_nt_screeninginfo(l_nt_screeninginfo.count)
+                     := new rt_screeninginfo(i_process_id => l_it_task_attr(i).value);
+            when lm_constant.g_con_tae_name_scr_proc_name
+            then
+               l_nt_screeninginfo(l_nt_screeninginfo.count).process_name := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_rea_scr_lvl
+            then
+               l_nt_screeninginfo(l_nt_screeninginfo.count).reached_screening_level := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_fail_scr_lvl
+            then
+               l_nt_screeninginfo(l_nt_screeninginfo.count).failed_screening_level := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_scr_pseudo_id
+            then
+               l_nt_screeninginfo(l_nt_screeninginfo.count).pseudo_id := l_it_task_attr(i).value;
+            when lm_constant.g_con_tae_name_bag_status
+            then
+               l_package_instruction.recovery.bag_status := l_it_task_attr(i).value;
+            else
+               null;
+         end case;
+      end loop;
+
+      l_package_instruction.recovery.screeninginfo := l_nt_screeninginfo;
+
+      
+      lm_common.convert_flightnr( i_flightnr => l_flight_nr
+                                 ,o_airline  => l_package_instruction.flightinformation.airline
+                                 ,o_flightnr => l_package_instruction.flightinformation.flightnumber
+                                );
+      
+      l_package_instruction.flightinformation.flightdate :=
+                             lm_common.date_to_varchar(lm_common.std_guess(i_sdd => l_sdd
+                                                                          ,i_std => l_package_instruction.flightinformation.std
+                                                                          )
+                                                       );
+      
+      lm_package_administration.send_instruction_for_package(i_pty_id     => i_rt_package.pty_id
+                                                            ,i_event_time => lm_common.default_timestamp
+                                                            ,i_pid        => i_rt_package.pid
+                                                            ,i_lic_id     => i_rt_package.lic
+                                                            ,i_pi         => l_package_instruction
+                                                            ,o_ims_id     => l_pin_ims_id
+                                                            );
+               
+      
+      l_rt_pin.ims_id  := l_pin_ims_id;
+      l_num            := lm_pin_tapi_pck.pin_update_row( i_pin_id       => l_rt_pin.id
+                                                        , io_rt_pin      => l_rt_pin
+                                                        );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_tpev%isopen
+      then
+         close c_tpev;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_instruction_record;
+
+end lm_idchange;
+/

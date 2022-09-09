@@ -1,0 +1,3176 @@
+create or replace PACKAGE bsis_baggage_data_mgr
+AUTHID DEFINER
+AS
+   FUNCTION get_bda_num_lpc
+     ( i_msg_id_rec IN bsis_interface.rt_msg_id
+     , i_check_src_data IN varchar2 := 'N'
+     ) RETURN NUMBER;
+   --
+   FUNCTION get_bda_lpc
+    ( i_msg_id_rec     IN  bsis_interface.rt_msg_id
+    , i_check_src_data IN varchar2 := 'N'
+    , o_bda_rec        OUT bsis_baggage_data%ROWTYPE
+    ) RETURN BOOLEAN
+;
+   --
+   FUNCTION get_bda_rec
+    (i_msg_id_rec IN  bsis_interface.rt_msg_id
+    ,o_bda_rec    OUT bsis_baggage_data%rowtype
+    ) RETURN BOOLEAN;
+   --
+   FUNCTION get_vendor_string
+    (i_bda_id_rec IN bsis_interface.rt_bda_id)
+   RETURN VARCHAR2;
+   --
+   PROCEDURE get_pda_bre_msg
+    (i_msg_id_rec  IN  bsis_interface.rt_msg_id
+    ,i_bda_id      IN  NUMBER := NULL
+    ,i_trigger_src IN  VARCHAR2
+    ,o_msg_pda_bre OUT XMLTYPE
+    );
+   --
+   FUNCTION insert_baggage_data (
+       i_baggage_data       IN  XMLTYPE
+      ,i_msg_id_rec         IN  bsis_interface.rt_msg_id
+      ,i_deleted_ind        IN  bsis_baggage_data.deleted_ind%TYPE
+      ,o_bda_rec            OUT bsis_baggage_data%ROWTYPE
+      ,o_iata_id_tab_change OUT bsis_interface.it_iata_id
+   ) RETURN BOOLEAN;
+   --
+   PROCEDURE split_bag_src_sve_data
+    (i_msg_id_rec         IN bsis_interface.rt_msg_id
+    ,i_bda_rec_org        IN bsis_baggage_data%ROWTYPE
+    ,io_bda_rec           IN OUT bsis_baggage_data%ROWTYPE
+    ,o_iata_id_tab_change OUT bsis_interface.it_iata_id
+    );
+   --
+   FUNCTION update_baggage_data (
+       i_baggage_data_new    IN     XMLTYPE
+      ,i_msg_id_rec          IN     bsis_interface.rt_msg_id
+      ,io_baggage_data_old   IN OUT bsis_baggage_data%ROWTYPE
+      ,o_iata_id_tab_change     OUT bsis_interface.it_iata_id
+   ) RETURN BOOLEAN;
+   --
+   FUNCTION delete_baggage_data (
+      i_bda_id       IN  bsis_baggage_data.id%TYPE
+     ,i_baggage_data IN  XMLTYPE
+     ,i_msg_id_rec   IN  bsis_interface.rt_msg_id
+     ,o_bda_rec      OUT bsis_baggage_data%ROWTYPE
+   ) RETURN BOOLEAN;
+   --
+   FUNCTION handle_baggage_data (
+       i_msg_id_rec         IN  bsis_interface.rt_msg_id
+      ,i_baggage_data       IN  XMLTYPE
+      ,o_bda_rec            OUT bsis_baggage_data%ROWTYPE
+      ,o_iata_id_tab_change OUT bsis_interface.it_iata_id
+   ) RETURN BOOLEAN;
+   --
+   PROCEDURE merge_xml
+    (i_data_type           IN  VARCHAR2
+    ,i_msg_id_rec          IN  bsis_interface.rt_msg_id
+    ,i_xml_old             IN  XMLTYPE
+    ,i_xml_new             IN  XMLTYPE
+    ,i_xml_is_new          IN  BOOLEAN                   := TRUE
+    ,i_bda_old_id          IN  bsis_baggage_data.id%TYPE := NULL
+    ,i_old_new_change      IN  BOOLEAN                   := FALSE
+    ,o_xml_mge             OUT XMLTYPE
+    ,o_iata_id_tab_change  OUT bsis_interface.it_iata_id
+    ,o_msg_type_tab_change OUT bsis_interface.it_iata_id
+    );
+   --
+   PROCEDURE insert_log_data
+    (i_msg_id_rec IN bsis_interface.rt_msg_id
+    ,i_bda_rec    IN bsis_baggage_data%ROWTYPE
+    ,i_msg_src    IN XMLTYPE := NULL
+    ,i_msg_sve    IN XMLTYPE := NULL
+    );
+   --
+   FUNCTION get_bagload_deliv_ind
+    (i_bda_id_rec        IN bsis_interface.rt_bda_id
+    ,i_bda_rec           IN bsis_baggage_data%ROWTYPE
+    ) RETURN BOOLEAN;
+   --
+   PROCEDURE set_bagload_deliv_ind
+    (i_bagload_deliv_ind IN BOOLEAN
+    ,i_bda_rec           IN bsis_baggage_data%ROWTYPE
+    );
+   --
+   PROCEDURE set_g_store_duplicate_lpn;
+   --
+   FUNCTION is_store_duplicate_lpn
+   RETURN BOOLEAN;
+   --
+END bsis_baggage_data_mgr;
+/
+
+
+
+package body bsis_baggage_data_mgr
+as
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   g_con_package         constant varchar2(30) := 'bsis_baggage_data_mgr';
+   g_store_duplicate_lpn boolean;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_bid
+    ( i_msg_id_rec in  bsis_interface.rt_msg_id
+    , o_bda_rec    out bsis_baggage_data%rowtype
+    )
+    return boolean
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_bid';
+      l_bda_rec      bsis_baggage_data%rowtype;
+      l_bda_id_rec   bsis_interface.rt_bda_id;
+      l_found        boolean := false;
+   begin
+      l_bda_id_rec := i_msg_id_rec.bda_id_rec;
+      
+      for r_bda in (select bda.*
+                    from   bsis_baggage_data bda
+                    where  l_bda_id_rec.bid           = bda.bid
+                    and (  l_bda_id_rec.bid_extension is null
+                        or l_bda_id_rec.bid_extension = bda.bid_extension
+                        )
+                    and  ( bda.deleted_ind               = 'N'
+                         or ( bda.deleted_ind = 'Y'
+                         and  bda.last_src_data_upd > i_msg_id_rec.msg_time
+                            )
+                         )
+                   )
+      loop
+         l_bda_rec := r_bda;
+         l_found   := true;
+      end loop;
+      
+      o_bda_rec := l_bda_rec;
+      
+      return l_found;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_bid;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function get_bda_num_lpc
+    ( i_msg_id_rec     in bsis_interface.rt_msg_id
+    , i_check_src_data in varchar2 := 'N'
+    ) return number
+  is
+    l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_num_lpc';
+    l_bda_id_rec   bsis_interface.rt_bda_id;
+    l_count        number;
+  begin
+    l_bda_id_rec := i_msg_id_rec.bda_id_rec;
+    
+    select count(bda.id)
+    into   l_count
+    from   bsis_baggage_data bda
+    where  l_bda_id_rec.lpc           = bda.lpc
+    and (  l_bda_id_rec.lpc_extension is null
+        or l_bda_id_rec.lpc_extension = bda.lpc_extension
+        )
+    and    bda.deleted_ind            = 'N'
+    and (  i_check_src_data           = 'N'
+        or bda.src_data_src           is not null
+        )
+    ;
+    
+    return l_count;
+  exception
+  when others then
+    viu_info.raise_info(i_calling_procedure => l_con_proc);
+  end get_bda_num_lpc;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_lpc
+    ( i_msg_id_rec     in  bsis_interface.rt_msg_id
+    , i_check_src_data in  varchar2 := 'N'
+    , o_bda_rec        out bsis_baggage_data%rowtype
+    ) return boolean
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_lpc';
+      l_bda_rec      bsis_baggage_data%rowtype;
+      l_bda_id_rec   bsis_interface.rt_bda_id;
+      l_found        boolean := false;
+   begin
+      l_bda_id_rec := i_msg_id_rec.bda_id_rec;
+      
+      for r_bda in ( select bda.*
+                     from   bsis_baggage_data bda
+                     where  l_bda_id_rec.lpc           = bda.lpc
+                     and (  l_bda_id_rec.lpc_extension is null
+                         or l_bda_id_rec.lpc_extension = bda.lpc_extension
+                         )
+                     and ( bda.deleted_ind               = 'N'
+                         or ( bda.deleted_ind = 'Y'
+                         and  bda.last_src_data_upd > i_msg_id_rec.msg_time
+                            )
+                         )
+                     and (  i_check_src_data           = 'N'
+                         or bda.src_data_src           is not null
+                         )
+                   )
+      loop
+         l_bda_rec := r_bda;
+         l_found   := true;
+      end loop;
+      
+      o_bda_rec := l_bda_rec;
+      
+      return l_found;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_lpc;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_lpc_flight
+    ( i_msg_id_rec in  bsis_interface.rt_msg_id
+    , i_not_bda_id in  bsis_baggage_data.id%type
+    , o_bda_rec    out bsis_baggage_data%rowtype
+    )
+    return boolean
+   is
+      l_con_proc      constant cmn_constant.st_proc_name := g_con_package || '.get_bda_lpc_flight';
+      l_bda_rec       bsis_baggage_data%rowtype;
+      l_not_bda_id    bsis_baggage_data.id%type;
+      l_bda_id_rec    bsis_interface.rt_bda_id;
+      l_flight_id_rec bsis_interface.rt_flight_id;
+      l_found         boolean := false;
+   begin
+      l_bda_id_rec    := i_msg_id_rec.bda_id_rec;
+      l_not_bda_id    := i_not_bda_id;
+      l_flight_id_rec := l_bda_id_rec.flight_id_rec;
+      
+      for r_bda in (select bda.*
+                    from   bsis_baggage_data bda
+                    where ( l_not_bda_id             is null
+                         or bda.id                   != l_not_bda_id
+                          )
+                    and    l_bda_id_rec.lpc           = bda.lpc
+                    and (  l_bda_id_rec.lpc_extension is null
+                        or l_bda_id_rec.lpc_extension = bda.lpc_extension
+                        )
+                    and (  bda.flight is null
+                        or (l_flight_id_rec.flight       = bda.flight)
+                        )
+                    and  ( bda.deleted_ind               = 'N'
+                         or ( bda.deleted_ind = 'Y'
+                         and  bda.last_src_data_upd > i_msg_id_rec.msg_time
+                            )
+                         )
+                   )
+      loop
+         l_bda_rec := r_bda;
+         l_found   := true;
+      end loop;
+      
+      o_bda_rec := l_bda_rec;
+      
+      return l_found;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_lpc_flight;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_dup_lpc
+    ( i_msg_id_rec in  bsis_interface.rt_msg_id
+    , i_not_bda_id in  bsis_baggage_data.id%type := null
+    , o_bda_rec    out bsis_baggage_data%rowtype
+    )
+    return boolean
+   is
+      l_con_proc      constant cmn_constant.st_proc_name := g_con_package || '.get_bda_dup_lpc';
+      l_msg_id_rec    bsis_interface.rt_msg_id;
+      l_flight_id_rec bsis_interface.rt_flight_id;
+      l_bda_found     boolean := false;
+      l_bda_rec       bsis_baggage_data%rowtype;
+      l_not_bda_id    bsis_baggage_data.id%type;
+      l_count         number;
+      
+      l_bsmotherflightexists boolean := false;
+   begin
+      l_msg_id_rec    := i_msg_id_rec;
+      l_not_bda_id    := i_not_bda_id;
+      l_flight_id_rec := l_msg_id_rec.bda_id_rec.flight_id_rec;
+      
+      
+
+
+
+
+      
+      
+      if not g_store_duplicate_lpn
+      then
+         l_bda_found := get_bda_lpc(i_msg_id_rec => l_msg_id_rec
+                                   ,o_bda_rec    => l_bda_rec
+                                   );
+      elsif l_flight_id_rec.flight       is null
+      then  
+         
+         l_count := get_bda_num_lpc(i_msg_id_rec => l_msg_id_rec);
+         
+         if l_count = 1
+         then
+            l_bda_found := get_bda_lpc(i_msg_id_rec => l_msg_id_rec
+                                      ,o_bda_rec    => l_bda_rec
+                                      );
+         elsif l_count > 1
+         then
+            
+            l_bsmotherflightexists := true;
+         end if;
+         
+      else 
+         
+         if get_bda_lpc_flight(i_msg_id_rec => l_msg_id_rec
+                              ,i_not_bda_id => l_not_bda_id
+                              ,o_bda_rec    => l_bda_rec
+                              )
+         then
+            l_bda_found := true;
+         else
+            l_bsmotherflightexists := (get_bda_num_lpc(i_msg_id_rec => l_msg_id_rec) > 1);
+         end if;
+         
+      end if;
+      
+      if l_bsmotherflightexists
+      then
+         viu_info.operator_info
+            (i_ifo_nr                 => viu_constant.c_ifo_bsmotherflightexists
+            ,i_calling_procedure      => l_con_proc
+            ,i_severity               => viu_info.c_severity_warning
+            ,i_additional_data        => 'LPC(' || l_msg_id_rec.bda_id_rec.lpc || ') Flight('
+                      || l_flight_id_rec.flight || ')'
+            );
+      end if;
+      
+      o_bda_rec := l_bda_rec;
+      
+      return l_bda_found;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_dup_lpc;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_rec
+    (i_msg_id_rec in  bsis_interface.rt_msg_id
+    ,o_bda_rec    out bsis_baggage_data%rowtype
+    ) return boolean
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_rec';
+      l_bda_id_rec   bsis_interface.rt_bda_id;
+      l_bda_rec      bsis_baggage_data%rowtype;
+      l_found        boolean := false;
+   begin
+      l_bda_id_rec := i_msg_id_rec.bda_id_rec;
+      
+      if i_msg_id_rec.pmd_name in
+         (bsis_constant.g_con_pdi_pd_subscribe,bsis_constant.g_con_pdi_pd_unsubscribe)
+      then
+         
+         if l_bda_id_rec.lpc is not null
+         then
+            l_found := get_bda_dup_lpc(i_msg_id_rec => i_msg_id_rec
+                                      ,o_bda_rec    => l_bda_rec
+                                      );
+         else
+            null; 
+         end if;
+      else
+         
+         if l_bda_id_rec.lpc is not null
+         then
+            
+            l_found := get_bda_dup_lpc(i_msg_id_rec => i_msg_id_rec
+                                      ,o_bda_rec    => l_bda_rec
+                                      );
+         elsif l_bda_id_rec.bid is not null
+         then
+            
+            l_found := get_bda_bid(i_msg_id_rec => i_msg_id_rec
+                                  ,o_bda_rec    => l_bda_rec
+                                  );
+         else
+            null; 
+         end if;
+      end if;
+      
+      o_bda_rec := l_bda_rec;
+      
+      return l_found;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_rec;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_vendor_string
+    (i_bda_id_rec in bsis_interface.rt_bda_id)
+   return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+         := g_con_package || '.get_vendor_string' ;
+      l_vendor_string     bsis_baggage_data.vendor_string%type;
+   begin
+      
+
+
+
+      select max(bda.vendor_string) 
+        into l_vendor_string
+        from bsis_baggage_data bda
+       where bda.vendor_string is not null
+         and bda.deleted_ind <> cmn_constant.g_con_yesno_yes
+         and bda.lpc = i_bda_id_rec.lpc
+         and (   i_bda_id_rec.lpc_extension is null
+              or i_bda_id_rec.lpc_extension = bda.lpc_extension
+             )
+         and (i_bda_id_rec.flight_id_rec.flight is null
+              or (bda.flight       = i_bda_id_rec.flight_id_rec.flight)
+             );
+      
+      return l_vendor_string;
+   exception
+      when others
+      then
+         viu_info.operator_info (
+            i_ifo_nr              => viu_constant.c_ifo_recordnotfound,
+            i_calling_procedure   => l_con_proc_name,
+            i_severity            => viu_info.c_severity_notification,
+            i_additional_data     => sqlerrm);
+         return l_vendor_string;
+   end get_vendor_string;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_pda_bre_msg
+    (i_msg_id_rec  in  bsis_interface.rt_msg_id
+    ,i_bda_id      in  number := null
+    ,i_trigger_src in  varchar2
+    ,o_msg_pda_bre out xmltype
+    )
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_pda_bre_msg';
+      l_num_bda      number;
+      l_bda_id_rec   bsis_interface.rt_bda_id;
+      l_msg_pda_bre  xmltype;
+      l_org_msg_type varchar2(30);
+      l_org_msg_src  varchar2(1);
+      l_org_msg_sve  varchar2(1);
+   begin
+      l_bda_id_rec   := i_msg_id_rec.bda_id_rec;
+      l_org_msg_type := i_msg_id_rec.org_msg_type;
+      l_org_msg_src  := i_msg_id_rec.dat_elt_typ_src;
+      l_org_msg_sve  := i_msg_id_rec.dat_elt_typ_sve;
+      
+      select xmlelement("BagResponse"
+                       ,xmlelement("ReplyData"
+                                  ,xmlelement("MessageType",'PACKAGEDATA')
+                                  ,xmlelement("EventTime"
+                                             ,cmn_common.timestamp_to_varchar
+                                                (max(case when bda.last_src_data_upd is null then bda.last_sve_data_upd
+                                                          when bda.last_sve_data_upd is null then bda.last_src_data_upd
+                                                          else case
+                                                                 when l_org_msg_src = cmn_constant.g_con_yesno_yes
+                                                                   then bda.last_src_data_upd
+                                                                 when l_org_msg_sve = cmn_constant.g_con_yesno_yes
+                                                                   then bda.last_sve_data_upd
+                                                                 else
+                                                                   null
+                                                               end
+                                                     end
+                                                    )
+                                                )
+                                             )
+                                  ,xmlelement("TriggerType"
+                                             ,i_trigger_src
+                                             )
+                                  )
+                       ,xmlagg(xmlelement("BagData"
+                                         ,xmlelement("PackageIdentifier"
+                                                    ,xmlelement("BaggageTag"
+                                                               ,xmlelement("LPC",bda.lpc)
+                                                               ,case when bda.lpc_extension is not null
+                                                                     then xmlelement("LPC_Extension",bda.lpc_extension)
+                                                                else null
+                                                                end
+                                                               )
+                                                    ,case when bda.bid is not null
+                                                          then xmlelement("BaggageIdentifier"
+                                                                         ,xmlelement("BID",bda.bid)
+                                                                         ,xmlelement("BID_Extension",bda.bid_extension)
+                                                                         )
+                                                          else null
+                                                          end
+                                                    )
+                                         ,case when bda.pid is not null
+                                               then xmlelement("PID",bda.pid)
+                                               else null
+                                          end
+                                         ,xmlelement("Status"
+                                                    ,case when bda.deleted_ind = 'Y'
+                                                     then 'DELETED' else 'RECEIVED'
+                                                     end
+                                                    )
+                                         ,xmlelement("UpdatedIndicator"
+                                                    ,case when i_trigger_src = 'EXTERNAL'
+                                                          then case when i_bda_id = bda.id
+                                                                    then 'TRUE'
+                                                                    else 'FALSE'
+                                                               end
+                                                          else 'FALSE'
+                                                     end
+                                                    )
+                                         ,bda.src_data
+                                         ,bda.sve_data
+                                         )
+                              )
+                       )
+      ,      count(bda.id)
+      into   l_msg_pda_bre
+      ,      l_num_bda
+      from   bsis_baggage_data bda
+      where  l_bda_id_rec.lpc           = bda.lpc
+      and (  l_bda_id_rec.lpc_extension is null
+          or l_bda_id_rec.lpc_extension = bda.lpc_extension
+          )
+      and ( bda.deleted_ind = 'N'
+          or ( bda.deleted_ind = 'Y'
+             and bda.last_src_data_upd >= i_msg_id_rec.msg_time
+             )
+          )
+      ;
+      if l_num_bda != 0
+      then
+         o_msg_pda_bre := l_msg_pda_bre;
+      else
+         o_msg_pda_bre := null; 
+      end if;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_pda_bre_msg;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure set_msg_type_tab_change
+     (i_bda_id              in bsis_baggage_data.id%type
+     ,i_msg_type_tab_change in bsis_interface.it_iata_id
+     )
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.set_msg_type_tab_change';
+      l_rt_bds       bsis_baggage_data_att_source%rowtype;
+      l_rt_bds_empty bsis_baggage_data_att_source%rowtype;
+      l_idx      pls_integer;
+   begin
+      l_idx := i_msg_type_tab_change.first;
+      
+      if l_idx is not null
+      then
+         <<loop_elements>>
+         while l_idx is not null
+         loop
+            if i_msg_type_tab_change(l_idx) is not null
+            then
+               update bsis_baggage_data_att_source bds
+               set    bds.latest_message_type = i_msg_type_tab_change(l_idx)
+               where  bds.bda_id = i_bda_id
+               and    bds.att_id = l_idx
+               ;
+               if sql%notfound
+               then
+                  l_rt_bds                     := l_rt_bds_empty;
+                  l_rt_bds.bda_id              := i_bda_id;
+                  l_rt_bds.att_id              := l_idx;
+                  l_rt_bds.latest_message_type := i_msg_type_tab_change(l_idx);
+                  
+                  bsis_bds_tapi_pck.bds_insert_row (io_rt_bds => l_rt_bds);
+               end if;
+            end if;
+            
+            l_idx := i_msg_type_tab_change.next(l_idx);
+         end loop loop_elements;
+      end if;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end set_msg_type_tab_change;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure move_bag_sve_data
+    (i_bda_sve_rec_from in     bsis_baggage_data%rowtype
+    ,io_bda_sve_rec_to  in out bsis_baggage_data%rowtype
+    )
+   is
+      l_con_proc         constant cmn_constant.st_proc_name := g_con_package || '.move_bag_sve_data';
+      l_bda_sve_rec_from bsis_baggage_data%rowtype;
+      l_bda_sve_rec_to   bsis_baggage_data%rowtype;
+      l_updated          pls_integer;
+      l_flight_id_rec    bsis_interface.rt_flight_id := null;
+      
+      l_bda_tmp_rec      bsis_baggage_data%rowtype;
+   begin
+      l_bda_sve_rec_from := i_bda_sve_rec_from;
+      l_bda_sve_rec_to   := io_bda_sve_rec_to;
+      
+      l_bda_sve_rec_to.bid               := l_bda_sve_rec_from.bid;
+      l_bda_sve_rec_to.bid_extension     := l_bda_sve_rec_from.bid_extension;
+      l_bda_sve_rec_to.sve_data          := l_bda_sve_rec_from.sve_data;
+      l_bda_sve_rec_to.last_sve_data_upd := l_bda_sve_rec_from.last_sve_data_upd;
+      l_bda_sve_rec_to.last_updated_on   := cmn_common.default_timestamp;
+      
+      l_bda_tmp_rec := l_bda_sve_rec_to;
+      l_updated := bsis_bda_tapi_pck.bda_update_row(i_bda_id  => l_bda_sve_rec_to.id
+                                                   ,io_rt_bda => l_bda_sve_rec_to
+                                                   );
+      
+      delete from bsis_baggage_data_att_source bds
+      where  bds.id = l_bda_sve_rec_to.id
+      and    bds.att_id in (select att.id
+                            from   bsis_attributes att
+                            where  att.element = 'SVE'
+                            )
+      ;
+      
+      update  bsis_baggage_data_att_source bds
+      set     bds.bda_id = l_bda_sve_rec_to.id
+      where   bds.bda_id = l_bda_sve_rec_from.id
+      and     bds.att_id in (select att.id
+                             from   bsis_attributes att
+                             where  att.element = 'SVE'
+                            )
+      ;
+      if l_updated > 0
+      then
+         if l_bda_sve_rec_from.src_data is null
+         then
+            
+            delete from bsis_baggage_data_att_source bds where bds.id = l_bda_sve_rec_from.id;
+            
+            
+            delete from bsis_baggage_data bda where bda.id = l_bda_sve_rec_from.id
+            ;
+         else
+            l_bda_sve_rec_from.sve_data          := null;
+            l_bda_sve_rec_from.last_sve_data_upd := null;
+            l_bda_sve_rec_from.bid               := null;
+            l_bda_sve_rec_from.bid_extension     := null;
+            l_bda_sve_rec_from.last_updated_on   := cmn_common.default_timestamp;
+            
+            if g_store_duplicate_lpn
+            then
+               l_flight_id_rec := bsis_interface.get_flight_id
+                                   (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                   ,i_msg      => l_bda_sve_rec_from.src_data
+                                   );
+               if l_flight_id_rec.flight is not null
+               then
+                  l_bda_sve_rec_from.flight       := l_flight_id_rec.flight;
+               else
+                  l_bda_sve_rec_from.flight       := null;
+               end if;
+            end if;
+            
+            l_bda_tmp_rec := l_bda_sve_rec_from;
+            l_updated := bsis_bda_tapi_pck.bda_update_row
+                                          (i_bda_id  => l_bda_sve_rec_from.id
+                                          ,io_rt_bda => l_bda_sve_rec_from
+                                          );
+            if l_updated > 0
+            then
+               
+               delete from bsis_baggage_data_att_source bds
+               where  bds.id = l_bda_sve_rec_from.id
+               and    bds.att_id in (select att.id
+                                     from   bsis_attributes att
+                                     where  att.element = 'SVE'
+                                    )
+               ;
+            end if;
+         end if;
+      end if;
+      
+      io_bda_sve_rec_to := l_bda_sve_rec_to;
+      
+   exception
+      when others
+      then
+         
+         viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_exceptionraised
+                                , i_calling_procedure      => l_con_proc
+                                , i_severity               => viu_info.c_severity_warning
+                                , i_additional_data        => l_bda_tmp_rec.lpckey||' (id: '||l_bda_tmp_rec.id||') caused an exception'
+                                );
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end move_bag_sve_data;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure analyse_presence_flightinfo
+    (i_msg_id_rec         in bsis_interface.rt_msg_id
+    )
+   is
+     l_con_proc_name    constant cmn_constant.st_proc_name := g_con_package || '.analyse_presence_flightinfo';
+     l_msg_id_rec       bsis_interface.rt_msg_id;
+   begin
+     l_msg_id_rec   := i_msg_id_rec;
+
+     if l_msg_id_rec.baggagesource_ind in ('L','T','R') then
+       if not l_msg_id_rec.has_outflight then
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_missingoutboundflight
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_warning
+                               ,i_additional_data   => l_msg_id_rec.lpckey || ' with baggagesourceindicator ' || l_msg_id_rec.baggagesource_ind || ' does not contain outboundflightinformation'
+                               );
+       end if;
+     elsif l_msg_id_rec.baggagesource_ind in ('X') then
+       if not l_msg_id_rec.has_inflight then
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_missinginboundflight
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_warning
+                               ,i_additional_data   => l_msg_id_rec.lpckey || ' with baggagesourceindicator ' || l_msg_id_rec.baggagesource_ind || ' does not contain outboundflightinformation'
+                               );
+       end if;
+     end if;
+
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+   end analyse_presence_flightinfo;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure split_bag_src_sve_data
+    (i_msg_id_rec         in bsis_interface.rt_msg_id
+    ,i_bda_rec_org        in bsis_baggage_data%rowtype
+    ,io_bda_rec           in out bsis_baggage_data%rowtype
+    ,o_iata_id_tab_change out bsis_interface.it_iata_id
+    )
+   is
+     l_con_proc_name    constant cmn_constant.st_proc_name := g_con_package || '.split_bag_src_sve_data';
+     l_bda_rec          bsis_baggage_data%rowtype;
+     l_bda_sve_rec_new  bsis_baggage_data%rowtype;
+     l_msg_id_rec       bsis_interface.rt_msg_id;
+     l_msg_handled      boolean := false;
+     l_updated          pls_integer;
+   begin
+     l_msg_id_rec   := i_msg_id_rec;
+     l_bda_rec      := io_bda_rec;
+
+     viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_recordsplit
+                           ,i_calling_procedure => l_con_proc_name
+                           ,i_severity          => viu_info.c_severity_notification
+                           ,i_additional_data   => 'LPCKey SRC = ' || i_bda_rec_org.lpckey || ', LPCKey SRV = ' || l_msg_id_rec.lpckey
+                           );
+     
+     l_msg_handled := insert_baggage_data(i_baggage_data       => l_bda_rec.sve_data
+                                         ,i_msg_id_rec         => l_msg_id_rec
+                                         ,i_deleted_ind        => cmn_constant.g_con_yesno_no
+                                         ,o_bda_rec            => l_bda_sve_rec_new
+                                         ,o_iata_id_tab_change => o_iata_id_tab_change
+                                         );
+
+     l_bda_rec.lpc               := i_bda_rec_org.lpc;
+     l_bda_rec.lpc_extension     := i_bda_rec_org.lpc_extension;
+     l_bda_rec.bid               := null;
+     l_bda_rec.bid_extension     := null;
+     l_bda_rec.flight            := i_bda_rec_org.flight;
+     l_bda_rec.sve_data          := null;
+     l_bda_rec.last_sve_data_upd := null;
+     
+     l_updated := bsis_bda_tapi_pck.bda_update_row(i_bda_id  => l_bda_rec.id
+                                                  ,io_rt_bda => l_bda_rec
+                                                  );
+
+     update  bsis_baggage_data_att_source bds
+     set     bds.bda_id = l_bda_sve_rec_new.id
+     where   bds.bda_id = i_bda_rec_org.id
+     and     bds.att_id in (select att.id
+                            from   bsis_attributes att
+                            where  att.element = 'SVE'
+                           );
+
+     io_bda_rec := l_bda_sve_rec_new;
+     
+   exception
+   when others then
+      
+      viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_exceptionraised
+                             , i_calling_procedure      => l_con_proc_name
+                             , i_severity               => viu_info.c_severity_warning
+                             , i_additional_data        => l_bda_rec.lpckey||' (id: '||l_bda_rec.id||') caused an exception'
+                             );
+      viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+   end split_bag_src_sve_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function update_baggage_data (
+       i_baggage_data_new    in     xmltype
+      ,i_msg_id_rec          in     bsis_interface.rt_msg_id
+      ,io_baggage_data_old   in out bsis_baggage_data%rowtype
+      ,o_iata_id_tab_change     out bsis_interface.it_iata_id
+   )
+      return boolean
+   is
+      l_con_proc_name       constant cmn_constant.st_proc_name
+                                   := g_con_package || '.update_baggage_data';
+      l_updated             pls_integer;
+      l_msg_id_rec          bsis_interface.rt_msg_id;
+      l_flight_id_rec       bsis_interface.rt_flight_id := null;
+      l_baggage_data_new    xmltype;
+      l_msg_time_ok         boolean := false;
+      l_msg_handled         boolean := false;
+      l_xml_mge             xmltype;
+      l_iata_id_tab_change  bsis_interface.it_iata_id;
+      l_msg_type_tab_change bsis_interface.it_iata_id;
+
+      l_el_xpath            varchar2(200);
+      l_msg_type_old        varchar2(30);
+      l_msg_type_new        varchar2(30);
+
+   begin
+      l_msg_id_rec       := i_msg_id_rec;
+      l_baggage_data_new := i_baggage_data_new;
+      
+      if l_msg_id_rec.dat_elt_typ_src = cmn_constant.g_con_yesno_yes
+      then
+         
+         if io_baggage_data_old.last_src_data_upd is null
+         or l_msg_id_rec.msg_time >= io_baggage_data_old.last_src_data_upd
+         then
+            merge_xml(i_data_type           => 'SRC'
+                     ,i_msg_id_rec          => l_msg_id_rec
+                     ,i_xml_old             => io_baggage_data_old.src_data
+                     ,i_xml_new             => l_baggage_data_new
+                     ,i_xml_is_new          => true
+                     ,i_bda_old_id          => io_baggage_data_old.id
+                     ,o_xml_mge             => l_xml_mge
+                     ,o_iata_id_tab_change  => l_iata_id_tab_change
+                     ,o_msg_type_tab_change => l_msg_type_tab_change
+                     );
+            io_baggage_data_old.last_src_data_upd := l_msg_id_rec.msg_time;
+            
+            
+            if l_msg_id_rec.org_msg_type = bsis_constant.g_con_msg_type_bsm
+            then
+              io_baggage_data_old.last_src_data_upd_bsm := l_msg_id_rec.msg_time;
+            end if;
+         else
+           
+           viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_outofsequencemerging
+                                 ,i_calling_procedure => l_con_proc_name
+                                 ,i_severity          => viu_info.c_severity_notification
+                                 ,i_additional_data   => l_msg_id_rec.bda_id_rec.lpc || ' - Merging of messages out-of-sequence'
+                                 );
+
+            merge_xml(i_data_type           => 'SRC'
+                     ,i_msg_id_rec          => l_msg_id_rec
+                     ,i_xml_old             => l_baggage_data_new
+                     ,i_xml_new             => io_baggage_data_old.src_data
+                     ,i_xml_is_new          => false
+                     ,i_bda_old_id          => null
+                     ,i_old_new_change      => true
+                     ,o_xml_mge             => l_xml_mge
+                     ,o_iata_id_tab_change  => l_iata_id_tab_change
+                     ,o_msg_type_tab_change => l_msg_type_tab_change
+                     );
+         end if;
+         
+         io_baggage_data_old.src_data          := l_xml_mge;
+         io_baggage_data_old.baggagesource_ind := bsis_interface.get_baggage_source_ind
+                                                         (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                                         ,i_msg      => l_xml_mge
+                                                         );
+         l_msg_time_ok                         := true;
+         
+      elsif l_msg_id_rec.dat_elt_typ_sve = cmn_constant.g_con_yesno_yes
+      then
+         l_el_xpath := '/BSISBagService/BagProcessedMessageType/text()';
+         l_msg_type_old := nvl(bsis_interface.get_element_value(io_baggage_data_old.sve_data, l_el_xpath),'NULL');
+         l_msg_type_new := nvl(bsis_interface.get_element_value(l_baggage_data_new, l_el_xpath), 'NULL');
+
+         
+         if io_baggage_data_old.last_sve_data_upd is null
+         or l_msg_id_rec.msg_time >= io_baggage_data_old.last_sve_data_upd
+         or l_msg_type_old != l_msg_type_new
+         then
+            merge_xml(i_data_type           => 'SVE'
+                     ,i_msg_id_rec          => l_msg_id_rec
+                     ,i_xml_old             => io_baggage_data_old.sve_data
+                     ,i_xml_new             => l_baggage_data_new
+                     ,i_xml_is_new          => true
+                     ,i_bda_old_id          => io_baggage_data_old.id
+                     ,o_xml_mge             => l_xml_mge
+                     ,o_iata_id_tab_change  => l_iata_id_tab_change
+                     ,o_msg_type_tab_change => l_msg_type_tab_change
+                     );
+            io_baggage_data_old.last_sve_data_upd := l_msg_id_rec.msg_time;
+         else
+            
+            viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_outofsequencemerging
+                                  ,i_calling_procedure => l_con_proc_name
+                                  ,i_severity          => viu_info.c_severity_notification
+                                  ,i_additional_data   => l_msg_id_rec.bda_id_rec.lpc || ' - Merging of messages out-of-sequence'
+                                  );
+            merge_xml(i_data_type           => 'SVE'
+                     ,i_msg_id_rec          => l_msg_id_rec
+                     ,i_xml_old             => l_baggage_data_new
+                     ,i_xml_new             => io_baggage_data_old.sve_data
+                     ,i_xml_is_new          => false
+                     ,i_bda_old_id          => null
+                     ,o_xml_mge             => l_xml_mge
+                     ,o_iata_id_tab_change  => l_iata_id_tab_change
+                     ,o_msg_type_tab_change => l_msg_type_tab_change
+                     );
+         end if;
+         
+         io_baggage_data_old.sve_data          := l_xml_mge;
+         l_msg_time_ok                         := true;
+         
+      end if;
+      
+      if l_msg_time_ok
+      then
+         if g_store_duplicate_lpn
+         then
+            l_flight_id_rec := bsis_interface.get_flight_id
+                                (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                ,i_msg      => l_xml_mge
+                                );
+            if l_flight_id_rec.flight is not null
+            then
+               io_baggage_data_old.flight        := l_flight_id_rec.flight;
+            end if;
+         end if;
+         
+         io_baggage_data_old.last_updated_on := cmn_common.default_timestamp;
+         
+         if (l_msg_id_rec.vendor_string is not null)
+         then
+            io_baggage_data_old.vendor_string := l_msg_id_rec.vendor_string;
+         end if;
+         
+         if (l_msg_id_rec.sequencenr is not null)
+         then
+            io_baggage_data_old.checkinsequencenr := l_msg_id_rec.sequencenr;
+         end if;
+         
+         if (l_msg_id_rec.pnr is not null)
+         then
+            io_baggage_data_old.pnr := l_msg_id_rec.pnr;
+         end if;
+         
+         l_updated := bsis_bda_tapi_pck.bda_update_row (io_baggage_data_old.id
+                                                       ,io_baggage_data_old
+                                                       );
+         if l_updated > 0
+         then
+            
+            set_msg_type_tab_change(i_bda_id              => io_baggage_data_old.id
+                                   ,i_msg_type_tab_change => l_msg_type_tab_change
+                                   );
+            l_msg_handled := true;
+         end if;
+      end if;
+      
+      o_iata_id_tab_change := l_iata_id_tab_change;
+      
+      return l_msg_handled;
+   exception
+      when others
+      then
+         
+         viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_exceptionraised
+                                , i_calling_procedure      => l_con_proc_name
+                                , i_severity               => viu_info.c_severity_warning
+                                , i_additional_data        => io_baggage_data_old.lpckey||' (id: '||io_baggage_data_old.id||') caused an exception'
+                                );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end update_baggage_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function insert_baggage_data (
+       i_baggage_data       in  xmltype
+      ,i_msg_id_rec         in  bsis_interface.rt_msg_id
+      ,i_deleted_ind        in  bsis_baggage_data.deleted_ind%type
+      ,o_bda_rec            out bsis_baggage_data%rowtype
+      ,o_iata_id_tab_change out bsis_interface.it_iata_id
+   )
+      return boolean
+   is
+      l_con_proc_name       constant cmn_constant.st_proc_name
+                                   := g_con_package || '.insert_baggage_data';
+      l_bda_rec             bsis_baggage_data%rowtype;
+      l_msg_id_rec          bsis_interface.rt_msg_id;
+      l_baggage_data        xmltype;
+      l_iata_id_tab_change  bsis_interface.it_iata_id;
+      l_msg_type_tab_change bsis_interface.it_iata_id;
+      l_xml_mge             xmltype;
+   begin
+      l_msg_id_rec                := i_msg_id_rec;
+      l_baggage_data              := i_baggage_data;
+      
+      l_bda_rec.lpckey            := l_msg_id_rec.lpckey;
+      l_bda_rec.lpc               := l_msg_id_rec.bda_id_rec.lpc;
+      l_bda_rec.lpc_extension     := l_msg_id_rec.bda_id_rec.lpc_extension;
+      l_bda_rec.bid               := l_msg_id_rec.bda_id_rec.bid;
+      l_bda_rec.bid_extension     := l_msg_id_rec.bda_id_rec.bid_extension;
+      l_bda_rec.pid               := l_msg_id_rec.bda_id_rec.pid;
+      l_bda_rec.vendor_string     := l_msg_id_rec.vendor_string;
+      l_bda_rec.src_data_src      := l_msg_id_rec.src_data_src;
+      l_bda_rec.pnr               := l_msg_id_rec.pnr;
+      l_bda_rec.checkinsequencenr := l_msg_id_rec.sequencenr;
+      
+      if l_msg_id_rec.dat_elt_typ_src = cmn_constant.g_con_yesno_yes
+      then
+         merge_xml(i_data_type           => 'SRC'
+                  ,i_msg_id_rec          => l_msg_id_rec
+                  ,i_xml_old             => null
+                  ,i_xml_new             => l_baggage_data
+                  ,i_xml_is_new          => true
+                  ,i_bda_old_id          => null
+                  ,o_xml_mge             => l_xml_mge
+                  ,o_iata_id_tab_change  => l_iata_id_tab_change
+                  ,o_msg_type_tab_change => l_msg_type_tab_change
+                  );
+         l_bda_rec.src_data          := l_xml_mge;
+         l_bda_rec.last_src_data_upd := l_msg_id_rec.msg_time;
+         l_bda_rec.baggagesource_ind := l_msg_id_rec.baggagesource_ind;
+         
+         if l_msg_id_rec.org_msg_type = bsis_constant.g_con_msg_type_bsm
+         then
+            l_bda_rec.last_src_data_upd_bsm := l_msg_id_rec.msg_time;
+         end if;
+         
+      elsif l_msg_id_rec.dat_elt_typ_sve = cmn_constant.g_con_yesno_yes
+      then
+         merge_xml(i_data_type           => 'SVE'
+                  ,i_msg_id_rec          => l_msg_id_rec
+                  ,i_xml_old             => null
+                  ,i_xml_new             => l_baggage_data
+                  ,i_xml_is_new          => true
+                  ,i_bda_old_id          => null
+                  ,o_xml_mge             => l_xml_mge
+                  ,o_iata_id_tab_change  => l_iata_id_tab_change
+                  ,o_msg_type_tab_change => l_msg_type_tab_change
+                  );
+         l_bda_rec.sve_data          := l_xml_mge;
+         l_bda_rec.last_sve_data_upd := l_msg_id_rec.msg_time;
+      end if;
+      
+         l_bda_rec.flight       := l_msg_id_rec.bda_id_rec.flight_id_rec.flight;
+      
+      l_bda_rec.created_on        := cmn_common.default_timestamp;
+      l_bda_rec.last_updated_on   := cmn_common.default_timestamp;
+      l_bda_rec.deleted_ind       := nvl(i_deleted_ind,'N');
+      
+      bsis_bda_tapi_pck.bda_insert_row (l_bda_rec);
+      
+      
+      set_msg_type_tab_change(i_bda_id              => l_bda_rec.id
+                             ,i_msg_type_tab_change => l_msg_type_tab_change
+                             );
+      
+      o_bda_rec            := l_bda_rec;
+      o_iata_id_tab_change := l_iata_id_tab_change;
+      
+      
+      return (l_bda_rec.id is not null);
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end insert_baggage_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function delete_baggage_data (
+      i_bda_id       in  bsis_baggage_data.id%type
+     ,i_baggage_data in  xmltype
+     ,i_msg_id_rec   in  bsis_interface.rt_msg_id
+     ,o_bda_rec      out bsis_baggage_data%rowtype
+   )
+      return boolean
+   is
+      l_con_proc_name       constant cmn_constant.st_proc_name
+                             := g_con_package || '.delete_baggage_data';
+      l_bda_rec             bsis_baggage_data%rowtype;
+      l_rows_updated        pls_integer;
+      l_msg_handled         boolean := false;
+      l_iata_id_tab_change  bsis_interface.it_iata_id;
+      l_msg_type_tab_change bsis_interface.it_iata_id;
+      l_msg_id_rec          bsis_interface.rt_msg_id;
+      l_xml_mge             xmltype;
+      
+      exc_updatefailed                   exception;
+      pragma exception_init(exc_updatefailed, -20044);
+   begin
+      l_msg_id_rec := i_msg_id_rec;
+      
+      if bsis_bda_tapi_pck.bda_select_row_upd(i_bda_id, l_bda_rec)
+      then
+         if i_baggage_data is not null
+         then
+            
+            if l_bda_rec.last_src_data_upd is null
+            or l_msg_id_rec.msg_time >= l_bda_rec.last_src_data_upd
+            then
+               merge_xml(i_data_type           => 'SRC'
+                        ,i_msg_id_rec          => l_msg_id_rec
+                        ,i_xml_old             => l_bda_rec.src_data
+                        ,i_xml_new             => i_baggage_data
+                        ,i_xml_is_new          => true
+                        ,i_bda_old_id          => l_bda_rec.id
+                        ,o_xml_mge             => l_xml_mge
+                        ,o_iata_id_tab_change  => l_iata_id_tab_change
+                        ,o_msg_type_tab_change => l_msg_type_tab_change
+                        );
+               l_bda_rec.last_src_data_upd := l_msg_id_rec.msg_time;
+               
+               
+               if l_msg_id_rec.org_msg_type = bsis_constant.g_con_msg_type_bsm
+               then
+                 l_bda_rec.last_src_data_upd_bsm := l_msg_id_rec.msg_time;
+               end if;
+            else
+               
+               viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_outofsequencemerging
+                                     ,i_calling_procedure => l_con_proc_name
+                                     ,i_severity          => viu_info.c_severity_notification
+                                     ,i_additional_data   => l_msg_id_rec.bda_id_rec.lpc || ' - Merging of messages out-of-sequence'
+                                     );
+               merge_xml(i_data_type           => 'SRC'
+                        ,i_msg_id_rec          => l_msg_id_rec
+                        ,i_xml_old             => i_baggage_data
+                        ,i_xml_new             => l_bda_rec.src_data
+                        ,i_xml_is_new          => false
+                        ,i_bda_old_id          => null
+                        ,o_xml_mge             => l_xml_mge
+                        ,o_iata_id_tab_change  => l_iata_id_tab_change
+                        ,o_msg_type_tab_change => l_msg_type_tab_change
+                        );
+            end if;
+            
+            l_bda_rec.src_data          := l_xml_mge;
+         end if;
+         
+         l_bda_rec.last_updated_on   := cmn_common.default_timestamp;
+         l_bda_rec.deleted_ind       := cmn_constant.g_con_yesno_yes;
+         
+         l_rows_updated := bsis_bda_tapi_pck.bda_update_row (l_bda_rec.id, l_bda_rec);
+      else
+         viu_info.operator_info
+                          (i_ifo_nr                 => viu_constant.c_ifo_deletefailed,
+                           i_calling_procedure      => l_con_proc_name,
+                           i_severity               => viu_info.c_severity_warning,
+                           i_additional_data        =>    'Baggage with identifier '
+                                                       || i_bda_id
+                                                       || ' does not exist'
+                          );
+      end if;
+      
+      if l_rows_updated > 0
+      then
+         
+         delete from bsis_baggage_data_att_source bds where bds.bda_id = l_bda_rec.id;
+         
+         o_bda_rec     := l_bda_rec;
+         l_msg_handled := true;
+      end if;
+      
+      
+      return l_msg_handled;
+   exception
+      when exc_updatefailed
+      then
+         viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_updatefailed
+                                , i_calling_procedure      => l_con_proc_name
+                                , i_severity               => viu_info.c_severity_warning
+                                , i_additional_data        => 'LPC: '||l_bda_rec.lpckey||substr(sqlerrm,instr(sqlerrm,':')+1)
+                                
+                                );
+         return l_msg_handled;
+      when others
+      then
+         
+         viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_exceptionraised
+                                , i_calling_procedure      => l_con_proc_name
+                                , i_severity               => viu_info.c_severity_warning
+                                , i_additional_data        => l_bda_rec.lpckey||' (id: '||i_bda_id||') caused an exception'
+                                );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end delete_baggage_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure att_merge_update
+    (i_att_value_old  in  varchar2
+    ,i_att_value_new  in  varchar2
+    ,i_xml_is_new     in  boolean
+    ,i_new_is_leading in  boolean
+    ,o_att_value      out varchar2
+    ,o_iata_id_change out boolean
+    )
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                               := g_con_package || '.att_merge_update';
+      l_att_value      varchar2(32767);
+      l_iata_id_change boolean;
+   begin
+      if i_att_value_new is not null
+      then
+         
+         l_att_value := i_att_value_new;
+         
+         
+         if      i_xml_is_new
+         and (   i_att_value_old is null
+              or i_att_value_old != i_att_value_new
+             )
+         then
+            l_iata_id_change := true;
+         end if;
+      elsif i_att_value_old is not null
+      then
+         
+         if i_new_is_leading
+         then
+            
+            if i_xml_is_new
+            then
+               l_iata_id_change := true;
+            end if;
+         else 
+            
+            l_att_value := i_att_value_old;
+            
+            
+            if  not i_xml_is_new
+            then
+               l_iata_id_change := true;
+            end if;
+         end if;
+      else
+         null; 
+      end if;
+      
+      o_att_value      := l_att_value;
+      o_iata_id_change := l_iata_id_change;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end att_merge_update;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure att_merge_custom
+    (i_xml_old         in  xmltype := null
+    ,i_xml_new         in  xmltype
+    ,i_att_id          in  bsis_attributes.id%type
+    ,i_msg_id_obj      in  ot_msg_id
+    ,i_att_value_old   in  varchar2
+    ,i_att_value_new   in  varchar2
+    ,o_att_value       out clob
+    ,o_iata_id_change  out boolean
+    )
+   is
+      l_con_proc_name        constant cmn_constant.st_proc_name
+                                  := g_con_package || '.att_merge_custom';
+      l_att_custom_procedure bsis_attributes.custom_procedure%type;
+      l_plsql_statement      varchar2(500);
+      l_att_value            clob;
+      l_iata_id_change       boolean;
+   begin
+      select att.custom_procedure
+      into   l_att_custom_procedure
+      from   bsis_attributes att
+      where  att.id = i_att_id;
+      
+      l_plsql_statement := 'BEGIN '|| l_att_custom_procedure
+                                   || '(:i_new_xml_data'
+                                   || ',:i_old_xml_data'
+                                   || ',:i_msg_id_obj'
+                                   || ',:i_attribute_id'
+                                   || ',:o_processed_attribute'
+                                   || '); '
+                        || 'END;';
+      
+      execute immediate l_plsql_statement using i_xml_new, i_xml_old, i_msg_id_obj, i_att_id, out l_att_value;
+      
+      
+      if l_att_value is not null
+      then
+        if (i_att_value_old is null
+        or   replace( replace(dbms_lob.substr( i_att_value_old, 32000, 1 ), chr(10), ''), ' ', '') != replace( replace(dbms_lob.substr( l_att_value, 32000, 1 ), chr(10), ''), ' ', ''))
+        then
+          l_iata_id_change := true;
+        end if;
+      end if;
+      o_att_value       := l_att_value;
+      o_iata_id_change  := l_iata_id_change;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end att_merge_custom;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure att_merge_priority
+    (i_att_value_old   in  varchar2
+    ,i_att_value_new   in  varchar2
+    ,i_att_id          in  bsis_attributes.id%type
+    ,i_org_msg_type    in  varchar2
+    ,i_bda_old_id      in  bsis_baggage_data.id%type
+    ,i_old_new_change  in  boolean
+    ,o_att_value       out clob
+    ,o_iata_id_change  out boolean
+    ,o_msg_type_change out bsis_baggage_data_att_source.latest_message_type%type
+    )
+   is
+      l_con_proc_name             constant cmn_constant.st_proc_name
+                                  := g_con_package || '.att_merge_priority';
+      l_att_priority_message_type bsis_attributes.priority_message_type%type;
+      l_bds_latest_message_type   bsis_baggage_data_att_source.latest_message_type%type;
+      l_msg_type_change           bsis_baggage_data_att_source.latest_message_type%type;
+      l_att_value                 varchar2(32767);
+      l_iata_id_change            boolean;
+   begin
+      if i_att_id is not null
+      then
+         
+         select att.priority_message_type
+         into   l_att_priority_message_type
+         from   bsis_attributes att
+         where  att.id = i_att_id;
+      end if;
+
+      if i_bda_old_id is not null
+      then
+         
+         select max(bds.latest_message_type)
+         into   l_bds_latest_message_type
+         from   bsis_baggage_data_att_source bds
+         where  bds.bda_id = i_bda_old_id
+         and    bds.att_id = i_att_id;
+      end if;
+      
+      
+      if  i_att_value_old is null
+      and i_att_value_new is null
+      then
+         null; 
+      elsif i_att_value_old is null
+      then
+         l_att_value       := i_att_value_new;
+         l_msg_type_change := i_org_msg_type;
+      elsif i_att_value_new is null
+      then
+         l_att_value       := i_att_value_old;
+         l_msg_type_change := l_bds_latest_message_type;
+      elsif   instr(l_att_priority_message_type,l_bds_latest_message_type) != 0
+      and (   instr(l_att_priority_message_type,i_org_msg_type           )  = 0
+           or i_org_msg_type                                               is null
+          )
+      then
+         l_att_value       := i_att_value_old;
+         l_msg_type_change := l_bds_latest_message_type;
+      else
+         l_att_value       := i_att_value_new;
+         l_msg_type_change := i_org_msg_type;
+      end if;
+      
+      
+
+      if l_att_value is not null
+      then
+         if (i_old_new_change = false and(
+                                          i_att_value_old is null
+                                       or i_att_value_old != l_att_value))
+             or
+            (i_old_new_change = true and(
+                                          i_att_value_new is null
+                                       or i_att_value_new != l_att_value))
+         then
+            l_iata_id_change := true;
+         end if;
+      end if;
+      
+      o_att_value       := l_att_value;
+      o_iata_id_change  := l_iata_id_change;
+      o_msg_type_change := l_msg_type_change;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end att_merge_priority;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure merge_xml
+    (i_data_type           in  varchar2
+    ,i_msg_id_rec          in  bsis_interface.rt_msg_id
+    ,i_xml_old             in  xmltype
+    ,i_xml_new             in  xmltype
+    ,i_xml_is_new          in  boolean                   := true
+    ,i_bda_old_id          in  bsis_baggage_data.id%type := null
+    ,i_old_new_change      in  boolean                   := false
+    ,o_xml_mge             out xmltype
+    ,o_iata_id_tab_change  out bsis_interface.it_iata_id
+    ,o_msg_type_tab_change out bsis_interface.it_iata_id
+    )
+   is
+      l_con_proc_name       constant cmn_constant.st_proc_name
+                                  := g_con_package || '.merge_xml';
+      l_dat_elt_type        varchar2(50);
+      l_iata_id_tab_old     bsis_interface.it_iata_id;
+      l_iata_id_tab_new     bsis_interface.it_iata_id;
+      l_msg_id_obj          ot_msg_id;
+      l_clob_mge            clob;
+      l_att_value           clob;
+      l_iata_id_tab_change  bsis_interface.it_iata_id;
+      l_iata_id_change      boolean;
+      l_msg_type_tab_change bsis_interface.it_iata_id;
+      l_msg_type_change     bsis_baggage_data_att_source.latest_message_type%type;
+      l_xml_is_new          boolean;
+      l_merge_method        bsis_attributes.merge_strategy%type;
+      l_xml_new             xmltype;
+      l_xml_old             xmltype;
+      l_validation_result   number(1);
+      l_attribute_name      bsis_attributes.attribute_name%type;
+      l_schema_validation   bsis_attributes.schema_validation%type;
+      l_tmp_clob            clob;
+      
+      type type_multiple_attributes is table of xmltype;
+      l_multiple_attributes type_multiple_attributes;
+   begin
+      l_dat_elt_type := i_data_type;
+      l_xml_old      := i_xml_old;
+      l_xml_new      := i_xml_new;
+      l_xml_is_new   := nvl(i_xml_is_new,true);
+      l_msg_id_obj   := bsis_interface.r2o_msg_id(i_msg_id_rec => i_msg_id_rec);
+      
+      
+      bsis_interface.get_iata_id_tab(i_dat_elt_type => l_dat_elt_type
+                                    ,i_iata_xml     => i_xml_old
+                                    ,o_iata_id_tab  => l_iata_id_tab_old
+                                    );
+      
+      bsis_interface.get_iata_id_tab(i_dat_elt_type => l_dat_elt_type
+                                    ,i_iata_xml     => i_xml_new
+                                    ,o_iata_id_tab  => l_iata_id_tab_new
+                                    );
+      if l_dat_elt_type = 'SRC'
+      then
+         l_clob_mge := '<BSISBagSource>';
+      elsif l_dat_elt_type = 'SVE'
+      then
+         l_clob_mge := '<BSISBagService>';
+      else
+         null; 
+      end if;
+      
+      if l_iata_id_tab_old.first is not null
+      then
+         <<loop_elements>>
+         for i in l_iata_id_tab_old.first .. l_iata_id_tab_old.last
+         loop
+            
+            l_merge_method := bsis_interface.get_merge_method(i_attribute_id => i
+                                                             ,i_dat_elt_type => l_dat_elt_type
+                                                             );
+            case  l_merge_method
+             when bsis_constant.g_con_merge_no_merge
+             then
+                l_att_value := null; 
+             when bsis_constant.g_con_merge_concatenate
+             then
+                null; 
+             when bsis_constant.g_con_merge_custom
+             then
+                att_merge_custom
+                   (i_xml_old        => l_xml_old
+                   ,i_xml_new        => l_xml_new
+                   ,i_att_id         => i
+                   ,i_msg_id_obj     => l_msg_id_obj
+                   ,i_att_value_old  => l_iata_id_tab_old(i)
+                   ,i_att_value_new  => l_iata_id_tab_new(i)
+                   ,o_att_value      => l_att_value
+                   ,o_iata_id_change => l_iata_id_change
+                   );
+             when bsis_constant.g_con_merge_priority
+             then
+                att_merge_priority
+                   (i_att_value_old   => l_iata_id_tab_old(i)
+                   ,i_att_value_new   => l_iata_id_tab_new(i)
+                   ,i_att_id          => i
+                   ,i_org_msg_type    => i_msg_id_rec.org_msg_type
+                   ,i_bda_old_id      => i_bda_old_id
+                   ,i_old_new_change  => i_old_new_change
+                   ,o_att_value       => l_att_value
+                   ,o_iata_id_change  => l_iata_id_change
+                   ,o_msg_type_change => l_msg_type_change
+                   );
+                l_msg_type_tab_change(i) := l_msg_type_change;
+             else 
+                att_merge_update
+                   (i_att_value_old  => l_iata_id_tab_old(i)
+                   ,i_att_value_new  => l_iata_id_tab_new(i)
+                   ,i_xml_is_new     => l_xml_is_new
+                   ,i_new_is_leading => (l_merge_method = bsis_constant.g_con_merge_new_leading)
+                   ,o_att_value      => l_att_value
+                   ,o_iata_id_change => l_iata_id_change
+                   );
+            end case;
+            
+            if l_att_value is not null
+            then
+               
+               select att.attribute_name
+               ,      att.schema_validation
+               into   l_attribute_name
+               ,      l_schema_validation
+               from   bsis_attributes att
+               where  att.id = i
+               and    att.element = nvl(l_dat_elt_type,att.element) 
+               ;
+               if l_schema_validation is null
+               then
+                 
+                 l_clob_mge              := l_clob_mge || l_att_value;
+               else
+                 
+
+
+
+                 
+                 
+                 
+                 
+                 
+                 select t.column_value
+                 bulk   collect into l_multiple_attributes
+                 from   xmltable ( ( '/Rootnode/'||l_attribute_name )
+                                   passing xmltype('<Rootnode>'||l_att_value||'</Rootnode>')
+                                   columns column_value xmltype path '/*'
+                                 ) t;
+                 
+                 <<loop_attributes>>
+                 if (l_multiple_attributes.count > 0) then
+                   for j in l_multiple_attributes.first..l_multiple_attributes.last
+                   loop
+                     
+                     
+                     
+                     l_tmp_clob := l_multiple_attributes(j).getclobval();
+                     select xmlisvalid ( xmltype.createxml ( xmldata => l_tmp_clob )
+                                       , l_schema_validation
+                                       , l_attribute_name
+                                       )
+                     into   l_validation_result
+                     from   dual;
+                     
+                     if l_validation_result = 1
+                     then
+                       
+                       l_clob_mge              := l_clob_mge || l_tmp_clob;
+                     else
+                       
+
+                       viu_info.operator_info ( i_ifo_nr            => viu_constant.c_ifo_cmninvalidxmlreceived
+                                              , i_calling_procedure => l_con_proc_name
+                                              , i_severity          => viu_info.c_severity_warning
+                                              , i_additional_data   => i_msg_id_rec.bda_id_rec.lpc||' '||l_tmp_clob
+                                              );
+                     end if;
+                   end loop loop_attributes;
+                 end if;
+                  
+               end if;
+            end if;
+            
+            if l_iata_id_change
+            then
+               l_iata_id_tab_change(i) := 'Y'; 
+            end if;
+            
+         end loop loop_elements;
+      end if;
+      
+      if l_dat_elt_type = 'SRC'
+      then
+         l_clob_mge := l_clob_mge || '</BSISBagSource>';
+      elsif l_dat_elt_type = 'SVE'
+      then
+         l_clob_mge := l_clob_mge || '</BSISBagService>';
+      else
+         null; 
+      end if;
+      
+      o_xml_mge             := xmltype(l_clob_mge);
+      o_iata_id_tab_change  := l_iata_id_tab_change;
+      o_msg_type_tab_change := l_msg_type_tab_change;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end merge_xml;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   procedure insert_log_data
+    (i_msg_id_rec in bsis_interface.rt_msg_id
+    ,i_bda_rec    in bsis_baggage_data%rowtype
+    ,i_msg_src    in xmltype := null
+    ,i_msg_sve    in xmltype := null
+    )
+   is
+    l_con_proc_name      constant cmn_constant.st_proc_name
+                                  := g_con_package || '.insert_log_data';
+    
+    l_bdg_rec            bsis_baggage_data_log%rowtype;
+    pragma autonomous_transaction;
+   begin
+    begin
+      l_bdg_rec.bda_id                 := i_bda_rec.id;
+      l_bdg_rec.source_process_id      := i_msg_id_rec.src_pcs_id;
+      l_bdg_rec.created_on             := i_bda_rec.created_on;
+      l_bdg_rec.last_updated_on        := i_bda_rec.last_updated_on;
+      l_bdg_rec.deleted_ind            := i_bda_rec.deleted_ind;
+      l_bdg_rec.lpckey                 := i_bda_rec.lpckey;
+      l_bdg_rec.lpc                    := i_bda_rec.lpc;
+      l_bdg_rec.lpc_extension          := i_bda_rec.lpc_extension;
+      l_bdg_rec.bid                    := i_bda_rec.bid;
+      l_bdg_rec.bid_extension          := i_bda_rec.bid_extension;
+      l_bdg_rec.pid                    := i_bda_rec.pid;
+      l_bdg_rec.flight                 := i_bda_rec.flight;
+      l_bdg_rec.pnr                    := i_bda_rec.pnr;
+      l_bdg_rec.checkinsequencenr      := i_bda_rec.checkinsequencenr;
+      l_bdg_rec.vendor_string          := i_bda_rec.vendor_string;
+      l_bdg_rec.src_data_src           := i_bda_rec.src_data_src;
+      l_bdg_rec.src_data               := i_bda_rec.src_data;
+      l_bdg_rec.last_src_data_upd      := i_bda_rec.last_src_data_upd;
+      l_bdg_rec.last_src_data_upd_bsm  := i_bda_rec.last_src_data_upd_bsm;
+      l_bdg_rec.sve_data               := i_bda_rec.sve_data;
+      l_bdg_rec.last_sve_data_upd      := i_bda_rec.last_sve_data_upd;
+      l_bdg_rec.baggagesource_ind      := i_bda_rec.baggagesource_ind;
+      l_bdg_rec.bagload_deliv_ind      := i_bda_rec.bagload_deliv_ind;
+      l_bdg_rec.original_message_type  := i_msg_id_rec.org_msg_type;
+      l_bdg_rec.received_src_data      := i_msg_src;
+      l_bdg_rec.received_sve_data      := i_msg_sve;
+      l_bdg_rec.received_lpc           := i_msg_id_rec.bda_id_rec.lpc;
+      l_bdg_rec.received_lpc_extension := i_msg_id_rec.bda_id_rec.lpc_extension;
+      l_bdg_rec.received_bid           := i_msg_id_rec.bda_id_rec.bid;
+      l_bdg_rec.received_bid_extension := i_msg_id_rec.bda_id_rec.bid_extension;
+      
+      bsis_bdg_tapi_pck.bdg_insert_row(io_rt_bdg => l_bdg_rec);
+      
+      
+      commit write batch nowait;
+    exception
+      when others
+      then
+        rollback;   
+        viu_info.raise_info ( i_ifo_nr                 => viu_constant.c_ifo_cmnunabletologmessage
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => sqlerrm
+                            );
+    end;
+   exception
+     when others
+     then
+       
+       
+       viu_info.handle_info;
+   end insert_log_data;
+   
+   function get_bagload_deliv_ind
+    (i_bda_id_rec        in bsis_interface.rt_bda_id
+    ,i_bda_rec           in bsis_baggage_data%rowtype
+    )
+   return boolean
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                  := g_con_package || '.get_bagload_deliv_ind';
+      l_return   boolean;
+      
+      cursor c_bdi_count
+       (b_bda_id_rec in bsis_interface.rt_bda_id
+       ,b_bda_rec    in bsis_baggage_data%rowtype
+       )
+      is
+      select 1
+      from   bsis_baggage_data bda
+      where (bda.id = b_bda_rec.id
+      or(    b_bda_id_rec.bid           = bda.bid
+      and (  b_bda_id_rec.bid_extension is null
+          or b_bda_id_rec.bid_extension = bda.bid_extension
+          )
+      and    b_bda_id_rec.lpc           = bda.lpc
+      and (  b_bda_id_rec.lpc_extension is null
+          or b_bda_id_rec.lpc_extension = bda.lpc_extension
+          )))
+       and   bda.deleted_ind            = 'N'
+       and   bda.bagload_deliv_ind      = 'Y'
+      ;
+      r_bdi_count c_bdi_count%rowtype;
+   begin
+      
+      
+      open  c_bdi_count(b_bda_id_rec => i_bda_id_rec
+                       ,b_bda_rec    => i_bda_rec);
+      fetch c_bdi_count into r_bdi_count;
+      l_return := c_bdi_count%found;
+      close c_bdi_count;
+      
+      return l_return;
+   exception
+   when others
+   then if c_bdi_count%isopen
+        then
+           close c_bdi_count;
+        end if;
+        
+      viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+   end get_bagload_deliv_ind;
+   
+   procedure set_bagload_deliv_ind
+    (i_bagload_deliv_ind in boolean
+    ,i_bda_rec           in bsis_baggage_data%rowtype
+    )
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                  := g_con_package || '.set_bagload_deliv_ind';
+      l_bda_id_rec         bsis_interface.rt_bda_id;
+      l_bagload_deliv_ind  char(1) := 'N';
+   begin
+      if i_bagload_deliv_ind then l_bagload_deliv_ind := 'Y'; end if;
+      
+      update bsis_baggage_data bda
+      set    bda.bagload_deliv_ind = l_bagload_deliv_ind
+      where  bda.id = i_bda_rec.id;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+   end set_bagload_deliv_ind;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   function is_store_duplicate_lpn
+   return boolean
+   is
+     l_con_proc_name      constant cmn_constant.st_proc_name
+                                   := g_con_package || '.is_store_duplicate_lpn';
+   begin
+     return g_store_duplicate_lpn;
+   exception
+    when others then null;
+   end is_store_duplicate_lpn;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   procedure set_g_store_duplicate_lpn
+   is
+     l_con_proc_name      constant cmn_constant.st_proc_name
+                                   := g_con_package || '.set_g_store_duplicate_lpn';
+   begin
+     g_store_duplicate_lpn := nvl(cmn_common.get_parameter_value(i_prr_name => bsis_constant.g_con_store_duplicate_lpn)
+                                 ,'N'
+                                 ) = 'Y';
+   exception
+    when others then g_store_duplicate_lpn := false;
+   end set_g_store_duplicate_lpn;
+   
+   
+   
+
+
+
+
+
+   
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure warn_bda_exists
+      (i_msg_id_rec        in  bsis_interface.rt_msg_id
+      ,i_bda_rec           in  bsis_baggage_data%rowtype
+      ,i_msg_type          in  varchar2
+      ,i_lpckey            in  varchar2
+      )
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                   := g_con_package || '.warn_bda_exists';
+   begin
+      if     i_msg_type = 'BSM-NEW'
+         and i_bda_rec.deleted_ind = 'N'
+         and i_bda_rec.src_data_src is not null
+         and i_msg_id_rec.src_data_src = bsis_constant.g_con_src_data_src_bsm
+      then
+         
+         viu_info.operator_info
+                      (i_ifo_nr            => viu_constant.c_ifo_bsmexistinglpc
+                      ,i_calling_procedure => l_con_proc_name
+                      ,i_severity          => viu_info.c_severity_warning
+                      ,i_additional_data   => 'BSM for existing LPC: '||i_lpckey
+                      );
+      elsif (i_msg_id_rec.baggagesource_ind = 'X' and i_bda_rec.baggagesource_ind in ('L','T'))
+      then
+         
+         viu_info.operator_info
+                      (i_ifo_nr            => viu_constant.c_ifo_sideparturetoarrival
+                      ,i_calling_procedure => l_con_proc_name
+                      ,i_severity          => viu_info.c_severity_warning
+                      ,i_additional_data   => 'Change from Departure to Arrival, for LPC: '||i_lpckey
+                      );
+      elsif (i_msg_id_rec.baggagesource_ind in ('L','T') and i_bda_rec.baggagesource_ind = 'X')
+      then
+         
+         viu_info.operator_info
+                      (i_ifo_nr            => viu_constant.c_ifo_siarrivaltodeparture
+                      ,i_calling_procedure => l_con_proc_name
+                      ,i_severity          => viu_info.c_severity_warning
+                      ,i_additional_data   => 'Change from Arrival to Departure, for LPC: '||i_lpckey
+                      );
+      end if;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end warn_bda_exists;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure warn_bda_missing
+      (i_msg_id_rec        in  bsis_interface.rt_msg_id
+      ,i_msg_type          in  varchar2
+      ,i_lpckey            in  varchar2
+      )
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                   := g_con_package || '.warn_bda_missing';
+   begin
+      if i_msg_type = 'BSM-CHG'
+      then
+         
+         viu_info.operator_info
+                     (i_ifo_nr            => viu_constant.c_ifo_bsmwithoutbagsource
+                     ,i_calling_procedure => l_con_proc_name
+                     ,i_severity          => viu_info.c_severity_warning
+                     ,i_additional_data   => 'BSM-CHG without BSM: ' || i_lpckey
+                     );
+      elsif i_msg_type = 'BSM-DEL'
+      then
+         
+         viu_info.operator_info
+                     (i_ifo_nr            => viu_constant.c_ifo_delwithoutbsm
+                     ,i_calling_procedure => l_con_proc_name
+                     ,i_severity          => viu_info.c_severity_warning
+                     ,i_additional_data   => 'BSM-DEL without BSM: ' || i_lpckey
+                     );
+      elsif i_msg_type = 'BUM'
+      then
+         
+         viu_info.operator_info
+                     (i_ifo_nr            => viu_constant.c_ifo_bumwithoutbsm,
+                      i_calling_procedure => l_con_proc_name,
+                      i_severity          => viu_info.c_severity_warning,
+                      i_additional_data   => 'BUM without BSM: ' || i_lpckey
+                     );
+      end if;
+
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end warn_bda_missing;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda
+      (i_lpckey     in  varchar2 := null
+      ,i_bid        in  number := null
+      ,i_bid_ext    in  varchar2 := null
+      ,i_msg_time   in  timestamp
+      ,i_incl_del   boolean := true
+      ,o_bda_rec    out bsis_baggage_data%rowtype
+      )
+      return boolean
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_lpckey';
+      l_bda_rec      bsis_baggage_data%rowtype;
+      l_found        boolean := false;
+   begin
+      if i_lpckey is not null and i_bid is not null
+      then
+         for r_bda in (select bda.*
+                       from   bsis_baggage_data bda
+                       where  i_lpckey = bda.lpckey
+                       and    i_bid = bda.bid
+                       and (  i_bid_ext is null
+                           or i_bid_ext = bda.bid_extension
+                           )
+                       and  ( bda.deleted_ind = 'N'
+                            or ( bda.deleted_ind = 'Y'
+                            and  bda.last_src_data_upd > i_msg_time
+                               )
+                            )
+                      )
+         loop
+            if i_incl_del or (not i_incl_del and r_bda.deleted_ind = 'N')
+            then
+               l_bda_rec := r_bda;
+               l_found   := true;
+            end if;
+         end loop;
+      elsif i_lpckey is not null
+      then
+         for r_bda in (select bda.*
+                       from   bsis_baggage_data bda
+                       where  i_lpckey = bda.lpckey
+                       and (bda.deleted_ind = 'N'
+                            or (bda.deleted_ind = 'Y'
+                                and bda.last_src_data_upd > i_msg_time)
+                           )
+                      )
+         loop
+            if i_incl_del or (not i_incl_del and r_bda.deleted_ind = 'N')
+            then
+               l_bda_rec := r_bda;
+               l_found   := true;
+            end if;
+         end loop;
+      elsif i_bid is not null
+      then
+         for r_bda in (select bda.*
+                       from   bsis_baggage_data bda
+                       where  i_bid = bda.bid
+                       and (  i_bid_ext is null
+                           or i_bid_ext = bda.bid_extension
+                           )
+                       and  ( bda.deleted_ind = 'N'
+                            or ( bda.deleted_ind = 'Y'
+                            and  bda.last_src_data_upd > i_msg_time
+                               )
+                            )
+                      )
+         loop
+            if i_incl_del or (not i_incl_del and r_bda.deleted_ind = 'N')
+            then
+               l_bda_rec := r_bda;
+               l_found   := true;
+            end if;
+         end loop;
+      end if;
+      
+      o_bda_rec := l_bda_rec;
+      
+      return l_found;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_lpc_count
+      (i_msg_id_rec in  bsis_interface.rt_msg_id
+      ,i_msg_time   in  timestamp
+      )
+    return number
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_lpc_count';
+      l_bda_id_rec   bsis_interface.rt_bda_id;
+      l_count        number;
+   begin
+      l_bda_id_rec := i_msg_id_rec.bda_id_rec;
+      
+      select count(bda.id)
+      into   l_count
+      from   bsis_baggage_data bda
+      where  l_bda_id_rec.lpc           = bda.lpc
+      and (  l_bda_id_rec.lpc_extension is null
+          or l_bda_id_rec.lpc_extension = bda.lpc_extension
+          )
+      and (   bda.deleted_ind = 'N'
+          or (bda.deleted_ind = 'Y' and bda.last_src_data_upd > i_msg_time)
+          )
+      and    bda.src_data_src in (bsis_constant.g_con_src_data_src_bsm,
+                                  bsis_constant.g_con_src_data_src_bpm);
+      
+      return l_count;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_lpc_count;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure analyze_baggage_data_msg
+      (i_msg_id_rec         in  bsis_interface.rt_msg_id
+      ,i_baggage_data       xmltype
+      ,o_msg_type           out varchar2
+      )
+   is
+      l_con_proc_name       constant cmn_constant.st_proc_name
+                                   := g_con_package || '.analyze_baggage_data_msg';
+      l_lpckey              varchar2(40);
+      l_flight_id           bsis_interface.rt_flight_id;
+      l_msg_type            varchar2(30);
+      l_msg_type_ext        varchar2(15);
+      l_el_xpath            varchar2(200);
+   begin
+      l_msg_type := i_msg_id_rec.org_msg_type;
+      if l_msg_type = bsis_constant.g_con_msg_type_bsm
+      then
+         
+         l_el_xpath := '/' || bsis_constant.g_con_bdi_src_root || '/'
+                           || bsis_constant.g_con_bdi_action || '/text()';
+         l_msg_type_ext := nvl(bsis_interface.get_element_value(i_baggage_data, l_el_xpath), 'NULL');
+         l_msg_type := l_msg_type || '-' || l_msg_type_ext;
+      end if;
+      o_msg_type := l_msg_type;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end analyze_baggage_data_msg;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function handle_src_data
+      (i_msg_id_rec         in  bsis_interface.rt_msg_id
+      ,i_baggage_data       in  xmltype
+      ,i_msg_type           in  varchar2
+      ,i_lpckey             in  varchar2
+      ,o_bda_rec            out bsis_baggage_data%rowtype
+      ,o_iata_id_tab_change out bsis_interface.it_iata_id
+   )
+      return boolean
+   is
+      l_con_proc_name            constant cmn_constant.st_proc_name
+                                            := g_con_package || '.handle_src_data';
+      l_prio_local_over_transfer constant cmn_parameter_values.value%type
+                                            := nvl ( cmn_common.get_parameter_value ( i_prr_name => bsis_constant.g_con_prio_local_over_transfer)
+                                                   , cmn_constant.g_con_yesno_yes
+                                                   );
+      l_bda_rec                  bsis_baggage_data%rowtype;
+      l_msg_id_rec               bsis_interface.rt_msg_id;
+      l_baggage_data             xmltype;
+      l_msg_handled              boolean := false;
+      l_rec_deleted              boolean;
+      l_found                    boolean := false;
+      l_is_delete_msg            boolean;
+      
+      exc_insertfailed                   exception;
+      pragma exception_init(exc_insertfailed, -20043);
+   begin
+      l_msg_id_rec    := i_msg_id_rec;
+      l_baggage_data  := i_baggage_data;
+      l_is_delete_msg := i_msg_type in ('BSM-DEL', 'BUM');
+      
+      if i_msg_type in ('BSM-NEW', 'BSM-CHG', 'BSM-DEL', 'BUM')
+      then
+         
+         update bsis_baggage_data bda
+         set    bda.deleted_ind   = 'X'
+         where  bda.lpc           = i_msg_id_rec.bda_id_rec.lpc
+         and    bda.lpckey       <> i_msg_id_rec.lpckey
+         and    bda.src_data_src  = bsis_constant.g_con_src_data_src_bpm
+         and    bda.deleted_ind   = 'N';
+      end if;
+
+      l_found := get_bda(i_lpckey   => i_lpckey
+                        ,i_msg_time => i_msg_id_rec.msg_time
+                        ,i_incl_del => not l_is_delete_msg
+                        ,o_bda_rec  => l_bda_rec);
+
+      if l_found
+      then
+         warn_bda_exists(i_msg_id_rec => l_msg_id_rec
+                        ,i_bda_rec    => l_bda_rec
+                        ,i_msg_type   => i_msg_type
+                        ,i_lpckey     => i_lpckey
+                        );
+         if  l_msg_id_rec.baggagesource_ind = 'T'
+         and l_bda_rec.baggagesource_ind    = 'L'
+         and l_bda_rec.src_data_src         = bsis_constant.g_con_src_data_src_bsm
+         and l_prio_local_over_transfer     = 'Y'
+         then
+            
+            
+            viu_info.operator_info
+                       (i_ifo_nr            => viu_constant.c_ifo_localbsmexists
+                       ,i_calling_procedure => l_con_proc_name
+                       ,i_severity          => viu_info.c_severity_warning
+                       ,i_additional_data   => 'Local BSM exists for LPC: '||i_lpckey
+                       );
+         elsif i_msg_type = 'BSM-NEW' and l_bda_rec.deleted_ind = 'N'
+         and   l_bda_rec.src_data_src = bsis_constant.g_con_src_data_src_bsm
+         and   l_msg_id_rec.msg_time > l_bda_rec.last_src_data_upd
+         then
+            
+            l_rec_deleted := delete_baggage_data
+                                (i_bda_id       => l_bda_rec.id
+                                ,i_baggage_data => null
+                                ,i_msg_id_rec   => l_msg_id_rec
+                                ,o_bda_rec      => l_bda_rec
+                                );
+            
+            l_msg_handled := insert_baggage_data
+                                (i_baggage_data       => l_baggage_data
+                                ,i_msg_id_rec         => l_msg_id_rec
+                                ,i_deleted_ind        => cmn_constant.g_con_yesno_no
+                                ,o_bda_rec            => l_bda_rec
+                                ,o_iata_id_tab_change => o_iata_id_tab_change
+                                );
+         elsif i_msg_type in ('BSM-NEW', 'BSM-CHG')
+         then
+            l_bda_rec.src_data_src := bsis_constant.g_con_src_data_src_bsm;
+            
+            l_msg_handled := update_baggage_data
+                                (i_baggage_data_new   => l_baggage_data
+                                ,i_msg_id_rec         => l_msg_id_rec
+                                ,io_baggage_data_old  => l_bda_rec
+                                ,o_iata_id_tab_change => o_iata_id_tab_change
+                                );
+         elsif i_msg_type in ('BSM-DEL', 'BUM')
+         then
+            
+            l_msg_handled := delete_baggage_data
+                                (i_bda_id       => l_bda_rec.id
+                                ,i_baggage_data => l_baggage_data
+                                ,i_msg_id_rec   => l_msg_id_rec
+                                ,o_bda_rec      => l_bda_rec
+                                );
+            
+            o_iata_id_tab_change := bsis_interface.get_iata_exist_tab
+                                       (i_dat_elt_type => 'SRC');
+         else
+            
+            viu_info.operator_info
+                       (i_ifo_nr            => viu_constant.c_ifo_unsupportedmessage
+                       ,i_calling_procedure => l_con_proc_name
+                       ,i_severity          => viu_info.c_severity_warning
+                       ,i_additional_data   => 'Unsupported message type: '||i_msg_type
+                       );
+         end if;
+      else
+         warn_bda_missing(i_msg_id_rec => l_msg_id_rec
+                         ,i_msg_type   => i_msg_type
+                         ,i_lpckey     => i_lpckey
+                         );
+         
+         l_msg_handled := insert_baggage_data
+                               (i_baggage_data       => l_baggage_data
+                               ,i_msg_id_rec         => l_msg_id_rec
+                               ,i_deleted_ind        => case l_is_delete_msg
+                                                          when true then cmn_constant.g_con_yesno_yes
+                                                          else cmn_constant.g_con_yesno_no
+                                                        end
+                               ,o_bda_rec            => l_bda_rec
+                               ,o_iata_id_tab_change => o_iata_id_tab_change
+                               );
+      end if;
+      
+      if l_msg_handled
+      then
+        o_bda_rec := l_bda_rec;
+      end if;
+      
+      return l_msg_handled;
+   exception
+      when exc_insertfailed
+      then
+         viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_insertfailed
+                                , i_calling_procedure      => l_con_proc_name
+                                , i_severity               => viu_info.c_severity_warning
+                                , i_additional_data        => 'LPC: '||nvl(i_lpckey,'null')||substr(sqlerrm,instr(sqlerrm,':')+1)
+                                );
+         return l_msg_handled;
+      when others
+      then
+        viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_exceptionraised
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_additional_data        => 'LPCkey '||nvl(i_lpckey,'null')||' caused an exception'
+                               );
+        viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end handle_src_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function handle_proc_data
+      (i_msg_id_rec         in  bsis_interface.rt_msg_id
+      ,i_baggage_data       in  xmltype
+      ,i_msg_type           in  varchar2
+      ,i_lpckey             in  varchar2
+      ,o_bda_rec            out bsis_baggage_data%rowtype
+      ,o_iata_id_tab_change out bsis_interface.it_iata_id
+   )
+      return boolean
+   is
+      l_con_proc_name    constant cmn_constant.st_proc_name
+                                   := g_con_package || '.handle_proc_data';
+      l_bda_rec          bsis_baggage_data%rowtype;
+      l_msg_id_rec       bsis_interface.rt_msg_id;
+      l_baggage_data     xmltype;
+      l_msg_handled      boolean := false;
+      l_rec_deleted      boolean;
+      l_found            boolean := false;
+      l_count            number;
+   begin
+      l_msg_id_rec   := i_msg_id_rec;
+      l_baggage_data := i_baggage_data;
+      
+      l_found := get_bda(i_lpckey   => i_lpckey
+                        ,i_msg_time => i_msg_id_rec.msg_time
+                        ,o_bda_rec  => l_bda_rec);
+      if l_found
+      then
+         if l_bda_rec.src_data_src is null
+         then
+           l_bda_rec.src_data_src := bsis_constant.g_con_src_data_src_bpm;
+         end if;
+         
+         
+         l_msg_handled := update_baggage_data
+                             (i_baggage_data_new   => l_baggage_data
+                             ,i_msg_id_rec         => l_msg_id_rec
+                             ,io_baggage_data_old  => l_bda_rec
+                             ,o_iata_id_tab_change => o_iata_id_tab_change
+                             );
+      else
+      l_count := get_bda_lpc_count
+                             (i_msg_id_rec => l_msg_id_rec
+                             ,i_msg_time => i_msg_id_rec.msg_time);
+      if l_count = 0
+      then
+         
+         l_msg_handled := insert_baggage_data
+                             (i_baggage_data       => l_baggage_data
+                             ,i_msg_id_rec         => l_msg_id_rec
+                             ,i_deleted_ind        => cmn_constant.g_con_yesno_no
+                             ,o_bda_rec            => l_bda_rec
+                             ,o_iata_id_tab_change => o_iata_id_tab_change
+                             );
+         else
+            
+            viu_info.operator_info
+                       (i_ifo_nr            => viu_constant.c_ifo_bsmotherflightexists
+                       ,i_calling_procedure => l_con_proc_name
+                       ,i_severity          => viu_info.c_severity_warning
+                       ,i_additional_data   => 'LPC: '||i_lpckey||' is assigned to other flight'
+                       );
+            l_msg_handled := false;
+         end if;
+      end if;
+      
+      if l_msg_handled
+      then
+        o_bda_rec := l_bda_rec;
+      end if;
+      
+      return l_msg_handled;
+   exception
+      when others
+      then
+        viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_exceptionraised
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_additional_data        => 'LPCkey '||nvl(i_lpckey,'null')||' caused an exception'
+                               );
+        viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end handle_proc_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function handle_sve_data
+      (i_msg_id_rec         in  bsis_interface.rt_msg_id
+      ,i_baggage_data       in  xmltype
+      ,i_msg_type           in  varchar2
+      ,o_bda_rec            out bsis_baggage_data%rowtype
+      ,o_iata_id_tab_change out bsis_interface.it_iata_id
+   )
+      return boolean
+   is
+      l_con_proc_name    constant cmn_constant.st_proc_name
+                                   := g_con_package || '.handle_sve_data';
+      l_bda_rec          bsis_baggage_data%rowtype;
+      l_bda_rec_bid      bsis_baggage_data%rowtype;
+      l_bda_rec_bid_org  bsis_baggage_data%rowtype;
+      l_bda_rec_lpc      bsis_baggage_data%rowtype;
+      l_msg_id_rec       bsis_interface.rt_msg_id;
+      l_baggage_data     xmltype;
+      l_msg_handled      boolean := false;
+      l_rec_deleted      boolean;
+      l_found            boolean := false;
+      l_found_bid        boolean := false;
+      l_found_lpc        boolean := false;
+      l_count            number;
+      l_has_bid          boolean := false;
+      l_has_lpc          boolean := false;
+   begin
+      l_msg_id_rec   := i_msg_id_rec;
+      l_baggage_data := i_baggage_data;
+      
+      l_has_bid := l_msg_id_rec.bda_id_rec.bid is not null;
+      l_has_lpc := l_msg_id_rec.lpckey is not null;
+
+      if not l_has_bid and not l_has_lpc
+      then
+         l_msg_handled := false;
+      else
+         if l_has_bid and l_has_lpc
+         then
+            l_found := get_bda(i_lpckey   => l_msg_id_rec.lpckey
+                              ,i_bid      => l_msg_id_rec.bda_id_rec.bid
+                              ,i_bid_ext  => l_msg_id_rec.bda_id_rec.bid_extension
+                              ,i_msg_time => i_msg_id_rec.msg_time
+                              ,o_bda_rec  => l_bda_rec);
+         end if;
+         if l_found
+         then
+            
+            l_msg_handled := update_baggage_data
+                                (i_baggage_data_new   => l_baggage_data
+                                ,i_msg_id_rec         => l_msg_id_rec
+                                ,io_baggage_data_old  => l_bda_rec
+                                ,o_iata_id_tab_change => o_iata_id_tab_change
+                                );
+         else
+            if l_has_bid
+            then
+               l_found_bid := get_bda(
+                                i_bid      => l_msg_id_rec.bda_id_rec.bid
+                               ,i_bid_ext  => l_msg_id_rec.bda_id_rec.bid_extension
+                               ,i_msg_time => i_msg_id_rec.msg_time
+                               ,o_bda_rec  => l_bda_rec_bid);
+            end if;
+            if l_has_lpc
+            then
+               l_found_lpc := get_bda(
+                                i_lpckey   => l_msg_id_rec.lpckey
+                               ,i_msg_time => i_msg_id_rec.msg_time
+                               ,o_bda_rec  => l_bda_rec_lpc);
+            end if;
+            if l_found_bid
+            then
+               
+               if l_msg_id_rec.lpckey is not null
+                  and i_msg_type <> bsis_constant.g_con_msg_type_bagload 
+                  and ( l_bda_rec_bid.lpc is null
+		              
+                  
+                  or  ( (    l_bda_rec_bid.lpc = l_msg_id_rec.bda_id_rec.lpc)
+		         and l_bda_rec_bid.src_data_src is null
+		        ) 
+                      )
+               then
+                  l_bda_rec_bid.lpckey        := l_msg_id_rec.lpckey;
+                  l_bda_rec_bid.lpc           := l_msg_id_rec.bda_id_rec.lpc;
+                  l_bda_rec_bid.lpc_extension := l_msg_id_rec.bda_id_rec.lpc_extension;
+               end if;
+               
+               l_bda_rec_bid_org := l_bda_rec_bid;
+               l_msg_handled := update_baggage_data
+                                   (i_baggage_data_new   => l_baggage_data
+                                   ,i_msg_id_rec         => l_msg_id_rec
+                                   ,io_baggage_data_old  => l_bda_rec_bid
+                                   ,o_iata_id_tab_change => o_iata_id_tab_change
+                                   );
+               l_bda_rec := l_bda_rec_bid;
+            elsif l_found_lpc
+            then
+               
+               if l_has_bid
+               then
+                  l_bda_rec_lpc.bid           := l_msg_id_rec.bda_id_rec.bid;
+                  l_bda_rec_lpc.bid_extension := l_msg_id_rec.bda_id_rec.bid_extension;
+               end if;
+               
+               l_msg_handled := update_baggage_data
+                                   (i_baggage_data_new   => l_baggage_data
+                                   ,i_msg_id_rec         => l_msg_id_rec
+                                   ,io_baggage_data_old  => l_bda_rec_lpc
+                                   ,o_iata_id_tab_change => o_iata_id_tab_change
+                                   );
+               l_bda_rec := l_bda_rec_lpc;
+            else
+               
+               l_msg_handled := insert_baggage_data
+                                   (i_baggage_data       => l_baggage_data
+                                   ,i_msg_id_rec         => l_msg_id_rec
+                                   ,i_deleted_ind        => cmn_constant.g_con_yesno_no
+                                   ,o_bda_rec            => l_bda_rec
+                                   ,o_iata_id_tab_change => o_iata_id_tab_change
+                                   );
+            end if;
+            if l_found_bid and l_found_lpc
+            then
+               
+               move_bag_sve_data(i_bda_sve_rec_from => l_bda_rec_bid
+                                ,io_bda_sve_rec_to  => l_bda_rec_lpc
+                                );
+               l_bda_rec := l_bda_rec_lpc;
+            end if;
+
+            
+            
+            if l_found_bid and not l_found_lpc
+            and i_msg_type <> bsis_constant.g_con_msg_type_bagload
+            and l_bda_rec_bid.lpckey <> l_msg_id_rec.lpckey
+            and l_msg_id_rec.lpckey is not null then
+              if l_bda_rec_bid.src_data is not null
+              
+              and l_bda_rec_bid.src_data_src = bsis_constant.g_con_src_data_src_bsm
+              then
+                split_bag_src_sve_data(i_msg_id_rec         => l_msg_id_rec
+                                      ,i_bda_rec_org        => l_bda_rec_bid_org
+                                      ,io_bda_rec           => l_bda_rec_bid
+                                      ,o_iata_id_tab_change => o_iata_id_tab_change
+                                     );
+              else 
+                  l_bda_rec_bid.lpc           := l_msg_id_rec.bda_id_rec.lpc;
+                  l_bda_rec_bid.lpc_extension := l_msg_id_rec.bda_id_rec.lpc_extension;
+                  l_bda_rec_bid.lpckey        := l_msg_id_rec.lpckey;
+              end if;
+              l_bda_rec := l_bda_rec_bid;
+            end if;
+         end if;
+      end if;
+      
+      if l_msg_handled
+      then
+        o_bda_rec := l_bda_rec;
+      end if;
+      
+      return l_msg_handled;
+   exception
+      when others
+      then
+        viu_info.operator_info ( i_ifo_nr                 => viu_constant.c_ifo_exceptionraised
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_additional_data        => 'LPCkey '||nvl(l_msg_id_rec.lpckey,'null')||' caused an exception'
+                               );
+        viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end handle_sve_data;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function handle_baggage_data
+    ( i_msg_id_rec         in  bsis_interface.rt_msg_id
+    , i_baggage_data       in  xmltype
+    , o_bda_rec            out bsis_baggage_data%rowtype
+    , o_iata_id_tab_change out bsis_interface.it_iata_id
+    ) return boolean
+  is
+    l_con_proc_name      constant cmn_constant.st_proc_name
+                                 := g_con_package || '.handle_baggage_data';
+    l_bda_rec            bsis_baggage_data%rowtype;
+    l_msg_id_rec         bsis_interface.rt_msg_id;
+    l_baggage_data       xmltype;
+    l_msg_handled        boolean;
+    l_iata_id_tab_change bsis_interface.it_iata_id;
+    l_msg_type           varchar2(30);
+    l_has_inflight       boolean;
+    l_has_outflight      boolean;
+    l_lpckey             varchar2(40);
+  begin
+    l_msg_id_rec           := i_msg_id_rec;
+    l_lpckey               := i_msg_id_rec.lpckey;
+    l_has_inflight         := i_msg_id_rec.has_inflight;
+    l_has_outflight        := i_msg_id_rec.has_outflight;
+    l_baggage_data         := i_baggage_data;
+    
+    analyze_baggage_data_msg ( i_msg_id_rec    => l_msg_id_rec
+                             , i_baggage_data  => l_baggage_data
+                             , o_msg_type      => l_msg_type
+                             );
+    analyse_presence_flightinfo ( i_msg_id_rec => l_msg_id_rec
+                                );
+    if l_msg_type in ('BSM-NEW', 'BSM-DEL', 'BSM-CHG', 'BUM')
+       and not l_has_inflight
+       and not l_has_outflight
+    then
+      
+      viu_info.operator_info
+                 ( i_ifo_nr            => viu_constant.c_ifo_bsmwithoutflightinfo
+                 , i_calling_procedure => l_con_proc_name
+                 , i_severity          => viu_info.c_severity_notification
+                 , i_additional_data   => l_msg_type || ' with LPC: ' || l_msg_id_rec.bda_id_rec.lpc
+                 );
+    elsif l_msg_type in ('BSM-NEW', 'BSM-DEL', 'BSM-CHG', 'BUM')
+    then
+      
+      l_msg_handled := handle_src_data
+                         ( i_msg_id_rec         => l_msg_id_rec
+                         , i_baggage_data       => l_baggage_data
+                         , i_msg_type           => l_msg_type
+                         , i_lpckey             => l_lpckey
+                         , o_bda_rec            => l_bda_rec
+                         , o_iata_id_tab_change => l_iata_id_tab_change
+                         );
+    elsif l_msg_type in ( bsis_constant.g_con_msg_type_bpm )
+    then
+      
+      l_msg_handled := handle_proc_data
+                         ( i_msg_id_rec         => l_msg_id_rec
+                         , i_baggage_data       => l_baggage_data
+                         , i_msg_type           => l_msg_type
+                         , i_lpckey             => l_lpckey
+                         , o_bda_rec            => l_bda_rec
+                         , o_iata_id_tab_change => l_iata_id_tab_change
+                         );
+    elsif l_msg_type in ( bsis_constant.g_con_msg_type_bagevent
+                        , bsis_constant.g_con_msg_type_pkginfo
+                        , bsis_constant.g_con_msg_type_bagload
+                        , bsis_constant.g_con_msg_type_uldtrack
+                        , bsis_constant.g_con_msg_type_uldprocess
+                        , bsis_constant.g_con_msg_type_bisbags
+                        )
+    then
+      
+      l_msg_handled := handle_sve_data
+                         ( i_msg_id_rec         => l_msg_id_rec
+                         , i_baggage_data       => l_baggage_data
+                         , i_msg_type           => l_msg_type
+                         , o_bda_rec            => l_bda_rec
+                         , o_iata_id_tab_change => l_iata_id_tab_change
+                         );
+    else
+      
+      viu_info.operator_info
+                 ( i_ifo_nr            => viu_constant.c_ifo_unsupportedmessage
+                 , i_calling_procedure => l_con_proc_name
+                 , i_severity          => viu_info.c_severity_error
+                 , i_additional_data   => l_msg_type
+                 );
+    end if; 
+    
+    if l_msg_handled
+    then
+      o_bda_rec            := l_bda_rec;
+      o_iata_id_tab_change := l_iata_id_tab_change;
+    end if;
+    
+    return l_msg_handled;
+    
+  exception
+    when others
+    then
+       viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end handle_baggage_data;
+  
+begin
+  
+  begin
+    set_g_store_duplicate_lpn;
+  end;
+  
+end bsis_baggage_data_mgr;
+/

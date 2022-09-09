@@ -1,0 +1,14 @@
+function dec2bin (n in number) return varchar2 is
+  binval varchar2(64);
+  n2     number := n;
+begin
+  if n2 = 0 then binval := 0;
+  else
+  while ( n2 > 0 ) loop
+     binval := mod(n2, 2) || binval;
+     n2 := trunc( n2 / 2 );
+  end loop;
+  end if;
+  return binval;
+end dec2bin;
+/

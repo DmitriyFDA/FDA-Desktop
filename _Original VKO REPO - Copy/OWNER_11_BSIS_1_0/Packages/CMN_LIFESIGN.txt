@@ -1,0 +1,871 @@
+create or replace PACKAGE cmn_lifesign
+IS
+   /* Get the LifeSign Party ID. */
+   FUNCTION get_lifesign_party_id( i_id_cust          IN cmn_parties.id_cust%TYPE
+                                 , i_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                                 )
+      RETURN cmn_lifesign_parties.ID%TYPE;
+
+   FUNCTION get_next_lsn_sent_seq( i_lpy_id IN cmn_lifesign_parties.ID%TYPE )
+      RETURN cmn_lifesign_req_sent.SEQUENCE%TYPE;
+
+   PROCEDURE controller( i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                       , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                       );
+
+   PROCEDURE record_lpy_healthiness( i_lpy_id     IN cmn_lifesign_parties.id%TYPE
+                                   , i_event_time IN cmn_lifesign_party_statuses.timestamp_healthy%TYPE
+                                   );
+    
+   FUNCTION lpy_healthy( i_lpy_id IN cmn_lifesign_parties.ID%TYPE )
+      RETURN BOOLEAN;
+
+   FUNCTION lpy_healthy( i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                       , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                       )
+      RETURN BOOLEAN;
+
+   FUNCTION lpy_healthy_yn( i_lpy_id IN cmn_lifesign_parties.ID%TYPE )
+      RETURN VARCHAR2;
+
+   FUNCTION lpy_healthy_yn( i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                          , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                          )
+      RETURN VARCHAR2;
+
+   FUNCTION lpy_job_enabled_yn( i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                              , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                              )
+      RETURN VARCHAR2;
+
+   FUNCTION lpy_job_scheduled_yn( i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                                , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                                )
+      RETURN VARCHAR2;
+END cmn_lifesign;
+/
+
+
+
+
+package body cmn_lifesign
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure exec_lpy_init_procedure(
+      i_lpy_id   in   cmn_lifesign_parties.id%type
+   );
+
+   g_con_package   constant varchar2( 30 ) := 'cmn_lifesign';
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_lifesign_party_id( i_id_cust          in cmn_parties.id_cust%type
+                                 , i_instance_id_cust in cmn_parties.instance_id_cust%type default null
+                                 )
+      return cmn_lifesign_parties.id%type
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                       := g_con_package || '.get_lifesign_party_id';
+
+       cursor c_lpy( b_id_cust in cmn_parties.id_cust%type
+                  , b_instance_id_cust in cmn_parties.instance_id_cust%type)
+      is
+         select lpy.*
+         from   cmn_lifesign_parties lpy
+              , cmn_parties pty
+         where  pty.id_cust          = b_id_cust
+         and    ( pty.instance_id_cust = b_instance_id_cust
+                  or ( pty.instance_id_cust is null
+                       and
+                       b_instance_id_cust is null
+                     )
+                )
+         and    pty.id               = lpy.pty_id;
+
+      l_rt_lpy                   cmn_lifesign_parties%rowtype;
+      l_lpy_found                boolean                        := false;
+      l_return_value             cmn_lifesign_parties.id%type;
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_id_cust=' || i_id_cust
+                             );
+
+      
+      open c_lpy( b_id_cust          => i_id_cust
+                , b_instance_id_cust => i_instance_id_cust
+                );
+
+      fetch c_lpy
+      into  l_rt_lpy;
+
+      if c_lpy%found
+      then
+         l_return_value  := l_rt_lpy.id;
+      else
+         
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_cmnnolifesignpartyfound
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         => i_id_cust
+                               , i_additional_data        => 'LifeSign party: ' || i_id_cust
+                                                          || ', InstanceID: '   || nvl(i_instance_id_cust, 'NULL')
+                               );
+         l_return_value  := null;
+      end if;
+
+      close c_lpy;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'lpy_id=' || to_char( l_return_value )
+                             );
+      return l_return_value;
+   exception
+      when others
+      then
+         if c_lpy%isopen
+         then
+            close c_lpy;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_lifesign_party_id;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_next_lsn_sent_seq( i_lpy_id in cmn_lifesign_parties.id%type )
+      return cmn_lifesign_req_sent.sequence%type
+   is
+      
+      cursor c_lsn_sent_seqs(
+         b_lpy_id     in   cmn_lifesign_parties.id%type
+      )
+      is
+         select lrt.sequence
+         from   cmn_lifesign_req_sent lrt
+         where  lrt.lpy_id = b_lpy_id
+         order by lrt.event_time desc;
+
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.get_next_lsn_sent_seq';
+      l_next_lsn_sent_seq        cmn_lifesign_req_sent.sequence%type;
+      l_lsn_sent_seq_found       boolean                               := false;
+      rec_lsn_sent_seqs          c_lsn_sent_seqs%rowtype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      open c_lsn_sent_seqs( b_lpy_id => i_lpy_id);
+
+      fetch c_lsn_sent_seqs
+      into  rec_lsn_sent_seqs;
+
+      if c_lsn_sent_seqs%notfound
+      then
+         
+         close c_lsn_sent_seqs;
+
+         l_next_lsn_sent_seq := 1;
+      else
+         
+         close c_lsn_sent_seqs;
+         
+         l_next_lsn_sent_seq := mod(rec_lsn_sent_seqs.sequence, cmn_constant.g_con_lsn_max_sent_seq) + 1;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_next_lsn_sent_seq;
+   exception
+      when others
+      then
+         if c_lsn_sent_seqs%isopen
+         then
+            close c_lsn_sent_seqs;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_next_lsn_sent_seq;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure controller( i_pty_id_cust in cmn_parties.id_cust%type
+                       , i_pty_instance_id_cust in cmn_parties.instance_id_cust%type default null
+                       )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name      := g_con_package || '.controller';
+      l_rt_lpy                   cmn_lifesign_parties%rowtype;
+      l_rt_pty                   cmn_parties%rowtype;
+      l_first_run                boolean;
+
+      cursor c_ujb
+      is
+         select number_of_executions
+         from   acl_user_jobs_v
+         where  unique_session_id = dbms_session.unique_session_id;
+      r_ujb    c_ujb%rowtype;
+
+   begin
+      
+      
+      
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      if cmn_common_msg.pty_select_row_uk( i_pty_id_cust      => i_pty_id_cust
+                                         , i_pty_instance_id_cust => i_pty_instance_id_cust
+                                         , o_rt_pty           => l_rt_pty
+                                         )
+      then
+         
+         if cmn_lpy_tapi_pck.lpy_select_row( i_lpy_pty_id      => l_rt_pty.id
+                                           , o_rt_lpy          => l_rt_lpy
+                                           )
+         then
+            l_first_run := false;
+            open c_ujb;
+            fetch c_ujb into r_ujb;
+            if c_ujb%found
+            then
+            
+               if nvl(r_ujb.number_of_executions,0) = 0
+               then
+                  l_first_run := true;
+               end if;
+            end if;
+            close c_ujb;
+         
+            if l_first_run
+            then
+               
+               exec_lpy_init_procedure(i_lpy_id      => l_rt_lpy.id);
+               
+               acl_application_control.set_detailed_state( i_dsd_name => acl_constant.g_con_dsd_name_communication, i_aet_id => null );
+            else
+               
+               if lpy_healthy( i_lpy_id => l_rt_lpy.id )
+               then
+                  acl_application_control.clear_detailed_state( i_dsd_name => acl_constant.g_con_dsd_name_communication, i_aet_id => null );
+               else
+                  acl_application_control.set_detailed_state( i_dsd_name => acl_constant.g_con_dsd_name_communication, i_aet_id => null );
+               end if;
+            end if;
+         
+            cmn_lifesignrequest.send_request( i_rt_lpy      => l_rt_lpy );
+         end if;
+      end if;
+
+      
+      commit;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_ujb%isopen
+         then
+            close c_ujb;
+         end if;
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.handle_info( i_ifo_nr                => viu_constant.c_ifo_cmnmessage
+                             , i_calling_procedure     => l_con_proc_name
+                             , i_severity              => viu_info.c_severity_error
+                             , i_info_arguments        => dbms_utility.format_error_stack
+                             , i_additional_data       =>    'Backtraced Error for party '
+                                                          || i_pty_id_cust || ':'
+                                                          || chr( 10 )
+                                                          || dbms_utility.format_error_backtrace
+                             );
+   end controller;
+
+   procedure record_lpy_healthiness(
+      i_lpy_id     in cmn_lifesign_parties.id%type
+    , i_event_time in cmn_lifesign_party_statuses.timestamp_healthy%type
+   )
+   is
+      
+      cursor c_lpy_status
+       (b_lpy_id in cmn_lifesign_party_statuses.lpy_id%type
+       )
+       is
+      select lps.lpy_id
+      ,      lps.timestamp_healthy
+      from   cmn_lifesign_party_statuses lps
+      where  lps.lpy_id = i_lpy_id;
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.record_lpy_healthiness';
+
+      rec_lpy_status c_lpy_status%rowtype;
+      l_rt_lps       cmn_lifesign_party_statuses%rowtype;
+      l_lps_found    number;
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      open c_lpy_status (b_lpy_id => i_lpy_id);
+
+      fetch c_lpy_status
+      into  rec_lpy_status;
+
+      if c_lpy_status%found
+      then
+         close c_lpy_status;
+
+         if rec_lpy_status.timestamp_healthy < i_event_time
+         then
+            
+            l_rt_lps.lpy_id             := rec_lpy_status.lpy_id;
+            l_rt_lps.timestamp_healthy  := i_event_time;
+            l_lps_found                 :=
+                  cmn_lps_tapi_pck.lps_update_row (i_lps_lpy_id =>    rec_lpy_status.lpy_id
+                                                 , io_rt_lps =>       l_rt_lps);
+         end if;
+      else
+         
+         close c_lpy_status;
+
+         l_rt_lps.lpy_id             := i_lpy_id;
+         l_rt_lps.timestamp_healthy  := i_event_time;
+         cmn_lps_tapi_pck.lps_insert_row (io_rt_lps =>    l_rt_lps);
+      end if;
+
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_lpy_status%isopen
+         then
+            close c_lpy_status;
+         end if;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end record_lpy_healthiness;
+   
+   function lpy_healthy_yn( i_pty_id_cust          in cmn_parties.id_cust%type
+                          , i_pty_instance_id_cust in cmn_parties.instance_id_cust%type
+                          )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.lpy_healthy_yn';
+      l_rt_pty                   cmn_parties%rowtype;
+      l_lpy_healthy              boolean                   := false;
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_pty_id_cust=' || i_pty_id_cust
+                             );
+      l_lpy_healthy  := lpy_healthy( i_pty_id_cust      => i_pty_id_cust );
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => case l_lpy_healthy
+                                  when true
+                                     then cmn_constant.g_con_yesno_yes
+                                  else cmn_constant.g_con_yesno_no
+                               end
+                             );
+
+      case l_lpy_healthy
+         when true
+         then
+            return( cmn_constant.g_con_yesno_yes );
+         else
+            return( cmn_constant.g_con_yesno_no );
+      end case;
+   end;
+
+   function lpy_healthy_yn( i_lpy_id in cmn_lifesign_parties.id%type )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.lpy_healthy_yn';
+      l_lpy_healthy              boolean                   := false;
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_lpy_id=' || to_char( i_lpy_id )
+                             );
+      l_lpy_healthy  := lpy_healthy( i_lpy_id      => i_lpy_id );
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => case l_lpy_healthy
+                                  when true
+                                     then cmn_constant.g_con_yesno_yes
+                                  else cmn_constant.g_con_yesno_no
+                               end
+                             );
+
+      case l_lpy_healthy
+         when true
+         then
+            return( cmn_constant.g_con_yesno_yes );
+         else
+            return( cmn_constant.g_con_yesno_no );
+      end case;
+   end;
+
+   function lpy_healthy( i_pty_id_cust in cmn_parties.id_cust%type
+                       , i_pty_instance_id_cust in cmn_parties.instance_id_cust%type
+                       )
+      return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name      := g_con_package || '.lpy_healthy';
+      l_rt_pty                   cmn_parties%rowtype;
+      l_rt_lpy                   cmn_lifesign_parties%rowtype;
+      l_lpy_healthy              boolean                        := false;
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_pty_id_cust=' || i_pty_id_cust
+                             );
+
+      if cmn_common_msg.pty_select_row_uk( i_pty_id_cust          => i_pty_id_cust
+                                         , i_pty_instance_id_cust => i_pty_instance_id_cust
+                                         , o_rt_pty               => l_rt_pty
+                                         )
+      then
+         if cmn_lpy_tapi_pck.lpy_select_row( i_lpy_pty_id      => l_rt_pty.id
+                                           , o_rt_lpy          => l_rt_lpy
+                                           )
+         then
+            l_lpy_healthy  := lpy_healthy( i_lpy_id      => l_rt_lpy.id );
+            viu_module.leave_module( i_module          => l_con_proc_name
+                                   , i_debug_info      => case l_lpy_healthy
+                                        when true
+                                           then 'TRUE'
+                                        else 'FALSE'
+                                     end
+                                   );
+         end if;
+      end if;
+
+      return( l_lpy_healthy );
+   end;
+
+   function lpy_healthy( i_lpy_id in cmn_lifesign_parties.id%type )
+      return boolean
+   is
+      l_rt_lpy                   cmn_lifesign_parties%rowtype;
+      l_rt_pty                   cmn_parties%rowtype;
+
+      
+      cursor c_lpy_status( b_lpy_id in cmn_lifesign_parties.id%type )
+      is
+      select lpy.allowed_misses
+      ,      lpy.response_interval
+      ,      lps.timestamp_healthy
+      from   cmn_lifesign_parties        lpy
+      ,      cmn_lifesign_party_statuses lps
+      where  lpy.id = lps.lpy_id (+)
+      and    lpy.id = b_lpy_id
+      ;
+
+      l_con_proc_name   constant cmn_constant.st_proc_name        := g_con_package || '.lpy_healthy';
+      l_job_enabled              varchar2( 1 );
+      l_lpy_healthy              boolean                                := false;
+      l_job_scheduled            varchar2( 1 );
+      l_found                    boolean;
+      l_rt_lpy_status            c_lpy_status%rowtype;
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_lpy_id=' || to_char( i_lpy_id )
+                             );
+
+      
+      if cmn_lpy_tapi_pck.lpy_select_row( i_lpy_id      => i_lpy_id
+                                        , o_rt_lpy      => l_rt_lpy
+                                        )
+      then
+         if cmn_pty_tapi_pck.pty_select_row( i_pty_id      => l_rt_lpy.pty_id
+                                           , o_rt_pty      => l_rt_pty
+                                           )
+         then
+            l_job_enabled    := lpy_job_enabled_yn( i_pty_id_cust      => l_rt_pty.id_cust );
+         end if;
+      end if;
+
+      if l_job_enabled = cmn_constant.g_con_yesno_no
+      then
+         l_lpy_healthy  := true;
+      elsif l_job_enabled = cmn_constant.g_con_yesno_yes
+      then
+         l_job_scheduled  := lpy_job_scheduled_yn( i_pty_id_cust      => l_rt_pty.id_cust );
+         
+         if l_job_scheduled = cmn_constant.g_con_yesno_yes
+         then
+            
+            open c_lpy_status( b_lpy_id => i_lpy_id );
+
+            fetch c_lpy_status
+            into  l_rt_lpy_status;
+
+            close c_lpy_status;
+            
+
+            if l_rt_lpy_status.timestamp_healthy is not null
+             and l_rt_lpy_status.timestamp_healthy
+                 + numtodsinterval((l_rt_lpy_status.allowed_misses + 1) * l_rt_lpy_status.response_interval
+                                  , 'SECOND'
+                                  )
+                  > cmn_common.default_timestamp
+            then
+               
+               l_lpy_healthy := true;
+            end if;
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => case l_lpy_healthy
+                                  when true
+                                     then 'TRUE'
+                                  else 'FALSE'
+                               end
+                             );
+      return l_lpy_healthy;
+   exception
+      when others
+      then
+         if c_lpy_status%isopen
+         then
+            close c_lpy_status;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end lpy_healthy;
+
+   function lpy_job_enabled_yn( i_pty_id_cust          in cmn_parties.id_cust%type
+                              , i_pty_instance_id_cust in cmn_parties.instance_id_cust%type
+                              )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                          := g_con_package || '.lpy_job_enabled_yn';
+
+      cursor c_job( b_pgm_name_fragment varchar2 )
+      is
+         select job.enabled
+         from   cmn_jobs job
+              , cmn_programs pgm
+         where  job.pgm_id = pgm.id
+         and    pgm.name like '%' || b_pgm_name_fragment || '%';
+         
+      cursor c_aet(b_parameter_fragment in varchar2)
+      is
+         select ''
+         from   acl_application_elements
+         where  aet_type = acl_constant.get_aet_type_background_job
+         and    upper(procedure_call) like '%LIFESIGN%'||b_parameter_fragment||'%';
+
+      l_rt_job                   c_job%rowtype;
+      l_rt_aet                   c_aet%rowtype;
+      l_fragment                 varchar2(200);
+      l_job_enabled              varchar2(1);
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_pty_id_cust=' || i_pty_id_cust
+                             );
+
+      
+
+
+      if i_pty_instance_id_cust is null
+      then
+         l_fragment := i_pty_id_cust;
+      else
+         l_fragment := i_pty_id_cust || '%' || i_pty_instance_id_cust;
+      end if;
+
+      
+
+
+
+      open c_aet(b_parameter_fragment => l_fragment);
+
+      fetch c_aet
+      into  l_rt_aet;
+         
+      if c_aet%found
+      then
+         l_job_enabled := cmn_constant.g_con_yesno_yes;
+      end if;
+         
+      close c_aet;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'enabled=' || l_rt_job.enabled
+                             );
+      return( l_job_enabled );
+   exception
+      when others
+      then
+         if c_job%isopen
+         then
+            close c_job;
+         end if;
+
+         if c_aet%isopen
+         then
+            close c_aet;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end;
+
+   function lpy_job_scheduled_yn( i_pty_id_cust          in cmn_parties.id_cust%type
+                                , i_pty_instance_id_cust in cmn_parties.instance_id_cust%type
+                                )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.lpy_job_scheduled_yn';
+
+      cursor c_usj( b_pgm_name_fragment varchar2 )
+      is
+         select usj.state
+         from   user_scheduler_jobs usj
+         where  ( upper(usj.job_action) like '%LIFESIGN%'||b_pgm_name_fragment||'%')
+         union all
+         select usj.state
+         from   user_scheduler_jobs usj
+         ,      user_scheduler_job_args uja
+         where  uja.job_name = usj.job_name
+         and    ( upper(uja.value) like '%LIFESIGN%'||b_pgm_name_fragment||'%')
+         ;
+
+      l_rt_usj                   c_usj%rowtype;
+      l_return                   varchar2( 1 );
+      l_fragment                 varchar2( 200 );
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_pty_id_cust=' || i_pty_id_cust
+                             );
+
+      
+
+
+      if i_pty_instance_id_cust is null
+      then
+         l_fragment := i_pty_id_cust;
+      else
+         l_fragment := i_pty_id_cust || '%' || i_pty_instance_id_cust;
+      end if;
+
+      open c_usj( b_pgm_name_fragment      => l_fragment );
+
+      fetch c_usj
+      into  l_rt_usj;
+
+      close c_usj;
+
+      if l_rt_usj.state in ('SCHEDULED', 'RUNNING')
+         then
+            l_return  := cmn_constant.g_con_yesno_yes;
+         else
+            l_return  := cmn_constant.g_con_yesno_no;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'scheduled=' || l_return
+                             );
+      return( l_return );
+   exception
+      when others
+      then
+         if c_usj%isopen
+         then
+            close c_usj;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end;
+
+   procedure exec_lpy_init_procedure(i_lpy_id in cmn_lifesign_parties.id%type)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                          := g_con_package || '.init_lpy_procedure';
+
+      l_rt_lpy                   cmn_lifesign_parties%rowtype;
+      l_plsql_block              varchar2( 240 );
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_lpy_id=' || i_lpy_id
+                             );
+
+      if cmn_lpy_tapi_pck.lpy_select_row( i_lpy_id      => i_lpy_id
+                                        , o_rt_lpy      => l_rt_lpy
+                                        )
+      then
+         if cmn_lifesign.lpy_healthy( i_lpy_id      => i_lpy_id )
+         and l_rt_lpy.init_procedure is not null
+         then
+            
+            l_plsql_block  := 'BEGIN ' || l_rt_lpy.init_procedure || '; END;';
+
+            execute immediate ( l_plsql_block );
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end;
+
+end cmn_lifesign;
+/

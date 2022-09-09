@@ -1,0 +1,559 @@
+create or replace PACKAGE lm_cfg_availability_control
+IS
+   g_con_package       CONSTANT lm_constant.st_proc_name := 'LM_CFG_GENERAL';
+
+   PROCEDURE load_general_data;
+   PROCEDURE load_controlled_routing;
+   PROCEDURE load_station_proximity;
+   PROCEDURE load_operator_availability;
+   PROCEDURE load_ind_use_unavailable_stns;
+   PROCEDURE load_store_control;
+
+END lm_cfg_availability_control;
+/
+
+
+
+
+package body lm_cfg_availability_control is
+
+
+
+
+
+
+
+
+
+
+
+
+procedure load_general_data
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_general_data';
+
+   
+   cursor c_stn
+   is
+       select stn.fallback_stn_id
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/General/FallbackStationID'
+                        passing cfg.data
+                        columns fallback_stn_id varchar2(30)  path 'text()'
+                      ) stn
+      ;
+
+   l_fallback_stn_id                   lm_stations.id%type;
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_#stn                              integer := 0;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_stn;
+   fetch c_stn into l_fallback_stn_id;
+   if c_stn%found
+   then
+      lm_config.check_station(i_stn_id => l_fallback_stn_id);
+      update lm_stations
+      set    ind_fallback = lm_constant.g_con_yesno_yes
+      where  id = l_fallback_stn_id;
+      l_#stn := sql%rowcount;  
+   end if;
+   close c_stn;
+
+   lm_config.log_processing_time( i_message_name    => 'General '
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Updated: '||l_#stn||' lm_stations (ind fallback)'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_stn%isopen
+      then
+         close c_stn;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_general_data;
+
+
+
+
+
+
+procedure load_controlled_routing
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_controlled_routing';
+
+   
+   cursor c_stn
+   is
+       select stn.stn_id
+       ,      stn.cache_positions
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/AvailabilityControl/ControlledRouting/Station'
+                        passing cfg.data
+                        columns stn_id          integer path 'StationID/text()'
+                        ,       cache_positions integer path 'CachePositions/text()'
+                      ) stn
+       ;
+
+   
+   
+   cursor c_pve
+   is
+       select case prm.name
+               when 'StorageDuration' then lm_constant.g_con_pve_lbp_eo_storage_time
+               when 'TaskTimeLimit'   then lm_constant.g_con_pve_lbp_eo_timelimit
+               when 'ReleasePriority' then lm_constant.g_con_pve_lbp_eo_release_prio
+               when 'TimeToSTD'       then lm_constant.g_con_pve_lbp_eo_time_to_std
+              end name
+       ,      case prm.value when 0 then null else prm.value end value
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/AvailabilityControl/ControlledRouting/ReleasePrioritySequence/*'
+                        passing cfg.data
+                        columns name  varchar2(30) path 'local-name()'
+                        ,       value integer      path 'text()'
+                      ) prm
+      ;
+   
+   
+   cursor c_pst
+   is
+   select pst.*
+   from   lm_parameter_sets pst
+   where  pst.active = lm_constant.g_con_yesno_yes;
+   
+   type nt_stations is table of c_stn%rowtype;
+
+   l_nt_stn                            nt_stations;
+   l_rt_pst                            lm_parameter_sets%rowtype;
+   l_rt_prr                            lm_parameters%rowtype;
+   l_rt_pve                            lm_parameter_values%rowtype;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_#pve                              integer := 0;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   open c_stn;
+   fetch c_stn bulk collect into l_nt_stn;
+   close c_stn;
+   
+   for idx_stn in 1..l_nt_stn.count
+   loop
+      lm_config.check_station(i_stn_id => l_nt_stn(idx_stn).stn_id);
+   end loop;
+   
+   forall idx in 1 .. l_nt_stn.count
+      update lm_stations
+      set    cache_positions = l_nt_stn(idx).cache_positions
+      where  id              = l_nt_stn(idx).stn_id
+      ;
+   
+   
+   
+   
+   
+   
+   open c_pst;
+   fetch c_pst into l_rt_pst;
+   close c_pst;
+   if l_rt_pst.id is null
+   then
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_configuration
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   => 'No active parameter set present. Define one in the project configuration.'
+         );
+   end if;
+      
+   for rec_pve in c_pve
+   loop
+      
+      if lm_prr_tapi_pck.prr_select_row_uk1( i_prr_name => rec_pve.name
+                                           , o_rt_prr   => l_rt_prr
+                                           )
+      then
+         l_rt_pve.id          := l_rt_prr.id;
+         l_rt_pve.prr_id      := l_rt_prr.id;
+         l_rt_pve.pve_comment := l_rt_prr.description;
+         l_rt_pve.pst_id      := l_rt_pst.id;
+         l_rt_pve.value       := rec_pve.value;
+         lm_pve_tapi_pck.pve_insert_row( io_rt_pve => l_rt_pve);
+         l_#pve := l_#pve + 1;
+      end if;
+   end loop;
+   
+   lm_config.log_processing_time( i_message_name    => 'ControlledRouting '
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Updated: '||l_nt_stn.count||' lm_stations (cache positions)'
+                                                    ||' and created '||l_#pve||' lm_parameter_values'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_stn%isopen
+      then
+         close c_stn;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_controlled_routing;
+
+
+
+
+
+
+procedure load_station_proximity
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_station_proximity';
+
+   
+   cursor c_spy
+   is
+      select spy.station_id
+      ,      lm_config.translate_truefalse(spy.ind_restr_logoff)
+      ,      rst.routesegment_id
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/AvailabilityControl/StationProximity/Station'
+                       passing cfg.data
+                       columns station_id        integer       path 'StationID/text()'
+                       ,       ind_restr_logoff  varchar2(5)   path 'IndRestrictToLogoffRequest/text()'
+                       ,       routesegments_xml xmltype       path 'RouteSegments'
+                     ) spy
+      ,      xmltable( 'RouteSegments/RouteSegmentID'
+                       passing spy.routesegments_xml
+                       columns routesegment_id integer path '/text()'
+                     ) rst
+      ;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_nt_stn                            nt_id_coll;
+   l_nt_rst                            nt_id_coll;
+   l_nt_ind_logoff                     nt_vc2_coll;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_spy;
+   fetch c_spy
+   bulk collect into l_nt_stn, l_nt_ind_logoff, l_nt_rst;
+   close c_spy;
+
+   
+   for rec_stn in (select distinct column_value
+                   from   table(l_nt_stn)
+                  )
+   loop
+     lm_config.check_station(i_stn_id => rec_stn.column_value);
+   end loop;
+
+   for rec_rst in (select distinct column_value
+                   from   table(l_nt_rst)
+                  )
+   loop
+      lm_config.check_route_segment(i_rst_id => rec_rst.column_value);
+   end loop;
+
+   forall idx in 1 .. l_nt_stn.count
+      insert
+      into   lm_station_proximities
+      (      stn_id
+      ,      ind_restrict_to_logoff_req
+      ,      rst_id
+      ) values
+      (      l_nt_stn(idx)
+      ,      l_nt_ind_logoff(idx)
+      ,      l_nt_rst(idx)
+      );
+   
+   lm_config.log_processing_time( i_message_name    => 'StationProximities'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_stn.count||' lm_station_proximities'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_spy%isopen
+      then
+         close c_spy;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_station_proximity;
+
+
+
+
+
+
+
+procedure load_operator_availability
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_operator_availability';
+
+   
+   cursor c_ste
+   is
+       select ste.station_type
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/AvailabilityControl/IgnoreOperatorAvailability/StationType'
+                        passing cfg.data
+                        columns station_type varchar2(100) path 'text()'
+                      ) ste
+       ;
+
+   l_rt_ste                            lm_station_types%rowtype;
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_#ste                              integer := 0;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   
+   for rec_ste in c_ste
+   loop
+      
+      l_rt_ste := lm_config.check_station_type( i_ste_name => rec_ste.station_type);
+      if l_rt_ste.id is not null
+      then
+         
+         
+         
+
+         
+         l_rt_ste.ind_use_oper_state_for_avlblty := lm_constant.g_con_yesno_no;
+         
+         l_#ste := l_#ste + lm_ste_tapi_pck.ste_update_row( i_ste_id  => l_rt_ste.id
+                                                          , io_rt_ste => l_rt_ste
+                                                          );
+      end if;
+   end loop;
+  
+   lm_config.log_processing_time( i_message_name    => 'IgnoreOperatorAvailability'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Updated: '||l_#ste||' lm_station_types'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_operator_availability;
+
+
+
+
+
+
+
+procedure load_ind_use_unavailable_stns
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_ind_use_unavailable_stns';
+
+   
+   cursor c_pve
+   is
+       select lm_config.translate_truefalse(prm.value) value
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/AvailabilityControl/UseUnavailableStations'
+                        passing cfg.data
+                        columns value varchar2(5)  path 'text()'
+                      ) prm
+      ;
+   
+   
+   cursor c_pst
+   is
+   select pst.*
+   from   lm_parameter_sets pst
+   where  pst.active = lm_constant.g_con_yesno_yes;
+   
+   l_rt_pst                            lm_parameter_sets%rowtype;
+   l_rt_prr                            lm_parameters%rowtype;
+   l_rt_pve                            lm_parameter_values%rowtype;
+   rec_pve                             c_pve%rowtype;
+   
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_#pve                              integer := 0;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   
+   
+   
+   
+   open c_pst;
+   fetch c_pst into l_rt_pst;
+   close c_pst;
+   if l_rt_pst.id is null
+   then
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_configuration
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   => 'No active parameter set present. Define one in the project configuration.'
+         );
+   end if;
+      
+   open c_pve;
+   fetch c_pve into rec_pve; 
+   if c_pve%notfound
+   then
+      
+      rec_pve.value := lm_constant.g_con_yesno_no;
+   end if;
+   close c_pve;
+   
+   
+   if lm_prr_tapi_pck.prr_select_row_uk1( i_prr_name => lm_constant.g_con_pve_ind_use_unavail_stns
+                                        , o_rt_prr   => l_rt_prr
+                                        )
+   then
+      l_rt_pve.id          := l_rt_prr.id;
+      l_rt_pve.prr_id      := l_rt_prr.id;
+      l_rt_pve.pve_comment := l_rt_prr.description;
+      l_rt_pve.pst_id      := l_rt_pst.id;
+      l_rt_pve.value       := rec_pve.value;
+      lm_pve_tapi_pck.pve_insert_row( io_rt_pve => l_rt_pve);
+      l_#pve := l_#pve + 1;
+   end if;
+   
+   lm_config.log_processing_time( i_message_name    => 'UseUnavailableStations '
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created '||l_#pve||' lm_parameter_values'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_pve%isopen
+      then
+         close c_pve;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_ind_use_unavailable_stns;
+
+
+
+
+
+
+
+procedure load_store_control
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_store_control';
+
+   
+   cursor c_stn
+   is
+       select stn.stn_id
+       ,      stn.prim_fill_rate_1
+       ,      lm_config.duration_to_dsinterval(stn.prim_duration_1) prim_duration_1
+       ,      stn.prim_fill_rate_2
+       ,      lm_config.duration_to_dsinterval(stn.prim_duration_2) prim_duration_2
+       ,      stn.alt_fill_rate_1
+       ,      lm_config.duration_to_dsinterval(stn.alt_duration_1) alt_duration_1
+       ,      stn.alt_fill_rate_2
+       ,      lm_config.duration_to_dsinterval(stn.alt_duration_2) alt_duration_2
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/StoreControl/StoreStation'
+                        passing cfg.data
+                        columns stn_id             number        path 'StationID/text()'
+                        ,       prim_fill_rate_1   number        path 'HighestOrderBalanceThresholds/FirstPoint/FillRateThreshold/text()'
+                        ,       prim_duration_1    varchar2(100) path 'HighestOrderBalanceThresholds/FirstPoint/RemainingStorageDurationThreshold/text()'
+                        ,       prim_fill_rate_2   number        path 'HighestOrderBalanceThresholds/SecondPoint/FillRateThreshold/text()'
+                        ,       prim_duration_2    varchar2(100) path 'HighestOrderBalanceThresholds/SecondPoint/RemainingStorageDurationThreshold/text()'
+                        ,       alt_fill_rate_1    number        path 'OtherBalanceThresholds/FirstPoint/FillRateThreshold/text()'
+                        ,       alt_duration_1     varchar2(100) path 'OtherBalanceThresholds/FirstPoint/RemainingStorageDurationThreshold/text()'
+                        ,       alt_fill_rate_2    number        path 'OtherBalanceThresholds/SecondPoint/FillRateThreshold/text()'
+                        ,       alt_duration_2     varchar2(100) path 'OtherBalanceThresholds/SecondPoint/RemainingStorageDurationThreshold/text()'
+                      ) stn
+      ;
+   
+   type nt_stations is table of c_stn%rowtype;
+
+   l_nt_stn                            nt_stations;
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   open c_stn;
+   fetch c_stn bulk collect into l_nt_stn;
+   close c_stn;
+   
+   for idx_stn in 1..l_nt_stn.count
+   loop
+      lm_config.check_station(i_stn_id => l_nt_stn(idx_stn).stn_id);
+   end loop;
+   
+   forall idx in 1 .. l_nt_stn.count
+      update lm_stations
+      set    store_control_prim_fill_rate_1 = l_nt_stn(idx).prim_fill_rate_1
+      ,      store_control_prim_duration_1  = l_nt_stn(idx).prim_duration_1
+      ,      store_control_prim_fill_rate_2 = l_nt_stn(idx).prim_fill_rate_2
+      ,      store_control_prim_duration_2  = l_nt_stn(idx).prim_duration_2
+      ,      store_control_alt_fill_rate_1  = l_nt_stn(idx).alt_fill_rate_1
+      ,      store_control_alt_duration_1   = l_nt_stn(idx).alt_duration_1
+      ,      store_control_alt_fill_rate_2  = l_nt_stn(idx).alt_fill_rate_2
+      ,      store_control_alt_duration_2   = l_nt_stn(idx).alt_duration_2
+      where  id = l_nt_stn(idx).stn_id
+      ;
+   
+   lm_config.log_processing_time( i_message_name    => 'Store Control '
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Updated: '||l_nt_stn.count||' lm_stations (store_control)'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_stn%isopen
+      then
+         close c_stn;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_store_control;
+
+end lm_cfg_availability_control;
+/

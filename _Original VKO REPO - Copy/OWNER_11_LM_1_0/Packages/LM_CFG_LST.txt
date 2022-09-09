@@ -1,0 +1,144 @@
+create or replace PACKAGE lm_cfg_lst
+IS
+g_con_package        CONSTANT VARCHAR2( 30 ) := 'LM_CFG_LST';
+
+PROCEDURE load_logical_segment_data;
+
+END lm_cfg_lst;
+/
+
+
+
+
+package body lm_cfg_lst is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure load_logical_segment_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_logical_segment_data';
+
+   l_rt_lst       lm_logical_segments%rowtype;
+   l_rt_tst       lm_technical_segments%rowtype;
+   l_rt_sct       lm_system_components%rowtype;
+   l_area_id_cust number;
+   l_start_time   timestamp := lm_common.default_timestamp;
+   l_#lst         integer;
+
+   
+   
+   cursor c_status_segments
+   is
+      select lst_id
+      ,      lst_description
+      ,      cast( multiset( select area_id
+                             from   xmltable( '/area'
+                                              passing status_segment.area_xml
+                                              columns area_id number (30) path '@id'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_area
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable ( '/project_definition/status_segments/status_segment'
+                        passing pd.data
+                        columns area_xml        xmltype       path '/status_segment/area'
+                        ,       lst_id          number        path '@id'
+                        ,       lst_description varchar2(240) path '@description'    
+                      ) status_segment
+      where  exists
+             (
+             select status_segment_id
+             from   cmn_v_sysconfig_data pd
+             ,      xmltable ( '/project_definition/route_segments/route_segment[@ind_physical="TRUE"]'
+                               passing pd.data
+                               columns status_segment_id number path '@status_segment_id'
+                             )
+             where  status_segment_id = status_segment.lst_id
+             )
+      ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_status_segments in c_status_segments
+   loop
+   	
+      
+      l_rt_lst.id          := l_rec_status_segments.lst_id;
+      l_rt_lst.id_cust     := l_rec_status_segments.lst_id;
+      l_rt_lst.description := l_rec_status_segments.lst_description;
+      lm_lst_tapi_pck.lst_insert_row( io_rt_lst => l_rt_lst );
+      
+      
+      if l_rec_status_segments.nt_area.count > 0
+      then
+   
+         
+         for i in l_rec_status_segments.nt_area.first..l_rec_status_segments.nt_area.last
+         loop
+
+            
+            l_area_id_cust := l_rec_status_segments.nt_area(i);
+            if not lm_sct_tapi_pck.sct_select_row_uk1( i_sct_sct_type            => lm_constant.g_con_sct_type_ara
+                                                     , i_sct_id_cust             => l_area_id_cust
+                                                     , i_sct_sct_id_section_zone => null
+                                                     , i_sct_sct_id_zone_area    => null
+                                                     , o_rt_sct                  => l_rt_sct
+                                                     )
+            then
+               viu_info.raise_info
+                 ( i_ifo_nr            => viu_constant.c_ifo_configuration
+                 , i_calling_procedure => l_con_proc_name
+                 , i_severity          => viu_info.c_severity_error
+                 , i_additional_data   =>    'For status_segment '                        || l_rec_status_segments.lst_id
+                                          || ', no area SYSTEM COMPONENT found for area: '|| l_area_id_cust
+                 );
+            else
+      
+               
+               l_rt_tst.id          := (l_rt_lst.id * lm_constant.g_con_cfg_tst_factor) + l_area_id_cust;
+               l_rt_tst.id_cust     := l_rt_tst.id;
+               l_rt_tst.sct_id      := l_rt_sct.id;
+               l_rt_tst.lst_id      := l_rt_lst.id;
+               l_rt_tst.description := 'Area ' || l_area_id_cust || '; Segment ' || l_rt_lst.id;
+               lm_tst_tapi_pck.tst_insert_row( io_rt_tst => l_rt_tst );
+   
+            end if;
+         end loop;
+      end if;
+   end loop;
+
+   
+   select count(*)
+   into   l_#lst
+   from   lm_logical_segments
+   ;
+   lm_config.log_processing_time( i_message_name    => 'status_segments'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#lst||' lm_logical_segments'
+                                );
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_logical_segment_data;
+
+end lm_cfg_lst;
+/

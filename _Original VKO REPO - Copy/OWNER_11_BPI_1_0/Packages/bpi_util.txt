@@ -1,0 +1,449 @@
+create or replace PACKAGE bpi_util
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'bpi_util';
+   
+   SUBTYPE t_isc_format IS BINARY_INTEGER RANGE 0..2;
+   g_format_as_2dots CONSTANT t_isc_format := 0;
+   g_format_as_3dots CONSTANT t_isc_format := 1;
+   g_format_as_area_zone CONSTANT t_isc_format := 2;
+   
+   FUNCTION Format_as_2dots
+      RETURN INTEGER DETERMINISTIC;
+
+   FUNCTION Format_as_3dots
+      RETURN INTEGER DETERMINISTIC;
+ 
+   FUNCTION Format_as_area_zone
+      RETURN INTEGER DETERMINISTIC;
+     
+   FUNCTION string_to_number( i_string IN VARCHAR2 )
+      RETURN NUMBER DETERMINISTIC;
+
+   FUNCTION convert_eventtime( i_eventtime       IN VARCHAR2
+                             , i_default_eventts IN TIMESTAMP
+                             )
+      RETURN TIMESTAMP DETERMINISTIC;
+
+   FUNCTION vc2( i_iv  INTERVAL DAY TO SECOND
+               , i_fmt VARCHAR2 := 'FM999999.000000'
+               )
+      RETURN VARCHAR2 DETERMINISTIC;
+
+   FUNCTION isc_id( i_areaid      IN VARCHAR2
+                  , i_zoneid      IN VARCHAR2
+                  , i_equipmentid IN VARCHAR2
+                  , i_isc_format IN t_isc_format DEFAULT BPI_UTIL.g_format_as_3dots
+                  )
+      RETURN VARCHAR2 DETERMINISTIC;
+
+   FUNCTION convert_isc_id( i_isc_id     IN VARCHAR2
+                          , i_isc_format IN t_isc_format DEFAULT BPI_UTIL.g_format_as_3dots)
+	  RETURN VARCHAR2 DETERMINISTIC;
+    
+   -- Required parameter type to prevent ORA-01873: the leading precision of the interval is too small
+   SUBTYPE t_ds_interval IS INTERVAL DAY(9) To SECOND(9);
+   PROCEDURE get_parameter_value( i_name    IN  cmn_parameters.name%TYPE
+                                , i_default IN  NUMBER
+                                , i_unit    IN  VARCHAR2
+                                , o_value   OUT t_ds_interval
+                                );
+
+   PROCEDURE get_parameter_value( i_name    IN  cmn_parameters.name%TYPE
+                                , i_default IN  NUMBER
+                                , o_value   OUT NUMBER
+                                );
+    -- Add get_end_user_id function from old Patch	
+	FUNCTION get_end_user_id (i_destination_id IN dim_node_area_zone_equipment.destination_id%TYPE)
+		RETURN VARCHAR2;
+		
+	FUNCTION get_detail_error_code (i_detail_error_code IN  dim_detail_error_code.code%TYPE)
+      RETURN VARCHAR2;
+      
+   FUNCTION viu_info_lookup( i_proc_name       IN VARCHAR2
+                            ,i_exception_info  IN VARCHAR2
+                            )
+      RETURN NUMBER;
+
+    FUNCTION ByteNumberValuePair2MISAddress(p_ByteNumber  IN VARCHAR2
+                                            ,p_Value       IN VARCHAR2
+                                            )
+       RETURN VARCHAR2;
+
+END bpi_util;
+/
+
+
+Unwrap It!
+Unwrap More Code
+
+package body bpi_util
+is
+	c_default_element_value constant varchar2(3) := '000';
+   
+  
+   function string_to_number( i_string in varchar2)
+      return number deterministic
+   is
+   begin
+      if trim(i_string) is null
+      then
+         return null;
+      else
+         return to_number(i_string);
+      end if;
+   exception
+      when others then
+         return 0;
+   end;
+   
+   
+   function convert_eventtime( i_eventtime       in varchar2
+                             , i_default_eventts in timestamp
+                             )
+      return timestamp deterministic
+   is
+      l_eventtime varchar2(50) := i_eventtime;
+      l_eventts   timestamp with time zone;
+   begin
+      begin
+         l_eventts := to_timestamp_tz(l_eventtime, 'YYYY-MM-DD"T"HH24:MI:SS.FF"Z"');
+      exception when others then
+         begin
+            
+            l_eventts := sys_extract_utc(to_timestamp_tz(l_eventtime, 'YYYY-MM-DD"T"HH24:MI:SS.FF"Z"'));
+         exception when others then
+            begin
+               
+               l_eventtime := replace(l_eventtime, 'T', ' ');
+               l_eventtime := replace(l_eventtime, 'Z', '');
+               l_eventts := to_timestamp(l_eventtime, 'YYYY-MM-DD HH24:MI:SS.FF');
+            exception when others then
+               
+               l_eventts := i_default_eventts;
+            end;
+         end;
+      end;
+   
+      return l_eventts;
+   end;
+   
+   
+   function vc2( i_iv  interval day to second
+               , i_fmt varchar2 := 'FM999999.000000'
+               )
+      return varchar2 deterministic
+   is
+   begin
+      return to_char(  extract( second from i_iv )
+                     + 60 * (  extract( minute from i_iv )
+                             + 60 * (  extract( hour from i_iv )
+                                     + 24 * extract( day from i_iv )
+                                    )
+                            )
+                    , i_fmt
+                    );
+   end;
+   
+   function format_as_2dots
+      return integer deterministic
+   is
+   begin
+      return bpi_util.g_format_as_2dots;
+   end format_as_2dots;
+   
+   function format_as_3dots
+      return integer deterministic
+   is
+   begin
+      return bpi_util.g_format_as_3dots;
+   end format_as_3dots;
+   
+   
+   function format_as_area_zone
+      return integer deterministic
+   is
+   begin
+      return bpi_util.g_format_as_area_zone;
+   end format_as_area_zone;
+   
+   
+
+
+
+   function isc_id( i_areaid       in varchar2
+                  , i_zoneid       in varchar2
+                  , i_equipmentid  in varchar2
+                  , i_isc_format in t_isc_format default bpi_util.g_format_as_3dots
+                  )
+      return varchar2 deterministic
+   is
+      l_areaid      varchar2(10);
+      l_zoneid      varchar2(10);
+      l_equipmentid varchar2(10);
+   begin
+      
+      if    i_areaid is null
+         or i_zoneid is null
+      then
+         return null;
+      end if;
+       
+      begin
+         l_areaid := to_char( to_number(i_areaid), 'FM90000');
+         l_zoneid := to_char( to_number(i_zoneid), 'FM900');
+         if i_equipmentid is null
+         then
+            l_equipmentid := '';
+         else
+            l_equipmentid := to_char( to_number(i_equipmentid), 'FM9900');
+         end if;
+      exception
+         when  value_error then
+            return '-';
+      end;
+      
+      return case i_isc_format
+               when bpi_util.format_as_2dots
+                  then l_areaid||'.'||l_zoneid||'.'||l_equipmentid
+               when bpi_util.format_as_area_zone
+                  then l_areaid || '.' || l_zoneid
+               else l_areaid||'.'||l_zoneid||'.'||l_equipmentid || '.' || c_default_element_value
+             end;
+   end isc_id;
+   
+   
+
+
+   function convert_isc_id( i_isc_id      in varchar2
+                          , i_isc_format in t_isc_format default bpi_util.g_format_as_3dots)
+   	return varchar2 deterministic
+   is
+   	l_pos_dot3	integer;
+       l_isc_id    varchar2(30);
+   begin
+       l_isc_id := i_isc_id;
+   	l_pos_dot3 := instr(i_isc_id, '.', 1,3 );
+       if l_pos_dot3 > 0
+       then
+         
+         l_isc_id := substr(i_isc_id, 1, l_pos_dot3 - 1 );
+       end if;
+       
+   	return case
+                when i_isc_id is null
+                  then null
+                when i_isc_format = bpi_util.g_format_as_2dots
+                  then l_isc_id
+                else l_isc_id || '.' || c_default_element_value
+              end;
+   end convert_isc_id;
+   
+   procedure get_parameter_value( i_name    in  cmn_parameters.name%type
+                                , i_default in  number
+                                , i_unit    in  varchar2
+                                , o_value   out t_ds_interval
+                                )
+   is
+      l_con_proc constant varchar2(61) := g_con_package||'.get_parameter_value';
+   
+      l_parm     cmn_parameter_values.value%type;
+   begin
+      l_parm :=   cmn_common.get_parameter_value(i_name);
+      o_value :=  numtodsinterval(to_number(l_parm), i_unit);
+   exception
+      when others then
+         bpi_log.notify( i_con_proc  => l_con_proc
+                       , i_data      => 'Parameter '||i_name||' is incorrect. Reverting to default value of '
+                                                    ||to_char(i_default)||' '
+                                                    ||lower(i_unit)||case when i_default<>1 then 's' end
+                                                    ||'.'
+                                                    ||sqlerrm
+                       , i_info      => l_parm
+                       );
+         o_value := numtodsinterval(i_default, i_unit);
+   end;
+   
+   
+   procedure get_parameter_value( i_name    in  cmn_parameters.name%type
+                                , i_default in  number
+                                , o_value   out number
+                                )
+   is
+      l_con_proc constant varchar2(61) := g_con_package||'.get_parameter_value';
+   
+      l_parm     cmn_parameter_values.value%type;
+   begin
+      l_parm :=   cmn_common.get_parameter_value(i_name);
+      o_value :=  to_number(l_parm);
+   exception
+      when others then
+         bpi_log.notify( i_con_proc  => l_con_proc
+                       , i_data      => 'Parameter '||i_name||' is incorrect. Reverting to default value of '
+                                                    ||to_char(i_default)||'.'
+                                                    ||sqlerrm
+                       , i_info      => l_parm
+                       );
+         o_value := i_default;
+   end;
+
+
+function get_end_user_id (i_destination_id in dim_node_area_zone_equipment.destination_id%type)
+	return varchar2
+is
+      l_con_func_name constant cmn_constant.st_proc_name := 'get_end_user_id';
+
+      cursor c_getenduserid( c_destination_id in dim_node_area_zone_equipment.destination_id%type)
+      is
+         select end_user_id
+         from   dim_node_area_zone_equipment naze
+         where  naze.station_id = c_destination_id;
+      l_found                  boolean;
+      o_end_user_id dim_node_area_zone_equipment.end_user_id%type;
+   begin
+      open c_getenduserid( c_destination_id => i_destination_id);
+      fetch c_getenduserid into o_end_user_id;
+      l_found := c_getenduserid%found;
+      close c_getenduserid;
+      
+      if l_found then
+        return o_end_user_id;
+      else
+        return to_char(i_destination_id);
+      end if;
+   exception
+      when others
+      then
+         if c_getenduserid%isopen
+         then
+            close c_getenduserid;
+         end if;
+	
+         viu_info.raise_info( i_calling_procedure => l_con_func_name );
+end get_end_user_id;
+
+function get_detail_error_code (i_detail_error_code in  dim_detail_error_code.code%type)
+return varchar2
+is
+      l_con_func_name constant cmn_constant.st_proc_name := 'get_detail_error_code';
+      cursor c_get_detail_error_value(c_detail_error_code in  dim_detail_error_code.code%type)
+      is
+         select value
+         from   dim_detail_error_code d
+         where  d.code = c_detail_error_code;
+      l_found                  boolean;
+      o_detail_error_value dim_detail_error_code.value%type;
+   begin
+      open c_get_detail_error_value( c_detail_error_code => i_detail_error_code);
+      fetch c_get_detail_error_value into o_detail_error_value;
+      l_found := c_get_detail_error_value%found;
+      close c_get_detail_error_value;
+      
+      if l_found then
+        return o_detail_error_value;
+      else
+        return i_detail_error_code;
+      end if;
+   exception
+      when others
+      then
+         if c_get_detail_error_value%isopen
+         then
+            close c_get_detail_error_value;
+         end if;
+	
+         viu_info.raise_info( i_calling_procedure => l_con_func_name );
+end get_detail_error_code;
+
+function viu_info_lookup( i_proc_name       in varchar2
+                         ,i_exception_info  in varchar2
+                         )
+return
+   number
+is
+   l_con_proc   constant varchar2(61) := g_con_package||'.viu_info_lookup';
+   l_err_found  number(1) := 0;
+   pragma autonomous_transaction;
+begin
+
+   select 1
+   into   l_err_found
+   from   bpi_viu_info_lookup vil
+   where  vil.proc_name      = i_proc_name
+   and    vil.exception_info = i_exception_info;
+
+   return l_err_found;
+exception
+   when no_data_found then
+      begin
+        insert into bpi_viu_info_lookup
+         ( insertts
+         , proc_name
+         , exception_info)
+         values
+         ( sys_extract_utc(systimestamp)
+         , i_proc_name
+         , i_exception_info);
+         commit;
+      exception
+         when others then
+            viu_info.operator_info ( i_ifo_nr            => viu_constant.c_ifo_bpiexceptioninsert
+                                   , i_calling_procedure => l_con_proc
+                                   , i_severity          => viu_info.c_severity_warning
+                                   , i_additional_data   => l_con_proc||' ERROR on INSERT: '||i_exception_info||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                   );
+      end;
+      return 0;
+   when others then
+      return 0;
+end viu_info_lookup;
+
+function bytenumbervaluepair2misaddress
+(p_bytenumber  in varchar2
+,p_value       in varchar2
+)
+return
+   varchar2
+is
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   l_con_proc   constant varchar2(61) := g_con_package||'.ByteNumberValuePair2MISAddress';
+   
+   l_result               varchar2(20);
+begin
+
+   if p_bytenumber is null
+   or p_value      is null
+   then
+      l_result := null;
+   else
+      
+      if not regexp_like(p_bytenumber, '^[[:digit:]]+$')
+      or not regexp_like(p_value, '^[[:digit:]]+$')
+      then
+         l_result := null;
+      else
+         
+         if to_number(p_value) not in (1,2,4,8,16,32,64,128)
+         then
+            l_result := null;
+         else
+            
+            
+            l_result := p_bytenumber ||'.'||  to_char(round(log(2, to_number(p_value))));
+         end if;
+      end if;
+   end if;
+   
+   return l_result;
+end bytenumbervaluepair2misaddress;
+
+
+end bpi_util;
+/

@@ -1,0 +1,832 @@
+create or replace PACKAGE lm_cfg_congestion_control
+IS
+   g_con_package       CONSTANT lm_constant.st_proc_name := 'LM_CFG_CONGESTION_CONTROL';
+
+   PROCEDURE load_dynamic_capacity;
+   PROCEDURE load_dynamic_recirculation;
+   PROCEDURE load_flow_balancing;
+
+   FUNCTION get_load_groups
+   RETURN nt_load_groups;
+   PROCEDURE upd_load_groups
+   ( i_operator_id    IN VARCHAR2
+   , i_ip_address     IN VARCHAR2
+   , i_nt_load_groups IN nt_load_groups
+   );
+END lm_cfg_congestion_control;
+/
+
+
+
+
+package body lm_cfg_congestion_control is
+
+
+
+
+
+
+
+   
+   type nt_sgr is table of lm_segment_group_members%rowtype;
+
+
+
+
+
+
+procedure load_dynamic_capacity
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_dynamic_capacity';
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   cursor c_cap
+   is
+      select cap.group_id
+      ,      cap.name
+      ,      cap.description
+      ,      cast( multiset( select lst_id
+                             from   xmltable( 'StatusSegmentID'
+                                              passing cap.status_segments_xml
+                                              columns lst_id integer path 'text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_lst
+      ,      cast( multiset( select rule.id
+                             ,      rule.level_deactivate
+                             ,      rule.level_activate
+                             ,      cast ( multiset( select isc.isc_id
+                                                     ,      isc.capacity
+                                                     from   xmltable( 'Equipment'
+                                                                      passing rule.equipment_xml
+                                                                      columns isc_id      varchar2(30) path 'ISCID/text()'
+                                                                      ,       capacity    number       path 'Capacity/text()'
+                                                                    ) isc
+                                                    ) as nt_cap_equipments
+                                         ) nt_equipment
+                             from   xmltable( 'CapacityRule'
+                                              passing cap.capacity_rules_xml
+                                              columns id                 number(20)    path 'ID/text()'
+                                              ,       level_deactivate   number        path 'DeactivationLevel/text()'
+                                              ,       level_activate     number        path 'ActivationLevel/text()'
+                                              ,       equipment_xml      xmltype       path 'Equipment'
+                                            ) rule
+                           ) as nt_capacity_rules
+                 ) nt_rules
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/CongestionControl/DynamicCapacity/CapacityGroup'
+                       passing cfg.data
+                       columns group_id            integer       path 'ID/text()'
+                       ,       name                varchar2(100) path 'Name/text()'
+                       ,       description         varchar2(240) path 'Description/text()'
+                       ,       status_segments_xml xmltype       path 'StatusSegmentID'
+                       ,       capacity_rules_xml  xmltype       path 'CapacityRule'
+                     ) cap
+      ;
+
+   type nt_capacity_groups is table of c_cap%rowtype;
+   type nt_cre             is table of lm_capacity_rules%rowtype;
+   type nt_cir             is table of lm_capacity_influence_rules%rowtype;
+
+   l_nt_capacity_groups                nt_capacity_groups;
+   l_nt_sgr                            nt_sgr := nt_sgr();
+   l_nt_cre                            nt_cre := nt_cre();
+   l_nt_cir                            nt_cir := nt_cir();
+   l_rt_cap                            rt_cap_equipment;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_sgr_id_last                       lm_segment_group_members.id%type;
+   l_idx_sgr                           binary_integer;
+   l_idx_cre                           binary_integer;
+   l_idx_cir                           binary_integer;
+
+   l_rt_cst                            lm_capacity_sets%rowtype;
+   l_rt_sct                            lm_system_components%rowtype;
+   
+      
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   select nvl(max(id), 0)
+   into   l_sgr_id_last
+   from   lm_segment_group_members;
+    
+   
+   l_rt_cst.id                      := 1; 
+   l_rt_cst.name                    := 'Factory default';
+   l_rt_cst.description             := 'Factory default capacity set';
+   l_rt_cst.ind_factory_default_set := lm_constant.g_con_yesno_yes;
+   l_rt_cst.active                  := lm_constant.g_con_yesno_yes;
+   lm_cst_tapi_pck.cst_insert_row(io_rt_cst => l_rt_cst);
+
+   open c_cap;
+   fetch c_cap bulk collect into l_nt_capacity_groups;
+   close c_cap;
+
+   
+   
+   for idx_cgp in 1 .. l_nt_capacity_groups.count
+   loop
+
+      l_idx_sgr := l_nt_sgr.count;
+      l_nt_sgr.extend(l_nt_capacity_groups(idx_cgp).nt_lst.count);
+      for idx_sgr in 1 .. l_nt_capacity_groups(idx_cgp).nt_lst.count
+      loop
+         
+         lm_config.check_logical_segment( i_lst_id => l_nt_capacity_groups(idx_cgp).nt_lst(idx_sgr));
+         
+         l_nt_sgr(l_idx_sgr + idx_sgr).id := l_sgr_id_last 
+                                           + l_idx_sgr     
+                                           + idx_sgr;
+         l_nt_sgr(l_idx_sgr + idx_sgr).cgp_id   := l_nt_capacity_groups(idx_cgp).group_id;
+         l_nt_sgr(l_idx_sgr + idx_sgr).lst_id   := l_nt_capacity_groups(idx_cgp).nt_lst(idx_sgr);
+      end loop;
+
+      l_idx_cre := l_nt_cre.count;
+      l_nt_cre.extend(l_nt_capacity_groups(idx_cgp).nt_rules.count);
+      for idx_cre in 1 .. l_nt_capacity_groups(idx_cgp).nt_rules.count
+      loop
+         
+         l_nt_cre(l_idx_cre + idx_cre).id               := l_nt_capacity_groups(idx_cgp).nt_rules(idx_cre).id;
+         l_nt_cre(l_idx_cre + idx_cre).cgp_id           := l_nt_capacity_groups(idx_cgp).group_id;
+         l_nt_cre(l_idx_cre + idx_cre).cst_id           := l_rt_cst.id;
+         l_nt_cre(l_idx_cre + idx_cre).level_activate   := l_nt_capacity_groups(idx_cgp).nt_rules(idx_cre).level_activate;
+         l_nt_cre(l_idx_cre + idx_cre).level_deactivate := l_nt_capacity_groups(idx_cgp).nt_rules(idx_cre).level_deactivate;
+         l_nt_cre(l_idx_cre + idx_cre).description      := null; 
+         
+         l_idx_cir := l_nt_cir.count;
+         l_nt_cir.extend(l_nt_capacity_groups(idx_cgp).nt_rules(idx_cre).nt_cap_equipment.count);
+         
+         for idx_cir in 1 .. l_nt_capacity_groups(idx_cgp).nt_rules(idx_cre).nt_cap_equipment.count
+         loop
+            
+            l_rt_cap := l_nt_capacity_groups(idx_cgp).nt_rules(idx_cre).nt_cap_equipment(idx_cir);
+            l_nt_cir(l_idx_cir + idx_cir).id          := l_idx_cir     
+                                                       + idx_cir;
+            l_nt_cir(l_idx_cir + idx_cir).cre_id      := l_nt_capacity_groups(idx_cgp).nt_rules(idx_cre).id;
+            l_nt_cir(l_idx_cir + idx_cir).sct_id      := lm_config.check_system_component( i_sct_id_cust_full => l_rt_cap.isc_id);
+            if lm_sct_tapi_pck.sct_select_row( i_sct_id => l_nt_cir(l_idx_cir + idx_cir).sct_id
+                                             , o_rt_sct => l_rt_sct)
+            then
+               if l_rt_sct.sct_type not in (lm_constant.g_con_sct_type_sen, lm_constant.g_con_sct_type_zne)
+               then
+                  viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_configuration
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_error
+                     , i_additional_data   => 'System Component '|| l_rt_cap.isc_id || ' is not a ZONE or SECTION'
+                     );
+               end if;
+            end if;
+            l_nt_cir(l_idx_cir + idx_cir).value       := l_rt_cap.capacity;
+            l_nt_cir(l_idx_cir + idx_cir).description := null; 
+         end loop; 
+      end loop;    
+   end loop;       
+   
+   
+   forall idx in 1 .. l_nt_capacity_groups.count
+      insert
+      into   lm_capacity_groups
+      (      id
+      ,      name
+      ,      description
+      ) values
+      (      l_nt_capacity_groups(idx).group_id
+      ,      l_nt_capacity_groups(idx).name
+      ,      l_nt_capacity_groups(idx).description
+      );
+
+   forall idx in 1 .. l_nt_sgr.count
+      insert
+      into   lm_segment_group_members
+      (      id
+      ,      lst_id
+      ,      cgp_id
+      ) values
+      (      l_nt_sgr(idx).id
+      ,      l_nt_sgr(idx).lst_id
+      ,      l_nt_sgr(idx).cgp_id
+      );
+
+   forall idx in 1 .. l_nt_cre.count
+      insert
+      into   lm_capacity_rules
+      (      id
+      ,      cst_id
+      ,      cgp_id
+      ,      level_activate
+      ,      level_deactivate
+      ,      description
+      ) values
+      (      l_nt_cre(idx).id
+      ,      l_nt_cre(idx).cst_id
+      ,      l_nt_cre(idx).cgp_id
+      ,      l_nt_cre(idx).level_activate
+      ,      l_nt_cre(idx).level_deactivate
+      ,      l_nt_cre(idx).description
+      );
+      
+   forall idx in 1 .. l_nt_cir.count
+      insert
+      into   lm_capacity_influence_rules
+      (      id
+      ,      cre_id
+      ,      sct_id
+      ,      value
+      ,      description
+      ) values
+      (      l_nt_cir(idx).id
+      ,      l_nt_cir(idx).cre_id
+      ,      l_nt_cir(idx).sct_id
+      ,      l_nt_cir(idx).value
+      ,      l_nt_cir(idx).description
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'DynamicCapacity'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: 1 lm_capacity_set'
+                                                    ||', '||l_nt_capacity_groups.count||' lm_capacity_groups'
+                                                    ||', '||l_nt_sgr.count||' lm_segment_group_members'
+                                                    ||', '||l_nt_cre.count||' lm_capacity_rules'
+                                                    ||' and '||l_nt_cir.count||' lm_capacity_influence_rules'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_cap%isopen
+      then
+         close c_cap;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_dynamic_capacity;
+
+
+
+
+
+
+procedure load_dynamic_recirculation
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_dynamic_recirculation';
+
+   
+   
+   
+   
+   
+   
+   cursor c_lgp
+   is
+      select lgp.id
+      ,      lgp.name
+      ,      lgp.description
+      ,      cast( multiset( select lst_id
+                             from   xmltable( 'StatusSegmentID'
+                                              passing lgp.status_segments_xml
+                                              columns lst_id integer path 'text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_lst
+      ,      cast( multiset( select rule.rule_id
+                             ,      rule.recirc_count
+                             ,      rule.lower_load
+                             from   xmltable( 'LoadRule'
+                                              passing lgp.load_rules_xml
+                                              columns rule_id           integer       path 'ID/text()'
+                                              ,       recirc_count      integer       path 'Count/text()'
+                                              ,       lower_load        number(3,2)   path 'LowerThreshold/text()'
+                                            ) rule
+                           ) as nt_load_rules
+                 ) nt_load_rules
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/CongestionControl/DynamicRecirculation/LoadGroup'
+                       passing cfg.data
+                       columns id                   integer       path 'ID/text()'
+                       ,       name                 varchar2(100) path 'Name/text()'
+                       ,       description          varchar2(240) path 'Description/text()'
+                       ,       status_segments_xml  xmltype       path 'StatusSegmentID'
+                       ,       load_rules_xml       xmltype       path 'LoadRule'
+                     ) lgp
+      ;
+      
+   type nt_load_groups is table of c_lgp%rowtype;
+   type nt_lre         is table of lm_load_rules%rowtype;
+
+   l_nt_load_groups                    nt_load_groups;
+   l_nt_sgr                            nt_sgr := nt_sgr();
+   l_nt_lre                            nt_lre := nt_lre();
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_sgr_id_last                       lm_segment_group_members.id%type;
+   l_idx_sgr                           binary_integer;
+   l_idx_lre                           binary_integer;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   select nvl(max(id), 0)
+   into   l_sgr_id_last
+   from   lm_segment_group_members;
+    
+   open c_lgp;
+   fetch c_lgp bulk collect into l_nt_load_groups;
+   close c_lgp;
+
+   
+   
+   for idx_lgp in 1 .. l_nt_load_groups.count
+   loop
+
+      l_idx_sgr := l_nt_sgr.count;
+      l_nt_sgr.extend(l_nt_load_groups(idx_lgp).nt_lst.count);
+      for idx_sgr in 1 .. l_nt_load_groups(idx_lgp).nt_lst.count
+      loop
+         
+         lm_config.check_logical_segment( i_lst_id => l_nt_load_groups(idx_lgp).nt_lst(idx_sgr));
+         
+         l_nt_sgr(l_idx_sgr + idx_sgr).id := l_sgr_id_last 
+                                           + l_idx_sgr     
+                                           + idx_sgr;
+         l_nt_sgr(l_idx_sgr + idx_sgr).lgp_id   := l_nt_load_groups(idx_lgp).id;
+         l_nt_sgr(l_idx_sgr + idx_sgr).lst_id   := l_nt_load_groups(idx_lgp).nt_lst(idx_sgr);
+      end loop;
+
+      l_idx_lre := l_nt_lre.count;
+      l_nt_lre.extend(l_nt_load_groups(idx_lgp).nt_load_rules.count);
+      for idx_lre in 1 .. l_nt_load_groups(idx_lgp).nt_load_rules.count
+      loop
+         
+         l_nt_lre(l_idx_lre + idx_lre).id                  := l_nt_load_groups(idx_lgp).nt_load_rules(idx_lre).rule_id;
+         l_nt_lre(l_idx_lre + idx_lre).lgp_id              := l_nt_load_groups(idx_lgp).id;
+         l_nt_lre(l_idx_lre + idx_lre).lower_load_value    := l_nt_load_groups(idx_lgp).nt_load_rules(idx_lre).lower_load;
+         l_nt_lre(l_idx_lre + idx_lre).recirculation_count := l_nt_load_groups(idx_lgp).nt_load_rules(idx_lre).recirc_count;
+         l_nt_lre(l_idx_lre + idx_lre).description         := l_nt_load_groups(idx_lgp).name;
+         
+      end loop;    
+   end loop;       
+   
+   
+   forall idx in 1 .. l_nt_load_groups.count
+      insert
+      into   lm_load_groups
+      (      id
+      ,      name
+      ,      description
+      ) values
+      (      l_nt_load_groups(idx).id
+      ,      l_nt_load_groups(idx).name
+      ,      l_nt_load_groups(idx).description
+      );
+
+   forall idx in 1 .. l_nt_sgr.count
+      insert
+      into   lm_segment_group_members
+      (      id
+      ,      lst_id
+      ,      lgp_id
+      ) values
+      (      l_nt_sgr(idx).id
+      ,      l_nt_sgr(idx).lst_id
+      ,      l_nt_sgr(idx).lgp_id
+      );
+
+   forall idx in 1 .. l_nt_lre.count
+      insert
+      into   lm_load_rules
+      (      id
+      ,      lgp_id
+      ,      lower_load_value
+      ,      recirculation_count
+      ,      description
+      ) values
+      (      l_nt_lre(idx).id
+      ,      l_nt_lre(idx).lgp_id
+      ,      l_nt_lre(idx).lower_load_value
+      ,      l_nt_lre(idx).recirculation_count
+      ,      l_nt_lre(idx).description
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'DynamicRecirculation'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_load_groups.count||' lm_load_groups'
+                                                    ||', '||l_nt_sgr.count||' lm_segment_group_members'
+                                                    ||' and '||l_nt_lre.count||' lm_load_rules'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_lgp%isopen
+      then
+         close c_lgp;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_dynamic_recirculation;
+
+
+
+
+
+
+procedure load_flow_balancing
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_flow_balancing';
+
+   
+   
+   
+   cursor c_fbp
+   is
+      select fbp.id
+      ,      fbp.name
+      ,      fbp.min_unbalance
+      ,      fbp.travel_time
+      ,      fbp.sort_train_length
+      ,      fbp.min_bagsamount
+      ,      fbp.max_bagsamount
+      ,      fbp.member1_nde_id
+      ,      fbp.member1_name
+      ,      fbp.member1_desc
+      ,      cast( multiset( select lst_id
+                             from   xmltable( 'StatusSegmentID'
+                                              passing fbp.member1_segments_xml
+                                              columns lst_id integer path 'text()'
+                                            )
+                           ) as nt_id_coll
+                 ) member1_nt_lst
+      ,      fbp.member2_nde_id
+      ,      fbp.member2_name
+      ,      fbp.member2_desc
+      ,      cast( multiset( select lst_id
+                             from   xmltable( 'StatusSegmentID'
+                                              passing fbp.member2_segments_xml
+                                              columns lst_id integer path 'text()'
+                                            )
+                           ) as nt_id_coll
+                 ) member2_nt_lst
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/CongestionControl/FlowBalancing/Group'
+                       passing cfg.data
+                       columns id                   integer       path 'ID/text()'
+                       ,       name                 varchar2(100) path 'Name/text()'
+                       ,       min_unbalance        integer       path 'MinimumUnbalance/text()'
+                       ,       travel_time          integer       path 'TravelTime/text()'
+                       ,       sort_train_length    integer       path 'SortTrainLength/text()'
+                       ,       min_bagsamount       integer       path 'MinimumBagAmount/text()'
+                       ,       max_bagsamount       integer       path 'MaximumBagAmount/text()'
+                       ,       member1_nde_id       integer       path 'Member[1]/NodeID/text()'
+                       ,       member1_name         varchar2(100) path 'Member[1]/Name/text()'
+                       ,       member1_desc         varchar2(240) path 'Member[1]/Description/text()'
+                       ,       member1_segments_xml xmltype       path 'Member[1]/StatusSegmentID'
+                       ,       member2_nde_id       integer       path 'Member[2]/NodeID/text()'
+                       ,       member2_name         varchar2(100) path 'Member[2]/Name/text()'
+                       ,       member2_desc         varchar2(240) path 'Member[2]/Description/text()'
+                       ,       member2_segments_xml xmltype       path 'Member[2]/StatusSegmentID'
+                     ) fbp
+      ;
+      
+   type nt_flowbal_groups is table of c_fbp%rowtype;
+   type nt_fgr            is table of lm_flow_balance_group_members%rowtype;
+
+   l_nt_flowbal_groups                 nt_flowbal_groups;
+   l_nt_sgr                            nt_sgr := nt_sgr();
+   l_nt_fgr                            nt_fgr := nt_fgr();
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_sgr_id_last                       lm_segment_group_members.id%type;
+   l_idx_sgr                           binary_integer;
+   l_idx_fgr                           binary_integer;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   select nvl(max(id), 0)
+   into   l_sgr_id_last
+   from   lm_segment_group_members;
+    
+   open c_fbp;
+   fetch c_fbp bulk collect into l_nt_flowbal_groups;
+   close c_fbp;
+
+   
+   
+   for idx_fbp in 1 .. l_nt_flowbal_groups.count
+   loop
+      lm_config.check_node(i_nde_id => l_nt_flowbal_groups(idx_fbp).member1_nde_id);
+      lm_config.check_node(i_nde_id => l_nt_flowbal_groups(idx_fbp).member2_nde_id);
+      
+      l_idx_fgr := l_nt_fgr.count;
+      l_nt_fgr.extend(2);  
+      l_nt_fgr(l_idx_fgr+1).id          := l_nt_flowbal_groups(idx_fbp).member1_nde_id;
+      l_nt_fgr(l_idx_fgr+1).nde_id      := l_nt_flowbal_groups(idx_fbp).member1_nde_id;
+      l_nt_fgr(l_idx_fgr+1).name        := l_nt_flowbal_groups(idx_fbp).member1_name;
+      l_nt_fgr(l_idx_fgr+1).description := l_nt_flowbal_groups(idx_fbp).member1_desc;
+      l_nt_fgr(l_idx_fgr+1).fbp_id      := l_nt_flowbal_groups(idx_fbp).id;
+
+      l_nt_fgr(l_idx_fgr+2).id          := l_nt_flowbal_groups(idx_fbp).member2_nde_id;
+      l_nt_fgr(l_idx_fgr+2).nde_id      := l_nt_flowbal_groups(idx_fbp).member2_nde_id;
+      l_nt_fgr(l_idx_fgr+2).name        := l_nt_flowbal_groups(idx_fbp).member2_name;
+      l_nt_fgr(l_idx_fgr+2).description := l_nt_flowbal_groups(idx_fbp).member2_desc;
+      l_nt_fgr(l_idx_fgr+2).fbp_id      := l_nt_flowbal_groups(idx_fbp).id;
+
+      l_idx_sgr := l_nt_sgr.count;
+      l_nt_sgr.extend(l_nt_flowbal_groups(idx_fbp).member1_nt_lst.count);
+      for idx_sgr in 1 .. l_nt_flowbal_groups(idx_fbp).member1_nt_lst.count
+      loop
+         
+         lm_config.check_logical_segment( i_lst_id => l_nt_flowbal_groups(idx_fbp).member1_nt_lst(idx_sgr));
+         
+         l_nt_sgr(l_idx_sgr + idx_sgr).id := l_sgr_id_last 
+                                           + l_idx_sgr     
+                                           + idx_sgr;
+         l_nt_sgr(l_idx_sgr + idx_sgr).fgr_id   := l_nt_flowbal_groups(idx_fbp).member1_nde_id;
+         l_nt_sgr(l_idx_sgr + idx_sgr).lst_id   := l_nt_flowbal_groups(idx_fbp).member1_nt_lst(idx_sgr);
+      end loop;
+
+      l_idx_sgr := l_nt_sgr.count;
+      l_nt_sgr.extend(l_nt_flowbal_groups(idx_fbp).member2_nt_lst.count);
+      for idx_sgr in 1 .. l_nt_flowbal_groups(idx_fbp).member2_nt_lst.count
+      loop
+         
+         lm_config.check_logical_segment( i_lst_id => l_nt_flowbal_groups(idx_fbp).member2_nt_lst(idx_sgr));
+         
+         l_nt_sgr(l_idx_sgr + idx_sgr).id := l_sgr_id_last 
+                                           + l_idx_sgr     
+                                           + idx_sgr;
+         l_nt_sgr(l_idx_sgr + idx_sgr).fgr_id   := l_nt_flowbal_groups(idx_fbp).member2_nde_id;
+         l_nt_sgr(l_idx_sgr + idx_sgr).lst_id   := l_nt_flowbal_groups(idx_fbp).member2_nt_lst(idx_sgr);
+      end loop;
+
+   end loop;       
+   
+   
+   forall idx in 1 .. l_nt_flowbal_groups.count
+      insert
+      into   lm_flow_balance_groups
+      (      id
+      ,      name
+      ,      unbalance_min_value
+      ,      travel_time
+      ,      sort_train_length
+      ,      bags_amount_min_value
+      ,      bags_amount_max_value
+      ,      description
+      ) values
+      (      l_nt_flowbal_groups(idx).id
+      ,      l_nt_flowbal_groups(idx).name
+      ,      l_nt_flowbal_groups(idx).min_unbalance
+      ,      l_nt_flowbal_groups(idx).travel_time
+      ,      l_nt_flowbal_groups(idx).sort_train_length
+      ,      l_nt_flowbal_groups(idx).min_bagsamount
+      ,      l_nt_flowbal_groups(idx).max_bagsamount
+      ,      l_nt_flowbal_groups(idx).name 
+      );
+
+   forall idx in 1 .. l_nt_fgr.count
+      insert
+      into   lm_flow_balance_group_members
+      (      id
+      ,      fbp_id
+      ,      nde_id
+      ,      name
+      ,      description
+      ) values
+      (      l_nt_fgr(idx).id
+      ,      l_nt_fgr(idx).fbp_id
+      ,      l_nt_fgr(idx).nde_id
+      ,      l_nt_fgr(idx).name
+      ,      l_nt_fgr(idx).description
+      );
+
+   forall idx in 1 .. l_nt_sgr.count
+      insert
+      into   lm_segment_group_members
+      (      id
+      ,      lst_id
+      ,      fgr_id
+      ) values
+      (      l_nt_sgr(idx).id
+      ,      l_nt_sgr(idx).lst_id
+      ,      l_nt_sgr(idx).fgr_id
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'FlowBalancing'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_flowbal_groups.count||' lm_flow_balance_groups'
+                                                    ||' , '||l_nt_fgr.count||' lm_flow_balance_group_members'
+                                                    ||' and '||l_nt_sgr.count||' lm_segment_group_members'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_fbp%isopen
+      then
+         close c_fbp;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_flow_balancing;
+
+
+
+
+
+
+function get_load_groups
+return nt_load_groups
+is
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.get_load_groups';
+   
+   l_nt_lgp nt_load_groups := nt_load_groups();
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   select rt_load_group( lgp.id
+                       , lgp.name
+                       , cast( collect( rt_load_rule( lre.id
+                                                    , lre.recirculation_count
+                                                    , lre.lower_load_value
+                                                    )
+                                      ) as nt_load_rules
+                             )
+                       )
+   bulk collect into    l_nt_lgp
+   from    lm_load_groups lgp
+   ,       lm_load_rules  lre
+   where   lre.lgp_id = lgp.id
+   group by lgp.id, lgp.name
+   ;
+   
+   viu_module.leave_module( i_module => l_con_proc_name );
+   return l_nt_lgp;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end get_load_groups;
+
+
+
+
+
+
+procedure upd_load_groups
+( i_operator_id    in varchar2
+, i_ip_address     in varchar2
+, i_nt_load_groups in nt_load_groups
+)
+is
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.upd_load_groups';
+
+   l_rt_lre                       lm_load_rules%rowtype;
+   l_event_time                   timestamp(3) := lm_common.default_timestamp;
+   l_audit_value                  varchar2(4000);
+   l_audit_value_lre              varchar2(4000);
+   l_lre_update                   number;
+   
+   procedure append_audit_value( i_text         in     varchar2
+                               , io_audit_value in out varchar2
+                               )
+   is
+      l_sep constant varchar2(2) := chr(10); 
+   begin
+      if io_audit_value is null
+      then
+         io_audit_value := i_text;
+      else
+         io_audit_value := io_audit_value || l_sep || i_text;
+      end if;
+   end;
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   
+   for rec_lgp in (select lgp.id
+                   ,      lgp.name
+                   ,      lgp2.load_rules
+                   from   table(i_nt_load_groups) lgp2
+                   ,      lm_load_groups          lgp
+                   where  lgp.id = lgp2.id
+                   order by lgp.id 
+                  )
+   loop
+      l_audit_value_lre := null;
+      
+      for rec_lre in (select lre.id
+                      ,      lre.recirculation_count as recirc_count_old
+                      ,      lre2.recirc_count       as recirc_count_new
+                      from   table(rec_lgp.load_rules) lre2
+                      ,      lm_load_rules             lre
+                      where  lre.id = lre2.rule_id
+                      order by lre.id  
+                     )
+      loop
+         if rec_lre.recirc_count_old <> rec_lre.recirc_count_new
+         then
+            
+            
+            if lm_lre_tapi_pck.lre_select_row_upd( i_lre_id => rec_lre.id
+                                                 , o_rt_lre => l_rt_lre
+                                                 )
+            then
+               
+               
+               if    rec_lre.recirc_count_new is null
+                  or mod(rec_lre.recirc_count_new, 1) <> 0 
+                  or rec_lre.recirc_count_new <= 0
+                  or rec_lre.recirc_count_new >= 100
+               then
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_invalidloadruleattr
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_error
+                                     , i_info_arguments         => rec_lgp.name || '##'
+                                                                || rec_lre.id ||'##'
+                                                                || nvl(to_char(rec_lre.recirc_count_new), '<null>') || '##'
+                                                                || 'Recirc count'
+                                     );
+               end if;
+               
+               l_rt_lre.recirculation_count := rec_lre.recirc_count_new;
+               l_lre_update := lm_lre_tapi_pck.lre_update_row( i_lre_id  => l_rt_lre.id
+                                                             , io_rt_lre => l_rt_lre
+                                                             );
+               append_audit_value( '- Rule '||l_rt_lre.id||': Recirc count changed from '||rec_lre.recirc_count_old||' to '||rec_lre.recirc_count_new
+                                 , l_audit_value_lre
+                                 );
+               
+            end if; 
+         end if;    
+      end loop;     
+      if l_audit_value_lre is not null
+      then
+         
+         append_audit_value( 'Updates for Load Group '||rec_lgp.name||':'
+                           , l_audit_value
+                           );
+         append_audit_value( l_audit_value_lre
+                           , l_audit_value
+                           );
+      end if;
+   end loop;      
+   
+   
+   
+   
+   if l_audit_value is not null
+   then
+      lm_report_diagnostic_data.send_audit_log_message( i_operator_id => i_operator_id
+                                                      , i_event_time  => l_event_time
+                                                      , i_ip_address  => i_ip_address
+                                                      , i_event       => 'Update load group(s)'
+                                                      , i_description => l_audit_value
+                                                      );
+   end if;
+   
+   viu_module.leave_module( i_module     => l_con_proc_name
+                          , i_debug_info => sqlerrm
+                          );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end upd_load_groups;
+
+end lm_cfg_congestion_control;
+/

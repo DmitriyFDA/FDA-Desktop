@@ -1,0 +1,39 @@
+procedure update_cmn_parameter(p_parm in varchar2 default ' ') is
+type array_str is table of varchar2(2000) index by pls_integer;
+a_js array_str;
+v_msg varchar2(32767) := '';
+l_val varchar2(240) := '';
+begin
+  a_js( 1) := 'function exec_upd_cmn() { var h1=trimAll(p_val.value);';
+  a_js( 2) := '                      var s1="UpdCmnParm?p_parm='||p_parm||'@p_val="+h1';
+  a_js( 3) := '                      document.location=s1;';
+  a_js( 4) := '                    }';
+  begin
+    htp.print(gui.head( gui.app_name||' > Update CMN_PARAMETER_VALUES '
+                       , 'Update CMN_PARAMETER_VALUES: '||p_parm));
+    htp.print('<div class="operate"><br>');
+    htp.print('<SCRIPT>');
+    for i in 1..a_js.count loop
+      htp.print(replace(a_js(i), '@', chr(38)));
+    end loop;
+    htp.print('</SCRIPT>');
+    htp.print('<br>'||p_parm);
+    select value into l_val from cmn_parameter_values where pve_comment = p_parm;
+    if l_val is null or trim(l_val) = '' then
+      l_val := ' ';
+    end if;
+    htp.print(chr(38)||'nbsp;<input type=text size=50 STYLE="color:blue" name=p_val value='||l_val||'>');
+    htp.print(chr(38)||'nbsp;<BUTTON onClick="exec_upd_cmn()">Update</BUTTON><br><br><br></div>');
+    htp.print(gui.tail);
+  exception when others then
+    htp.print(gui.head( gui.app_name||' > Update CMN_PARAMETER_VALUES '
+                       , 'Update CMN_PARAMETER_VALUES: '||p_parm));
+    v_msg := v_msg||'<br>'||sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

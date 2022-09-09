@@ -1,0 +1,296 @@
+create or replace package TravelTimes is
+G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'TravelTimes';
+procedure SummarizeTravelTimes;
+procedure TRAVELTIMES_BENCHMARK;
+end TravelTimes;
+/
+
+
+
+
+package body traveltimes is
+
+function interval_in_seconds(i_ts1 timestamp, i_ts2 timestamp) return number is
+
+num_val number(19,6);
+diff interval day(9) to second;
+begin
+  diff := (i_ts2 - i_ts1);
+  num_val := extract(second from diff);
+  num_val := num_val + extract(minute from diff) * 60;
+  num_val := num_val + extract(hour from diff)   * 60 * 60;
+  num_val := num_val + extract(day from diff)  * 60 * 60 * 24;
+  return num_val;
+end;
+
+procedure insert_ftts(l_ftts_rec fact_travel_time_summaries%rowtype) is
+l_duration number(23,4) := 0;
+begin
+  l_duration := traveltimes.interval_in_seconds(l_ftts_rec.start_eventts, l_ftts_rec.end_eventts);
+  insert into fact_travel_time_summaries
+  ( id
+  , start_eventts
+  , start_node
+  , end_eventts
+  , end_node
+  , insertts
+  , m5_periodid
+  , h1_periodid
+  , duration
+  ) values
+  ( l_ftts_rec.id
+  , l_ftts_rec.start_eventts
+  , l_ftts_rec.start_node
+  , l_ftts_rec.end_eventts
+  , l_ftts_rec.end_node
+  , sys_extract_utc(systimestamp)
+  , period.periodid(l_ftts_rec.end_eventts, 'M5')
+  , period.periodid(l_ftts_rec.end_eventts, 'H1')
+  , l_duration
+  );
+end;
+
+procedure summarizetraveltimes is
+l_max_id number(23,4) := 0; 
+l_curr_id number(23,4) := 0; 
+l_curr_nodeid number  := 0;
+l_count number := 0; 
+l_tr_count number := 0; 
+l_msg varchar2(4000);
+l_conf_rec metric_config%rowtype;
+l_con_proc_name constant varchar2(61) := g_con_package||'.SummarizeTravelTimes';
+l_ftts_rec fact_travel_time_summaries%rowtype;
+
+cursor c_tracking(c_id number, c_maxrecs number) is
+select * from (
+select a.bagrunid, a.eventts, a.key, a.areaid, a.zoneid, a.equipmentid, d.nodeid
+from fact_bagtrace_hist a, dim_node_area_zone_equipment d
+where a.bagrunid > c_id and a.reporttype='TRACKINGREPORT' and a.summarized='Y'
+and a.areaid = d.areaid and a.zoneid = d.zoneid and a.equipmentid = d.equipmentid
+order by a.bagrunid, a.eventts, a.key
+) where rownum <= c_maxrecs*2;
+
+l_rec c_tracking%rowtype;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    
+    
+    
+    
+
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr         => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc_name
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+    else
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_travel_time_summaries;
+
+        viu_info.operator_info( i_ifo_nr        => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure  => l_con_proc_name
+                         , i_severity           => viu_info.c_severity_notification
+                         , i_info_arguments     => null
+                         , i_additional_data    => l_con_proc_name||' STARTED. Processing Bag Runs with BAGRUNID greater than '||to_char(l_max_id)
+                         );
+        l_rec.bagrunid := -1;
+        for c_rec in c_tracking(l_max_id, l_conf_rec.max_measurements) loop
+          l_curr_id := c_rec.bagrunid;
+          l_curr_nodeid := c_rec.nodeid;
+
+          if  c_rec.bagrunid != l_rec.bagrunid then
+            
+            l_tr_count := 0;
+            l_ftts_rec.id := c_rec.bagrunid + l_tr_count/10000;
+            l_ftts_rec.start_eventts := c_rec.eventts;
+            l_ftts_rec.start_node := c_rec.nodeid;
+            l_ftts_rec.end_eventts := null;
+            l_ftts_rec.end_node := null;
+            
+            commit;
+            
+            if l_count >= l_conf_rec.max_measurements then
+              exit;  
+            end if;
+          else
+            l_tr_count := l_tr_count + 1;
+            l_ftts_rec.id := c_rec.bagrunid + l_tr_count/10000;
+            l_ftts_rec.start_eventts := l_rec.eventts;
+            l_ftts_rec.start_node := l_rec.nodeid;
+            l_ftts_rec.end_eventts := c_rec.eventts;
+            l_ftts_rec.end_node := c_rec.nodeid;
+            traveltimes.insert_ftts(l_ftts_rec);
+            l_count := l_count + 1;
+          end if;
+          
+          l_rec := c_rec;
+        end loop;
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc_name);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Travel Time Summaries.'
+                         );
+
+      exception when others then
+        l_msg := substr(l_con_proc_name||' ERROR on BAGRUNID: '||to_char(l_curr_id)||', NODEID: '||to_char(l_curr_nodeid)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+      end;
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+    bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+procedure traveltimes_benchmark is
+l_con_proc_name constant varchar2(61) := g_con_package||'.TRAVELTIMES_BENCHMARK';
+l_max_id number(23,4) := 0; 
+l_curr_id number(23,4) := 0; 
+l_count number := 0;
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from
+( select /*+ INDEX(FACT_TRAVEL_TIME_SUMMARIES FACT_TRAVEL_TIME_SUMMARIES_PK) */ max(id) as id
+  , sys_extract_utc(systimestamp) as insertts
+  , sys_extract_utc(systimestamp) as updatets
+  , start_node
+  , end_node
+  , min(duration) as min_duration
+  , max(duration) as max_duration
+  , sum(duration) as sum_duration
+  , count(id) as counted
+  from fact_travel_time_summaries
+  where id > c_id
+  group by start_node, end_node
+) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception
+      when others then l_conf_rec.status := 0;
+    end;
+
+    
+    
+    
+
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( viu_constant.c_ifo_bpidebuginfo, l_con_proc_name, viu_info.c_severity_warning, null
+                            , l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).' );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+
+      select nvl(max(id), 0) into l_max_id from fact_traveltimes_benchmark;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing Travel Times with ID greater than '||to_char(l_max_id)
+                         );
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        l_curr_id := c_rec.id;
+        begin
+          insert into fact_traveltimes_benchmark
+          ( id
+          , insertts
+          , updatets
+          , start_node
+          , end_node
+          , min_duration
+          , max_duration
+          , sum_duration
+          , counted )
+          values
+          ( c_rec.id
+          , sys_extract_utc(systimestamp)
+          , sys_extract_utc(systimestamp)
+          , c_rec.start_node
+          , c_rec.end_node
+          , c_rec.min_duration
+          , c_rec.max_duration
+          , c_rec.sum_duration
+          , c_rec.counted );
+        exception when dup_val_on_index then
+          
+          update fact_traveltimes_benchmark
+          set id = c_rec.id
+          ,   updatets = sys_extract_utc(systimestamp)
+          ,   min_duration = least(min_duration, c_rec.min_duration)
+          ,   max_duration = greatest(max_duration, c_rec.max_duration)
+          ,   sum_duration = sum_duration + c_rec.sum_duration
+          ,   counted = counted + c_rec.counted
+          where start_node = c_rec.start_node
+          and end_node = c_rec.end_node
+          and id < c_rec.id;
+
+          if sql%rowcount <> 1 then
+            bpi_log.raise_fatal_error(l_con_proc_name,'UPDATE FACT_TRAVELTIMES_BENCHMARK FAILED. #Rows affected: '||to_char(sql%rowcount)
+            ||',START_NODE='||to_char(c_rec.start_node)
+            ||',END_NODE='||to_char(c_rec.end_node)
+            ||',ID='||to_char(c_rec.id));
+          end if;
+
+        end;
+        commit;
+        l_count := l_count + 1;
+      end loop;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.'
+                         );
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+end traveltimes;
+/

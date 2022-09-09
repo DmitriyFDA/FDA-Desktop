@@ -1,0 +1,12 @@
+procedure not_yet is
+v_msg varchar2(32767);
+begin
+  htp.print(gui.head(gui.app_name||' > NOT YET !!!', 'This form is not yet available..'));
+  htp.print('<div class="homewhite">');
+  htp.print('<IMG SRC="DOCS/ANI-GEAR.GIF">');
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

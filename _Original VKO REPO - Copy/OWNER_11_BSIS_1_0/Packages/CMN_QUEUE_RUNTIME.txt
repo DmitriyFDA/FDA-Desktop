@@ -1,0 +1,104 @@
+create or replace PACKAGE cmn_queue_runtime authid current_user AS
+/******************************************************************************
+   NAME:       cmn_queue_runtime
+   PURPOSE:
+
+   REVISIONS:
+   Ver        Date        Author           Description
+   ---------  ----------  ---------------  ------------------------------------
+   1.0        1-23-2007             1. Created this package.
+******************************************************************************/
+
+procedure inject_runtime_package;
+
+
+END cmn_queue_runtime;
+/
+
+
+
+
+package body cmn_queue_runtime  as
+
+
+
+
+
+
+
+
+
+g_con_package        constant varchar2( 17 ) := 'cmn_queue_runtime';
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure inject_runtime_package
+   is
+      l_con_procedure          constant cmn_constant.st_proc_name := g_con_package || '.inject_runtime_package';
+	  l_package_specification  varchar2(32767);
+	  l_package_body           varchar2(32767);
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+      
+	  l_package_specification :=    'create or replace package cmn_runtime is '
+	                             || 'procedure enqueue_msg( i_schema_name in varchar2,i_queue_name in varchar2, i_subscriber_name in varchar2, i_msg in xmltype); '
+								 || ' end;';
+	  execute immediate l_package_specification;
+	  l_package_body :=    'create or replace package body cmn_runtime is '
+	                    || ' procedure enqueue_msg(i_schema_name in varchar2,i_queue_name in varchar2, i_subscriber_name in varchar2, i_msg in xmltype) is '
+						|| ' enqopt                        dbms_aq.enqueue_options_t;'
+						|| ' mprop                         dbms_aq.message_properties_t;'
+						|| ' enqu_msgid                    RAW( 16 );'
+						|| ' begin '
+						|| '    mprop.sender_id  := SYS.aq$_agent( i_subscriber_name, '
+						|| '                                        NULL, '
+                        || '                                        NULL '
+                        || '                      ); '
+                        || '    dbms_aq.enqueue( queue_name         => i_schema_name ||''.''|| i_queue_name, '
+                        || '                     enqueue_options    => enqopt, '
+                        || '                     message_properties => mprop, '
+                        || '                     payload            => i_msg, '
+                        || '                     msgid              => enqu_msgid '
+                        || '   );'
+						|| ' end; '
+						|| ' end;';
+	  execute immediate l_package_body;
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+      
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.handle_info( i_calling_procedure      => l_con_procedure );
+   end inject_runtime_package;
+
+
+end cmn_queue_runtime;
+/

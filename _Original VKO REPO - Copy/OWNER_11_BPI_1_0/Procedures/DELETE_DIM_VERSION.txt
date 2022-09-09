@@ -1,0 +1,23 @@
+procedure delete_dim_version(p_id in varchar2 default ' ' ) is
+l_version_id number := str_to_num(p_id);
+l_source_id number;
+v_msg varchar2(32767) := '';
+begin
+  begin
+
+    if l_version_id > 0 then
+      dimension.remove_version(l_version_id);
+    end if;
+
+    owa_util.redirect_url('Remove_DIM_version');
+  exception when others then
+    htp.print(gui.head( gui.app_name||' > Remove Dimension Version ', 'Remove Dimension Version '));
+    v_msg := v_msg||'<br>'||sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

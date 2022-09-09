@@ -1,0 +1,241 @@
+create or replace package APP_MGT is
+FUNCTION start_application(i_id_cust IN VARCHAR2) RETURN varchar2;
+FUNCTION stop_application(i_id_cust IN VARCHAR2) RETURN varchar2;
+FUNCTION state(i_id_cust IN VARCHAR2) RETURN varchar2;
+PROCEDURE show_status(p_app in varchar2 default ' ', p_action in varchar2 default ' ');
+PROCEDURE reset_loglevel (p_level number);
+PROCEDURE show_loglevel (p_lev in varchar2 default ' ' );
+end APP_MGT;
+/
+
+
+
+
+package body app_mgt is
+
+  function start_application(i_id_cust in varchar2) return varchar2 is
+  l_success boolean;
+  begin
+    acl_application_control.handle_request( i_aet_id_cust      => i_id_cust
+                                          , i_ace_id_cust      => 'start'
+                                          , o_success          => l_success
+                                          );
+    if l_success then
+      return i_id_cust||' start was successful.';
+    else
+      return i_id_cust||' start failed.';
+    end if;
+  end;
+
+  function stop_application(i_id_cust in varchar2) return varchar2 is
+  l_success boolean;
+  begin
+    acl_application_control.handle_request( i_aet_id_cust      => i_id_cust
+                                          , i_ace_id_cust      => 'stop'
+                                          , o_success          => l_success
+                                          );
+    if l_success then
+      return i_id_cust||' stop was successful.';
+    else
+      return i_id_cust||' stop failed.';
+    end if;
+  end;
+
+  function state(i_id_cust in varchar2) return varchar2 is
+  l_state varchar2(50);
+  begin
+    begin
+      l_state := acl_application_control.select_status(i_id_cust);
+    exception when others then
+      l_state := '-';
+    end;
+    return l_state;
+  end;
+  
+  function fmt_interval(p_interval in interval day to second) return varchar2 is
+  begin
+    if p_interval is null then
+      return '';
+    else
+      return  to_char(extract(day from p_interval), 'fmS99999')
+       ||' '||to_char(extract(hour from p_interval), 'fm00')
+       ||':'||to_char(extract(minute from p_interval), 'fm00')
+       ||':'||to_char(extract(second from p_interval), 'fm00.000');
+    end if;
+  end;
+
+
+  procedure show_status(p_app in varchar2 default ' ', p_action in varchar2 default ' ') is
+  type array_str is table of varchar2(2000) index by pls_integer;
+  a_js array_str;
+  l_state       varchar2(2000);
+  l_app_name    varchar2(30) := '';
+  l_msg         varchar2(32767) := '';
+  l_op_status   varchar2(1) := 'N';
+
+  
+  
+  cursor c_sub_apps is
+  select aet.startup_sequence, aet.id_cust, aet.description
+       , aps.timestamp_latest_execution, aps.latest_execution_time
+       , aet.aet_type
+  from acl_application_elements aet
+     , acl_aet_weights awt
+     , acl_application_processes aps
+  where aet.awt_id = awt.id (+)
+  and aet.aet_id_part_of = 1
+  and aps.aet_id (+) = aet.id
+  and not exists (select 1 from acl_application_processes  aps2
+                  where aps2.aet_id = aps.aet_id
+                    and ( aps2.date_created > aps.date_created
+                         or aps.date_created  is null
+                        )
+                  )
+  order by 1;
+
+  begin
+
+    begin
+      select id_cust into l_app_name from acl_application_elements where id = 1;
+    exception
+      when others then l_msg := 'ACL_APPLICATION_ELEMENTS configuration error? ' ||sqlerrm;
+      l_app_name := '???';
+    end;
+
+    htp.print(gui.head( gui.app_name||' > Application Management '
+                       , 'Application Management '||l_app_name));
+
+    if p_action = 'start' then
+      begin
+        l_msg := app_mgt.start_application(p_app);
+      exception
+        when others then l_msg := sqlerrm;
+      end;
+    end if;
+
+    if p_action = 'stop' then
+      begin
+        l_msg := app_mgt.stop_application(p_app);
+      exception
+        when others then l_msg := sqlerrm;
+      end;
+    end if;
+
+    
+    htp.print('<BUTTON onClick="document.location=''app_mgt.show_status?p_app='||l_app_name||chr(38)||'p_action=start'';">Start Application</BUTTON>');
+    htp.print('<BUTTON onClick="document.location=''app_mgt.show_status?p_app='||l_app_name||chr(38)||'p_action=stop'';">Stop Application</BUTTON>');
+
+    htp.print('<br><br>');
+    htp.print('<TABLE border=2 bordercolor="#8B4513" bgcolor="#FFEBCD" cellspacing=2 cellpadding=1>');
+    htp.print('<TR><TH colspan=3>Application Elements<br></TH></TH><TH>Timestamp<br>Latest<br>Execution</TH><TH>Latest<br>Execution<br>Duration</TH><TH>Average<br>Execution<br>Duration</TH><TH>Status</TH><TH colspan=2></TH></TR>');
+
+
+    l_op_status := 'N';
+    for rec in c_sub_apps loop
+      
+      htp.print('<TR>');
+      htp.print('<TD>'||rec.startup_sequence||'</TD>');
+      htp.print('<TD>'||rec.id_cust||'</TD>');
+      htp.print('<TD>'||rec.description||'</TD>');
+      htp.print('<TD>'||ts2str(rec.timestamp_latest_execution)||'</TD>');
+      htp.print('<TD>'||fmt_interval(rec.latest_execution_time)||'</TD>');
+      l_state := state(rec.id_cust);
+      if l_state = 'started' then
+        if rec.aet_type = 'SWH' then
+          l_op_status := 'Y';
+        end if;
+        if l_op_status = 'Y' then
+          
+          htp.print('<TD BGCOLOR="#ADFF2F" style="font-weight:bold">'||l_state||'</TD>');
+        else
+          
+          htp.print('<TD BGCOLOR="#FBEC5D" style="font-weight:bold">'||l_state||'</TD>');
+        end if;
+      else
+        
+        htp.print('<TD BGCOLOR="#FF5333" style="font-weight:bold">'||l_state||'</TD>');
+      end if;
+      htp.print('<TD>');
+      if rec.aet_type = 'BJB' and l_op_status = 'N' then
+         htp.print('<BUTTON onClick="alert(''Warning: To become active BPI_OPERATIONAL_STATUS must be started as well..''); document.location=''app_mgt.show_status?p_app='||rec.id_cust||chr(38)||'p_action=start'';">Start</BUTTON>');
+      else
+         htp.print('<BUTTON onClick="document.location=''app_mgt.show_status?p_app='||rec.id_cust||chr(38)||'p_action=start'';">Start</BUTTON>');
+      end if;
+      htp.print('</TD><TD>');
+      htp.print('<BUTTON onClick="document.location=''app_mgt.show_status?p_app='||rec.id_cust||chr(38)||'p_action=stop'';">Stop</BUTTON>');
+      htp.print('</TD>');
+
+      
+      
+        
+      htp.p('</TR>');
+    end loop;
+
+    htp.p('</TABLE>');
+    htp.print('<br>'||l_msg||chr(38)||'nbsp;');
+    htp.print(gui.tail);
+  end;
+
+
+  procedure reset_loglevel(p_level number) is
+  l_owner varchar2(30);
+  l_sql varchar2(300);
+  begin
+
+    update viu_parameters set value = p_level where name = 'MaxLvlOprInfoLogged';
+    commit;
+    viu_action.set_current_loglevel(p_level);
+    viu_info.v_maxlvloprinfologged := p_level;
+
+    l_sql := 'alter package viu_info compile body';
+    
+    
+  end;
+
+
+  procedure show_loglevel (p_lev in varchar2 default ' ' ) is
+  l_level       number := 0;
+  l_style       varchar2(200) := '';
+  type array_str is table of varchar2(2000) index by pls_integer;
+  a_js array_str;
+  begin
+    if p_lev in ('1','2','3','4','5','6') then
+      l_level := to_number(p_lev);
+      reset_loglevel(l_level);
+    else
+      l_level := 0;
+    end if;
+
+    a_js( 1) := 'function confirm_reset(link) { if (confirm("Are you really sure you want to reset the current logging level..")) {document.location=link; } }';
+    a_js( 2) := 'function exec_l1() { confirm_reset(''app_mgt.show_loglevel?p_lev=1''); }';
+    a_js( 3) := 'function exec_l2() { confirm_reset(''app_mgt.show_loglevel?p_lev=2''); }';
+    a_js( 4) := 'function exec_l3() { confirm_reset(''app_mgt.show_loglevel?p_lev=3''); }';
+    a_js( 5) := 'function exec_l4() { confirm_reset(''app_mgt.show_loglevel?p_lev=4''); }';
+    a_js( 6) := 'function exec_l5() { confirm_reset(''app_mgt.show_loglevel?p_lev=5''); }';
+    a_js( 7) := 'function exec_l6() { confirm_reset(''app_mgt.show_loglevel?p_lev=6''); }';
+
+    htp.print(gui.head( gui.app_name||' > Logging Level ', 'Logging Level'));
+
+    htp.print('<div class="operate"><br>');
+
+    htp.print('<SCRIPT>');
+    for i in 1..a_js.count loop
+      htp.print(replace(a_js(i), '@', chr(38)));
+    end loop;
+    htp.print('</SCRIPT>');
+    htp.print('<br><h4>Current loggging level is: '|| to_char(viu_info.v_maxlvloprinfologged) ||'</h4><br>');
+
+    htp.print(' <BUTTON onClick=exec_l1()>Set to level 1:<br><h5>Error</h3></BUTTON>');
+    htp.print(' <BUTTON onClick=exec_l2()>Set to level 2:<br><h5>Warning</h3></BUTTON>');
+    htp.print(' <BUTTON onClick=exec_l3()>Set to level 3:<br><h5>Notification</h3></BUTTON>');
+    htp.print(' <BUTTON onClick=exec_l4()>Set to level 4:<br><h5>Debug</h3></BUTTON>');
+    htp.print(' <BUTTON onClick=exec_l5()>Set to level 5:<br><h5>Proc_arguments</h3></BUTTON>');
+    htp.print(' <BUTTON onClick=exec_l6()>Set to level 6:<br><h5>Proc_call</h3></BUTTON>');
+    htp.print('<br><br>');
+
+    
+    htp.print(gui.tail('HBLE', 'app_mgt.show_loglevel'));
+  end;
+
+end app_mgt;
+/

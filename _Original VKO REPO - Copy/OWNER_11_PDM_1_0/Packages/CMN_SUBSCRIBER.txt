@@ -1,0 +1,132 @@
+create or replace PACKAGE cmn_subscriber AS
+/******************************************************************************
+   NAME:       cmn_subscriber
+   PURPOSE:
+
+   REVISIONS:
+   Ver        Date        Author           Description
+   ---------  ----------  ---------------  ------------------------------------
+   1.0        24-11-2006             1. Created this package.
+******************************************************************************/
+procedure create_all_subscribers( i_user in varchar2);
+
+procedure remove_all_subscribers;
+
+END cmn_subscriber;
+/
+
+
+
+
+package body cmn_subscriber
+as
+   
+
+
+
+
+
+
+
+
+   g_con_package        constant varchar2( 20 ) := 'cmn_subscriber';
+
+   procedure create_all_subscribers( i_user in varchar2)
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name := g_con_package || '.create_all_subscribers';
+
+      cursor c_ssr_que ( b_user in varchar2)
+      is
+         select que.name queue_name,
+                que.schema_name schema_name,
+                ssr.name subscriber_name,
+				ssr.delivery_mode
+         from   cmn_queues que,
+                cmn_subscribers ssr
+         where  que.id = ssr.que_id
+         and    upper( schema_name ) = upper(b_user);
+
+      l_agent                       sys.aq$_agent;
+	  l_delivery_mode               pls_integer;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      for r_ssr_que in c_ssr_que( i_user)
+      loop
+         l_agent  := sys.aq$_agent( r_ssr_que.subscriber_name,
+                                    r_ssr_que.queue_name,
+                                    null
+                                  );
+         case r_ssr_que.delivery_mode
+		 when cmn_constant.g_con_buffered
+		 then
+		    l_delivery_mode := dbms_aqadm.buffered;
+		 when cmn_constant.g_con_persistent
+		 then
+		    l_delivery_mode := dbms_aqadm.persistent;
+		 when cmn_constant.g_con_persistent_or_buffered
+		 then
+		    l_delivery_mode := dbms_aqadm.persistent_or_buffered;
+		 else
+		    l_delivery_mode := dbms_aqadm.persistent;
+		 end case;
+		 								  
+         dbms_aqadm.add_subscriber( queue_name      => r_ssr_que.queue_name,
+                                    subscriber      => l_agent,
+									delivery_mode   => l_delivery_mode
+                                  );
+      end loop;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_all_subscribers;
+
+   procedure remove_all_subscribers
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name := g_con_package || '.remove_all_subscribers';
+
+      cursor c_ssr_que
+      is
+         select que.name queue_name,
+                ssr.name subscriber_name
+         from   cmn_queues que,
+                cmn_subscribers ssr
+         where  que.id = ssr.que_id
+         and    exists( select 1
+                       from   user_queue_subscribers qsr
+                       where  qsr.consumer_name = ssr.name );
+
+      l_agent                       sys.aq$_agent;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      for r_ssr_que in c_ssr_que
+      loop
+         l_agent  := sys.aq$_agent( r_ssr_que.subscriber_name,
+                                    r_ssr_que.queue_name,
+                                    null
+                                  );
+         dbms_aqadm.remove_subscriber( queue_name      => r_ssr_que.queue_name,
+                                       subscriber      => l_agent
+                                     );
+      end loop;
+
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end remove_all_subscribers;
+end cmn_subscriber;
+/

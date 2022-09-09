@@ -1,0 +1,123 @@
+create or replace PACKAGE VIU_CONFIGURATION IS
+
+TYPE TEXT_TT IS TABLE OF VARCHAR2(4000) INDEX BY BINARY_INTEGER;
+
+V_DEFAULT_LANGUAGE VIU_LANGUAGES.ID%TYPE;
+/* Required to circumvent the restriction on User-defined constrained sub-types */
+v_dummy_boolean NUMBER(1,0);
+SUBTYPE boolean_t IS v_dummy_boolean%TYPE;
+		/* False */
+C_BOOLEAN_FALSE                         CONSTANT	boolean_t := 0;
+		/* True */
+C_BOOLEAN_TRUE                          CONSTANT	boolean_t := 1;
+MIN_C_BOOLEAN                       CONSTANT	boolean_t := C_BOOLEAN_FALSE;
+MAX_C_BOOLEAN                       CONSTANT	boolean_t := C_BOOLEAN_TRUE;
+
+/* Get the requested parameter value */
+FUNCTION GET_PARAMETER_VALUE
+ (I_PARAM_ID IN VIU_PARAMETERS.ID%TYPE
+ )
+ RETURN NUMBER;
+/* Return the ID of the default language */
+FUNCTION GET_DEFAULT_LANGUAGE
+ RETURN viu_languages.id%TYPE;
+END VIU_CONFIGURATION;
+/
+
+
+
+
+package body viu_configuration is
+
+
+function get_parameter_value
+ (i_param_id in viu_parameters.id%type
+ )
+ return number
+ is
+
+cursor c_parameter_info
+ (i_param_id in viu_parameters.id%type
+ )
+ is
+select ptr.value
+from   viu_parameters ptr
+where  ptr.id = i_param_id
+;
+
+
+c_proc constant varchar2(100) := 'Viu_Configuration.Get_Parameter_Value';
+
+r_parameter_info c_parameter_info%rowtype;
+begin
+viu_trace.enter(c_proc);
+
+	
+	
+	open c_parameter_info(i_param_id => i_param_id);
+
+	fetch c_parameter_info into r_parameter_info;
+
+	close c_parameter_info;
+
+  viu_trace.leave;
+	return r_parameter_info.value;
+
+exception
+	when others
+	then
+		
+		if c_parameter_info%isopen
+		then
+		   close c_parameter_info;
+		end if;
+    viu_trace.leave;
+    raise;
+end get_parameter_value;
+
+function get_default_language
+ return viu_languages.id%type
+ is
+
+cursor c_language
+ is
+select id
+from   viu_languages
+where  lge_default = viu_configuration.c_boolean_true
+order by id;
+
+
+c_proc constant varchar2(100) := 'Viu_Configuration.Get_Default_Language';
+
+r_language c_language%rowtype;
+
+
+
+begin
+  viu_trace.enter(c_proc);
+
+  open c_language;
+  fetch c_language into r_language;
+
+  if c_language%notfound then
+    viu_info.operator_info
+      ( i_ifo_nr            => viu_constant.c_ifo_nodefaultlanguage
+      , i_calling_procedure => c_proc
+      , i_severity          => viu_info.c_severity_warning
+      );
+  end if;
+
+  close c_language;
+  viu_trace.leave;
+  return r_language.id;
+
+exception
+  when others then
+    if c_language%isopen then close c_language; end if;
+    viu_trace.leave;
+    raise;
+end get_default_language;
+begin
+  v_default_language := get_default_language;
+end viu_configuration;
+/

@@ -1,0 +1,154 @@
+create or replace PACKAGE odb_repair_statistics
+IS
+
+   PROCEDURE repair_handling_area_ids;
+      
+END odb_repair_statistics;
+/
+
+
+
+package body odb_repair_statistics
+is
+   
+
+
+
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure repair_handling_area_ids
+   is
+       
+       
+       
+       
+       pragma autonomous_transaction;
+
+       con_table_name_haa      constant user_tab_columns.table_name%type := 'ODB_HANDLING_AREAS';
+       con_column_name_haa_id  constant user_tab_columns.column_name%type := 'ID';
+       
+       l_haa_id_local          odb_handling_areas.id%type;
+       
+       l_distcnt               number;
+       l_density               number;
+       l_nullcnt               number;
+       l_avgclen               number;
+       l_srec                  dbms_stats.statrec;
+   begin
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       
+       select id
+       into   l_haa_id_local
+       from   odb_handling_areas
+       where  ind_local = 1;
+
+       
+       
+       for c in ( select table_name
+                  ,      column_name
+                  from   user_cons_columns
+                  where  constraint_name in
+                         ( select constraint_name
+                           from   user_constraints
+                           where  constraint_type = 'R'
+                           and    r_constraint_name =
+                                  ( select constraint_name
+                                    from   user_cons_columns
+                                    where  column_name = con_column_name_haa_id
+                                    and    table_name = con_table_name_haa
+                                    and    position = 1
+                                  )
+                         )
+                  and    position = 1
+                  order by table_name asc
+                 )
+       loop
+          begin
+             dbms_stats.get_column_stats( ownname => user
+                                        , tabname => c.table_name
+                                        , colname => c.column_name
+                                        , distcnt => l_distcnt
+                                        , density => l_density
+                                        , nullcnt => l_nullcnt
+                                        , srec    => l_srec
+                                        , avgclen => l_avgclen
+                                        );
+          exception
+             when others then l_srec.epc := null;
+          end;
+          
+          
+          if l_srec.epc = 2
+          then
+             l_srec.minval := utl_raw.cast_from_number( l_haa_id_local );
+             l_srec.maxval := utl_raw.cast_from_number( l_haa_id_local );
+             l_srec.novals(1):= l_haa_id_local;
+             l_srec.novals(2):= l_haa_id_local;
+
+             dbms_stats.set_column_stats( ownname => user
+                                        , tabname => c.table_name
+                                        , colname => c.column_name
+                                        , distcnt => l_distcnt
+                                        , density => l_density
+                                        , nullcnt => l_nullcnt
+                                        , srec    => l_srec
+                                        , avgclen => l_avgclen
+                                        , no_invalidate => false
+                                        , force   => true
+                                        );
+          else
+             
+             
+             null;
+          end if;
+       end loop;
+       
+       commit; 
+   exception
+      when too_many_rows
+      then
+         dbms_output.put_line('Multiple local HAA exists, exit procedure without action');
+      when others
+      then
+         rollback;
+         raise;
+   end repair_handling_area_ids;
+
+end odb_repair_statistics;
+/

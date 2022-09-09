@@ -1,0 +1,2549 @@
+create or replace package Metrics_H1 is
+G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'Metrics_H1';
+
+-- Standard Aggregations:
+procedure XMLTHROUGHPUT_AGG_H1;
+
+-- Period Aggregations:
+procedure GENERALSTATUS_AGG_H1;
+procedure SEGMENTSTATES_AGG_H1;
+procedure ROUTEAVAILABILITY_AGG_H1;
+
+-- Aggregation Aggregations:
+procedure APPLOGGING_AGG_AGG_H1;
+procedure BAGSUMMARIES_AGG_AGG_H1;
+procedure DEREGISTERS_AGG_AGG_H1;
+procedure EXTMETRICS_AGG_AGG_H1;
+procedure IDCHANGES_AGG_AGG_H1;
+procedure HANDOVERREPORTS_AGG_AGG_H1;
+procedure REGISTERS_AGG_AGG_H1;
+procedure SCANRESULTS_AGG_AGG_H1;
+procedure SCREEN_ANALYSIS_AGG_AGG_H1;
+procedure TRACKINGREPORTS_AGG_AGG_H1;
+procedure TRAVELTIMES_AGG_AGG_H1;
+
+end Metrics_H1;
+/
+
+
+
+
+package body metrics_h1 is
+
+g_commit_rate number := 5000;
+
+
+
+
+
+procedure xmlthroughput_agg_h1 is
+l_con_proc_name constant varchar2(61) := g_con_package||'.XMLTHROUGHPUT_AGG_H1';
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_conf_rec metric_config%rowtype;
+l_until timestamp;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+
+cursor c_metrics(c_id number, c_until timestamp, c_maxrecs number) is
+select * from (select /*+ INDEX(XML_MESSAGE_STORE XML_MESSAGE_STORE_PK) */ max(idevent) as id
+, sys_extract_utc(systimestamp) as insertts
+, sys_extract_utc(systimestamp) as updatets
+, period.startts(insertts, 'H1') as eventts
+, period.periodid(insertts, 'H1') as h1_periodid
+, period.periodid(insertts, 'D1') as d1_periodid
+, nvl(rootnode, '-') as messagetype
+, count(idevent) as number_of_messages
+, sum( case returncode when 0 then 1 else 0 end ) as processed
+, sum( case when returncode in (0,-2) then 0 else 1 end ) as errors
+, min(duration) as min_duration
+, max(duration) as max_duration
+, sum(duration) as sum_duration
+from xml_message_store
+where idevent > c_id
+and eventts < c_until
+group by period.startts(insertts, 'H1'), period.periodid(insertts, 'H1'), period.periodid(insertts, 'D1')
+, rootnode
+order by id) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception
+      when others then l_conf_rec.status := 0;
+    end;
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( viu_constant.c_ifo_bpidebuginfo, l_con_proc_name, viu_info.c_severity_warning, null
+                            , l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).' );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      l_until := sys_extract_utc(systimestamp);
+      if nvl(l_conf_rec.lag, 0) > 0 then
+        l_until := l_until - numtodsinterval(l_conf_rec.lag, 'DAY');
+      end if;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      if l_conf_rec.exclude_current_period = 1 then
+        l_until := period.startts(l_until, l_conf_rec.period_type);
+      end if;
+
+      select nvl(max(id), 0) into l_max_id from fact_xmlthroughput_agg_h1;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id)
+                         );
+
+      for c_rec in c_metrics(l_max_id, l_until, l_maxrecs) loop
+        l_curr_id := c_rec.id;
+        begin
+          insert into fact_xmlthroughput_agg_h1
+          ( id
+          , insertts
+          , updatets
+          , eventts
+          , h1_periodid
+          , d1_periodid
+          , messagetype
+          , number_of_messages
+          , processed
+          , errors
+          , min_duration
+          , max_duration
+          , sum_duration )
+          values
+          ( c_rec.id
+          , sys_extract_utc(systimestamp)
+          , sys_extract_utc(systimestamp)
+          , c_rec.eventts
+          , c_rec.h1_periodid
+          , c_rec.d1_periodid
+          , c_rec.messagetype
+          , c_rec.number_of_messages
+          , c_rec.processed
+          , c_rec.errors
+          , c_rec.min_duration
+          , c_rec.max_duration
+          , c_rec.sum_duration);
+        exception when dup_val_on_index then
+          
+          
+          update fact_xmlthroughput_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_messages = number_of_messages + c_rec.number_of_messages
+          , processed = processed + c_rec.processed
+          , errors = errors + c_rec.errors
+          , min_duration = least(min_duration, c_rec.min_duration)
+          , max_duration = greatest(max_duration, c_rec.max_duration)
+          , sum_duration = trunc(sum_duration + c_rec.sum_duration, 6)
+          where h1_periodid = c_rec.h1_periodid
+          and messagetype = c_rec.messagetype
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            bpi_log.raise_fatal_error(l_con_proc_name,'UPDATE FACT_XMLTHROUGHPUT_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)
+            ||',ID='||to_char(c_rec.id));
+          end if;
+        end;
+        commit;
+        l_count := l_count + 1;
+      end loop;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.'
+                         );
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+
+procedure generalstatus_agg_h1 is
+l_con_proc_name constant varchar2(61) := g_con_package||'.GENERALSTATUS_AGG_H1';
+l_h1_periodid_start number(19) := 0;
+l_h1_periodid_last number(19) := 0;
+l_h1_periodid_end number(19) := 0;
+l_count number := 0;
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+l_overlap number := 1;
+
+cursor c_metrics(c_periodid_start number, c_periodid_end number, c_maxrecs number) is
+select * from
+( select h1_periodid
+  , areaid
+  , zoneid
+  , equipmentid
+  , subject
+  , period.to_stamp(h1_periodid, 'H1') as eventts
+  , period.periodid(h1_periodid, 'D1') as d1_periodid
+  , sum(report_count) as report_count
+  , sum(dieback_count) as dieback_count
+  , sum(energysaving_count) as energysaving_count
+  , sum(error_count) as error_count
+  , sum(extended_count) as extended_count
+  , sum(full_count) as full_count
+  , sum(offline_count) as offline_count
+  , sum(powerup_count) as powerup_count
+  , sum(redundancy_count) as redundancy_count
+  , sum(safetystop_count) as safetystop_count
+  , sum(spare_count) as spare_count
+  , sum(started_count) as started_count
+  , sum(starting_count) as starting_count
+  , sum(stopped_count) as stopped_count
+  , sum(stopping_count) as stopping_count
+  , sum(unknown_count) as unknown_count
+  , sum(warning_count) as warning_count
+  , 1 - round(sum(1-operational_on)/12,7) as operational_on
+  , 1 - round(sum(1-operational)/12,7) as operational
+  , 1 - round(sum(1-available)/12,7) as available
+  , sum(dieback_seconds) as dieback_seconds
+  from fact_generalstatus_agg_m5
+  where m5_periodid between c_periodid_start and c_periodid_end
+  and eventts >= period.startts(c_periodid_start) 
+  group by h1_periodid, areaid, zoneid, equipmentid, subject
+) where rownum < c_maxrecs;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      l_overlap := cmn_common.get_parameter_value('AvailabilityH1PeriodOverlap');
+      
+      if l_overlap <> trunc(l_overlap) then
+        l_overlap := trunc(l_overlap) + 1;
+      end if;
+    exception when others then
+      l_overlap := 3;
+    end;
+
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+      l_conf_rec.max_measurements := 5000;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+       viu_info.operator_info( viu_constant.c_ifo_bpidebuginfo, l_con_proc_name, viu_info.c_severity_warning, null
+                            , l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).' );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+
+      select max(h1_periodid) into l_h1_periodid_last from fact_generalstatus_agg_h1;
+
+      l_h1_periodid_end := period.periodid(sysdate + 1/24, 'H1');  
+      l_h1_periodid_start := l_h1_periodid_end - (l_overlap * 3600); 
+      
+
+      if l_h1_periodid_last is not null then
+        l_h1_periodid_last := period.periodid(l_h1_periodid_last, 'H1'); 
+        l_h1_periodid_start := least(l_h1_periodid_last, l_h1_periodid_start);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Using AvailabilityH1PeriodOverlap '
+                                                  ||to_char(l_overlap)||'. Processing Metrics with PERIODID between '
+                                                  ||to_char(l_h1_periodid_start)||' and '||to_char(l_h1_periodid_end)
+                                                  ||', last was '||to_char(l_h1_periodid_last)
+                         );
+      for c_rec in c_metrics(l_h1_periodid_start, l_h1_periodid_end, l_maxrecs) loop
+        begin
+          insert into fact_generalstatus_agg_h1
+          ( h1_periodid
+          , areaid
+          , zoneid
+          , equipmentid
+          , subject
+          , insertts
+          , eventts
+          , d1_periodid
+          , report_count
+          , dieback_count
+          , energysaving_count
+          , error_count
+          , extended_count
+          , full_count
+          , offline_count
+          , powerup_count
+          , redundancy_count
+          , safetystop_count
+          , spare_count
+          , started_count
+          , starting_count
+          , stopped_count
+          , stopping_count
+          , unknown_count
+          , warning_count
+          , operational_on
+          , operational
+          , available
+          , dieback_seconds )
+          values
+          ( c_rec.h1_periodid
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.subject
+          , sys_extract_utc(systimestamp)
+          , c_rec.eventts
+          , c_rec.d1_periodid
+          , c_rec.report_count
+          , c_rec.dieback_count
+          , c_rec.energysaving_count
+          , c_rec.error_count
+          , c_rec.extended_count
+          , c_rec.full_count
+          , c_rec.offline_count
+          , c_rec.powerup_count
+          , c_rec.redundancy_count
+          , c_rec.safetystop_count
+          , c_rec.spare_count
+          , c_rec.started_count
+          , c_rec.starting_count
+          , c_rec.stopped_count
+          , c_rec.stopping_count
+          , c_rec.unknown_count
+          , c_rec.warning_count
+          , c_rec.operational_on
+          , c_rec.operational
+          , c_rec.available
+          , c_rec.dieback_seconds );
+        exception when dup_val_on_index then
+          
+          update fact_generalstatus_agg_h1 set insertts = sys_extract_utc(systimestamp)
+          , report_count = c_rec.report_count
+          , dieback_count = c_rec.dieback_count
+          , energysaving_count = c_rec.energysaving_count
+          , error_count = c_rec.error_count
+          , extended_count = c_rec.extended_count
+          , full_count = c_rec.full_count
+          , offline_count = c_rec.offline_count
+          , powerup_count = c_rec.powerup_count
+          , redundancy_count = c_rec.redundancy_count
+          , safetystop_count = c_rec.safetystop_count
+          , spare_count = c_rec.spare_count
+          , started_count = c_rec.started_count
+          , starting_count = c_rec.starting_count
+          , stopped_count = c_rec.stopped_count
+          , stopping_count = c_rec.stopping_count
+          , unknown_count = c_rec.unknown_count
+          , warning_count = c_rec.warning_count
+          , operational_on = c_rec.operational_on
+          , operational = c_rec.operational
+          , available = c_rec.available
+          , dieback_seconds = c_rec.dieback_seconds
+          where h1_periodid = c_rec.h1_periodid
+          and areaid = c_rec.areaid
+          and zoneid = c_rec.zoneid
+          and equipmentid = c_rec.equipmentid
+          and subject = c_rec.subject;
+
+          if sql%rowcount <> 1 then
+            bpi_log.raise_fatal_error(l_con_proc_name, 'UPDATE FACT_GENERALSTATUS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)
+            ||',ISC='||to_char(c_rec.areaid)||'.'||to_char(c_rec.zoneid)||'.'||to_char(c_rec.equipmentid));
+          end if;
+        end;
+        commit;
+        l_count := l_count + 1;
+      end loop;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.'
+                         );
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+procedure segmentstates_agg_h1 is
+l_con_proc_name constant varchar2(61) := g_con_package||'.SEGMENTSTATES_AGG_H1';
+l_h1_periodid_start number(19) := 0;
+l_h1_periodid_last number(19) := 0;
+l_h1_periodid_end number(19) := 0;
+l_count number := 0;
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+l_overlap number := 1;
+
+cursor c_metrics(c_periodid_start number, c_periodid_end number, c_maxrecs number) is
+select * from
+( select h1_periodid
+  , segmentid
+  , period.to_stamp(h1_periodid, 'H1') as eventts
+  , period.periodid(h1_periodid, 'D1') as d1_periodid
+  , sum(report_count) as report_count
+  , 1 - round(sum(1-operational_availability)/12,7) as operational_availability
+  , 1 - round(sum(1-technical_availability)/12,7) as technical_availability
+  , 1 - round(sum(1-safety_availability)/12,7) as safety_availability
+  from fact_segmentstates_agg_m5
+  where m5_periodid between c_periodid_start and c_periodid_end
+  and eventts >= period.startts(c_periodid_start) 
+  group by h1_periodid, segmentid
+) where rownum < c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      l_overlap := cmn_common.get_parameter_value('AvailabilityH1PeriodOverlap');
+      
+      if l_overlap <> trunc(l_overlap) then
+        l_overlap := trunc(l_overlap) + 1;
+      end if;
+    exception when others then
+      l_overlap := 3;
+    end;
+
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+      l_conf_rec.max_measurements := 5000;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+       viu_info.operator_info( viu_constant.c_ifo_bpidebuginfo, l_con_proc_name, viu_info.c_severity_warning, null
+                            , l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).' );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+
+      select max(h1_periodid) into l_h1_periodid_last from fact_segmentstates_agg_h1;
+
+      l_h1_periodid_end := period.periodid(sysdate + 1/24, 'H1');  
+      l_h1_periodid_start := l_h1_periodid_end - (l_overlap * 3600); 
+      
+
+      if l_h1_periodid_last is not null then
+        l_h1_periodid_last := period.periodid(l_h1_periodid_last, 'H1'); 
+        l_h1_periodid_start := least(l_h1_periodid_last, l_h1_periodid_start);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Using AvailabilityH1PeriodOverlap '
+                                                  ||to_char(l_overlap)||'. Processing Metrics with PERIODID between '
+                                                  ||to_char(l_h1_periodid_start)||' and '||to_char(l_h1_periodid_end)
+                                                  ||', last was '||to_char(l_h1_periodid_last)
+                         );
+      for c_rec in c_metrics(l_h1_periodid_start, l_h1_periodid_end, l_maxrecs) loop
+        begin
+          insert into fact_segmentstates_agg_h1
+          ( h1_periodid
+          , segmentid
+          , insertts
+          , eventts
+          , d1_periodid
+          , report_count
+          , operational_availability
+          , technical_availability
+          , safety_availability )
+          values
+          ( c_rec.h1_periodid
+          , c_rec.segmentid
+          , sys_extract_utc(systimestamp)
+          , c_rec.eventts
+          , c_rec.d1_periodid
+          , c_rec.report_count
+          , c_rec.operational_availability
+          , c_rec.technical_availability
+          , c_rec.safety_availability );
+        exception when dup_val_on_index then
+          
+          update fact_segmentstates_agg_h1 set insertts = sys_extract_utc(systimestamp)
+          , report_count = c_rec.report_count
+          , operational_availability = c_rec.operational_availability
+          , technical_availability = c_rec.technical_availability
+          , safety_availability = c_rec.safety_availability
+          where h1_periodid = c_rec.h1_periodid
+          and segmentid = c_rec.segmentid;
+
+          if sql%rowcount <> 1 then
+            bpi_log.raise_fatal_error(l_con_proc_name, 'UPDATE FACT_SEGMENTSTATES_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)
+            ||', SEGMENTID='||to_char(c_rec.segmentid));
+          end if;
+        end;
+        commit;
+        l_count := l_count + 1;
+      end loop;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.'
+                         );
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+procedure routeavailability_agg_h1 is
+l_con_proc_name constant varchar2(61) := g_con_package||'.ROUTEAVAILABILITY_AGG_H1';
+l_h1_periodid_start number(19) := 0;
+l_h1_periodid_last number(19) := 0;
+l_h1_periodid_end number(19) := 0;
+l_count number := 0;
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+l_overlap number := 1;
+
+cursor c_metrics(c_periodid_start number, c_periodid_end number, c_maxrecs number) is
+select * from
+( select h1_periodid
+  , route_id
+  , period.to_stamp(h1_periodid, 'H1') as eventts
+  , period.periodid(h1_periodid, 'D1') as d1_periodid
+  , trunc(avg(operational_availability), 6) as operational_availability
+  , trunc(avg(technical_availability), 6) as technical_availability
+  , trunc(avg(safety_availability), 6) as safety_availability
+  from fact_routeavailability_agg_m5
+  where m5_periodid between c_periodid_start and c_periodid_end
+  and eventts >= period.startts(c_periodid_start) 
+  group by h1_periodid, route_id
+) where rownum < c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      l_overlap := cmn_common.get_parameter_value('AvailabilityH1PeriodOverlap');
+      
+      if l_overlap <> trunc(l_overlap) then
+        l_overlap := trunc(l_overlap) + 1;
+      end if;
+    exception when others then
+      l_overlap := 3;
+    end;
+
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+      l_conf_rec.max_measurements := 5000;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+       viu_info.operator_info( viu_constant.c_ifo_bpidebuginfo, l_con_proc_name, viu_info.c_severity_warning, null
+                            , l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).' );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+
+      select max(h1_periodid) into l_h1_periodid_last from fact_routeavailability_agg_h1;
+
+      l_h1_periodid_end := period.periodid(sysdate + 1/24, 'H1');  
+      l_h1_periodid_start := l_h1_periodid_end - (l_overlap * 3600); 
+      
+
+      if l_h1_periodid_last is not null then
+        l_h1_periodid_last := period.periodid(l_h1_periodid_last, 'H1'); 
+        l_h1_periodid_start := least(l_h1_periodid_last, l_h1_periodid_start);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Using AvailabilityH1PeriodOverlap '
+                                                  ||to_char(l_overlap)||'. Processing Metrics with PERIODID between '
+                                                  ||to_char(l_h1_periodid_start)||' and '||to_char(l_h1_periodid_end)
+                                                  ||', last was '||to_char(l_h1_periodid_last)
+                         );
+      for c_rec in c_metrics(l_h1_periodid_start, l_h1_periodid_end, l_maxrecs) loop
+        begin
+          insert into fact_routeavailability_agg_h1
+          ( h1_periodid
+          , route_id
+          , insertts
+          , eventts
+          , d1_periodid
+          , operational_availability
+          , technical_availability
+          , safety_availability )
+          values
+          ( c_rec.h1_periodid
+          , c_rec.route_id
+          , sys_extract_utc(systimestamp)
+          , c_rec.eventts
+          , c_rec.d1_periodid
+          , c_rec.operational_availability
+          , c_rec.technical_availability
+          , c_rec.safety_availability );
+        exception when dup_val_on_index then
+          
+          update fact_routeavailability_agg_h1 set insertts = sys_extract_utc(systimestamp)
+          , operational_availability = c_rec.operational_availability
+          , technical_availability = c_rec.technical_availability
+          , safety_availability = c_rec.safety_availability
+          where h1_periodid = c_rec.h1_periodid
+          and route_id = c_rec.route_id;
+
+          if sql%rowcount <> 1 then
+            bpi_log.raise_fatal_error(l_con_proc_name, 'UPDATE FACT_ROUTEAVAILABILITY_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)
+            ||', ROUTE_ID='||to_char(c_rec.route_id));
+          end if;
+        end;
+        commit;
+        l_count := l_count + 1;
+      end loop;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.'
+                         );
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+
+
+
+procedure applogging_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.APPLOGGING_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, host, processid, logmessageseverity, logmessageid, applicationelementid, sessionid, subcomponent, threadid
+, sum(number_of_logs) as number_of_logs
+from fact_applogging_agg_m5
+where id > c_id
+group by h1_periodid
+, host, processid, logmessageseverity, logmessageid, applicationelementid, sessionid, subcomponent, threadid
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_host fact_applogging_agg_m5.host%type, c_processid fact_applogging_agg_m5.processid%type, c_logmessageseverity fact_applogging_agg_m5.logmessageseverity%type, c_logmessageid fact_applogging_agg_m5.logmessageid%type, c_applicationelementid fact_applogging_agg_m5.applicationelementid%type, c_sessionid fact_applogging_agg_m5.sessionid%type, c_subcomponent fact_applogging_agg_m5.subcomponent%type, c_threadid fact_applogging_agg_m5.threadid%type) is
+select sum(number_of_logs) as number_of_logs
+from fact_applogging_agg_m5
+where h1_periodid = c_h1_periodid and host = c_host and processid = c_processid and logmessageseverity = c_logmessageseverity and logmessageid = c_logmessageid and applicationelementid = c_applicationelementid and sessionid = c_sessionid and subcomponent = c_subcomponent and threadid = c_threadid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_applogging_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_applogging_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , host
+          , processid
+          , logmessageseverity
+          , logmessageid
+          , applicationelementid
+          , sessionid
+          , subcomponent
+          , threadid
+          , number_of_logs
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.host
+          , c_rec.processid
+          , c_rec.logmessageseverity
+          , c_rec.logmessageid
+          , c_rec.applicationelementid
+          , c_rec.sessionid
+          , c_rec.subcomponent
+          , c_rec.threadid
+          , c_rec.number_of_logs
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.host,c_rec.processid,c_rec.logmessageseverity,c_rec.logmessageid,c_rec.applicationelementid,c_rec.sessionid,c_rec.subcomponent,c_rec.threadid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_applogging_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_logs = measure_rec.number_of_logs
+          where h1_periodid = c_rec.h1_periodid
+          and host = c_rec.host
+          and processid = c_rec.processid
+          and logmessageseverity = c_rec.logmessageseverity
+          and logmessageid = c_rec.logmessageid
+          and applicationelementid = c_rec.applicationelementid
+          and sessionid = c_rec.sessionid
+          and subcomponent = c_rec.subcomponent
+          and threadid = c_rec.threadid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_APPLOGGING_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+procedure bagsummaries_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.BAGSUMMARIES_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, sum(number_of_bags) as number_of_bags
+, sum(deregistered_bags) as deregistered_bags
+, sum(crew_bags) as crew_bags
+, sum(rush_bags) as rush_bags
+, sum(non_conveyables) as non_conveyables
+, sum(operator_delays) as operator_delays
+, sum(manual_identifications) as manual_identifications
+, sum(system_time_oks) as system_time_oks
+, sum(system_time_w1s) as system_time_w1s
+, sum(system_time_w2s) as system_time_w2s
+, sum(system_time_w3s) as system_time_w3s
+, sum(system_attributables) as system_attributables
+, sum(lost_bags) as lost_bags
+, sum(recovered_bags) as recovered_bags
+, sum(bags_sorted_correctly) as bags_sorted_correctly
+, sum(bags_not_sorted) as bags_not_sorted
+, sum(bags_stored) as bags_stored
+, sum(bags_stored_outflow) as bags_stored_outflow
+, sum(sum_transport_exceptions) as sum_transport_exceptions
+, sum(sum_operator_delays) as sum_operator_delays
+, sum(sum_durations) as sum_durations
+, max(dur_max_rp_pi) as dur_max_rp_pi
+, max(dur_max_pr_tr) as dur_max_pr_tr
+, max(dur_max_ti_pi) as dur_max_ti_pi
+, max(dur_max_tr_ti) as dur_max_tr_ti
+, max(dur_max_pir_pi) as dur_max_pir_pi
+, sum(bags_in_early) as bags_in_early
+, sum(bags_in_time) as bags_in_time
+, sum(bags_in_critical) as bags_in_critical
+, sum(bags_in_toolate) as bags_in_toolate
+, sum(bags_out_early) as bags_out_early
+, sum(bags_out_ontime) as bags_out_ontime
+, sum(bags_out_expedite) as bags_out_expedite
+, sum(bags_out_late) as bags_out_late
+, sum(bags_out_missed) as bags_out_missed
+, sum(bags_screen_l1) as bags_screen_l1
+, sum(bags_screen_l2) as bags_screen_l2
+, sum(bags_screen_l3) as bags_screen_l3
+, sum(bags_screen_l4) as bags_screen_l4
+, sum(bags_screen_l5) as bags_screen_l5
+, sum(bags_not_screened) as bags_not_screened
+, sum(local_bags) as local_bags
+, sum(transfer_bags) as transfer_bags
+, sum(auto_identifications) as auto_identifications
+, sum(localbags_out_missed)as localbags_out_missed
+, sum(transferbags_out_missed) as transferbags_out_missed
+, sum(bags_screen_req) as bags_screen_req
+, sum(source_unknown_bags) as source_unknown_bags
+from fact_bagsummaries_agg_m5
+where id > c_id
+group by h1_periodid
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number) is
+select sum(number_of_bags) as number_of_bags
+, sum(deregistered_bags) as deregistered_bags
+, sum(crew_bags) as crew_bags
+, sum(rush_bags) as rush_bags
+, sum(non_conveyables) as non_conveyables
+, sum(operator_delays) as operator_delays
+, sum(manual_identifications) as manual_identifications
+, sum(system_time_oks) as system_time_oks
+, sum(system_time_w1s) as system_time_w1s
+, sum(system_time_w2s) as system_time_w2s
+, sum(system_time_w3s) as system_time_w3s
+, sum(system_attributables) as system_attributables
+, sum(lost_bags) as lost_bags
+, sum(recovered_bags) as recovered_bags
+, sum(bags_sorted_correctly) as bags_sorted_correctly
+, sum(bags_not_sorted) as bags_not_sorted
+, sum(bags_stored) as bags_stored
+, sum(bags_stored_outflow) as bags_stored_outflow
+, sum(sum_transport_exceptions) as sum_transport_exceptions
+, sum(sum_operator_delays) as sum_operator_delays
+, sum(sum_durations) as sum_durations
+, max(dur_max_rp_pi) as dur_max_rp_pi
+, max(dur_max_pr_tr) as dur_max_pr_tr
+, max(dur_max_ti_pi) as dur_max_ti_pi
+, max(dur_max_tr_ti) as dur_max_tr_ti
+, max(dur_max_pir_pi) as dur_max_pir_pi
+, sum(bags_in_early) as bags_in_early
+, sum(bags_in_time) as bags_in_time
+, sum(bags_in_critical) as bags_in_critical
+, sum(bags_in_toolate) as bags_in_toolate
+, sum(bags_out_early) as bags_out_early
+, sum(bags_out_ontime) as bags_out_ontime
+, sum(bags_out_expedite) as bags_out_expedite
+, sum(bags_out_late) as bags_out_late
+, sum(bags_out_missed) as bags_out_missed
+, sum(bags_screen_l1) as bags_screen_l1
+, sum(bags_screen_l2) as bags_screen_l2
+, sum(bags_screen_l3) as bags_screen_l3
+, sum(bags_screen_l4) as bags_screen_l4
+, sum(bags_screen_l5) as bags_screen_l5
+, sum(bags_not_screened) as bags_not_screened
+, sum(local_bags) as local_bags
+, sum(transfer_bags) as transfer_bags
+, sum(auto_identifications) as auto_identifications
+, sum(localbags_out_missed)as localbags_out_missed
+, sum(transferbags_out_missed) as transferbags_out_missed
+, sum(bags_screen_req) as bags_screen_req
+, sum(source_unknown_bags) as source_unknown_bags
+from fact_bagsummaries_agg_m5
+where h1_periodid = c_h1_periodid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_bagsummaries_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_bagsummaries_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , number_of_bags
+          , deregistered_bags
+          , crew_bags
+          , rush_bags
+          , non_conveyables
+          , operator_delays
+          , manual_identifications
+          , system_time_oks
+          , system_time_w1s
+          , system_time_w2s
+          , system_time_w3s
+          , system_attributables
+          , lost_bags
+          , recovered_bags
+          , bags_sorted_correctly
+		  , bags_not_sorted
+          , bags_stored
+		  , bags_stored_outflow
+          , sum_transport_exceptions
+          , sum_operator_delays
+          , sum_durations
+          , dur_max_rp_pi
+          , dur_max_pr_tr
+          , dur_max_ti_pi
+          , dur_max_tr_ti
+          , dur_max_pir_pi
+		  , bags_in_early
+		  , bags_in_time
+          , bags_in_critical
+		  , bags_in_toolate
+		  , bags_out_early
+		  , bags_out_ontime
+		  , bags_out_expedite
+		  , bags_out_late
+		  , bags_out_missed
+		  , bags_screen_l1
+		  , bags_screen_l2
+		  , bags_screen_l3
+		  , bags_screen_l4
+		  , bags_screen_l5
+		  , bags_not_screened
+		  , local_bags
+		  , transfer_bags
+		  , auto_identifications
+		  , localbags_out_missed
+		  , transferbags_out_missed
+		  , bags_screen_req
+		  , source_unknown_bags
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.number_of_bags
+          , c_rec.deregistered_bags
+          , c_rec.crew_bags
+          , c_rec.rush_bags
+          , c_rec.non_conveyables
+          , c_rec.operator_delays
+          , c_rec.manual_identifications
+          , c_rec.system_time_oks
+          , c_rec.system_time_w1s
+          , c_rec.system_time_w2s
+          , c_rec.system_time_w3s
+          , c_rec.system_attributables
+          , c_rec.lost_bags
+          , c_rec.recovered_bags
+          , c_rec.bags_sorted_correctly
+		  , c_rec.bags_not_sorted
+          , c_rec.bags_stored
+		  , c_rec.bags_stored_outflow
+          , c_rec.sum_transport_exceptions
+          , c_rec.sum_operator_delays
+          , c_rec.sum_durations
+          , c_rec.dur_max_rp_pi
+          , c_rec.dur_max_pr_tr
+          , c_rec.dur_max_ti_pi
+          , c_rec.dur_max_tr_ti
+          , c_rec.dur_max_pir_pi
+		  , c_rec.bags_in_early
+		  , c_rec.bags_in_time
+          , c_rec.bags_in_critical
+		  , c_rec.bags_in_toolate
+		  , c_rec.bags_out_early
+		  , c_rec.bags_out_ontime
+		  , c_rec.bags_out_expedite
+		  , c_rec.bags_out_late
+		  , c_rec.bags_out_missed
+		  , c_rec.bags_screen_l1
+		  , c_rec.bags_screen_l2
+		  , c_rec.bags_screen_l3
+		  , c_rec.bags_screen_l4
+		  , c_rec.bags_screen_l5
+		  , c_rec.bags_not_screened
+		  , c_rec.local_bags
+		  , c_rec.transfer_bags
+		  , c_rec.auto_identifications
+		  , c_rec.localbags_out_missed
+		  , c_rec.transferbags_out_missed
+		  , c_rec.bags_screen_req
+		  , c_rec.source_unknown_bags
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_bagsummaries_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_bags = measure_rec.number_of_bags
+          , deregistered_bags = measure_rec.deregistered_bags
+          , crew_bags = measure_rec.crew_bags
+          , rush_bags = measure_rec.rush_bags
+          , non_conveyables = measure_rec.non_conveyables
+          , operator_delays = measure_rec.operator_delays
+          , manual_identifications = measure_rec.manual_identifications
+          , system_time_oks = measure_rec.system_time_oks
+          , system_time_w1s = measure_rec.system_time_w1s
+          , system_time_w2s = measure_rec.system_time_w2s
+          , system_time_w3s = measure_rec.system_time_w3s
+          , system_attributables = measure_rec.system_attributables
+          , lost_bags = measure_rec.lost_bags
+          , recovered_bags = measure_rec.recovered_bags
+          , bags_sorted_correctly = measure_rec.bags_sorted_correctly
+		  , bags_not_sorted = measure_rec.bags_not_sorted
+          , bags_stored = measure_rec.bags_stored
+		  , bags_stored_outflow = measure_rec.bags_stored_outflow
+          , sum_transport_exceptions = measure_rec.sum_transport_exceptions
+          , sum_operator_delays = measure_rec.sum_operator_delays
+          , sum_durations = measure_rec.sum_durations
+          , dur_max_rp_pi = measure_rec.dur_max_rp_pi
+          , dur_max_pr_tr = measure_rec.dur_max_pr_tr
+          , dur_max_ti_pi = measure_rec.dur_max_ti_pi
+          , dur_max_tr_ti = measure_rec.dur_max_tr_ti
+          , dur_max_pir_pi = measure_rec.dur_max_pir_pi
+		  , bags_in_early = measure_rec.bags_in_early
+		  , bags_in_time = measure_rec.bags_in_time
+          , bags_in_critical = measure_rec.bags_in_critical
+		  , bags_in_toolate = measure_rec.bags_in_toolate
+		  , bags_out_early = measure_rec.bags_out_early
+		  , bags_out_ontime = measure_rec.bags_out_ontime
+		  , bags_out_expedite = measure_rec.bags_out_expedite
+		  , bags_out_late = measure_rec.bags_out_late
+		  , bags_out_missed = measure_rec.bags_out_missed
+		  , bags_screen_l1 = measure_rec.bags_screen_l1
+		  , bags_screen_l2 = measure_rec.bags_screen_l2
+		  , bags_screen_l3 = measure_rec.bags_screen_l3
+		  , bags_screen_l4 = measure_rec.bags_screen_l4
+		  , bags_screen_l5 = measure_rec.bags_screen_l5
+		  , bags_not_screened = measure_rec.bags_not_screened
+		  , local_bags = measure_rec.local_bags
+		  , transfer_bags = measure_rec.transfer_bags
+		  , auto_identifications = measure_rec.auto_identifications
+		  , localbags_out_missed = measure_rec.localbags_out_missed
+		  , transferbags_out_missed = measure_rec.transferbags_out_missed
+		  , bags_screen_req = measure_rec.bags_screen_req
+		  , source_unknown_bags = measure_rec.source_unknown_bags
+          where h1_periodid = c_rec.h1_periodid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_BAGSUMMARIES_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+procedure deregisters_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.DEREGISTERS_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, logistic_step_description, stype
+, sum(number_of_deregisterpackages) as number_of_deregisterpackages
+, sum(missings) as missings
+, sum(handovers) as handovers
+, sum(endoftracings) as endoftracings
+from fact_deregisters_agg_m5
+where id > c_id
+group by h1_periodid
+, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, logistic_step_description, stype
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_areaid fact_deregisters_agg_m5.areaid%type, c_zoneid fact_deregisters_agg_m5.zoneid%type, c_equipmentid fact_deregisters_agg_m5.equipmentid%type) is
+select sum(number_of_deregisterpackages) as number_of_deregisterpackages
+, sum(missings) as missings
+, sum(handovers) as handovers
+, sum(endoftracings) as endoftracings
+from fact_deregisters_agg_m5
+where h1_periodid = c_h1_periodid and areaid = c_areaid and zoneid = c_zoneid and equipmentid = c_equipmentid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_deregisters_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_deregisters_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , nodeid
+          , areaid
+          , zoneid
+          , equipmentid
+          , station_id
+          , end_user_id
+          , mark_code
+          , subjecttype
+          , subsystem_type
+          , process_step
+          , logistic_step_description
+          , stype
+          , number_of_deregisterpackages
+          , missings
+          , handovers
+          , endoftracings
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.nodeid
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.station_id
+          , c_rec.end_user_id
+          , c_rec.mark_code
+          , c_rec.subjecttype
+          , c_rec.subsystem_type
+          , c_rec.process_step
+          , c_rec.logistic_step_description
+          , c_rec.stype
+          , c_rec.number_of_deregisterpackages
+          , c_rec.missings
+          , c_rec.handovers
+          , c_rec.endoftracings
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.areaid,c_rec.zoneid,c_rec.equipmentid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_deregisters_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_deregisterpackages = measure_rec.number_of_deregisterpackages
+          , missings = measure_rec.missings
+          , handovers = measure_rec.handovers
+          , endoftracings = measure_rec.endoftracings
+          where h1_periodid = c_rec.h1_periodid
+          and areaid = c_rec.areaid
+          and zoneid = c_rec.zoneid
+          and equipmentid = c_rec.equipmentid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_DEREGISTERS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+procedure extmetrics_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.EXTMETRICS_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, statisticalid, family, subsystem_type, subjecttype, subjectid, areaid, zoneid, equipmentid, sampletype, process_step, mark_code, statistical, statistical_group, statistical_subgroup, unit
+, min(min_value) as min_value
+, max(max_value) as max_value
+, sum(sum_value) as sum_value
+, sum(number_of_messages) as number_of_messages
+from fact_extmetrics_agg_m5
+where id > c_id
+group by h1_periodid
+, statisticalid, family, subsystem_type, subjecttype, subjectid, areaid, zoneid, equipmentid, sampletype, process_step, mark_code, statistical, statistical_group, statistical_subgroup, unit
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_statisticalid fact_extmetrics_agg_m5.statisticalid%type, c_family fact_extmetrics_agg_m5.family%type,c_subsystem_type fact_extmetrics_agg_m5.subsystem_type%type, c_subjecttype fact_extmetrics_agg_m5.subjecttype%type, c_subjectid fact_extmetrics_agg_m5.subjectid%type, c_areaid fact_extmetrics_agg_m5.areaid%type, c_zoneid fact_extmetrics_agg_m5.zoneid%type, c_equipmentid fact_extmetrics_agg_m5.equipmentid%type, c_sampletype fact_extmetrics_agg_m5.sampletype%type) is
+select min(min_value) as min_value
+, max(max_value) as max_value
+, sum(sum_value) as sum_value
+, sum(number_of_messages) as number_of_messages
+from fact_extmetrics_agg_m5
+where h1_periodid = c_h1_periodid and statisticalid = c_statisticalid and family = c_family and subsystem_type = c_subsystem_type and subjecttype = c_subjecttype and subjectid = c_subjectid and areaid = c_areaid and zoneid = c_zoneid and equipmentid = c_equipmentid and sampletype = c_sampletype;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_extmetrics_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_extmetrics_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , statisticalid
+		  , family
+          , subsystem_type
+          , subjecttype
+          , subjectid
+          , areaid
+          , zoneid
+          , equipmentid
+          , sampletype
+          , process_step
+          , mark_code
+          , statistical
+          , statistical_group
+          , statistical_subgroup
+          , unit
+          , min_value
+          , max_value
+          , sum_value
+          , number_of_messages
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.statisticalid
+		  , c_rec.family
+          , c_rec.subsystem_type
+          , c_rec.subjecttype
+          , c_rec.subjectid
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.sampletype
+          , c_rec.process_step
+          , c_rec.mark_code
+          , c_rec.statistical
+          , c_rec.statistical_group
+          , c_rec.statistical_subgroup
+          , c_rec.unit
+          , c_rec.min_value
+          , c_rec.max_value
+          , c_rec.sum_value
+          , c_rec.number_of_messages
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.statisticalid,c_rec.family,c_rec.subsystem_type,c_rec.subjecttype,c_rec.subjectid,c_rec.areaid,c_rec.zoneid,c_rec.equipmentid,c_rec.sampletype);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_extmetrics_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , min_value = measure_rec.min_value
+          , max_value = measure_rec.max_value
+          , sum_value = measure_rec.sum_value
+          , number_of_messages = measure_rec.number_of_messages
+          where h1_periodid = c_rec.h1_periodid
+          and statisticalid = c_rec.statisticalid
+		  and family = c_rec.family
+          and subsystem_type = c_rec.subsystem_type
+          and subjecttype = c_rec.subjecttype
+          and subjectid = c_rec.subjectid
+          and areaid = c_rec.areaid
+          and zoneid = c_rec.zoneid
+          and equipmentid = c_rec.equipmentid
+          and sampletype = c_rec.sampletype
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_EXTMETRICS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+procedure idchanges_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.IDCHANGES_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, processid
+, sum(number_of_idchanges) as number_of_idchanges
+from fact_idchanges_agg_m5
+where id > c_id
+group by h1_periodid
+, processid
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_processid fact_idchanges_agg_m5.processid%type) is
+select sum(number_of_idchanges) as number_of_idchanges
+from fact_idchanges_agg_m5
+where h1_periodid = c_h1_periodid and processid = c_processid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_idchanges_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_idchanges_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , processid
+          , number_of_idchanges
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.processid
+          , c_rec.number_of_idchanges
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.processid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_idchanges_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_idchanges = measure_rec.number_of_idchanges
+          where h1_periodid = c_rec.h1_periodid
+          and processid = c_rec.processid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_IDCHANGES_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+procedure handoverreports_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.HANDOVERREPORTS_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+
+, sum(number_of_handovers) as number_of_handovers
+, sum(empty) as empty
+, sum(empty_normal) as empty_normal
+, sum(empty_occupied) as empty_occupied
+, sum(loaded) as loaded
+, sum(loaded_normal) as loaded_normal
+, sum(loaded_priority) as loaded_priority
+, sum(maintenance) as maintenance
+, sum(suspect_cart) as suspect_cart
+, sum(suspect_bag) as suspect_bag
+, sum(empty_carrier) as empty_carrier
+, sum(special_handling) as special_handling
+, sum(loaded_no_dest) as loaded_no_dest
+, sum(loaded_default_dest) as loaded_default_dest
+from fact_handoverreports_agg_m5
+where id > c_id
+group by h1_periodid
+
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number) is
+select sum(number_of_handovers) as number_of_handovers
+, sum(empty) as empty
+, sum(empty_normal) as empty_normal
+, sum(empty_occupied) as empty_occupied
+, sum(loaded) as loaded
+, sum(loaded_normal) as loaded_normal
+, sum(loaded_priority) as loaded_priority
+, sum(maintenance) as maintenance
+, sum(suspect_cart) as suspect_cart
+, sum(suspect_bag) as suspect_bag
+, sum(empty_carrier) as empty_carrier
+, sum(special_handling) as special_handling
+, sum(loaded_no_dest) as loaded_no_dest
+, sum(loaded_default_dest) as loaded_default_dest
+from fact_handoverreports_agg_m5
+where h1_periodid = c_h1_periodid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_handoverreports_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_handoverreports_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , number_of_handovers
+          , empty
+          , empty_normal
+          , empty_occupied
+          , loaded
+          , loaded_normal
+          , loaded_priority
+          , maintenance
+          , suspect_cart
+          , suspect_bag
+          , empty_carrier
+          , special_handling
+          , loaded_no_dest
+          , loaded_default_dest
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.number_of_handovers
+          , c_rec.empty
+          , c_rec.empty_normal
+          , c_rec.empty_occupied
+          , c_rec.loaded
+          , c_rec.loaded_normal
+          , c_rec.loaded_priority
+          , c_rec.maintenance
+          , c_rec.suspect_cart
+          , c_rec.suspect_bag
+          , c_rec.empty_carrier
+          , c_rec.special_handling
+          , c_rec.loaded_no_dest
+          , c_rec.loaded_default_dest
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_handoverreports_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_handovers = measure_rec.number_of_handovers
+          , empty = measure_rec.empty
+          , empty_normal = measure_rec.empty_normal
+          , empty_occupied = measure_rec.empty_occupied
+          , loaded = measure_rec.loaded
+          , loaded_normal = measure_rec.loaded_normal
+          , loaded_priority = measure_rec.loaded_priority
+          , maintenance = measure_rec.maintenance
+          , suspect_cart = measure_rec.suspect_cart
+          , suspect_bag = measure_rec.suspect_bag
+          , empty_carrier = measure_rec.empty_carrier
+          , special_handling = measure_rec.special_handling
+          , loaded_no_dest = measure_rec.loaded_no_dest
+          , loaded_default_dest = measure_rec.loaded_default_dest
+          where h1_periodid = c_rec.h1_periodid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_HANDOVERREPORTS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+
+procedure registers_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.REGISTERS_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, logistic_step_description, stype
+, sum(number_of_registerpackages) as number_of_registerpackages
+, sum(at_initial_reg) as at_initial_reg
+, sum(unexpected) as unexpected
+from fact_registers_agg_m5
+where id > c_id
+group by h1_periodid
+, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, logistic_step_description, stype
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_areaid fact_registers_agg_m5.areaid%type, c_zoneid fact_registers_agg_m5.zoneid%type, c_equipmentid fact_registers_agg_m5.equipmentid%type) is
+select sum(number_of_registerpackages) as number_of_registerpackages
+, sum(at_initial_reg) as at_initial_reg
+, sum(unexpected) as unexpected
+from fact_registers_agg_m5
+where h1_periodid = c_h1_periodid and areaid = c_areaid and zoneid = c_zoneid and equipmentid = c_equipmentid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_registers_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_registers_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , nodeid
+          , areaid
+          , zoneid
+          , equipmentid
+          , station_id
+          , end_user_id
+          , mark_code
+          , subjecttype
+          , subsystem_type
+          , process_step
+          , logistic_step_description
+          , stype
+          , number_of_registerpackages
+          , at_initial_reg
+          , unexpected
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.nodeid
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.station_id
+          , c_rec.end_user_id
+          , c_rec.mark_code
+          , c_rec.subjecttype
+          , c_rec.subsystem_type
+          , c_rec.process_step
+          , c_rec.logistic_step_description
+          , c_rec.stype
+          , c_rec.number_of_registerpackages
+          , c_rec.at_initial_reg
+          , c_rec.unexpected
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.areaid,c_rec.zoneid,c_rec.equipmentid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_registers_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_registerpackages = measure_rec.number_of_registerpackages
+          , at_initial_reg = measure_rec.at_initial_reg
+          , unexpected = measure_rec.unexpected
+          where h1_periodid = c_rec.h1_periodid
+          and areaid = c_rec.areaid
+          and zoneid = c_rec.zoneid
+          and equipmentid = c_rec.equipmentid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_REGISTERS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+procedure scanresults_agg_agg_h1 is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.SCANRESULTS_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, stype
+, sum(number_of_scanresults) as number_of_scanresults
+, sum(no_reads) as no_reads
+, sum(normal_reads) as normal_reads
+, sum(multi_reads) as multi_reads
+from fact_scanresults_agg_m5
+where id > c_id
+group by h1_periodid
+, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, stype
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_areaid fact_scanresults_agg_m5.areaid%type, c_zoneid fact_scanresults_agg_m5.zoneid%type, c_equipmentid fact_scanresults_agg_m5.equipmentid%type) is
+select sum(number_of_scanresults) as number_of_scanresults
+, sum(no_reads) as no_reads
+, sum(normal_reads) as normal_reads
+, sum(multi_reads) as multi_reads
+from fact_scanresults_agg_m5
+where h1_periodid = c_h1_periodid and areaid = c_areaid and zoneid = c_zoneid and equipmentid = c_equipmentid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_scanresults_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_scanresults_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , nodeid
+          , areaid
+          , zoneid
+          , equipmentid
+          , station_id
+          , end_user_id
+          , mark_code
+          , subjecttype
+          , subsystem_type
+          , process_step
+          , stype
+          , number_of_scanresults
+          , no_reads
+          , normal_reads
+          , multi_reads
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.nodeid
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.station_id
+          , c_rec.end_user_id
+          , c_rec.mark_code
+          , c_rec.subjecttype
+          , c_rec.subsystem_type
+          , c_rec.process_step
+          , c_rec.stype
+          , c_rec.number_of_scanresults
+          , c_rec.no_reads
+          , c_rec.normal_reads
+          , c_rec.multi_reads
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.areaid,c_rec.zoneid,c_rec.equipmentid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_scanresults_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_scanresults = measure_rec.number_of_scanresults
+          , no_reads = measure_rec.no_reads
+          , normal_reads = measure_rec.normal_reads
+          , multi_reads = measure_rec.multi_reads
+          where h1_periodid = c_rec.h1_periodid
+          and areaid = c_rec.areaid
+          and zoneid = c_rec.zoneid
+          and equipmentid = c_rec.equipmentid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_SCANRESULTS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+procedure screen_analysis_agg_agg_h1 is
+l_max_id fact_screen_analysis_agg_h1.id%type := 0;
+l_curr_id fact_screen_analysis_agg_h1.id%type := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.SCREEN_ANALYSIS_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, areaid, zoneid, equipmentid
+, screening_process_id
+, screening_process_name
+, nodeid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, stype
+, sum(number_of_screeningresults) as number_of_screeningresults
+, sum(cleared) as cleared
+, sum(nodecision) as nodecision
+, sum(uncleared) as uncleared
+, sum(l1_cleared) as l1_cleared
+, sum(l1_nodecision) as l1_nodecision
+, sum(l1_uncleared) as l1_uncleared
+, sum(l1_required_cleared) as l1_required_cleared
+, sum(l1_required_nodecision) as l1_required_nodecision
+, sum(l1_required_uncleared) as l1_required_uncleared
+, sum(l2_cleared) as l2_cleared
+, sum(l2_nodecision) as l2_nodecision
+, sum(l2_uncleared) as l2_uncleared
+, sum(l2_required_cleared) as l2_required_cleared
+, sum(l2_required_nodecision) as l2_required_nodecision
+, sum(l2_required_uncleared) as l2_required_uncleared
+, sum(l3_cleared) as l3_cleared
+, sum(l3_nodecision) as l3_nodecision
+, sum(l3_uncleared) as l3_uncleared
+, sum(l3_required_cleared) as l3_required_cleared
+, sum(l3_required_nodecision) as l3_required_nodecision
+, sum(l3_required_uncleared) as l3_required_uncleared
+, sum(l4_cleared) as l4_cleared
+, sum(l4_nodecision) as l4_nodecision
+, sum(l4_uncleared) as l4_uncleared
+, sum(l4_required_cleared) as l4_required_cleared
+, sum(l4_required_nodecision) as l4_required_nodecision
+, sum(l4_required_uncleared) as l4_required_uncleared
+, sum(l5_cleared) as l5_cleared
+, sum(l5_nodecision) as l5_nodecision
+, sum(l5_uncleared) as l5_uncleared
+, sum(l5_required_cleared) as l5_required_cleared
+, sum(l5_required_nodecision) as l5_required_nodecision
+, sum(l5_required_uncleared) as l5_required_uncleared
+from fact_screen_analysis_agg_m5
+where id > c_id
+group by h1_periodid
+, areaid, zoneid, equipmentid
+, screening_process_id
+, screening_process_name
+, nodeid, station_id, end_user_id, mark_code, subjecttype, subsystem_type, process_step, stype
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_areaid fact_screen_analysis_agg_m5.areaid%type, c_zoneid fact_screen_analysis_agg_m5.zoneid%type, c_equipmentid fact_screen_analysis_agg_m5.equipmentid%type, c_screening_process_id fact_screen_analysis_agg_m5.screening_process_id%type) is
+select sum(number_of_screeningresults) as number_of_screeningresults
+, sum(cleared) as cleared
+, sum(nodecision) as nodecision
+, sum(uncleared) as uncleared
+, sum(l1_cleared) as l1_cleared
+, sum(l1_nodecision) as l1_nodecision
+, sum(l1_uncleared) as l1_uncleared
+, sum(l1_required_cleared) as l1_required_cleared
+, sum(l1_required_nodecision) as l1_required_nodecision
+, sum(l1_required_uncleared) as l1_required_uncleared
+, sum(l2_cleared) as l2_cleared
+, sum(l2_nodecision) as l2_nodecision
+, sum(l2_uncleared) as l2_uncleared
+, sum(l2_required_cleared) as l2_required_cleared
+, sum(l2_required_nodecision) as l2_required_nodecision
+, sum(l2_required_uncleared) as l2_required_uncleared
+, sum(l3_cleared) as l3_cleared
+, sum(l3_nodecision) as l3_nodecision
+, sum(l3_uncleared) as l3_uncleared
+, sum(l3_required_cleared) as l3_required_cleared
+, sum(l3_required_nodecision) as l3_required_nodecision
+, sum(l3_required_uncleared) as l3_required_uncleared
+, sum(l4_cleared) as l4_cleared
+, sum(l4_nodecision) as l4_nodecision
+, sum(l4_uncleared) as l4_uncleared
+, sum(l4_required_cleared) as l4_required_cleared
+, sum(l4_required_nodecision) as l4_required_nodecision
+, sum(l4_required_uncleared) as l4_required_uncleared
+, sum(l5_cleared) as l5_cleared
+, sum(l5_nodecision) as l5_nodecision
+, sum(l5_uncleared) as l5_uncleared
+, sum(l5_required_cleared) as l5_required_cleared
+, sum(l5_required_nodecision) as l5_required_nodecision
+, sum(l5_required_uncleared) as l5_required_uncleared
+from fact_screen_analysis_agg_m5
+where h1_periodid = c_h1_periodid and areaid = c_areaid and zoneid = c_zoneid and equipmentid = c_equipmentid and (screening_process_id is null and c_screening_process_id is null or screening_process_id = c_screening_process_id);
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_screen_analysis_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_screen_analysis_agg_h1
+          ( id
+          , insertts
+          , updatets
+          , eventts
+          , h1_periodid
+          , d1_periodid
+          , areaid
+          , zoneid
+          , equipmentid
+          , screening_process_id
+          , screening_process_name
+          , nodeid
+          , station_id
+          , end_user_id
+          , mark_code
+          , subjecttype
+          , subsystem_type
+          , process_step
+          , stype
+          , number_of_screeningresults
+          , cleared
+          , nodecision
+          , uncleared
+          , l1_cleared
+          , l1_nodecision
+          , l1_uncleared
+          , l1_required_cleared
+          , l1_required_nodecision
+          , l1_required_uncleared
+          , l2_cleared
+          , l2_nodecision
+          , l2_uncleared
+          , l2_required_cleared
+          , l2_required_nodecision
+          , l2_required_uncleared
+          , l3_cleared
+          , l3_nodecision
+          , l3_uncleared
+          , l3_required_cleared
+          , l3_required_nodecision
+          , l3_required_uncleared
+          , l4_cleared
+          , l4_nodecision
+          , l4_uncleared
+          , l4_required_cleared
+          , l4_required_nodecision
+          , l4_required_uncleared
+          , l5_cleared
+          , l5_nodecision
+          , l5_uncleared
+          , l5_required_cleared
+          , l5_required_nodecision
+          , l5_required_uncleared
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.screening_process_id
+          , c_rec.screening_process_name
+          , c_rec.nodeid
+          , c_rec.station_id
+          , c_rec.end_user_id
+          , c_rec.mark_code
+          , c_rec.subjecttype
+          , c_rec.subsystem_type
+          , c_rec.process_step
+          , c_rec.stype
+          , c_rec.number_of_screeningresults
+          , c_rec.cleared
+          , c_rec.nodecision
+          , c_rec.uncleared
+          , c_rec.l1_cleared
+          , c_rec.l1_nodecision
+          , c_rec.l1_uncleared
+          , c_rec.l1_required_cleared
+          , c_rec.l1_required_nodecision
+          , c_rec.l1_required_uncleared
+          , c_rec.l2_cleared
+          , c_rec.l2_nodecision
+          , c_rec.l2_uncleared
+          , c_rec.l2_required_cleared
+          , c_rec.l2_required_nodecision
+          , c_rec.l2_required_uncleared
+          , c_rec.l3_cleared
+          , c_rec.l3_nodecision
+          , c_rec.l3_uncleared
+          , c_rec.l3_required_cleared
+          , c_rec.l3_required_nodecision
+          , c_rec.l3_required_uncleared
+          , c_rec.l4_cleared
+          , c_rec.l4_nodecision
+          , c_rec.l4_uncleared
+          , c_rec.l4_required_cleared
+          , c_rec.l4_required_nodecision
+          , c_rec.l4_required_uncleared
+          , c_rec.l5_cleared
+          , c_rec.l5_nodecision
+          , c_rec.l5_uncleared
+          , c_rec.l5_required_cleared
+          , c_rec.l5_required_nodecision
+          , c_rec.l5_required_uncleared
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.areaid,c_rec.zoneid,c_rec.equipmentid,c_rec.screening_process_id);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_screen_analysis_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_screeningresults = measure_rec.number_of_screeningresults
+          , cleared = measure_rec.cleared
+          , nodecision = measure_rec.nodecision
+          , uncleared = measure_rec.uncleared
+          , l1_cleared = measure_rec.l1_cleared
+          , l1_nodecision = measure_rec.l1_nodecision
+          , l1_uncleared = measure_rec.l1_uncleared
+          , l1_required_cleared = measure_rec.l1_required_cleared
+          , l1_required_nodecision = measure_rec.l1_required_nodecision
+          , l1_required_uncleared = measure_rec.l1_required_uncleared
+          , l2_cleared = measure_rec.l2_cleared
+          , l2_nodecision = measure_rec.l2_nodecision
+          , l2_uncleared = measure_rec.l2_uncleared
+          , l2_required_cleared = measure_rec.l2_required_cleared
+          , l2_required_nodecision = measure_rec.l2_required_nodecision
+          , l2_required_uncleared = measure_rec.l2_required_uncleared
+          , l3_cleared = measure_rec.l3_cleared
+          , l3_nodecision = measure_rec.l3_nodecision
+          , l3_uncleared = measure_rec.l3_uncleared
+          , l3_required_cleared = measure_rec.l3_required_cleared
+          , l3_required_nodecision = measure_rec.l3_required_nodecision
+          , l3_required_uncleared = measure_rec.l3_required_uncleared
+          , l4_cleared = measure_rec.l4_cleared
+          , l4_nodecision = measure_rec.l4_nodecision
+          , l4_uncleared = measure_rec.l4_uncleared
+          , l4_required_cleared = measure_rec.l4_required_cleared
+          , l4_required_nodecision = measure_rec.l4_required_nodecision
+          , l4_required_uncleared = measure_rec.l4_required_uncleared
+          , l5_cleared = measure_rec.l5_cleared
+          , l5_nodecision = measure_rec.l5_nodecision
+          , l5_uncleared = measure_rec.l5_uncleared
+          , l5_required_cleared = measure_rec.l5_required_cleared
+          , l5_required_nodecision = measure_rec.l5_required_nodecision
+          , l5_required_uncleared = measure_rec.l5_required_uncleared
+          where h1_periodid = c_rec.h1_periodid
+          and areaid = c_rec.areaid
+          and zoneid = c_rec.zoneid
+          and equipmentid = c_rec.equipmentid
+          and (screening_process_id is null and c_rec.screening_process_id is null or screening_process_id = c_rec.screening_process_id)
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_SCREEN_ANALYSIS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+procedure trackingreports_agg_agg_h1 is
+l_max_id fact_trackingreports_agg_h1.id%type := 0;
+l_curr_id fact_trackingreports_agg_h1.id%type := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.TRACKINGREPORTS_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, decisionlevel, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, family, subsystem_type, process_step, logistic_step_description, stype
+, sum(number_of_trackingreports) as number_of_trackingreports
+, sum(direction_ok) as direction_ok
+, sum(direction_failed) as direction_failed
+, sum(capacity_too_high) as capacity_too_high
+, sum(no_direction_lm_routing) as no_direction_lm_routing
+, sum(no_routing_default) as no_routing_default
+, sum(not_allowed_blocked_by_lm) as not_allowed_blocked_by_lm
+, sum(not_allowed_dimensions) as not_allowed_dimensions
+, sum(not_allowed_flow_control) as not_allowed_flow_control
+, sum(not_allowed_forced_direction) as not_allowed_forced_direction
+, sum(not_allowed_security) as not_allowed_security
+, sum(not_available_or_full) as not_available_or_full
+, sum(technical_failure) as technical_failure
+from fact_trackingreports_agg_m5
+where id > c_id
+group by h1_periodid
+, decisionlevel, nodeid, areaid, zoneid, equipmentid, station_id, end_user_id, mark_code, subjecttype, family, subsystem_type, process_step, logistic_step_description, stype
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_decisionlevel fact_trackingreports_agg_m5.decisionlevel%type, c_nodeid fact_trackingreports_agg_m5.nodeid%type, c_areaid fact_trackingreports_agg_m5.areaid%type, c_zoneid fact_trackingreports_agg_m5.zoneid%type, c_equipmentid fact_trackingreports_agg_m5.equipmentid%type) is
+select sum(number_of_trackingreports) as number_of_trackingreports
+, sum(direction_ok) as direction_ok
+, sum(direction_failed) as direction_failed
+, sum(capacity_too_high) as capacity_too_high
+, sum(no_direction_lm_routing) as no_direction_lm_routing
+, sum(no_routing_default) as no_routing_default
+, sum(not_allowed_blocked_by_lm) as not_allowed_blocked_by_lm
+, sum(not_allowed_dimensions) as not_allowed_dimensions
+, sum(not_allowed_flow_control) as not_allowed_flow_control
+, sum(not_allowed_forced_direction) as not_allowed_forced_direction
+, sum(not_allowed_security) as not_allowed_security
+, sum(not_available_or_full) as not_available_or_full
+, sum(technical_failure) as technical_failure
+from fact_trackingreports_agg_m5
+where h1_periodid = c_h1_periodid and decisionlevel = c_decisionlevel and nodeid = c_nodeid and areaid = c_areaid and zoneid = c_zoneid and equipmentid = c_equipmentid;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_trackingreports_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_trackingreports_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , decisionlevel
+          , nodeid
+          , areaid
+          , zoneid
+          , equipmentid
+          , station_id
+          , end_user_id
+          , mark_code
+          , subjecttype
+          , family
+          , subsystem_type
+          , process_step
+          , logistic_step_description
+          , stype
+          , number_of_trackingreports
+          , direction_ok
+          , direction_failed
+          , capacity_too_high
+          , no_direction_lm_routing
+          , no_routing_default
+          , not_allowed_blocked_by_lm
+          , not_allowed_dimensions
+          , not_allowed_flow_control
+          , not_allowed_forced_direction
+          , not_allowed_security
+          , not_available_or_full
+          , technical_failure
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.decisionlevel
+          , c_rec.nodeid
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.station_id
+          , c_rec.end_user_id
+          , c_rec.mark_code
+          , c_rec.subjecttype
+		  , c_rec.family
+          , c_rec.subsystem_type
+          , c_rec.process_step
+          , c_rec.logistic_step_description
+          , c_rec.stype
+          , c_rec.number_of_trackingreports
+          , c_rec.direction_ok
+          , c_rec.direction_failed
+          , c_rec.capacity_too_high
+          , c_rec.no_direction_lm_routing
+          , c_rec.no_routing_default
+          , c_rec.not_allowed_blocked_by_lm
+          , c_rec.not_allowed_dimensions
+          , c_rec.not_allowed_flow_control
+          , c_rec.not_allowed_forced_direction
+          , c_rec.not_allowed_security
+          , c_rec.not_available_or_full
+          , c_rec.technical_failure
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.decisionlevel,c_rec.nodeid,c_rec.areaid,c_rec.zoneid,c_rec.equipmentid);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_trackingreports_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , number_of_trackingreports = measure_rec.number_of_trackingreports
+          , direction_ok = measure_rec.direction_ok
+          , direction_failed = measure_rec.direction_failed
+          , capacity_too_high = measure_rec.capacity_too_high
+          , no_direction_lm_routing = measure_rec.no_direction_lm_routing
+          , no_routing_default = measure_rec.no_routing_default
+          , not_allowed_blocked_by_lm = measure_rec.not_allowed_blocked_by_lm
+          , not_allowed_dimensions = measure_rec.not_allowed_dimensions
+          , not_allowed_flow_control = measure_rec.not_allowed_flow_control
+          , not_allowed_forced_direction = measure_rec.not_allowed_forced_direction
+          , not_allowed_security = measure_rec.not_allowed_security
+          , not_available_or_full = measure_rec.not_available_or_full
+          , technical_failure = measure_rec.technical_failure
+          where h1_periodid = c_rec.h1_periodid
+          and decisionlevel = c_rec.decisionlevel
+          and nodeid = c_rec.nodeid
+          and areaid = c_rec.areaid
+          and zoneid = c_rec.zoneid
+          and equipmentid = c_rec.equipmentid
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_TRACKINGREPORTS_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+procedure traveltimes_agg_agg_h1 is
+l_max_id fact_traveltimes_agg_h1.id%type := 0;
+l_curr_id fact_traveltimes_agg_h1.id%type := 0;
+l_count number := 0;
+l_con_proc_name constant varchar2(61) := g_con_package||'.TRAVELTIMES_AGG_AGG_H1';
+l_conf_rec metric_config%rowtype;
+l_maxrecs number;
+l_msg viu_info_logs.additional_data%type;
+cursor c_metrics(c_id number, c_maxrecs number) is
+select * from ( select max(id) as id, h1_periodid
+, start_node, end_node
+, min(min_duration) as min_duration
+, max(max_duration) as max_duration
+, sum(sum_duration) as sum_duration
+, sum(counted) as counted
+from fact_traveltimes_agg_m5
+where id > c_id
+group by h1_periodid
+, start_node, end_node
+order by id ) where rownum <= c_maxrecs;
+cursor c_h1_measure(c_h1_periodid number, c_start_node fact_traveltimes_agg_m5.start_node%type, c_end_node fact_traveltimes_agg_m5.end_node%type) is
+select min(min_duration) as min_duration
+, max(max_duration) as max_duration
+, sum(sum_duration) as sum_duration
+, sum(counted) as counted
+from fact_traveltimes_agg_m5
+where h1_periodid = c_h1_periodid and start_node = c_start_node and end_node = c_end_node;
+measure_rec c_h1_measure%rowtype;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    if l_conf_rec.status != 1 then
+     l_msg := l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).';
+     viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_warning, null, l_msg);
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      if l_conf_rec.period_type != 'H1' then
+        bpi_log.raise_fatal_error(l_con_proc_name, l_con_proc_name||', PERIOD_TYPE must be configured as H1');
+      end if;
+      select nvl(max(id), 0) into l_max_id from fact_traveltimes_agg_h1;
+      l_msg := l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id);
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+      for c_rec in c_metrics(l_max_id, l_maxrecs) loop
+        begin
+          insert into fact_traveltimes_agg_h1
+          ( id, insertts, updatets
+          , eventts, h1_periodid, d1_periodid
+          , start_node
+          , end_node
+          , min_duration
+          , max_duration
+          , sum_duration
+          , counted
+          ) values
+          ( c_rec.id, sys_extract_utc(systimestamp), sys_extract_utc(systimestamp)
+          , period.to_stamp(c_rec.h1_periodid, 'H1'), c_rec.h1_periodid, period.periodid(c_rec.h1_periodid, 'D1')
+          , c_rec.start_node
+          , c_rec.end_node
+          , c_rec.min_duration
+          , c_rec.max_duration
+          , c_rec.sum_duration
+          , c_rec.counted
+          );
+        exception when dup_val_on_index then
+          
+          open c_h1_measure(c_rec.h1_periodid,c_rec.start_node,c_rec.end_node);
+          fetch  c_h1_measure into measure_rec; 
+          close c_h1_measure;
+
+          update fact_traveltimes_agg_h1
+          set id = c_rec.id, updatets = sys_extract_utc(systimestamp)
+          , min_duration = measure_rec.min_duration
+          , max_duration = measure_rec.max_duration
+          , sum_duration = measure_rec.sum_duration
+          , counted = measure_rec.counted
+          where h1_periodid = c_rec.h1_periodid
+          and start_node = c_rec.start_node
+          and end_node = c_rec.end_node
+          and id < c_rec.id;
+          if sql%rowcount <> 1 then
+            l_msg := 'UPDATE FACT_TRAVELTIMES_AGG_H1 FAILED. H1_PERIODID='||to_char(c_rec.h1_periodid)||',ID='||to_char(c_rec.id);
+            bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+          end if;
+        end;
+        l_count := l_count + 1;
+        
+        if mod(l_count, g_commit_rate) = 0 then commit; end if;
+      end loop;
+      commit;
+
+      if l_count >= l_conf_rec.max_measurements
+      then
+         metrics.unfinished( i_proc => l_con_proc_name);
+      end if;
+
+      l_msg := l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.';
+      viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+  
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+end metrics_h1;
+/

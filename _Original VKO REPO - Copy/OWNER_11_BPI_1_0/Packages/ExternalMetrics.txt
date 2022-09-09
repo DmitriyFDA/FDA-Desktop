@@ -1,0 +1,366 @@
+create or replace PACKAGE ExternalMetrics IS
+G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'ExternalMetrics';
+
+function dim_isc_rec(p_areaid varchar2, p_zoneid varchar2, p_equipmentid varchar2) return DIM_ISCS%ROWTYPE;
+function dim_statistical_rec(p_statisticalid varchar2, p_subjecttype in varchar2) return DIM_STATISTICAL%ROWTYPE;
+function statistical(p_statisticalid varchar2, p_subjecttype in varchar2) return varchar2;
+
+procedure summarize_statisticals;
+
+END ExternalMetrics;
+/
+
+
+
+
+package body externalmetrics
+is
+function dim_isc_rec(
+    p_areaid      varchar2,
+    p_zoneid      varchar2,
+    p_equipmentid varchar2)
+  return dim_iscs%rowtype
+is
+  l_rec dim_iscs%rowtype;
+begin
+  l_rec.mark_code           := null;
+  l_rec.process_step        := null;
+  l_rec.statistical_subject := null;
+  l_rec.family              := null;
+  l_rec.subsystem_type      := null;
+  if p_areaid               is null or p_zoneid is null then
+    return l_rec;
+  end if;
+  begin
+    select *
+    into l_rec
+    from dim_iscs
+    where id = bpi_util.isc_id(p_areaid,p_zoneid,p_equipmentid);
+  exception
+  when others then
+    l_rec.mark_code           := null;
+    l_rec.process_step        := null;
+    l_rec.statistical_subject := null;
+    l_rec.family              := null;
+    l_rec.subsystem_type      := null;
+  end;
+  return l_rec;
+end;
+function dim_statistical_rec(
+    p_statisticalid varchar2,
+    p_subjecttype in varchar2)
+  return dim_statistical%rowtype
+is
+  l_rec dim_statistical%rowtype;
+begin
+  l_rec.markcode         := null;
+  l_rec.symbolicname     := null;
+  l_rec.statisticalgroup := null;
+  l_rec.kpigroup         := null;
+  l_rec.sampletype       := null;
+  if p_statisticalid     is null or p_subjecttype is null then 
+    return l_rec;
+  end if;
+  begin
+    select *
+    into l_rec
+    from dim_statistical
+    where statisticalid = p_statisticalid
+    and subjecttype     = p_subjecttype;
+  exception
+  when others then 
+    begin
+      select *
+      into l_rec
+      from dim_statistical
+      where statisticalid = p_statisticalid
+      and sourceprocessid like '%'||p_subjecttype||'%'
+      and rownum = 1;
+    exception
+    when others then
+      l_rec.markcode         := null;
+      l_rec.symbolicname     := null;
+      l_rec.statisticalgroup := null;
+      l_rec.kpigroup         := null;
+      l_rec.sampletype       := null;
+    end;
+  end;
+  return l_rec;
+end;
+function statistical(
+    p_statisticalid varchar2,
+    p_subjecttype in varchar2)
+  return varchar2
+is
+  l_stat_rec dim_statistical%rowtype;
+begin
+  l_stat_rec := dim_statistical_rec(p_statisticalid, p_subjecttype);
+  return l_stat_rec.symbolicname;
+end;
+procedure summarize_statisticals
+is
+  l_con_proc_name constant varchar2(61) := g_con_package||'.summarize_statisticals';
+  
+  type typ_exception_info is table of number index by varchar2(200);
+  
+  l_exception_info       typ_exception_info;
+  l_stat_rec             dim_statistical%rowtype;
+  l_isc_rec              dim_iscs%rowtype;
+  l_subjecttype          varchar2(50) := '';
+  l_family               varchar2(50) := '';
+  l_subsystemtype        varchar2(50) := '';
+  l_subjectid            varchar2(50) := '';
+  l_msg                  viu_info_logs.additional_data%type;
+  l_conf_rec             metric_config%rowtype;
+  l_maxrecs              number;
+  l_curr_id              number;
+  l_max_id               number;
+  l_count                number := 0;
+  l_dim_error            number(1) := 0;
+  l_statisticalid_exist  boolean;
+  l_column_info          bpi_viu_info_lookup.exception_info%type;
+  l_error_columns        bpi_viu_info_lookup.exception_info%type;
+  l_pos_sep1             pls_integer;
+  l_pos_sep2             pls_integer;
+  l_pos_sep3             pls_integer;
+  l_err_statisticalid    bpi_viu_info_lookup.exception_info%type;
+  l_err_subjecttype      bpi_viu_info_lookup.exception_info%type;
+  l_err_sourceprocessid  bpi_viu_info_lookup.exception_info%type;
+  l_err_subsystemtype    bpi_viu_info_lookup.exception_info%type;
+  
+  
+  cursor c_stats(c_id number, c_maxrecs number)
+  is
+    select d.*
+    ,      r.sourceprocessid
+    from wc_statisticaldata d
+    ,    wc_statisticalreport r
+    where d.key   > c_id
+    and   d.idevent = r.idevent (+)
+    and rownum <= c_maxrecs
+    order by d.key;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select *
+      into l_conf_rec
+      from metric_config
+      where upper(metric_procedure) = upper(l_con_proc_name);
+    exception
+    when others then
+      l_conf_rec.status := 0;
+    end;
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity => viu_info.c_severity_notification
+                            , i_info_arguments => null
+                            , i_additional_data => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_external_metrics;
+
+        viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure => l_con_proc_name
+                              , i_severity => viu_info.c_severity_notification
+                              , i_info_arguments => null
+                              , i_additional_data => l_con_proc_name||' STARTED. Processing statistical reports (max:'||l_maxrecs||') with ID greater than '||to_char(l_max_id) );
+
+        for c_rec in c_stats(l_max_id, l_maxrecs)
+        loop
+          l_curr_id       := c_rec.key;
+          l_error_columns := null;
+          
+          if c_rec.areaid is not null
+          then   
+            l_isc_rec        := dim_isc_rec(c_rec.areaid, c_rec.zoneid, c_rec.equipmentid);
+            l_subjecttype    := l_isc_rec.statistical_subject;
+            l_subsystemtype  := l_isc_rec.subsystem_type;
+            l_family         := l_isc_rec.family;
+          elsif c_rec.subjectid is not null
+          then   
+            l_subjecttype    := c_rec.subjecttype;
+            l_subsystemtype  := substr(c_rec.sourceprocessid, 1, instr( c_rec.sourceprocessid, '_') - 1);
+            l_family := substr(c_rec.sourceprocessid, 1, instr( c_rec.sourceprocessid, '_') - 1);
+          elsif c_rec.processplanname is not null
+          then   
+            l_subjecttype    := 'PPL';
+            l_subsystemtype  := 'ODB';
+          elsif c_rec.processdefinitionname is not null
+          then
+            l_subjecttype    := 'PDN';
+            l_subsystemtype  := 'ODB';
+            l_family  := 'ODB';
+          elsif c_rec.logisticstepid is not null
+          then
+            if c_rec.handlingareaid is not null
+            then
+               l_subjecttype := 'LSP_HAA';
+            else
+               l_subjecttype := 'LSP';
+            end if;
+            l_subjectid      := c_rec.logisticstepid;
+            l_subsystemtype  := 'ODB';
+            l_family  := 'ODB';
+          elsif c_rec.handlingareaid is not null
+          then
+            l_subjecttype    := 'HAA';
+            l_subjectid      := c_rec.handlingareaid;
+            l_subsystemtype  := 'ODB';
+            l_family  := 'ODB';
+          elsif c_rec.linkid is not null
+          then
+            l_subjecttype    := 'LNK';
+            l_subjectid      := c_rec.linkid;
+            l_subsystemtype  := 'ODB';
+            l_family  := 'ODB';
+          elsif c_rec.stationid is not null
+          then
+            l_subjecttype    := 'STN';
+            l_subjectid      := c_rec.stationid;
+            l_subsystemtype  := 'ODB';
+            l_family := 'ODB';
+          elsif c_rec.statussegmentid is not null
+          then
+            l_subjecttype    := 'SST';
+            l_subjectid      := c_rec.statussegmentid;
+            l_subsystemtype  := 'ODB';
+            l_family  := 'ODB';
+          end if;
+
+          l_stat_rec := dim_statistical_rec(c_rec.statisticalid, l_subjecttype);
+          
+          if l_stat_rec.symbolicname is not null
+          then
+            insert
+            into fact_external_metrics
+              (
+                id ,
+                insertts ,
+                eventts ,
+                eventseconds ,
+                m5_periodid ,
+                statisticalid ,
+                family ,
+                subsystem_type ,
+                subjecttype ,
+                subjectid ,
+                areaid ,
+                zoneid ,
+                equipmentid ,
+                sampletype ,
+                process_step ,
+                mark_code ,
+                statistical ,
+                statistical_group ,
+                statistical_subgroup ,
+                unit ,
+                value
+              )
+              values
+              (
+                c_rec.key ,
+                sys_extract_utc(systimestamp) ,
+                c_rec.eventts ,
+                period.seconds_since_millennium(c_rec.eventts) ,
+                period.periodid(to_timestamp_tz(nvl(c_rec.datetimeperiodstart,c_rec.datetimevalue), 'YYYY-MM-DD"T"HH24:MI:SS.FFTZH:TZM') , 'M5') ,
+                nvl(c_rec.statisticalid, '-') ,
+                nvl(l_family, '-') ,
+                nvl(l_subsystemtype, '-') ,
+                nvl(l_subjecttype, '-') ,
+                nvl(c_rec.subjectid, nvl(l_subjectid, '-')) ,
+                nvl(c_rec.areaid, '-') ,
+                nvl(c_rec.zoneid, '-') ,
+                nvl(c_rec.equipmentid, '-') ,
+                nvl(l_stat_rec.sampletype, '-') ,
+                nvl(l_isc_rec.process_step, '-') ,
+                nvl(l_stat_rec.markcode, nvl(l_isc_rec.mark_code, '-')) ,
+                l_stat_rec.symbolicname ,
+                l_stat_rec.statisticalgroup ,
+                l_stat_rec.kpigroup ,
+                l_stat_rec.unit ,
+                nvl(bpi_util.string_to_number(c_rec.value), 0)
+              );
+            commit;
+            l_count := l_count + 1;
+          else
+            l_error_columns := c_rec.statisticalid||','||l_subjecttype||','||c_rec.sourceprocessid||','||l_subsystemtype;
+            
+            if not l_exception_info.exists(l_error_columns)
+            and l_error_columns <> ',,,'
+            then
+               l_exception_info(l_error_columns) := null;
+            end if;
+          end if;
+
+          l_subjectid := null;
+          l_subjecttype := null;
+          l_isc_rec.process_step := null;
+          l_isc_rec.mark_code    := null;
+        end loop;
+
+        
+        l_column_info := l_exception_info.first;
+        
+        while l_column_info is not null
+        loop
+           l_dim_error := bpi_util.viu_info_lookup(l_con_proc_name,l_column_info);
+           if l_dim_error = 0
+           then
+              
+              l_pos_sep1 := instr(l_column_info,',',1,1);
+              l_pos_sep2 := instr(l_column_info,',',1,2);
+              l_pos_sep3 := instr(l_column_info,',',1,3);
+              
+              l_err_statisticalid   := nvl(substr(l_column_info,1             ,l_pos_sep1 - 1             ), 'NULL');
+              l_err_subjecttype     := nvl(substr(l_column_info,l_pos_sep1 + 1,l_pos_sep2 - l_pos_sep1 - 1), 'NULL');
+              l_err_sourceprocessid := nvl(substr(l_column_info,l_pos_sep2 + 1,l_pos_sep3 - l_pos_sep2 - 1), 'NULL');
+              l_err_subsystemtype   := nvl(substr(l_column_info,l_pos_sep3 + 1                            ), 'NULL');
+              
+              viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_extmetricmissingmeta
+                                    , i_calling_procedure => l_con_proc_name
+                                    , i_severity          => viu_info.c_severity_warning
+                                    , i_info_arguments    =>          l_err_statisticalid
+                                                             ||'##'|| l_err_subjecttype
+                                                             ||'##'|| l_err_sourceprocessid
+                                                             ||'##'|| l_err_subsystemtype
+                                    , i_additional_data   =>   'StatisticalId :'   || l_err_statisticalid
+                                                             ||' SubjectType :'    || l_err_subjecttype
+                                                             ||' SourceProcessId :'|| l_err_sourceprocessid
+                                                             ||' SubSystemType :'  || l_err_subsystemtype
+                                    );
+           end if;
+           l_column_info := l_exception_info.next(l_column_info);
+        end loop;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc_name);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure => l_con_proc_name
+                              , i_severity => viu_info.c_severity_notification
+                              , i_info_arguments => null
+                              , i_additional_data => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' statistical reports.' );
+      exception
+      when others then
+        l_msg := l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+      end;
+    end if;
+  exception
+  when others then
+    l_msg := l_con_proc_name||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+end externalmetrics;
+/

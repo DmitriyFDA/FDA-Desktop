@@ -1,0 +1,18 @@
+create or replace FUNCTION tmp_determ_app_status RETURN INT
+IS
+output              BOOLEAN;
+l_process_id_cust   cmn_parties.id_cust%type;
+BEGIN
+  SELECT pty.id_cust
+    INTO   l_process_id_cust
+    FROM   cmn_parties pty
+    WHERE  pty.type = cmn_common.get_parameter_value( i_prr_name => cmn_constant.g_con_pve_cmn_party_ident );
+   
+  output := acl_application_control.determ_app_operational_status ( i_aet_id_cust => l_process_id_cust);
+  IF output = TRUE THEN
+    RETURN 1;
+  ELSE
+    RETURN 0;
+  END IF;
+END tmp_determ_app_status;
+/

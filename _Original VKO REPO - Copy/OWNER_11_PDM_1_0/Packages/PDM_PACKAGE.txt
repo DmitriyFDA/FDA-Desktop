@@ -1,0 +1,1016 @@
+create or replace PACKAGE pdm_package
+IS
+   FUNCTION is_valid_pd_id( i_pd_id IN pdm_packages.pd_id%TYPE )
+      RETURN BOOLEAN;
+
+   FUNCTION is_valid_fallback_tag( i_pd_id IN pdm_packages.pd_id%TYPE )
+      RETURN BOOLEAN;
+
+   PROCEDURE main_package_retention( i_aet_id IN acl_application_elements.id%TYPE );
+
+   PROCEDURE act_physical_member( i_rt_pae_physical      IN pdm_packages%ROWTYPE
+                                , i_rt_pet_physical      IN pdm_package_events%ROWTYPE
+                                , i_rt_pae_logical       IN pdm_packages%ROWTYPE
+                                , i_ind_use_mult_bagdata IN BOOLEAN
+                                );
+
+   PROCEDURE deact_physical_member( i_rt_pae_physical IN pdm_packages%ROWTYPE
+                                  , i_rt_pet_physical IN pdm_package_events%ROWTYPE
+                                  );
+END pdm_package;
+/
+
+
+
+
+package body pdm_package
+is
+   
+
+
+
+
+   g_con_package                 constant varchar2( 30 ) := 'pdm_package';
+
+   
+
+
+
+
+
+
+   function is_valid_pd_id( i_pd_id in pdm_packages.pd_id%type )
+      return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.is_valid_pd_id';
+
+      l_ind_valid_pd_id          boolean                   := false;
+      l_valid_pd_id_regexp       varchar2( 100 );
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_pd_id=' || i_pd_id
+                             );
+
+      l_valid_pd_id_regexp  :=
+                 cmn_common.get_parameter_value( i_prr_name      => pdm_constant.g_con_pve_pd_id_regexp );
+
+      if regexp_like( i_pd_id
+                    , l_valid_pd_id_regexp
+                    )
+      then
+         l_ind_valid_pd_id  := true;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => case l_ind_valid_pd_id
+                                                       when true
+                                                          then 'true'
+                                                       else 'false'
+                                                    end
+                             );
+
+      return l_ind_valid_pd_id;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end is_valid_pd_id;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   function is_valid_fallback_tag( i_pd_id in pdm_packages.pd_id%type )
+      return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                       := g_con_package || '.is_valid_fallback_tag';
+
+      l_ind_vfbta                boolean               := false;
+      l_vfbta_regexp             varchar2( 100 );
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'i_pd_id=' || i_pd_id
+                             );
+
+      l_vfbta_regexp  :=
+                 cmn_common.get_parameter_value( i_prr_name      => pdm_constant.g_con_pve_vfbta_regexp );
+
+      if regexp_like( i_pd_id
+                    , l_vfbta_regexp
+                    )
+      then
+         l_ind_vfbta  := true;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => case l_ind_vfbta
+                                                       when true
+                                                          then 'true'
+                                                       else 'false'
+                                                    end
+                             );
+      return l_ind_vfbta;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end is_valid_fallback_tag;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure act_physical_member( i_rt_pae_physical      in pdm_packages%rowtype
+                                , i_rt_pet_physical      in pdm_package_events%rowtype
+                                , i_rt_pae_logical       in pdm_packages%rowtype
+                                , i_ind_use_mult_bagdata in boolean
+                                )
+
+   is
+      l_con_proc_name    constant cmn_constant.st_proc_name := g_con_package || '.act_physical_member';
+
+      
+      
+      
+      cursor c_phys_member_act( b_logical_pae_id  in pdm_packages.id%type
+                              , b_physical_pae_id in pdm_packages.id%type
+                              )
+      is
+      select plk_logical_member.*
+      from   pdm_package_links plk_logical_member
+      where  plk_logical_member.pln_id                =  pdm_constant.g_con_pln_logical_member
+      and    plk_logical_member.deactivated_by_pet_id is null
+      and    plk_logical_member.pae_id_primary        =  b_logical_pae_id
+      and    not exists ( select 1
+                          from   pdm_package_links plk_physical_member
+                          where  plk_physical_member.pln_id                =  pdm_constant.g_con_pln_physical_member
+                          and    plk_physical_member.deactivated_by_pet_id is null
+                          and    plk_physical_member.pae_id_primary        =  b_physical_pae_id
+                          and    plk_physical_member.pae_id_secondary      =  plk_logical_member.pae_id_secondary
+                        )
+      ;
+
+      l_rt_plk_phys_member pdm_package_links%rowtype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if i_ind_use_mult_bagdata
+      then
+
+         
+         
+         
+         for r_phys_member_act in c_phys_member_act ( b_logical_pae_id  => i_rt_pae_logical.id
+                                                    , b_physical_pae_id => i_rt_pae_physical.id
+                                                    )
+         loop
+
+            
+            l_rt_plk_phys_member                       := null;
+
+            l_rt_plk_phys_member.pln_id                := pdm_constant.g_con_pln_physical_member;
+            l_rt_plk_phys_member.pae_id_primary        := i_rt_pae_physical.id;
+            l_rt_plk_phys_member.pae_id_secondary      := r_phys_member_act.pae_id_secondary;
+            l_rt_plk_phys_member.activated_by_pet_id   := i_rt_pet_physical.id;
+            l_rt_plk_phys_member.deactivated_by_pet_id := null;
+
+            pdm_plk_tapi_pck.plk_insert_row( io_rt_plk => l_rt_plk_phys_member );
+         end loop;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end act_physical_member;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure deact_physical_member( i_rt_pae_physical in pdm_packages%rowtype
+                                  , i_rt_pet_physical in pdm_package_events%rowtype
+                                  )
+
+   is
+      l_con_proc_name    constant cmn_constant.st_proc_name := g_con_package || '.deact_physical_member';
+
+      
+      cursor c_phys_member_deact( b_physical_pae_id in pdm_packages.id%type )
+      is
+      select plk_physical_member.*
+      from   pdm_package_links plk_physical_member
+      where  plk_physical_member.pln_id                =  pdm_constant.g_con_pln_physical_member
+      and    plk_physical_member.deactivated_by_pet_id is null
+      and    plk_physical_member.pae_id_primary        =  b_physical_pae_id
+      ;
+
+      l_rt_plk_phys_member pdm_package_links%rowtype;
+      l_dml_amount         pls_integer;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      for r_phys_member_deact in c_phys_member_deact ( b_physical_pae_id => i_rt_pae_physical.id )
+      loop
+
+         
+         l_rt_plk_phys_member := r_phys_member_deact;
+         l_rt_plk_phys_member.deactivated_by_pet_id := i_rt_pet_physical.id;
+         l_dml_amount := pdm_plk_tapi_pck.plk_update_row( i_plk_id  => l_rt_plk_phys_member.id
+                                                        , io_rt_plk => l_rt_plk_phys_member
+                                                        );
+
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end deact_physical_member;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure suspend_physical_packages( i_aet_id in acl_application_elements.id%type )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.suspend_physical_packages';
+
+      cursor c_old_packages( b_retention_date in pdm_packages.date_modified%type )
+      is
+         select pae.id
+         from   pdm_packages pae
+         where  pae.pte_id = pdm_constant.g_con_pte_id_physical
+         and    pae.status = pdm_constant.g_con_pae_status_open
+         and    nvl(pae.date_modified,pae.date_created) < b_retention_date
+         ;
+
+      l_retention_date           cmn_constant.st_timestamp;
+      l_retention_parameter      cmn_parameter_values.value%type;
+      l_rt_pae                   pdm_packages%rowtype;
+      l_rt_pet                   pdm_package_events%rowtype;
+      l_rt_evt                   pdm_events%rowtype;
+      l_rt_plk                   pdm_package_links%rowtype;
+      l_dml_amount               pls_integer;
+      l_result                   number;
+      l_dummy                    boolean;
+      l_evt_created              boolean := false;
+      l_timestamp                cmn_constant.st_timestamp;
+      l_pty_id_cust              cmn_parties.id_cust%type;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if cmn_common.get_parameter_value( i_prr_name => pdm_constant.g_con_ptr_ghost_concept )
+            = cmn_constant.g_con_yesno_no
+      then
+
+         
+         l_retention_parameter := cmn_common.get_parameter_value
+                                    ( i_prr_name => pdm_constant.g_con_open_physical_pae
+                                    );
+         l_retention_date := cmn_common.default_timestamp -
+                             cmn_common.varchar_to_interval( i_int => l_retention_parameter );
+
+         
+         l_pty_id_cust := pdm_common.get_process_id( i_ptr_name => pdm_constant.g_con_odb_party_process_id );
+
+         for l_rt_old_package in c_old_packages( b_retention_date => l_retention_date )
+         loop
+            begin
+               l_timestamp := cmn_common.default_timestamp;
+
+               
+               if not l_evt_created
+               then
+                  l_rt_evt              := null;
+                  l_rt_evt.date_created := l_timestamp;
+                  l_rt_evt.aet_id       := i_aet_id;
+
+                  pdm_evt_tapi_pck.evt_insert_row( io_rt_evt => l_rt_evt );
+
+                  
+                  
+                  
+                  commit;
+
+                  l_evt_created := true;
+               end if;
+
+               
+               l_dummy := pdm_common.pae_lock_select_via_pas( i_pae_id => l_rt_old_package.id
+                                                            , i_evt_id => l_rt_evt.id
+                                                            , o_rt_pae => l_rt_pae
+                                                            );
+
+               
+               
+               
+               if     l_rt_pae.status                                    = pdm_constant.g_con_pae_status_open
+                  and nvl(l_rt_pae.date_modified, l_rt_pae.date_created) < l_retention_date
+
+               then
+                  l_rt_pae.status             := pdm_constant.g_con_pae_status_suspended;
+                  l_rt_pae.ind_match          := cmn_constant.g_con_yesno_no;
+                  l_rt_pae.ind_match_hdl_psn  := cmn_constant.g_con_yesno_no;
+                  l_rt_pae.ind_match_hdl_time := cmn_constant.g_con_yesno_no;
+                  l_rt_pae.ind_match_time     := cmn_constant.g_con_yesno_no;
+
+                  
+                  l_dml_amount := pdm_pae_tapi_pck.pae_update_row( i_pae_id  => l_rt_old_package.id
+                                                                 , io_rt_pae => l_rt_pae
+                                                                 );
+
+                   
+                  l_rt_pet.id           := null;
+                  l_rt_pet.evt_id       := l_rt_evt.id;
+                  l_rt_pet.pae_id       := l_rt_pae.id;
+                  l_rt_pet.date_created := l_timestamp;
+
+                  pdm_common.create_package_event
+                     ( io_rt_pet                => l_rt_pet
+                     , i_ind_check_existing_pet => false
+                     );
+
+                  
+                  pdm_taskreport.select_one_active_package_link( i_rt_pae => l_rt_pae
+                                                               , o_rt_plk => l_rt_plk
+                                                               );
+                  if l_rt_plk.id is not null
+                  then
+                     
+                     l_rt_plk.deactivated_by_pet_id := l_rt_pet.id;
+                     l_result := pdm_plk_tapi_pck.plk_update_row( i_plk_id  => l_rt_plk.id
+                                                                , io_rt_plk => l_rt_plk
+                                                                );
+
+                     
+                     deact_physical_member( i_rt_pae_physical => l_rt_pae
+                                          , i_rt_pet_physical => l_rt_pet
+                                          );
+
+                  end if;
+
+                  
+                  pdm_processstatus.send_processstatus
+                     ( i_rt_pae                   => l_rt_pae
+                     , i_rt_pet                   => l_rt_pet
+                     , i_tasktype                 => null
+                     , i_pty_id_cust              => l_pty_id_cust
+                     , i_event_time               => l_timestamp
+                     , i_rt_plk_deactivated       => null
+                     , i_lpc_old                  => null
+                     , i_lpc_extension_old        => null
+                     , i_ind_lpc_old              => false
+                     , i_ind_triggered_by_cleanup => true
+                     );
+
+               end if;
+
+               
+               
+               acl_application_control.commit_and_check_halt_signal;
+
+            exception
+               when viu_constant.exc_aclprocessstopped
+               then
+                  viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+               when others
+               then
+                  
+                  rollback;
+
+                  viu_info.handle_info;
+            end;
+         end loop;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end suspend_physical_packages;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure set_pae_obsolete_physical( i_aet_id in acl_application_elements.id%type )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.set_pae_obsolete_physical';
+
+      
+      cursor c_old_packages( b_retention_date in pdm_packages.date_modified%type )
+      is
+         select pae.id
+         from   pdm_packages pae
+         where  pae.pte_id =  pdm_constant.g_con_pte_id_physical
+         and    pae.status in ( pdm_constant.g_con_pae_status_open
+                              , pdm_constant.g_con_pae_status_closed
+                              , pdm_constant.g_con_pae_status_suspended
+                              )
+         and    nvl(pae.date_modified,pae.date_created) < b_retention_date
+         ;
+
+      
+      
+      
+      
+
+      cursor c_plk( b_pae_id in pdm_packages.id%type )
+      is
+         select *
+         from   pdm_package_links plk
+         where  plk.deactivated_by_pet_id is null
+         and    (   b_pae_id = plk.pae_id_primary
+                 or b_pae_id = plk.pae_id_secondary
+                )
+         ;
+
+      l_retention_date           cmn_constant.st_timestamp;
+      l_retention_parameter      cmn_parameter_values.value%type;
+      l_rt_pae                   pdm_packages%rowtype;
+      l_rt_pet                   pdm_package_events%rowtype;
+      l_rt_evt                   pdm_events%rowtype;
+      l_rt_plk                   pdm_package_links%rowtype;
+      l_dml_amount               pls_integer;
+      l_result                   number;
+      l_dummy                    boolean;
+      l_evt_created              boolean := false;
+      l_timestamp                cmn_constant.st_timestamp;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_retention_parameter := cmn_common.get_parameter_value
+                                 ( i_prr_name => pdm_constant.g_con_retention_physical_pae
+                                 );
+      l_retention_date := cmn_common.default_timestamp -
+                          cmn_common.varchar_to_interval( i_int => l_retention_parameter );
+
+      
+      for l_rt_old_package in c_old_packages( b_retention_date => l_retention_date )
+      loop
+         begin
+            l_timestamp := cmn_common.default_timestamp;
+
+            
+            if not l_evt_created
+            then
+               l_rt_evt              := null;
+               l_rt_evt.date_created := l_timestamp;
+               l_rt_evt.aet_id       := i_aet_id;
+
+               pdm_evt_tapi_pck.evt_insert_row( io_rt_evt => l_rt_evt );
+
+               
+               
+               
+               commit;
+
+               l_evt_created := true;
+            end if;
+
+            
+            l_dummy := pdm_common.pae_lock_select_via_pas( i_pae_id => l_rt_old_package.id
+                                                         , i_evt_id => l_rt_evt.id
+                                                         , o_rt_pae => l_rt_pae
+                                                         );
+
+            
+            
+            
+            if     l_rt_pae.status in ( pdm_constant.g_con_pae_status_open
+                                      , pdm_constant.g_con_pae_status_closed
+                                      , pdm_constant.g_con_pae_status_suspended
+                                      )
+               and nvl(l_rt_pae.date_modified, l_rt_pae.date_created) < l_retention_date
+
+            then
+
+               
+               
+               
+               
+
+               l_rt_pae.status             := pdm_constant.g_con_pae_status_obsolete;
+               l_rt_pae.date_obsolete      := cmn_common.default_timestamp;
+               l_rt_pae.pi_id              := null;
+               l_rt_pae.place_of_birth     := null;
+               l_rt_pae.pid                := null;
+               l_rt_pae.pd_id              := null;
+               l_rt_pae.ind_match          := cmn_constant.g_con_yesno_no;
+               l_rt_pae.ind_match_hdl_psn  := cmn_constant.g_con_yesno_no;
+               l_rt_pae.ind_match_hdl_time := cmn_constant.g_con_yesno_no;
+               l_rt_pae.ind_match_time     := cmn_constant.g_con_yesno_no;
+
+               
+               l_dml_amount := pdm_pae_tapi_pck.pae_update_row( i_pae_id  => l_rt_old_package.id
+                                                              , io_rt_pae => l_rt_pae
+                                                              );
+
+                
+               l_rt_pet.id           := null;
+               l_rt_pet.evt_id       := l_rt_evt.id;
+               l_rt_pet.pae_id       := l_rt_pae.id;
+               l_rt_pet.date_created := l_timestamp;
+
+               pdm_common.create_package_event
+                  ( io_rt_pet                => l_rt_pet
+                  , i_ind_check_existing_pet => false
+                  );
+
+               
+               for l_rt_plk in c_plk( b_pae_id => l_rt_pae.id )
+               loop
+
+                  
+                  l_rt_plk.deactivated_by_pet_id := l_rt_pet.id;
+                  l_result := pdm_plk_tapi_pck.plk_update_row( i_plk_id  => l_rt_plk.id
+                                                             , io_rt_plk => l_rt_plk
+                                                             );
+               end loop;
+
+            end if; 
+
+            
+            
+            acl_application_control.commit_and_check_halt_signal;
+
+         exception
+            when viu_constant.exc_aclprocessstopped
+            then
+               viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+            when others
+            then
+               
+               rollback;
+
+               viu_info.handle_info;
+         end;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end set_pae_obsolete_physical;
+
+   
+
+
+
+
+
+
+
+
+
+
+   procedure update_pae_log_member( i_rt_pae    in pdm_packages%rowtype
+                                  , i_evt_id    in pdm_events.id%type
+                                  , i_timestamp in cmn_constant.st_timestamp
+                                  )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.update_pae_log_member';
+
+      l_rt_pae     pdm_packages%rowtype;
+      l_rt_pet     pdm_package_events%rowtype;
+      l_dml_amount pls_integer;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_rt_pae := i_rt_pae;
+
+      l_rt_pae.status             := pdm_constant.g_con_pae_status_obsolete;
+      l_rt_pae.date_obsolete      := cmn_common.default_timestamp;
+      l_rt_pae.pd_id              := null;
+      l_rt_pae.bagdata_id         := null;
+      l_rt_pae.ind_match          := cmn_constant.g_con_yesno_no;
+      l_rt_pae.ind_match_hdl_psn  := cmn_constant.g_con_yesno_no;
+      l_rt_pae.ind_match_hdl_time := cmn_constant.g_con_yesno_no;
+      l_rt_pae.ind_match_time     := cmn_constant.g_con_yesno_no;
+
+      
+      l_dml_amount := pdm_pae_tapi_pck.pae_update_row( i_pae_id  => l_rt_pae.id
+                                                     , io_rt_pae => l_rt_pae
+                                                     );
+
+       
+      l_rt_pet.evt_id       := i_evt_id;
+      l_rt_pet.pae_id       := l_rt_pae.id;
+      l_rt_pet.date_created := i_timestamp;
+
+      pdm_common.create_package_event
+         ( io_rt_pet                => l_rt_pet
+         , i_ind_check_existing_pet => false
+         );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end update_pae_log_member;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure set_pae_obsolete_log_member( i_aet_id in acl_application_elements.id%type )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.set_pae_obsolete_log_member';
+
+      
+      
+      
+      
+      
+      
+      cursor c_old_packages( b_retention_date in pdm_packages.date_modified%type )
+      is
+         select pae.*
+         from   pdm_packages pae
+         where  pae.pte_id   =  pdm_constant.g_con_pte_id_logical
+         
+         and    pae.status  in ( pdm_constant.g_con_pae_status_open
+                               , pdm_constant.g_con_pae_status_closed
+                               )
+         
+         and    nvl(pae.date_modified,pae.date_created)        <  b_retention_date
+         
+         and    not exists ( select plk1.pae_id_secondary
+                             from   pdm_package_links          plk1
+                             where  plk1.pln_id                =  pdm_constant.g_con_pln_compose_attributes
+                             and    plk1.deactivated_by_pet_id is null
+                             and    plk1.pae_id_secondary      =  pae.id
+                           )
+         
+         and    not exists ( select plk2.pae_id_secondary
+                             from   pdm_package_links          plk2
+                             where  plk2.pln_id                =  pdm_constant.g_con_pln_logical_member
+                             and    plk2.deactivated_by_pet_id is null
+                             and    plk2.pae_id_primary        =  pae.id
+                             and    exists ( select plk3.pae_id_secondary
+                                             from   pdm_package_links          plk3
+                                             where  plk3.pln_id                =  pdm_constant.g_con_pln_physical_member
+                                             and    plk3.pae_id_secondary      =  plk2.pae_id_secondary
+                                             and    plk3.deactivated_by_pet_id is null
+                                           )
+                           )
+         ;
+
+      
+      
+      cursor c_old_package( b_pae_id         in pdm_packages.id%type
+                          , b_retention_date in pdm_packages.date_modified%type
+                          )
+      is
+         select pae.id
+         from   pdm_packages pae
+         where  pae.id       =  b_pae_id
+         and    pae.pte_id   =  pdm_constant.g_con_pte_id_logical
+         
+         and    pae.status  in ( pdm_constant.g_con_pae_status_open
+                               , pdm_constant.g_con_pae_status_closed
+                               )
+         
+         and    nvl(pae.date_modified,pae.date_created)        <  b_retention_date
+         
+         and    not exists ( select plk1.pae_id_secondary
+                             from   pdm_package_links          plk1
+                             where  plk1.pln_id                =  pdm_constant.g_con_pln_compose_attributes
+                             and    plk1.deactivated_by_pet_id is null
+                             and    plk1.pae_id_secondary      =  b_pae_id
+                           )
+         
+         and    not exists ( select plk2.pae_id_secondary
+                             from   pdm_package_links          plk2
+                             where  plk2.pln_id                =  pdm_constant.g_con_pln_logical_member
+                             and    plk2.deactivated_by_pet_id is null
+                             and    plk2.pae_id_primary        =  b_pae_id
+                             and    exists ( select plk3.pae_id_secondary
+                                             from   pdm_package_links          plk3
+                                             where  plk3.pln_id                =  pdm_constant.g_con_pln_physical_member
+                                             and    plk3.pae_id_secondary      =  plk2.pae_id_secondary
+                                             and    plk3.deactivated_by_pet_id is null
+                                           )
+                           )
+         ;
+
+      
+      
+      cursor c_pae_logical_member ( b_pae_id_primary in pdm_packages.id%type )
+      is
+         select pae.*
+         from   pdm_package_links plk
+         ,      pdm_packages      pae
+         where  plk.pln_id         = pdm_constant.g_con_pln_logical_member
+         and    plk.pae_id_primary = b_pae_id_primary
+         and    pae.id             = plk.pae_id_secondary
+         ;
+
+      l_retention_date           cmn_constant.st_timestamp;
+      l_retention_parameter      cmn_parameter_values.value%type;
+      l_rt_pae                   pdm_packages%rowtype;
+      l_rt_pet                   pdm_package_events%rowtype;
+      l_rt_evt                   pdm_events%rowtype;
+      l_rt_plk                   pdm_package_links%rowtype;
+      l_pae_id                   pdm_packages.id%type;
+      l_dml_amount               pls_integer;
+      l_result                   number;
+      l_found                    boolean;
+      l_dummy                    boolean;
+      l_evt_created              boolean := false;
+      l_timestamp                cmn_constant.st_timestamp;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_retention_parameter := cmn_common.get_parameter_value
+                                 ( i_prr_name => pdm_constant.g_con_retention_logical_pae
+                                 );
+      l_retention_date := cmn_common.default_timestamp -
+                          cmn_common.varchar_to_interval( i_int => l_retention_parameter );
+
+      
+      for l_rt_old_package in c_old_packages( b_retention_date => l_retention_date )
+      loop
+         begin
+            l_timestamp := cmn_common.default_timestamp;
+
+            
+            if not l_evt_created
+            then
+               l_rt_evt              := null;
+               l_rt_evt.date_created := l_timestamp;
+               l_rt_evt.aet_id       := i_aet_id;
+
+               pdm_evt_tapi_pck.evt_insert_row( io_rt_evt => l_rt_evt );
+
+               
+               
+               
+               commit;
+
+               l_evt_created := true;
+            end if;
+
+            
+            pdm_common.lock_package_access( i_pd_id  => l_rt_old_package.pd_id
+                                          , i_evt_id => l_rt_evt.id
+                                          );
+
+            
+            l_dummy := pdm_pae_tapi_pck.pae_select_row( i_pae_id => l_rt_old_package.id
+                                                      , o_rt_pae => l_rt_pae
+                                                      );
+
+            
+            
+            
+            open c_old_package ( b_pae_id         => l_rt_pae.id
+                               , b_retention_date => l_retention_date
+                               );
+            fetch c_old_package into l_pae_id;
+            l_found := c_old_package%found;
+            close c_old_package;
+
+            if l_found
+            then
+
+               
+               update_pae_log_member( i_rt_pae    => l_rt_pae
+                                    , i_evt_id    => l_rt_evt.id
+                                    , i_timestamp => l_timestamp
+                                    );
+
+               
+               
+               for r_pae_logical_member in c_pae_logical_member ( b_pae_id_primary => l_rt_pae.id )
+               loop
+
+                  
+                  update_pae_log_member( i_rt_pae    => r_pae_logical_member
+                                       , i_evt_id    => l_rt_evt.id
+                                       , i_timestamp => l_timestamp
+                                       );
+               end loop;
+
+            end if; 
+
+            
+            
+            acl_application_control.commit_and_check_halt_signal;
+
+         exception
+            when viu_constant.exc_aclprocessstopped
+            then
+               viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+            when others
+            then
+               
+               rollback;
+
+               viu_info.handle_info;
+         end;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         if c_old_package%isopen
+         then
+            close c_old_package;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end set_pae_obsolete_log_member;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure main_package_retention( i_aet_id in acl_application_elements.id%type )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.main_package_retention';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      suspend_physical_packages   ( i_aet_id => i_aet_id);
+      set_pae_obsolete_physical   ( i_aet_id => i_aet_id);
+      set_pae_obsolete_log_member ( i_aet_id => i_aet_id);
+
+      
+      commit;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when viu_constant.exc_aclprocessstopped
+      then
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      when others
+      then
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.handle_info;
+   end main_package_retention;
+
+end pdm_package;
+/

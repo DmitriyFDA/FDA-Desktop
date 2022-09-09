@@ -1,0 +1,238 @@
+create or replace package screening_results_Reports is
+  g_con_package constant varchar2(30) := 'screening_results_Reports';
+  g_max_rownum number := 10000;
+  
+  procedure summarize_screening_results;
+  
+end screening_results_Reports;
+/
+
+
+
+
+package body screening_results_reports is
+
+procedure summarize_screening_results is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_ins_count number := 0;
+l_upd_count number := 0;
+l_msg viu_info_logs.additional_data%type;
+l_conf_rec metric_config%rowtype;
+l_con_proc_name constant varchar2(61) := g_con_package||'.summarize_screening_results';
+l_previous_pid varchar2(50) := '??';
+l_reached_required_level boolean := false;
+l_screeningconcept  varchar2(50);
+c_overlap constant number := 1000; 
+
+cursor c_stats(c_id number) is
+select * from
+  ( select * from
+    ( select pr.key, pr.eventts, pr.birpid as pid, 'PACKAGEREPORT' as reporttype
+      , n.nodeid as screening_node
+      , sp.id as screening_process_id
+      , sp.name as screening_process_name
+      , bagsummary.get_tag_delimited_value(pr.l_screeningresult, 'ScreeningLevel', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept))      as screening_level
+      , bagsummary.get_tag_delimited_value(pr.l_birscreeninginfo, 'RequiredScreeningLevel', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept)) as required_level
+      , bagsummary.get_tag_delimited_value(pr.l_birscreeninginfo, 'ReachedScreeningLevel', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept))  as reached_level
+      , case when bagsummary.get_tag_delimited_value(pr.l_screeningresult, 'Result', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept))='CLEARED'           then 1 else 0 end as cleared
+      , case when bagsummary.get_tag_delimited_value(pr.l_screeningresult, 'Result', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept))='NODECISION'        then 1 else 0 end as nodecision
+      , case when bagsummary.get_tag_delimited_value(pr.l_screeningresult, 'Result', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept))='UNCLEARED'         then 1 else 0 end as uncleared
+      , case when bagsummary.get_tag_delimited_value(pr.l_screeningresult, 'Result', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept))='OPERATOR_TIME_OUT' then 1 else 0 end as operator_time_out
+      , case when bagsummary.get_tag_delimited_value(pr.l_screeningresult, 'Result', nvl2(sp.id, 'ID='||sp.id, l_screeningconcept))='REJECT'            then 1 else 0 end as reject
+      , 0 as sent_to_l3_while_cleared
+      , 0 as bags_deregistered
+      , 0 as bags_arrived_at_screening
+      from wc_packagereport pr, dim_node_area_zone_equipment n, dim_screening_processes sp
+      where pr.areaid = n.areaid and pr.zoneid = n.zoneid and pr.equipmentid = n.equipmentid
+      and pr.resulttype like '%ScreeningResult%'
+      and (   instr(chr(10)||pr.l_birscreeninginfo, chr(10)||'ID='||sp.id) > 0
+           or instr(chr(10)||pr.l_screeningresult, chr(10)||'ID='||sp.id) > 0
+          )
+      union all
+      select tp.key, tp.eventts, tp.pid, 'TRACKINGREPORT' as reporttype
+      , n.tracking_screening_node as screening_node
+      , null as screening_process_id
+      , null as screening_process_name
+      , null as screening_level
+      , null as required_level
+      , null as reached_level
+      , 0 as cleared
+      , 0 as nodecision
+      , 0 as uncleared
+      , 0 as operator_time_out
+      , 0 as reject
+      , 0 as sent_to_l3_while_cleared
+      , 0 as bags_deregistered
+      , 1 as bags_arrived_at_screening
+      from wc_trackingreport tp, dim_node_area_zone_equipment n
+      where tp.areaid = n.areaid and tp.zoneid = n.zoneid and tp.equipmentid = n.equipmentid
+      and n.tracking_screening_node is not null
+      union all
+      select dp.key, dp.eventts, dp.pid, 'DEREGISTERPACKAGE' as reporttype
+      , i.register_screening_node as screening_node
+      , null as screening_process_id
+      , null as screening_process_name
+      , null as screening_level
+      , null as required_level
+      , null as reached_level
+      , 0 as cleared
+      , 0 as nodecision
+      , 0 as uncleared
+      , 0 as operator_time_out
+      , 0 as reject
+      , 0 as sent_to_l3_while_cleared
+      , 1 as bags_deregistered
+      , 0 as bags_arrived_at_screening
+      from wc_deregisterpackage dp, dim_iscs i
+      where dp.areaid = i.areaid and dp.zoneid = i.zoneid and dp.equipmentid = i.equipmentid
+      and dp.deregisterreason = 'MISSING'
+      and i.register_screening_node is not null
+    ) where key > c_id order by key
+  ) where rownum <= g_max_rownum;
+  
+cursor c_facts(c_id number) is
+select * from fact_screening_results_reports
+where id > c_id
+order by pid, eventts;
+  
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+    
+    
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc_name
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+
+    else
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_screening_results_reports;
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing FACT_SCREENING_RESULTS_REPORTS with ID greater than '||to_char(l_max_id)
+                         );
+
+        begin
+           begin
+              select 'ID='||to_char(id)
+              into   l_screeningconcept
+              from   dim_screening_processes
+              where  is_default = 'Y';
+           exception
+              when others then
+                 
+                 l_screeningconcept := cmn_common.get_parameter_value('SCREENING_CONCEPT');
+           end;
+        exception
+           when others then
+             l_screeningconcept := null;
+        end;
+
+        for c_rec in c_stats(l_max_id) loop
+          l_curr_id := c_rec.key;
+          
+          insert into fact_screening_results_reports
+          ( id
+          , insertts
+          , eventts
+          , pid
+          , reporttype
+          , screening_node
+          , screening_process_id
+          , screening_process_name
+          , screening_level
+          , required_level
+          , reached_level
+          , cleared
+          , nodecision
+          , uncleared
+          , operator_time_out
+          , reject
+          , sent_to_l3_while_cleared
+          , bags_deregistered
+          , bags_arrived_at_screening
+          ) values
+          ( l_curr_id + nvl(c_rec.screening_process_id, 0)
+          , sys_extract_utc(systimestamp)
+          , c_rec.eventts
+          , c_rec.pid
+          , c_rec.reporttype
+          , c_rec.screening_node
+          , c_rec.screening_process_id
+          , c_rec.screening_process_name
+          , c_rec.screening_level
+          , c_rec.required_level
+          , c_rec.reached_level
+          , c_rec.cleared
+          , c_rec.nodecision
+          , c_rec.uncleared
+          , c_rec.operator_time_out
+          , c_rec.reject
+          , c_rec.sent_to_l3_while_cleared
+          , c_rec.bags_deregistered
+          , c_rec.bags_arrived_at_screening
+          );
+          l_ins_count := l_ins_count + 1;
+        end loop;
+        commit;
+        
+        if l_ins_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc_name);
+        end if;
+
+        for c_rec in c_facts(l_max_id - c_overlap) loop
+          if c_rec.pid != l_previous_pid then
+            l_reached_required_level := false;
+          else
+            if (c_rec.required_level = 1 and c_rec.reached_level = 1) or (c_rec.required_level = 2 and c_rec.reached_level = 2) then
+              l_reached_required_level := true;
+            end if;
+          end if;
+          if c_rec.screening_level = 3 and c_rec.sent_to_l3_while_cleared = 0 and l_reached_required_level then
+            update fact_screening_results_reports
+            set sent_to_l3_while_cleared = 1
+            where id = c_rec.id;
+            l_upd_count := l_upd_count + 1;
+          end if;
+          l_previous_pid := c_rec.pid;
+        end loop;
+        commit;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Inserted '||to_char(l_ins_count)||', updated '||to_char(l_upd_count)||' FACT_SCREENING_RESULTS_REPORTS.'
+                         );
+      exception when others then
+        l_msg := l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+      end;
+    end if;
+
+  exception when others then
+    l_msg := l_con_proc_name||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+end screening_results_reports;
+/

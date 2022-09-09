@@ -1,0 +1,560 @@
+create or replace PACKAGE odb_metrics_initialization
+IS
+   PROCEDURE odb_init_metric_per_stn(i_metric_type  	IN ODB_METRICS.METRIC_TYPE%TYPE
+		  	                        ,i_handling_area_id IN ODB_HANDLING_AREAS.ID%TYPE);
+
+   PROCEDURE odb_init_metric_per_haa(i_metric_type  	IN ODB_METRICS.METRIC_TYPE%TYPE
+   		  	                        ,i_handling_area_id IN ODB_HANDLING_AREAS.ID%TYPE);
+               
+   PROCEDURE odb_init_metric_per_lnk(i_metric_type  	IN ODB_METRICS.METRIC_TYPE%TYPE);
+
+   PROCEDURE odb_init_metric_per_lsp(i_metric_type      IN ODB_METRICS.METRIC_TYPE%TYPE
+   		  	                        ,i_handling_area_id IN ODB_HANDLING_AREAS.ID%TYPE);
+
+   PROCEDURE odb_init_metric_per_pdn(i_metric_type  	IN ODB_METRICS.METRIC_TYPE%TYPE
+   		  	                        ,i_handling_area_id IN ODB_HANDLING_AREAS.ID%TYPE);
+             
+   PROCEDURE odb_init_metric_per_sst(i_metric_type  	IN ODB_METRICS.METRIC_TYPE%TYPE
+   		  	                        ,i_handling_area_id IN ODB_HANDLING_AREAS.ID%TYPE);
+
+   PROCEDURE odb_init_metric_per_lspxhaa(i_metric_type IN ODB_METRICS.METRIC_TYPE%TYPE);
+   
+   PROCEDURE odb_init_metric_per_haaxhaa(i_metric_type IN ODB_METRICS.METRIC_TYPE%TYPE);
+   
+       
+   domain_type_haa			CONSTANT varchar2(100) := 'HANDLING_AREA';
+   domain_type_lsp			CONSTANT varchar2(100) := 'LOGISTIC_STEP';
+   domain_type_lnk			CONSTANT varchar2(100) := 'LINK';
+   domain_type_sst			CONSTANT varchar2(100) := 'STATUS_SEGMENT';
+   domain_type_stn			CONSTANT varchar2(100) := 'STATION';
+   domain_type_pdn			CONSTANT varchar2(100) := 'PROCESS_DEFINITION';
+   domain_type_haaxhaa		CONSTANT varchar2(100) := 'HANDLING_AREAxHANDLING_AREA';
+   domain_type_lspxhaa		CONSTANT varchar2(100) := 'LOGISTIC_STEPxHANDLING_AREA';
+    
+   subject_type_haa			CONSTANT varchar2(100) := 'HANDLING_AREA';
+   subject_type_lsp			CONSTANT varchar2(100) := 'LOGISTIC_STEP';
+   subject_type_lnk			CONSTANT varchar2(100) := 'LINK';
+   subject_type_sst			CONSTANT varchar2(100) := 'STATUS_SEGMENT';
+   subject_type_stn			CONSTANT varchar2(100) := 'STATION';
+   subject_type_pdn			CONSTANT varchar2(100) := 'PROCESS_DEFINITION';
+   
+END odb_metrics_initialization;
+/
+
+
+package body odb_metrics_initialization
+is
+   
+
+
+
+
+ 
+   
+
+
+
+
+
+
+
+
+
+
+
+   function get_metric (i_metric_type      in     odb_metrics.metric_type%type,
+   				  	    i_domain_type      in     odb_metrics.domain_type%type)
+
+   return odb_metrics%rowtype
+   as
+      l_metric      odb_metrics%rowtype;
+   begin
+   
+      select * into l_metric
+      from odb_metrics mtc
+      where mtc.metric_type = i_metric_type and mtc.domain_type = i_domain_type;
+      return l_metric;
+   end get_metric;
+  
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_subject_id (i_metric_type      in     odb_metrics.metric_type%type,
+   				  	        i_domain_type      in     odb_metrics.domain_type%type,
+   				  	        i_subject_type     in     odb_metric_subjects.subject_type%type,
+   				  	        i_use              in     odb_metric_subjects.use%type default null
+   				  	        )
+   return integer
+   as
+      l_subject_id      odb_metric_subjects.id%type;
+   begin
+   
+      select msu.id into l_subject_id
+      from odb_metrics mtc
+      inner join odb_metric_subjects msu on msu.mtc_id = mtc.id
+      where mtc.metric_type  = i_metric_type
+      and   mtc.domain_type  = i_domain_type
+      and   msu.subject_type = i_subject_type
+      and  (msu.use          = nvl(i_use, msu.use) or (i_use is null and msu.use is null));
+	
+      if l_subject_id is null then
+         raise_application_error(-20000, 'ODB: subject (' || i_metric_type || '/' || i_domain_type || '/' || i_subject_type || ') can not be found.');
+      end if;
+      return l_subject_id;
+   end get_subject_id;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_stn(
+                     i_metric_type      in     odb_metrics.metric_type%type
+                   , i_handling_area_id in     odb_handling_areas.id%type
+             )
+   as
+        cursor station_cursor (b_ass_sys in odb_metrics.assigned_system%type)
+		is
+        select stn.id , stn.lsp_id
+        from odb_stations stn
+        inner join odb_logistic_steps lsp on lsp.id = stn.lsp_id
+        where lsp.haa_id = i_handling_area_id
+		and  ((lsp.assigned_system = b_ass_sys)
+		or    (b_ass_sys = 'BAGGAGE_AND_ULD_SYSTEM' and
+			   stn.id not in
+				(select msi.stn_id
+				from   odb_metric_subject_instances msi
+				inner join odb_metric_instances min on min.id = msi.min_id
+				inner join odb_metrics mtc on mtc.id = min.mtc_id
+				where  mtc.domain_type = domain_type_stn
+				and    mtc.metric_type = i_metric_type
+                )
+			 ));
+		
+        l_metric odb_metrics%rowtype;
+        l_metric_subject_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+        l_now odb_metric_instances.date_modified%type;
+        
+   begin
+   		l_metric 			:= get_metric (i_metric_type, domain_type_stn);
+   		l_metric_subject_id	:= get_subject_id (i_metric_type, domain_type_stn, subject_type_stn);
+        l_now := sys_extract_utc(odb_common.get_my_systimestamp);
+        for station in station_cursor (l_metric.assigned_system)
+        loop
+            insert into odb_metric_instances
+            (id
+            ,mtc_id
+            ,value
+            ,previous_value
+            ,date_modified)
+            values
+            (odb_min_seq1.nextval
+            ,l_metric.id
+            ,0.0
+            ,null
+            ,l_now)
+            returning id into l_metric_instance_id;
+            
+            insert into odb_metric_subject_instances
+            (id
+            ,min_id
+            ,msu_id
+            ,stn_id
+            ,haa_id
+            ,lsp_id)
+            values
+            (odb_msi_seq1.nextval
+            ,l_metric_instance_id
+            ,l_metric_subject_id
+            ,station.id
+            ,i_handling_area_id
+            ,station.lsp_id);
+        end loop;
+   end odb_init_metric_per_stn;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_haa(
+                    i_metric_type      in     odb_metrics.metric_type%type
+                  , i_handling_area_id in     odb_handling_areas.id%type
+             )
+   as
+        l_metric odb_metrics%rowtype;
+        l_metric_subject_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+   begin
+    
+   		l_metric 			:= get_metric (i_metric_type, domain_type_haa);
+   		l_metric_subject_id	:= get_subject_id (i_metric_type, domain_type_haa, subject_type_haa);
+         
+        insert into odb_metric_instances (id, mtc_id, value, previous_value, date_modified)
+        values (odb_min_seq1.nextval, l_metric.id, 0.0, null, sys_extract_utc(odb_common.get_my_systimestamp))
+        returning id into l_metric_instance_id;
+            
+        insert into odb_metric_subject_instances (id, min_id, msu_id, haa_id)
+        values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subject_id, i_handling_area_id);
+ 
+   end odb_init_metric_per_haa;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_haaxhaa(
+                    i_metric_type      in     odb_metrics.metric_type%type
+             )
+   as
+        cursor c_haa_link_status
+        is
+        select lnk_haa_id_start, downstream_haa_id
+        from odb_haa_link_status_v hls
+        where not exists
+           (select * from odb_metric_instances_v miv
+            where miv.haa_id = hls.lnk_haa_id_start
+            and   miv.dha_id = hls.downstream_haa_id
+            and   miv.domain_type = 'HANDLING_AREAxHANDLING_AREA'
+            and   miv.metric_type = 'INTER_HA_STATUS'
+           )
+        group by lnk_haa_id_start, downstream_haa_id;
+
+        l_metric odb_metrics%rowtype;
+        l_metric_subj_haa_start_id odb_metric_subjects.id%type;
+        l_metric_subj_haa_down_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+        
+   begin
+      
+  		l_metric 				:= get_metric (i_metric_type, domain_type_haaxhaa);
+   		l_metric_subj_haa_start_id	:= get_subject_id (i_metric_type, domain_type_haaxhaa, subject_type_haa,'START');
+   		l_metric_subj_haa_down_id	:= get_subject_id (i_metric_type, domain_type_haaxhaa, subject_type_haa,'DOWNSTREAM');
+            
+        for r_haa_link_status in c_haa_link_status
+        loop
+            insert into odb_metric_instances (id, mtc_id, value, previous_value, date_modified)
+            values (odb_min_seq1.nextval, l_metric.id, 0.0, null, sys_extract_utc(odb_common.get_my_systimestamp))
+            returning id into l_metric_instance_id;
+            
+            insert into odb_metric_subject_instances (id, min_id, msu_id, lsp_id, haa_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subj_haa_start_id ,null, r_haa_link_status.lnk_haa_id_start);
+                    
+            insert into odb_metric_subject_instances (id, min_id, msu_id, lsp_id, haa_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subj_haa_down_id, null, r_haa_link_status.downstream_haa_id);
+                                        
+        end loop;
+
+   end odb_init_metric_per_haaxhaa;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_lnk(
+                    i_metric_type      in     odb_metrics.metric_type%type
+             )
+   as
+        cursor link_cursor
+        is
+        select lnk.id
+        from odb_handling_area_links lnk
+        where not exists
+        	(select * from odb_metric_instances_v miv
+             where miv.lnk_id = lnk.id
+             and   miv.domain_type = 'LINK'
+             and   miv.metric_type = i_metric_type);
+
+        l_metric odb_metrics%rowtype;
+        l_metric_subject_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+   begin
+       
+  		l_metric 			:= get_metric (i_metric_type, domain_type_lnk);
+   		l_metric_subject_id	:= get_subject_id (i_metric_type, domain_type_lnk, subject_type_lnk);
+                       
+        for handling_area_link in link_cursor
+        loop
+            insert into odb_metric_instances (id, mtc_id, value, previous_value, date_modified)
+            values (odb_min_seq1.nextval, l_metric.id, 0.0, null, sys_extract_utc(odb_common.get_my_systimestamp))
+            returning id into l_metric_instance_id;
+            
+            insert into odb_metric_subject_instances (id, min_id, msu_id, lnk_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subject_id, handling_area_link.id);
+        end loop;
+
+   end odb_init_metric_per_lnk;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_lspxhaa(
+                    i_metric_type      in     odb_metrics.metric_type%type
+             )
+   as
+        cursor c_haa_link_status is
+        select hls.lsp_id, hls.downstream_haa_id, lsp.haa_id
+        from odb_haa_link_status_v hls
+        inner join odb_logistic_steps lsp on lsp.id = hls.lsp_id
+        where not exists
+           (select * from odb_metric_instances_v miv
+            where miv.lsp_id = hls.lsp_id
+            and   miv.dha_id = hls.downstream_haa_id
+            and   miv.domain_type = 'LOGISTIC_STEPxHANDLING_AREA'
+            and   miv.metric_type = 'INTER_HA_STATUS'
+        )
+        group by lsp_id, downstream_haa_id, haa_id;
+ 
+        l_metric odb_metrics%rowtype;
+        l_metric_subj_lsp_id odb_metric_subjects.id%type;
+        l_metric_subj_haa_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+        
+   begin
+      
+  		l_metric 		    	:= get_metric  (i_metric_type, domain_type_lspxhaa);
+   		l_metric_subj_lsp_id	:= get_subject_id (i_metric_type, domain_type_lspxhaa, subject_type_lsp,'START');
+   		l_metric_subj_haa_id	:= get_subject_id (i_metric_type, domain_type_lspxhaa, subject_type_haa,'DOWNSTREAM');
+            
+        for r_haa_link_status in c_haa_link_status
+        loop
+            insert into odb_metric_instances (id, mtc_id, value, previous_value, date_modified)
+            values (odb_min_seq1.nextval, l_metric.id, 0.0, null, sys_extract_utc(odb_common.get_my_systimestamp))
+            returning id into l_metric_instance_id;
+          
+            insert into odb_metric_subject_instances (id, min_id, msu_id, lsp_id, haa_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subj_lsp_id, r_haa_link_status.lsp_id, r_haa_link_status.haa_id);
+                    
+            insert into odb_metric_subject_instances (id, min_id, msu_id, lsp_id, haa_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subj_haa_id, null, r_haa_link_status.downstream_haa_id);
+                                        
+        end loop;
+
+   end odb_init_metric_per_lspxhaa;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_lsp(
+                    i_metric_type      in     odb_metrics.metric_type%type
+                  , i_handling_area_id in     odb_handling_areas.id%type
+              )
+   as
+        cursor logistic_step_cursor (b_ass_sys in odb_metrics.assigned_system%type)
+		is
+        select lsp.id
+        from odb_logistic_steps lsp
+		where lsp.haa_id = i_handling_area_id
+		and i_metric_type not like 'LOAD_BAGS_TO_BE_RELEASED_TIMEFRAME%'
+		and i_metric_type != 'MIN_REMAINING_BUILD_TIME'
+		and lsp.assigned_system = b_ass_sys
+		union all
+        select lsp.id
+        from odb_logistic_steps lsp
+		where lsp.haa_id = i_handling_area_id
+		and (i_metric_type like 'LOAD_BAGS_TO_BE_RELEASED_TIMEFRAME%'
+		    or i_metric_type = 'MIN_REMAINING_BUILD_TIME')
+		and lsp.assigned_system = b_ass_sys
+		and lsp.ind_has_stores = 1;
+
+        l_metric odb_metrics%rowtype;
+        l_metric_subject_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+   begin
+        
+        l_metric 			:= get_metric  (i_metric_type, domain_type_lsp);
+   		l_metric_subject_id	:= get_subject_id (i_metric_type, domain_type_lsp, subject_type_lsp);
+        
+        for logistic_step in logistic_step_cursor (l_metric.assigned_system)
+        loop
+            insert into odb_metric_instances (id, mtc_id, value, previous_value, date_modified)
+            values (odb_min_seq1.nextval, l_metric.id, 0.0, null, sys_extract_utc(odb_common.get_my_systimestamp))
+            returning id into l_metric_instance_id;
+
+            insert into odb_metric_subject_instances (id, min_id, msu_id, lsp_id, haa_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subject_id, logistic_step.id, i_handling_area_id);
+            
+        end loop;
+
+   end odb_init_metric_per_lsp;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_pdn(
+                    i_metric_type      in     odb_metrics.metric_type%type
+                  , i_handling_area_id in     odb_handling_areas.id%type
+             )
+   as
+        cursor process_definition_cursor (b_ass_sys in odb_metrics.assigned_system%type)
+		is
+        select pdn.id
+        from odb_process_definitions pdn
+        inner join odb_process_plan_definitions ppn on ppn.id = pdn.ppn_id
+        where ppn.haa_id = i_handling_area_id
+		and   pdn.assigned_system in (b_ass_sys, 'BAGGAGE_AND_ULD_SYSTEM');
+        
+        l_metric odb_metrics%rowtype;
+        l_metric_subject_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+ 
+   begin
+ 	    l_metric 			:= get_metric  (i_metric_type, domain_type_pdn);
+   		l_metric_subject_id	:= get_subject_id (i_metric_type, domain_type_pdn, subject_type_pdn);
+        
+        for process_definition in process_definition_cursor (l_metric.assigned_system)
+        loop
+            insert into odb_metric_instances (id, mtc_id, value, previous_value, date_modified)
+            values (odb_min_seq1.nextval, l_metric.id, 0.0, null, sys_extract_utc(odb_common.get_my_systimestamp))
+            returning id into l_metric_instance_id;
+            
+            insert into odb_metric_subject_instances (id, min_id, msu_id, pdn_id, haa_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subject_id, process_definition.id, i_handling_area_id);
+        end loop;
+
+   end odb_init_metric_per_pdn;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure odb_init_metric_per_sst(
+                    i_metric_type      in     odb_metrics.metric_type%type
+                  , i_handling_area_id in     odb_handling_areas.id%type
+               )
+   as
+        cursor status_segment_cursor (b_ass_sys in odb_metrics.assigned_system%type)
+		is
+        select sst.id, sst.lsp_id
+        from odb_status_segments sst
+        inner join odb_logistic_steps lsp on sst.lsp_id = lsp.id
+        where lsp.haa_id = i_handling_area_id
+		and  ((lsp.assigned_system = b_ass_sys)
+		or    (b_ass_sys = 'BAGGAGE_AND_ULD_SYSTEM'
+			   and 	sst.id not in
+			  (select msi.sst_id
+				from   odb_metric_subject_instances msi
+				inner join odb_metric_instances min on min.id = msi.min_id
+				inner join odb_metrics mtc on mtc.id = min.mtc_id
+				where  mtc.domain_type = domain_type_sst
+				and    mtc.metric_type = i_metric_type
+              )
+			));
+        l_metric odb_metrics%rowtype;
+        l_metric_subject_id odb_metric_subjects.id%type;
+        l_metric_instance_id odb_metric_instances.id%type;
+   begin
+     
+        l_metric 			:= get_metric (i_metric_type, domain_type_sst);
+   		l_metric_subject_id	:= get_subject_id (i_metric_type, domain_type_sst, subject_type_sst);
+
+        for status_segment in status_segment_cursor (l_metric.assigned_system)
+        loop
+            insert into odb_metric_instances (id, mtc_id, value, previous_value, date_modified)
+            values (odb_min_seq1.nextval, l_metric.id, 0.0, null, sys_extract_utc(odb_common.get_my_systimestamp))
+            returning id   into l_metric_instance_id;
+
+            insert into odb_metric_subject_instances (id, min_id, msu_id, sst_id, lsp_id, haa_id)
+            values (odb_msi_seq1.nextval, l_metric_instance_id, l_metric_subject_id, status_segment.id, status_segment.lsp_id,  i_handling_area_id);
+
+        end loop;
+
+   end odb_init_metric_per_sst;
+
+end odb_metrics_initialization;
+/

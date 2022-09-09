@@ -1,0 +1,86 @@
+procedure bpi_pdfreports (p_dd in varchar2 default ' ') is
+l_title varchar2(2000);
+l_dd varchar2(20) := trim(p_dd);
+begin
+  begin
+	  htp.print('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<HTML><HEAD><TITLE>BPI PDF Reports '||nvl(l_dd, 'Current')||'</TITLE><style type="text/css">
+p {font-family:"Trebuchet MS", Arial, Helvetica, sans-serif; font-size:16px;}
+table {font-family:"Trebuchet MS", Arial, Helvetica, sans-serif; font-size:12px;}
+.button {border: 1px solid #000066; background:#EEEEEE; border-radius:5px;}
+.button:hover {border:1px solid #9F8560; background: #FEFECB;}
+body {background:url(docs/report_logo.jpg);background-color:#FFFFFF;background-repeat:no-repeat;background-position:right top;"}
+</style></head><BODY><div style="border-bottom:4px solid #ff9900"><h3>BPI PDF Reports</h3></div>
+');
+	  htp.print('<div><br><IMG SRC="docs/baggagehandling.jpg" align="middle"><br><br><table border="0"><tr>');
+	  
+    if l_dd is null then
+      
+      htp.print('<td style="vertical-align:top"><div><p><b>Current:</b><table border="0">');
+      for c_rec in (select id, reportname, created from pdfstore where archived is null order by 2,3) loop
+        htp.print('<tr><td><BUTTON class="button" style="width:360px; height:28px;" onClick="document.location=''BPI_PDFREPORT?p_id='
+        ||to_char(c_rec.id)||''';">'||c_rec.reportname||'</BUTTON></td><td>&nbsp;</td><td>Created: '
+        ||to_char(c_rec.created,'YYYY-MM-DD HH24:MI:SS')||'</td>');
+      end loop;
+      htp.print('</p></tr></table></div></td>');
+      
+       
+      htp.print('<td width="50">&nbsp;</td>');
+      
+      
+      htp.print('<td style="vertical-align:top"><div><p><b>Archive:</b><br><table border="0"><tr>');
+     
+      for c_rec in (select distinct to_char(created, 'YYYY-MM-DD, Day') as datum
+               , to_char(created, 'YYYYMMDD') as dd
+               from pdfstore
+               where archived is not null order by 1 desc) loop
+        htp.print('<tr><td><BUTTON class="button" style="width:240px; height:28px;" onClick="document.location=''BPI_PDFReports?p_dd='
+        ||to_char(c_rec.dd)||''';">'||c_rec.datum||'</BUTTON></td>');
+      end loop;
+      htp.print('</p></tr></table></div></td>');
+    else
+      
+      begin
+        select to_char(to_date(l_dd,'YYYYMMDD'), 'YYYY-MM-DD, Day') into l_title from dual;
+      exception when others then
+        l_title := l_dd||'->'||sqlerrm;
+      end;
+      htp.print('<td style="vertical-align:top"><div><p><b>'||l_title||'</b><table border="0">');
+      
+      for c_rec in (select id, reportname, created
+               from pdfstore
+               where archived is not null
+               and to_char(created, 'YYYYMMDD') = l_dd
+               order by 2,3) loop
+        htp.print('<tr><td><BUTTON class="button" style="width:360px; height:28px;" onClick="document.location=''BPI_PDFREPORT?p_id='
+        ||to_char(c_rec.id)||''';">'||c_rec.reportname||'</BUTTON></td><td>&nbsp;</td><td>Created: '
+        ||to_char(c_rec.created,'YYYY-MM-DD HH24:MI:SS')||'</td>');
+      end loop;
+      htp.print('</p></tr></table></div></td>');
+      
+      
+      htp.print('<td width="50">&nbsp;</td>');
+      
+      
+      htp.print('<td style="vertical-align:top"><div><p><b>Archive:</b><br><table border="0"><tr>');
+     
+      htp.print('<tr><td><BUTTON class="button" style="width:240px; height:28px;" 
+ onClick="document.location=''BPI_PDFReports'';">Current</BUTTON></td>');
+      for c_rec in (select distinct to_char(created, 'YYYY-MM-DD, Day') as datum, to_char(created, 'YYYYMMDD') as dd
+               from pdfstore
+               where archived is not null
+               and to_char(created, 'YYYYMMDD') != l_dd
+               order by 1 desc) loop
+        htp.print('<tr><td><BUTTON class="button" style="width:240px; height:28px;" onClick="document.location=''BPI_PDFReports?p_dd='||c_rec.dd||''';">'||c_rec.datum||'</BUTTON></td>');
+      end loop;
+      htp.print('</p></tr></table></div></td>');
+    end if;
+  
+    htp.print('</tr></table><div></BODY></HTML>');
+  exception when others then
+     htp.print('<HTML><HEAD><TITLE>BPI_PDFReports</TITLE></HEAD><BODY>
+<p>Error producing page</p><br><p>'||sqlerrm||'</p>
+<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>')||'</BODY></HTML>');
+  end;
+end;
+/

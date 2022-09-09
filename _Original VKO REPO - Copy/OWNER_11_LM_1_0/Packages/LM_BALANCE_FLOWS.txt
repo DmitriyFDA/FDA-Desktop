@@ -1,0 +1,499 @@
+create or replace PACKAGE lm_balance_flows IS
+
+g_con_package CONSTANT lm_constant.st_proc_name := 'lm_balance_flows';
+   
+-- Type definitions to hold essential balance flow data needed
+-- to count the packages and compose the message.
+  
+TYPE rt_flow_balance_grp_members IS RECORD
+        (fgr_id                lm_flow_balance_group_members.id%TYPE
+        ,ara_id_cust           lm_system_components.id_cust%TYPE
+        ,zne_id_cust           lm_system_components.id_cust%TYPE
+        ,identifier_within_sct lm_nodes.identifier_within_sct%TYPE
+        );
+TYPE it_flow_balance_grp_members IS TABLE OF rt_flow_balance_grp_members;
+
+/* BFS_001: Main (called from a continuous job) */
+PROCEDURE main(i_flow_balance_group_name IN lm_flow_balance_groups.name%TYPE) ;
+
+/* BFS_002: Balance flow one execution cycle. */
+PROCEDURE execute(i_rt_fbg IN lm_flow_balance_groups%ROWTYPE
+                 ,i_it_flow_balance_grp_members IN it_flow_balance_grp_members);
+
+/* Wrapper function for lm_common.stop_signal */
+PROCEDURE stop_signal( i_flow_balance_group_name IN lm_flow_balance_groups.name%TYPE);
+
+/* Wrapper function for lm_common.build_signal */
+FUNCTION build_signal( i_flow_balance_group_name IN lm_flow_balance_groups.name%TYPE )
+RETURN   VARCHAR2;
+
+END lm_balance_flows;
+/
+
+
+
+
+package body lm_balance_flows is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure main(i_flow_balance_group_name in lm_flow_balance_groups.name%type)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+   l_con_proc_name      constant lm_constant.st_proc_name := g_con_package || '.main';
+
+   l_alertname                   varchar2( 30 );
+   l_alertstatus                 integer := lm_constant.g_con_alert_waitany_timeout;
+   l_message                     varchar2( 40 );
+   l_rt_fbp                      lm_flow_balance_groups%rowtype;
+   l_it_flow_balance_grp_members it_flow_balance_grp_members;
+
+   
+   
+   
+   cursor c_bfs(i_fbp_id lm_flow_balance_groups.id%type)
+   is
+   select fgr.id
+         ,ara.id_cust ara_id_cust
+         ,zne.id_cust zne_id_cust
+         ,nde.identifier_within_sct
+   from   lm_system_components ara
+         ,lm_system_components zne
+         ,lm_nodes nde
+         ,lm_flow_balance_group_members fgr
+   where  fgr.nde_id = nde.id
+   and    nde.sct_id = zne.id
+   and    zne.sct_id_zone_area = ara.id
+   and    fgr.fbp_id = i_fbp_id
+   order  by ara.id_cust
+            ,zne.id_cust;
+   
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+
+   
+   if  not lm_fbp_tapi_pck.fbp_select_row_uk1(i_fbp_name => i_flow_balance_group_name
+                                             ,o_rt_fbp   => l_rt_fbp)
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_invalidflowbalancegroup
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_flow_balance_group_name
+                         , i_additional_data        => 'Group does not exist'
+                         );
+   end if;
+   
+   
+   open c_bfs(i_fbp_id => l_rt_fbp.id);
+   fetch c_bfs
+   bulk collect into l_it_flow_balance_grp_members;
+   close c_bfs;
+
+   if l_it_flow_balance_grp_members.count != 2 then
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_invalidflowbalancegroup
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_flow_balance_group_name
+                         , i_additional_data        => 'Group does not have exactly two member nodes'
+                         );
+   end if;
+      
+   
+   l_alertname := lm_balance_flows.build_signal( i_flow_balance_group_name => i_flow_balance_group_name );
+
+   
+   dbms_alert.register( l_alertname );
+   
+   while l_alertstatus !=  lm_constant.g_con_alert_waitany_alert
+   loop
+      begin
+         
+         acl_application_control.register_process;
+
+         lm_balance_flows.execute(i_rt_fbg                      => l_rt_fbp
+                                 ,i_it_flow_balance_grp_members => l_it_flow_balance_grp_members);
+         
+         
+         acl_application_control.update_aps_stats;
+
+         commit;
+
+         
+         
+                           
+         dbms_alert.waitone ( name    => l_alertname
+                            , message => l_message
+                            , status  => l_alertstatus
+                            , timeout => l_rt_fbp.travel_time
+                           );
+      exception
+         when others
+         then
+            
+            
+            
+            rollback;
+            viu_info.handle_info ();
+
+            dbms_alert.waitone ( name          => l_alertname
+                               , message       => l_message
+                               , status        => l_alertstatus
+                               , timeout       => lm_constant.g_con_job_delay
+                               );
+      end;
+   end loop;
+
+   dbms_alert.remove ( name    => l_alertname);
+   
+   viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   
+exception
+   when others
+   then
+      if c_bfs%isopen
+      then
+         close c_bfs;
+      end if;
+      rollback;
+      
+      if l_alertname is not null
+      then
+         dbms_alert.remove ( name    => l_alertname);
+      end if;
+      
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end main;
+
+
+procedure execute(i_rt_fbg                      in lm_flow_balance_groups%rowtype
+                 ,i_it_flow_balance_grp_members in it_flow_balance_grp_members)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.monitor';
+
+   type rt_sortgroup is record (approachingbags number
+                               ,allowedsorting  number
+                               ,sorttrainlength number);
+   
+   type it_sortgroup is table of rt_sortgroup;
+   
+   cursor c_fgr_open_packages(i_fgr_id in lm_flow_balance_group_members.id%type)
+   is
+   select count( * ) approachingbags
+   from   lm_segment_group_members sgr
+   ,      lm_logical_segments      lst
+   ,      lm_route_segments        rst
+   ,      lm_packages              pae
+   where  sgr.lst_id         = lst.id
+   and    rst.lst_id         = lst.id
+   and    pae.rst_id         = rst.id
+   and    pae.pss_id         = lm_constant.g_con_pss_name_open
+   and    sgr.fgr_id         = i_fgr_id;
+   
+   l_idx_highest_load        number;
+   l_message                 xmltype;
+   l_ims_id                  lm_ifc_messages.id%type;
+  
+   l_it_sortgroup            it_sortgroup := it_sortgroup();
+   l_default_timestamp       timestamp;
+   l_source_processid        lm_parameter_values.value%type;
+         
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+
+   l_default_timestamp := lm_common.default_timestamp;
+   l_source_processid  := lm_common.get_parameter_value(lm_constant.g_con_pve_lm_source_process_id);
+
+   
+   
+   for l_idx in 1..2
+   loop
+      
+      l_it_sortgroup.extend;
+      l_it_sortgroup(l_idx).allowedsorting  := 0;
+      l_it_sortgroup(l_idx).sorttrainlength := null;
+
+      
+      open  c_fgr_open_packages(i_fgr_id => i_it_flow_balance_grp_members(l_idx).fgr_id);
+      fetch c_fgr_open_packages
+      into  l_it_sortgroup(l_idx).approachingbags;
+      close c_fgr_open_packages;
+   end loop;
+   
+   
+   
+   
+   
+   
+   
+   if     ( l_it_sortgroup(1).approachingbags + l_it_sortgroup(2).approachingbags >= i_rt_fbg.bags_amount_min_value
+           or i_rt_fbg.bags_amount_min_value is null
+          )
+      and ( l_it_sortgroup(1).approachingbags + l_it_sortgroup(2).approachingbags <= i_rt_fbg.bags_amount_max_value
+           or i_rt_fbg.bags_amount_max_value is null
+          )
+      and  abs(l_it_sortgroup(1).approachingbags - l_it_sortgroup(2).approachingbags) >=  i_rt_fbg.unbalance_min_value
+   then
+      
+      
+      
+      
+      
+      l_idx_highest_load := case when l_it_sortgroup(1).approachingbags > l_it_sortgroup(2).approachingbags
+                                then 1
+                              else   2
+                            end;
+      
+      
+      l_it_sortgroup(l_idx_highest_load).allowedsorting := round(abs   (l_it_sortgroup(1).approachingbags
+                                                                      - l_it_sortgroup(2).approachingbags)
+                                                                 / 2 );
+                                             
+      if l_it_sortgroup(l_idx_highest_load).allowedsorting > 0
+      then
+         
+         l_it_sortgroup(l_idx_highest_load).sorttrainlength := i_rt_fbg.sort_train_length;
+      end if;
+                                                                
+   end if;
+
+   
+   for l_idx in 1..2
+   loop
+      
+      select xmlconcat
+             ( xmlelement("PhysicalLocation"
+                  , xmlelement("AreaID"     ,i_it_flow_balance_grp_members(l_idx).ara_id_cust)
+                  , xmlelement("ZoneID"     ,i_it_flow_balance_grp_members(l_idx).zne_id_cust)
+                  , xmlelement("EquipmentID",i_it_flow_balance_grp_members(l_idx).identifier_within_sct)
+                         )
+             , xmlelement("SortGroup"
+                  , xmlelement("DirectionID"    ,lm_constant.g_con_flow_bal_sort_direction)
+                  , xmlelement("ApproachingBags",l_it_sortgroup(l_idx).approachingbags)
+                  , xmlelement("AllowedSorting" ,l_it_sortgroup(l_idx).allowedsorting)
+                  , nvl2      (l_it_sortgroup(l_idx).sorttrainlength
+                               , xmlelement("SortTrainLength",l_it_sortgroup(l_idx).sorttrainlength)
+                               , null
+                              )
+                         )
+             )
+      into   l_message
+      from   dual;
+
+      
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'BagSortControlUpdate'
+                 , i_message         => l_message
+                 , i_event_time      => l_default_timestamp
+                 , i_pty_id_cust     => null
+                 , i_pty_instance_id => null
+                 , i_sct_id_cust     => i_it_flow_balance_grp_members(l_idx).ara_id_cust
+                );
+   end loop;
+
+   viu_module.leave_module(i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_fgr_open_packages%isopen
+      then
+        close c_fgr_open_packages;
+      end if;
+      
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end execute;
+
+
+procedure stop_signal( i_flow_balance_group_name in lm_flow_balance_groups.name%type)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name   constant lm_constant.st_proc_name  := g_con_package || '.stop_signal';
+
+   l_signal_name              varchar(4096);
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   l_signal_name := lm_balance_flows.build_signal( i_flow_balance_group_name => i_flow_balance_group_name );
+   
+   dbms_alert.signal(l_signal_name, l_signal_name);
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module      => l_con_proc_name
+                             , i_debug_info  => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure  => l_con_proc_name );
+
+end stop_signal;
+
+
+function build_signal( i_flow_balance_group_name in lm_flow_balance_groups.name%type )
+return   varchar2
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+
+   l_con_proc_name constant lm_constant.st_proc_name    := g_con_package || '.build_signal';
+
+   l_result_signal          varchar2(4096);
+   l_found                  boolean;
+   l_rt_fbp                 lm_flow_balance_groups%rowtype;
+   
+begin
+   viu_module.enter_module( i_module  => l_con_proc_name );
+
+   
+   l_found := lm_fbp_tapi_pck.fbp_select_row_uk1(i_fbp_name => i_flow_balance_group_name
+                                                ,o_rt_fbp   => l_rt_fbp);
+
+   l_result_signal := lm_common.build_signal(lm_constant.g_con_alert_flow_balancing||l_rt_fbp.id) ;
+
+   viu_module.leave_module( i_module  => l_con_proc_name );
+
+   return l_result_signal;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      viu_info.raise_info( i_calling_procedure  => l_con_proc_name );
+end build_signal;
+
+
+end lm_balance_flows;
+/

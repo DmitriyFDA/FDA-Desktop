@@ -1,0 +1,8 @@
+function get_par_val( i_prr_name in cmn_parameters.name%type )
+return cmn_parameter_values.value%type
+is
+begin
+   return 'x';
+
+end get_par_val;
+/

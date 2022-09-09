@@ -1,0 +1,216 @@
+create or replace PACKAGE TOPO_APPL_dimensions IS
+   PROCEDURE process_TOPO_APPL(i_node in DBMS_XMLDOM.domnode, i_source_id in number, o_error out number);
+END TOPO_APPL_dimensions;
+/
+
+
+
+
+package body topo_appl_dimensions is
+
+g_con_package                 constant varchar2(30) := 'TOPO_APPL_dimensions';
+g_document_node               dbms_xmldom.domnode;
+g_dimension_source_id         number := 0;
+g_version                     varchar2(50);
+g_error                       number := 0;
+
+procedure free_memory is
+begin
+  begin
+    dbms_xmldom.freenode(n => g_document_node);
+  exception when others then
+    null;
+  end;
+end;
+
+procedure process_applications(p_version_id number, p_node dbms_xmldom.domnode, p_parent_id varchar2) is
+l_node_list dbms_xmldom.domnodelist;
+l_node_count number;
+l_sub_node dbms_xmldom.domnode;
+l_componenttypeid varchar2(50) := '';
+l_processid varchar2(50) := '';
+l_description varchar2(200) := '';
+l_applicationelementid varchar2(200) := '';
+l_versionid varchar2(200) := '';
+l_rows_processed integer := 0;
+begin
+  dbms_xslprocessor.valueof (p_node, 'ApplicationElementID', l_applicationelementid);
+  dbms_xslprocessor.valueof (p_node, 'ComponentTypeID', l_componenttypeid);
+  dbms_xslprocessor.valueof (p_node, 'ProcessID', l_processid);
+  dbms_xslprocessor.valueof (p_node, 'Description', l_description);
+
+  update dim_applications
+  set process_id = l_processid
+  ,   description = l_description
+  ,   version_id = p_version_id
+  where componenttypeid = l_componenttypeid
+  and applicationelementid = l_applicationelementid;
+
+  l_rows_processed := sql%rowcount;
+
+  if l_rows_processed < 1 then
+    insert into dim_applications
+    ( componenttypeid
+    , applicationelementid
+	  , parentid
+    , process_id
+    , description
+	  , version_id)
+    values
+    ( l_componenttypeid
+    , l_applicationelementid
+	  , p_parent_id
+    , l_processid
+    , l_description
+	  , p_version_id);
+   end if;
+
+   l_node_list := dbms_xslprocessor.selectnodes(p_node, 'ApplicationElement');
+   l_node_count := dbms_xmldom.getlength(l_node_list);
+   if l_node_count > 0 then
+   for j in 0..(l_node_count - 1) loop
+     l_sub_node := dbms_xmldom.item (l_node_list, j);
+	 
+     process_applications(p_version_id, l_sub_node, l_applicationelementid);
+   end loop;
+ end if;
+end;
+
+
+procedure create_applications(p_new_version_id number) is
+l_node_list             dbms_xmldom.domnodelist;
+l_node_count            number (20);
+l_node                  dbms_xmldom.domnode;
+l_msg viu_info_logs.additional_data%type;
+begin
+  insert into hist_applications select * from dim_applications
+  where version_id = (select max(version_id) from dim_applications)
+  and version_id > nvl((select max(version_id) from hist_applications),0);
+
+  l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//ApplicationElement');
+  l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+  plog ('Total of Applications nodes in input: ' || l_node_count, 'info');
+  for i in 0..(l_node_count - 1) loop
+    l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+    process_applications(p_new_version_id, l_node, null);
+    dbms_xmldom.freenode(l_node);
+  end loop;
+  select count(*) into l_node_count from dim_applications;
+  plog ('Total of records in DIM_APPLICATIONS: ' || l_node_count, 'info');
+exception when others then
+  l_msg := sqlerrm;
+  g_error := 14;
+  plog( 'Error (create_applications): '||l_msg, 'error' );
+end;
+
+
+procedure update_version_enddates is
+l_msg viu_info_logs.additional_data%type;
+l_count number := 1;
+cursor c_inactive_versions is
+select id from dimension_version where source_type='TOPO_APPL' and enddate is null
+and id not in ( select distinct version_id
+                from (select distinct version_id from dim_applications)
+               );
+begin
+  for c_rec in c_inactive_versions loop
+    update dimension_version set enddate = sysdate where id = c_rec.id;
+  end loop;
+exception when others then
+  l_msg := sqlerrm;
+  g_error := 15;
+  plog( 'Error (update_version_enddates): '||l_msg, 'error' );
+end;
+
+
+procedure process_topo_appl(i_node in dbms_xmldom.domnode, i_source_id in number, o_error out number) is
+l_con_proc_name constant varchar2(200) := g_con_package||'.process_TOPO_APPL';
+l_node_list dbms_xmldom.domnodelist;
+l_attr_node dbms_xmldom.domnode;
+l_old_version_id number(19,0) := 0;
+l_new_version_id number(19,0) := 0;
+l_description varchar2(200) := '';
+l_filename varchar2(200) := '';
+l_msg viu_info_logs.additional_data%type;
+begin
+  viu_module.enter_module(l_con_proc_name,to_char(sys_extract_utc(systimestamp)));
+  o_error := 0;
+  begin
+    g_document_node := i_node;
+    g_dimension_source_id := i_source_id;
+    
+    dbms_xslprocessor.valueof(g_document_node, '//Version', g_version);
+    l_description := 'Version="'||g_version||'"';
+
+    if (g_version is null) or (trim(g_version) = '') then
+      plog('Error (process_TOPO_APPL): No version information found (//Version)', 'error');
+      g_error := 11;
+    end if;
+
+    if g_error = 0 then
+      begin
+        select max(ver.id)
+        into   l_old_version_id
+        from   dimension_version ver
+        where  ver.source_id in ( select src2.id
+                                  from   dimension_source src1
+                                  ,      dimension_source src2
+                                  where  src1.id = i_source_id
+                                  and    src2.filename = src1.filename
+                                  and    src2.source_type = src1.source_type
+                                );
+      exception when others then
+        l_old_version_id := 0;
+      end;
+
+      begin
+        select scr.filename
+        into   l_filename
+        from   dimension_source scr
+        where  scr.id = g_dimension_source_id;
+      exception when others then
+        l_filename := '';
+      end;
+      
+      begin
+        select dimension_seq.nextval into l_new_version_id from dual;
+        insert into dimension_version(id, source_id, filename, source_type, startdate, enddate, versiontag, description)
+          select l_new_version_id, g_dimension_source_id, l_filename, 'TOPO_APPL', sysdate, null, g_version, l_description
+          from   dimension_source
+          where  id = g_dimension_source_id;
+      exception when others then
+        plog('Error (process_TOPO_APPL) inserting DIMENSION_VERSION: '||sqlerrm, 'error');
+        g_error := 12;
+      end;
+    end if;
+
+    if g_error = 0 then
+      l_old_version_id := nvl(l_old_version_id, 0);
+      if l_old_version_id = 0 then
+        plog('Installing initial version (ID '||to_char(l_new_version_id)||')', 'info');
+      else
+        plog('Old version ID: '||to_char(l_old_version_id)||', new version ID: '||to_char(l_new_version_id), 'info');
+      end if;
+
+
+
+      create_applications(l_new_version_id);
+      update_version_enddates;
+
+
+
+    end if;
+    
+    plog ('TOPO_APPL has been processed.', 'info');
+  exception	when others	then
+    l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    plog(l_msg, 'error');
+    g_error := 10;
+  end;
+  o_error := g_error;
+	viu_module.leave_module(l_con_proc_name);
+end;
+
+
+end topo_appl_dimensions;
+/

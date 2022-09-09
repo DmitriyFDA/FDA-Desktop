@@ -1,0 +1,438 @@
+create or replace PACKAGE odb_cursor
+IS
+   TYPE bga_nt IS TABLE OF odb_bag_attributes_v%ROWTYPE;
+
+   FUNCTION search_bags ( -- Bag Criteria
+                          i_lpn                  odb_physical_bags.lpc%TYPE            := NULL
+                        , i_bid                  odb_packages.bid%TYPE                 := NULL
+                        , i_bid_extension        odb_packages.bid_extension%TYPE       := NULL
+                        , i_last_seen_haa_name   odb_handling_areas.name%TYPE          := NULL
+                        , i_last_seen_lsp_id_ext odb_logistic_steps.id_ext%TYPE        := NULL
+                        , i_airline_designator   odb_airlines.designator%TYPE          := NULL
+                        , i_baggage_tag_serial   odb_physical_bags.lpc%TYPE            := NULL
+                        , i_timeliness           odb_bag_datas.timeliness%TYPE         := NULL
+                        , i_checkin_seq_no       odb_bag_datas.checkin_sequence_number%TYPE := NULL
+                          -- Flight Criteria
+                        , i_passenger_surname    odb_bag_datas.passenger_surname%TYPE  := NULL
+                        , i_airline              odb_process_plans.airline%TYPE        := NULL
+                        , i_flight_number        odb_process_plans.flight_number%TYPE  := NULL
+                        , i_scheduled_date       odb_process_plans.sd%TYPE             := NULL
+                        , i_sta_from             odb_process_plans.date_scheduled%TYPE := NULL
+                        , i_sta_to               odb_process_plans.date_scheduled%TYPE := NULL
+                        , i_std_from             odb_process_plans.date_scheduled%TYPE := NULL
+                        , i_std_to               odb_process_plans.date_scheduled%TYPE := NULL
+                        , i_flight_handler       odb_handlers.designator%TYPE          := NULL
+                        , i_flight_haa_name      odb_handling_areas.name%TYPE          := NULL
+                        , i_origin_airport       odb_process_plans.airport%TYPE        := NULL
+                        , i_destination_airport  odb_process_plans.airport%TYPE        := NULL
+                        , i_cabin_class          odb_bag_attributes_v.cabin_class%TYPE := NULL
+                        -- limit of result set
+                        , i_max_results          INTEGER                               := NULL
+                        )
+      RETURN bga_nt PIPELINED;
+      
+END odb_cursor;
+/
+
+
+package body odb_cursor
+is
+   
+
+
+
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   function search_bags (
+                   
+                     i_lpn                  odb_physical_bags.lpc%type
+                   , i_bid                  odb_packages.bid%type
+                   , i_bid_extension        odb_packages.bid_extension%type
+                   , i_last_seen_haa_name   odb_handling_areas.name%type
+                   , i_last_seen_lsp_id_ext odb_logistic_steps.id_ext%type
+                   , i_airline_designator   odb_airlines.designator%type
+                   , i_baggage_tag_serial   odb_physical_bags.lpc%type
+                   , i_timeliness           odb_bag_datas.timeliness%type
+                   , i_checkin_seq_no       odb_bag_datas.checkin_sequence_number%type
+                   
+                   , i_passenger_surname    odb_bag_datas.passenger_surname%type
+                   , i_airline              odb_process_plans.airline%type
+                   , i_flight_number        odb_process_plans.flight_number%type
+                   , i_scheduled_date       odb_process_plans.sd%type
+                   , i_sta_from             odb_process_plans.date_scheduled%type
+                   , i_sta_to               odb_process_plans.date_scheduled%type
+                   , i_std_from             odb_process_plans.date_scheduled%type
+                   , i_std_to               odb_process_plans.date_scheduled%type
+                   , i_flight_handler       odb_handlers.designator%type
+                   , i_flight_haa_name      odb_handling_areas.name%type
+                   , i_origin_airport       odb_process_plans.airport%type
+                   , i_destination_airport  odb_process_plans.airport%type
+                   , i_cabin_class          odb_bag_attributes_v.cabin_class%type
+                    
+                   , i_max_results          integer
+                   )
+      return bga_nt pipelined
+   is
+      type lpn_array_type is table of odb_physical_bags.lpc%type;
+      l_lpn_derived lpn_array_type;
+      l_lpn odb_physical_bags.lpc%type;
+      l_last_seen_haa_id odb_handling_areas.id%type;
+      l_last_seen_lsp_id odb_logistic_steps.id%type;
+      l_surname odb_bag_datas.passenger_surname%type;
+      l_resultcounter integer;
+
+
+      
+
+
+
+
+
+      function satisfies_criteria( i_bga       odb_bag_attributes_v%rowtype
+                                 , i_check_haa boolean := true
+                                 )
+         return boolean
+      is
+         l_match boolean := true;
+         l_surname odb_bag_datas.passenger_surname%type;
+
+      begin
+
+         if (i_passenger_surname is not null) then
+             l_surname := upper(i_passenger_surname) || '%';
+         else
+             l_surname := null;
+         end if;
+
+         
+         if i_check_haa and l_last_seen_haa_id is not null
+         then
+            l_match := false;
+            for c in ( select 1
+	                       from   odb_physical_bags pbg
+	                              inner join odb_packages pae on pae.id = pbg.pae_id
+	                              inner join odb_route_segments rst on rst.id = pae.rst_id_last_seen
+	                              inner join odb_status_segments sst on sst.id = rst.sst_id
+	                              inner join odb_logistic_steps lsp on lsp.id = sst.lsp_id
+	                       where  pbg.id = i_bga.pbg_id
+	                       and    lsp.haa_id = l_last_seen_haa_id
+	                       and    lnnvl( l_last_seen_lsp_id <> lsp.id )
+	                   union all
+					   select 1
+						   from   odb_physical_bags pbg
+							   	  inner join odb_packages pae on pbg.pae_id = pae.id and pae.rst_id_last_seen is null
+							   	  inner join odb_stations stn on pae.stn_id_last_processed = stn.id
+							      inner join odb_logistic_steps lsp on stn.lsp_id = lsp.id
+						   where  pbg.id = i_bga.pbg_id
+						   and    lsp.haa_id = l_last_seen_haa_id
+	                       and    lnnvl( l_last_seen_lsp_id <> lsp.id )
+                     )
+            loop
+               l_match := true;
+            end loop;
+         end if;
+
+         return l_match
+                and ( i_lpn                  is null or i_bga.lpn = i_lpn )
+                and ( l_lpn_derived.count = 0 or substr( i_bga.lpn, 2 ) member of l_lpn_derived )
+                and ( i_timeliness           is null or i_bga.timeliness = i_timeliness )
+                and ( l_surname              is null or upper( i_bga.surname ) like l_surname )
+                and ( i_airline              is null or i_bga.airline = i_airline )
+                and ( i_flight_number        is null or i_bga.flight_number = i_flight_number )
+                and ( i_scheduled_date       is null or i_bga.sd = i_scheduled_date )
+                and ( i_sta_from is null or i_sta_to is null or i_bga.sta between i_sta_from and i_sta_to )
+                and ( i_std_from is null or i_std_to is null or i_bga.std between i_std_from and i_std_to )
+                and ( i_flight_handler       is null or i_bga.handler = i_flight_handler )
+                and ( i_flight_haa_name      is null or i_bga.target_handling_area = i_flight_haa_name )
+                and ( i_origin_airport       is null or i_bga.origin = i_origin_airport )
+                and ( i_destination_airport  is null or i_bga.destination = i_destination_airport )
+                and ( i_cabin_class          is null or i_bga.cabin_class = i_cabin_class )
+                and ( i_checkin_seq_no       is null or i_bga.checkin_sequence_number = i_checkin_seq_no )
+         ;
+      end;
+      
+
+   begin
+
+      
+      for haa in ( select id
+                   from   odb_handling_areas
+                   where  name = i_last_seen_haa_name
+                 )
+      loop
+         l_last_seen_haa_id := haa.id;
+
+         
+         for lsp in ( select id
+                      from   odb_logistic_steps
+                      where  id_ext = i_last_seen_lsp_id_ext
+                      and    haa_id = l_last_seen_haa_id
+                    )
+         loop
+            l_last_seen_lsp_id := lsp.id;
+         end loop;
+      end loop;
+
+      
+      if i_airline_designator is not null and i_baggage_tag_serial is not null
+      then
+         begin
+            select baggage_tag_issuer_code || lpad( i_baggage_tag_serial, 6, '0') bulk collect
+            into   l_lpn_derived
+            from   odb_airlines
+            where  designator = i_airline_designator;
+         end;
+      else
+         l_lpn_derived := lpn_array_type();
+      end if;
+
+
+      
+      l_resultcounter := 0;
+
+      if i_bid is not null 
+      then
+         
+         for bga in ( select *
+                      from   odb_bag_attributes_v bga
+                      where  bga.pbg_id in ( select pbg_id
+                                             from   odb_packages pae
+                                             where  pae.bid = i_bid
+                                             and    pae.bid_extension = i_bid_extension
+                                           )
+                    )
+         loop
+            exit when l_resultcounter >= i_max_results;
+            if satisfies_criteria( bga )
+            then
+               pipe row( bga );
+               l_resultcounter := l_resultcounter + 1;
+            end if;
+         end loop;
+
+      elsif i_lpn is not null
+      then
+         
+         for bga in ( with pbg as ( select /*+ INLINE */
+                                           pbg.id
+                                    from   odb_physical_bags pbg
+                                    where  pbg.lpc = i_lpn
+                                    union all
+                                    select nvl (bse.pbg_id, pae.pbg_id)
+                                    from   odb_bag_datas bda
+                                           left outer join odb_bag_sources bse
+                                                        on bse.id = bda.bse_id
+                                           left outer join odb_packages pae
+                                                        on pae.id = bda.pae_id
+                                    where  bda.ohd_lpn = i_lpn
+                                  )
+                      select *
+                      from   odb_bag_attributes_v bga
+                      where  bga.pbg_id in ( select id from pbg )
+                    )
+         loop
+            exit when l_resultcounter >= i_max_results;
+            if satisfies_criteria( bga )
+            then
+               pipe row( bga );
+               l_resultcounter := l_resultcounter + 1;
+            end if;
+         end loop;
+
+      elsif i_airline_designator is not null and i_baggage_tag_serial is not null
+      then
+         <<lpn_derived>>
+         for lpn_derived_idx in 1 .. l_lpn_derived.count
+         loop
+             
+             
+	         for i in 0..9
+	         loop
+	            l_lpn := to_char(i)||l_lpn_derived(lpn_derived_idx);
+	
+	            for bga in ( with pbg as ( select /*+ INLINE */
+	                                              pbg.id
+	                                       from   odb_physical_bags pbg
+	                                       where  pbg.lpc = l_lpn
+	                                       union all
+	                                       select nvl (bse.pbg_id, pae.pbg_id)
+	                                       from   odb_bag_datas bda
+	                                              left outer join odb_bag_sources bse
+	                                                           on bse.id = bda.bse_id
+	                                              left outer join odb_packages pae
+	                                                           on pae.id = bda.pae_id
+	                                       where  bda.ohd_lpn = l_lpn
+	                                     )
+	                         select *
+	                         from   odb_bag_attributes_v bga
+	                         where  bga.pbg_id in ( select id from pbg )
+	                       )
+	            loop
+	               exit lpn_derived when l_resultcounter >= i_max_results;
+	               if satisfies_criteria( bga )
+	               then
+	                  pipe row( bga );
+	                  l_resultcounter := l_resultcounter + 1;
+	               end if;
+	            end loop;
+	         end loop;
+	     end loop lpn_derived;
+
+      elsif i_airline is not null and i_flight_number is not null
+      then
+         
+         for bga in ( with pbg as ( select /*+ INLINE */
+                                           nvl (bse.pbg_id, pae.pbg_id) as id
+                                           from   odb_bag_datas bda
+                                                  left outer join odb_bag_sources bse
+                                                               on bse.id = bda.bse_id
+                                                  left outer join odb_packages pae
+                                                               on pae.id = bda.pae_id
+                                           where  bda.inbound_flight_airline = i_airline
+                                           and    bda.inbound_flight_number = i_flight_number
+                                           or     bda.outbound_flight_airline = i_airline
+                                           and    bda.outbound_flight_number = i_flight_number
+                                   union all
+                                   select pha.pbg_id
+                                           from   odb_phase_allocations pha
+                                                  inner join odb_phases phe on phe.id = pha.phe_id
+                                                  inner join odb_process_plans ppl on ppl.id = phe.ppl_id
+                                           where  ppl.airline = i_airline
+                                           and    ppl.flight_number = i_flight_number
+                                  )
+                      select *
+                      from   odb_bag_attributes_v bga
+                      where  bga.pbg_id in ( select id from pbg )
+                    )
+         loop
+            exit when l_resultcounter >= i_max_results;
+            if satisfies_criteria( bga )
+            then
+               pipe row( bga );
+               l_resultcounter := l_resultcounter + 1;
+            end if;
+         end loop;
+
+      elsif l_last_seen_haa_id is not null
+      then
+         
+         if l_last_seen_lsp_id is not null
+         then
+         for bga in ( with pbg as ( select /*+ INLINE */ pbg.id
+										 from
+											 odb_physical_bags pbg
+											 inner join odb_packages pae on pae.id = pbg.pae_id
+											 inner join odb_route_segments rst on rst.id = pae.rst_id_last_seen
+											 inner join odb_status_segments sst on sst.id = rst.sst_id
+										 where
+											 sst.lsp_id = l_last_seen_lsp_id
+									 union all
+									 select pbg.id
+										 from
+											 odb_physical_bags pbg
+											 inner join odb_packages pae on pbg.pae_id = pae.id and pae.rst_id_last_seen is null
+											 inner join odb_stations stn on pae.stn_id_last_processed = stn.id
+										 where
+											 stn.lsp_id = l_last_seen_lsp_id
+								  )
+                      select *
+                      from   odb_bag_attributes_v bga
+                      where  bga.pbg_id in ( select id from pbg )
+                    )
+         loop
+            exit when l_resultcounter >= i_max_results;
+            if satisfies_criteria( bga, false )
+            then
+               pipe row( bga );
+               l_resultcounter := l_resultcounter + 1;
+            end if;
+         end loop;
+         else
+	         for bga in ( with pbg as ( select /*+ INLINE */ pbg.id
+	         							from odb_physical_bags pbg
+											 inner join odb_packages pae on pae.id = pbg.pae_id
+											 inner join odb_route_segments rst on rst.id = pae.rst_id_last_seen
+											 inner join odb_status_segments sst on sst.id = rst.sst_id
+											 inner join odb_logistic_steps lsp on lsp.id = sst.lsp_id
+										where
+											 lsp.haa_id = l_last_seen_haa_id
+										union all
+										select pbg.id
+										from
+											 odb_physical_bags pbg
+											 inner join odb_packages pae on pbg.pae_id = pae.id and pae.rst_id_last_seen is null
+											 inner join odb_stations stn on pae.stn_id_last_processed = stn.id
+											 inner join odb_logistic_steps lsp on stn.lsp_id = lsp.id
+										where
+											 lsp.haa_id = l_last_seen_haa_id
+									  )
+	                      select *
+	                      from   odb_bag_attributes_v bga
+	                      where  bga.pbg_id in ( select id from pbg )
+	                    )
+	     loop
+                exit when l_resultcounter >= i_max_results;
+                if satisfies_criteria( bga, false )
+                then
+                   pipe row( bga );
+                   l_resultcounter := l_resultcounter + 1;
+                end if;
+	     end loop;
+         end if;
+
+      else
+         if (i_passenger_surname is not null) then
+             l_surname := upper(i_passenger_surname) || '%';
+         else
+             l_surname := null;
+         end if;
+
+         
+         for bga in ( select *
+                      from   odb_bag_attributes_v bga
+                      where  ( i_timeliness           is null or bga.timeliness = i_timeliness )
+                      and    ( l_surname              is null or upper( bga.surname ) like l_surname )
+                      and    ( i_airline              is null or bga.airline = i_airline )
+                      and    ( i_flight_number        is null or bga.flight_number = i_flight_number )
+                      and    ( i_scheduled_date       is null or bga.sd = i_scheduled_date )
+                      and    ( i_sta_from is null or i_sta_to is null or bga.sta between i_sta_from and i_sta_to )
+                      and    ( i_std_from is null or i_std_to is null or bga.std between i_std_from and i_std_to )
+                      and    ( i_flight_handler       is null or bga.handler = i_flight_handler )
+                      and    ( i_flight_haa_name      is null or bga.target_handling_area = i_flight_haa_name )
+                      and    ( i_origin_airport       is null or bga.origin = i_origin_airport )
+                      and    ( i_destination_airport  is null or bga.destination = i_destination_airport )
+                      and    ( i_cabin_class          is null or bga.cabin_class = i_cabin_class )
+                      and    ( i_checkin_seq_no       is null or bga.checkin_sequence_number = i_checkin_seq_no )
+                      and    ( i_max_results          is null or rownum <= i_max_results )
+                    )
+         loop
+            exit when l_resultcounter >= i_max_results;
+            pipe row( bga );
+            l_resultcounter := l_resultcounter + 1;
+         end loop;
+      end if;
+
+   exception
+      when no_data_needed
+      then
+         null;
+      when others
+      then
+         raise;
+   end;
+
+end odb_cursor;
+/

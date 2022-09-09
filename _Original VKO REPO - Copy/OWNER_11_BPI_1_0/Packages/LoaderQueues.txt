@@ -1,0 +1,471 @@
+create or replace PACKAGE LoaderQueues IS
+
+   g_con_package  CONSTANT  VARCHAR2(30) := 'LoaderQueues';
+   --
+   PROCEDURE process_tubsreports;
+   
+   PROCEDURE summarize_loader_queues;
+
+END LoaderQueues;
+/
+
+
+
+
+package body loaderqueues is
+   
+   type r_segment is record(idevent           wc_tubsreport_v.idevent%type
+                           ,key               wc_tubsreport_v.key%type
+                           ,eventts           wc_tubsreport_v.eventts%type
+                           ,eventtime         wc_tubsreport_v.eventtime%type
+                           ,loader_queue      dim_loader_queues.loader_queue%type
+                           ,route_segment_id  wc_tubsreport_v.segmentid%type
+                           ,l_tub             wc_tubsreport_v.l_tub%type
+                           );
+   type t_loader_queue_tubs is table of fact_loader_queue_tubs%rowtype index by pls_integer;
+   
+function extract_tubs(p_segment  in  r_segment)
+return
+   t_loader_queue_tubs
+is
+   l_con_proc        constant varchar2(61) := g_con_package||'.extract_tubs';
+   
+   l_loader_queue_tubs  t_loader_queue_tubs;
+   
+   l_eventseconds     fact_loader_queue_tubs.eventseconds%type;
+   l_m5_periodid      fact_loader_queue_tubs.m5_periodid%type;
+   l_new_empty_tub    boolean  := false;
+   l_index            integer  := 0;
+begin
+   
+   l_eventseconds := period.seconds_since_millennium(i_dt => p_segment.eventts);
+   l_m5_periodid  := period.periodid(p_segment.eventts, 'M5');
+               
+   
+   
+   for r_tub in (select pos
+                 ,      val
+                 from   table(csv.vals(p_segment.l_tub))
+                 order by pos
+                )
+   loop
+      
+      
+      case
+         when r_tub.val like 'TubStatus=%'
+         then
+            if substr(r_tub.val,11) = 'EMPTY'
+            then
+               l_new_empty_tub := true;
+            else
+               l_new_empty_tub := false;
+            end if;
+         when l_new_empty_tub
+         and  r_tub.val like 'TubID=%'
+         then
+            l_index := l_loader_queue_tubs.count + 1;
+            
+            l_loader_queue_tubs(l_index).id               := p_segment.key;
+            l_loader_queue_tubs(l_index).tub_id           := to_number(substr(r_tub.val,7));
+            l_loader_queue_tubs(l_index).insertts         := sys_extract_utc(systimestamp);
+            l_loader_queue_tubs(l_index).eventts          := p_segment.eventts;
+            l_loader_queue_tubs(l_index).eventseconds     := l_eventseconds;
+            l_loader_queue_tubs(l_index).m5_periodid      := l_m5_periodid;
+            l_loader_queue_tubs(l_index).loader_queue     := p_segment.loader_queue;
+            l_loader_queue_tubs(l_index).route_segment_id := p_segment.route_segment_id;
+            
+            l_new_empty_tub := false;
+         else
+            
+            null;
+      end case;
+   end loop;
+   
+   return l_loader_queue_tubs;
+end extract_tubs;
+
+procedure process_tubsreports
+is
+   l_con_proc        constant varchar2(61) := g_con_package||'.process_tubsreports';
+   
+   l_loader_queue_tubs  t_loader_queue_tubs;
+   
+   l_metric_config            metric_config%rowtype;
+   
+   l_max_id                   fact_loader_queue_tubs.id%type            := 0;
+   l_curr_id                  wc_tubsreport_v.key%type                  := 0;
+   l_count                    number                                    := 0;
+   
+   
+   
+   cursor c_tubreports
+   (c_id          fact_loader_queue_tubs.id%type
+   ,c_max_rownum  metric_config.max_measurements%type
+   )
+   is
+      select *
+      from  (select trt.idevent
+             ,      trt.key
+             ,      trt.eventts
+             ,      trt.eventtime
+             ,      lqe.loader_queue
+             ,      trt.segmentid as route_segment_id
+             ,      trt.l_tub
+             from   wc_tubsreport_v trt
+                    join dim_loader_queues lqe
+                      on lqe.route_segment_id = trt.segmentid
+             where  trt.key > c_id
+             and    trt.l_tub is not null
+             order by trt.key
+            )
+      where rownum <= c_max_rownum
+      ;
+begin
+   bpi_trace.enter_module(i_module => l_con_proc );
+
+   
+   l_metric_config := metrics.get_metric_config(i_metric_procedure => l_con_proc);
+   
+   case
+      
+      when l_metric_config.metric_id is null
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', METRIC Configuration not found for '||l_con_proc
+                             );
+      
+      when nvl(l_metric_config.period_type,'#') != 'M5'
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', PERIOD_TYPE must be configured as M5'
+                             );
+      
+      when nvl(l_metric_config.status,0) != 1
+      then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).'
+                     );
+      else
+
+         begin
+            
+            select nvl(max(id), 0)
+            into   l_max_id
+            from   fact_loader_queue_tubs
+            ;
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' STARTED. Processing TubsReports with ID greater than '||to_char(l_max_id)
+                          );
+            
+            for r_tubreports in c_tubreports(l_max_id
+                                            ,l_metric_config.max_measurements
+                                            )
+            loop
+               l_curr_id             := r_tubreports.key;
+               begin
+                  
+                  l_loader_queue_tubs := extract_tubs(r_tubreports);
+                  
+                  forall i in l_loader_queue_tubs.first..l_loader_queue_tubs.last save exceptions
+                     insert into fact_loader_queue_tubs values l_loader_queue_tubs(i);
+                  
+                  l_count := l_count + l_loader_queue_tubs.count;
+                  
+               exception
+                  when others
+                  then
+                     for indx in 1 .. sql%bulk_exceptions.count
+                     loop
+                          viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                                                , i_calling_procedure => l_con_proc
+                                                , i_severity          => viu_info.c_severity_warning
+                                                , i_info_arguments    => null
+                                                , i_additional_data   => substr(l_con_proc||
+                                                                              ' ERROR. Insert fact_loader_queue_tubs failed! '||
+                                                                              ' Key: '||l_loader_queue_tubs(sql%bulk_exceptions(indx).error_index).id||
+                                                                              ' Tub Id: '||l_loader_queue_tubs(sql%bulk_exceptions(indx).error_index).tub_id||
+                                                                              ' Eventts: '||l_loader_queue_tubs(sql%bulk_exceptions(indx).error_index).eventts||
+                                                                              ' Message: ' || sqlerrm(-sql%bulk_exceptions(indx).error_code)
+                                                                              ,1,4000)
+                                                 );
+                     end loop;
+               end;
+               commit;
+            end loop;
+            
+            if l_count >= l_metric_config.max_measurements
+            then
+               metrics.unfinished(i_proc => l_con_proc);
+            end if;
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' finished successfully. Inserted '||to_char(l_count)||' FACT_LOADER_QUEUE_TUBS.'
+                          );
+
+         exception
+            when others then
+               bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                        ,i_msg      => l_con_proc||', ERROR on ID: '||to_char(l_curr_id)
+                                        );
+         end;
+   
+   end case;
+   
+   bpi_trace.leave_module(i_module => l_con_proc );
+exception
+   when others then
+      bpi_log.raise_fatal_error( i_con_proc => l_con_proc);
+end process_tubsreports;
+
+procedure summarize_loader_queues
+is
+   l_con_proc         constant varchar2(61) := g_con_package||'.summarize_loader_queues';
+   
+   type err_t is table of err$_fact_loader_queues_agg_m5%rowtype index by pls_integer;
+   l_err              err_t;
+   
+   l_metric_config    metric_config%rowtype;
+   
+   l_max_rows         metric_config.max_measurements%type;
+   l_max_id           fact_loader_queues_agg_m5.id%type         := 0;
+   l_curr_id          fact_loader_queue_tubs.id%type            := 0;
+   l_count            number                                    := 0;
+   l_lag_time         timestamp;
+   l_exclude_time     timestamp;
+   l_current_time     timestamp;
+   l_until_dt         fact_loader_queue_tubs.eventts%type;
+   l_from_dt          fact_loader_queue_tubs.eventts%type;
+   l_msg              viu_info_logs.additional_data%type;
+   
+   l_minimum_processing_window interval day(9) to second(9) := numtodsinterval(30, 'MINUTE');
+   l_size_sampling_window      interval day(9) to second(9) := numtodsinterval(5, 'SECOND');
+  
+begin
+   bpi_trace.enter_module(i_module => l_con_proc );
+   
+   bpi_util.get_parameter_value( i_name    => 'TubsReportMinProcessingWindow'
+                               , i_default => 30
+                               , i_unit    => 'MINUTE'
+                               , o_value   => l_minimum_processing_window
+                               );
+
+   bpi_util.get_parameter_value( i_name    => 'TubsReportSamplingWindowSize'
+                               , i_default => 5
+                               , i_unit    => 'SECOND'
+                               , o_value   => l_size_sampling_window
+                               );
+
+   
+   l_metric_config := metrics.get_metric_config(i_metric_procedure => l_con_proc);
+   
+   case
+      
+      when l_metric_config.metric_id is null
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', METRIC Configuration not found for '||l_con_proc
+                             );
+      
+      when nvl(l_metric_config.period_type,'#') != 'M5'
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', PERIOD_TYPE must be configured as M5'
+                             );
+      
+      when nvl(l_metric_config.status,0) != 1
+      then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).'
+                     );
+      else
+
+         begin
+            
+            l_current_time := sys_extract_utc(systimestamp);
+            
+            
+            if nvl(l_metric_config.lag, 0) > 0
+            then
+               l_lag_time := l_current_time - numtodsinterval(l_metric_config.lag, 'DAY');
+            end if;
+            
+            
+            if nvl(l_metric_config.exclude_current_period,0) = 1
+            then
+               l_exclude_time := period.startts(l_current_time, l_metric_config.period_type);
+            end if;
+            
+            
+            l_until_dt := least(l_current_time
+                               ,nvl(l_lag_time    ,l_current_time + 1)
+                               ,nvl(l_exclude_time,l_current_time + 1)
+                               );
+
+            l_max_rows := l_metric_config.max_measurements;
+            
+            select nvl(max(id), 0)
+            into   l_max_id
+            from   fact_loader_queues_agg_m5
+            ;
+            
+            select min(eventts)
+            into   l_from_dt
+            from   fact_loader_queue_tubs
+            where  id > l_max_id
+            ;
+            
+            l_from_dt := least(nvl(l_from_dt,l_until_dt)
+                              ,l_until_dt - l_minimum_processing_window
+                              );
+            
+            l_from_dt := l_from_dt - (2 * l_size_sampling_window);
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' STARTED. Processing LoaderQueueTubs with ID greater than '||to_char(l_max_id)
+                          );
+            
+            delete from err$_fact_loader_queues_agg_m5;
+            
+            while l_max_rows > 0 and l_from_dt < l_until_dt
+            loop
+               
+               merge into fact_loader_queues_agg_m5  lq5
+               using (select *
+                      from  (with
+                                sampled as
+                                
+                                
+                               (select ltb.id
+                                ,      ltb.tub_id
+                                ,      ltb.m5_periodid
+                                ,      ltb.loader_queue
+                                ,      first_value(ltb.eventts) over (partition by ltb.loader_queue
+                                                                      order by ltb.eventts asc nulls last
+                                                                      range between l_size_sampling_window preceding
+                                                                                and l_size_sampling_window following
+                                                                     ) as sampling_time
+                                from   fact_loader_queue_tubs  ltb
+                                where  ltb.eventts >= l_from_dt
+                               )
+                             ,  latest_sampling as
+                                
+                               (select mse.loader_queue
+                                ,      mse.m5_periodid
+                                ,      max(mse.sampling_time) as latest_sampling_time
+                                from   sampled  mse
+                                group by mse.loader_queue
+                                ,        mse.m5_periodid
+                               )
+                             
+                             select id
+                             ,      sampling_time
+                             ,      period.to_stamp(m5_periodid, 'M5') as eventts
+                             ,      m5_periodid
+                             ,      loader_queue
+                             ,      tubs_count
+                             from  (
+                                    
+                                    
+                                   select max(spd.id) as id
+                                   ,      min(spd.m5_periodid) as m5_periodid
+                                   ,      spd.loader_queue
+                                   ,      spd.sampling_time
+                                   ,      count(distinct spd.tub_id) as tubs_count
+                                   from   sampled  spd
+                                          join latest_sampling  lsg
+                                            on     lsg.loader_queue         = spd.loader_queue
+                                               and lsg.latest_sampling_time = spd.sampling_time
+                                   where  spd.sampling_time >= l_from_dt
+                                   and    spd.sampling_time <  l_from_dt + numtodsinterval(1, 'HOUR')
+                                   group by spd.loader_queue
+                                   ,        spd.sampling_time
+                                   ) spd2
+                             where  spd2.id > l_max_id
+                             order by spd2.id asc
+                            )
+                      where rownum <= l_max_rows
+                     )  lqa
+               on (
+                       lq5.m5_periodid  = lqa.m5_periodid
+                   and lq5.loader_queue = lqa.loader_queue
+                  )
+               when matched then
+                  update
+                  set    id         = lqa.id
+                  ,      updatets   = sys_extract_utc(systimestamp)
+                  ,      tubs_count = lqa.tubs_count
+                  where  lq5.id < lqa.id
+               when not matched then
+                  insert ( id
+                         , insertts
+                         , updatets
+                         , eventts
+                         , m5_periodid
+                         , loader_queue
+                         , tubs_count
+                         )
+                  values ( lqa.id
+                         , sys_extract_utc(systimestamp)
+                         , sys_extract_utc(systimestamp)
+                         , lqa.eventts
+                         , lqa.m5_periodid
+                         , lqa.loader_queue
+                         , lqa.tubs_count
+                         )
+               log errors into err$_fact_loader_queues_agg_m5 reject limit unlimited
+               ;
+               l_count    := l_count + sql%rowcount;
+               l_max_rows := l_max_rows - sql%rowcount;
+               l_from_dt  := l_from_dt + numtodsinterval(1, 'HOUR');
+                
+               commit;
+            end loop;
+    
+            
+            select *
+            bulk collect into l_err
+            from   err$_fact_loader_queues_agg_m5
+            order by ora_err_number$
+            ;
+            
+            if l_err.count > 0
+            then
+               for i in l_err.first..l_err.last
+               loop
+                  bpi_log.handle_error( i_con_proc => l_con_proc
+                                      , i_msg      => l_con_proc         ||' ERROR. Merge FACT_LOADER_QUEUES_AGG_M5 failed. '
+                                                      ||' ID='           ||to_char(l_err(i).id)
+                                                      ||',M5_PERIODID='  ||to_char(l_err(i).m5_periodid)
+                                                      ||',LOADER_QUEUE=' ||to_char(l_err(i).loader_queue)
+                                                      ||', '             ||l_err(i).ora_err_mesg$
+                                      );
+               end loop;
+            end if;
+            
+            if l_count >= l_metric_config.max_measurements
+            then
+               metrics.unfinished(i_proc => l_con_proc);
+            end if;
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' finished successfully. Merged '||to_char(l_count)||' FACT_LOADER_QUEUES_AGG_M5.'
+                          );
+
+         exception
+            when others then
+               bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                        ,i_msg      => l_con_proc||', ERROR on ID: '||to_char(l_curr_id)
+                                        );
+         end;
+
+   end case;
+   
+   bpi_trace.leave_module(i_module => l_con_proc );
+exception
+   when others then
+      bpi_log.raise_fatal_error( i_con_proc => l_con_proc);
+end summarize_loader_queues;
+
+end loaderqueues;
+/

@@ -1,0 +1,40 @@
+procedure update_cmn_parameter_values is
+v_msg varchar2(32767) := '';
+cursor c_cmn_parms is
+  select pve_comment, value from cmn_parameter_values
+  where ptr_id >= 100 and user_updateable = 'Y'
+  order by pve_comment;
+begin
+  begin
+    htp.print(gui.head( gui.app_name||' > Update CMN_PARAMETER_VALUES '
+                       , 'Update CMN_PARAMETER_VALUES '));
+
+    htp.print('<br>');
+    htp.print('<TABLE border=2 bordercolor="#8B4513" bgcolor="#FFEBCD" cellspacing=2 cellpadding=1><TR><TH colspan=3>Parameters</TH></TR>');
+    htp.print('<TR><TH>Name</TH><TH>Value</TH><TH> '||chr(38)||'nbsp; </TH></TR>');
+
+    for rec in c_cmn_parms loop
+      
+      htp.print('<TR>');
+      htp.print('<TD>'||rec.pve_comment||'</TD>');
+      htp.print('<TD>'||rec.value||'</TD>');
+      htp.print('<TD>');
+      htp.print('<BUTTON onClick="document.location=''Update_CMN_PARAMETER?p_parm='||rec.pve_comment||''';">Update</BUTTON>');
+      htp.print('</TD>');
+      htp.p('</TR>');
+    end loop;
+    htp.p('</TABLE>');
+    htp.print(gui.tail);
+
+  exception when others then
+    htp.print(gui.head( gui.app_name||' > Update CMN_PARAMETER_VALUES '
+                       , 'Update CMN_PARAMETER_VALUES '));
+    v_msg := v_msg||'<br>'||sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

@@ -1,0 +1,16 @@
+procedure downloadreport(p_file in varchar2 default ' ') is
+v_clob clob;
+begin
+  begin
+    owa_util.mime_header( 'application/text', false );
+    htp.print('Content-Disposition: attachment;filename="'||p_file||'"');
+    owa_util.http_header_close;
+    select clob_content into v_clob from reports where name = p_file;
+    htpprintclob(v_clob);
+    
+    
+  exception when others then
+    htp.print(sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>'));
+  end;
+end;
+/

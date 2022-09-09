@@ -1,0 +1,963 @@
+create or replace PACKAGE cmn_http
+IS
+   /**
+    * Lightweight implementation of UTL_HTTP package suitable for use in VIBES.
+    * CMN_HTTP implements only a subset of functions from UTL_HTTP, sufficient
+    * for POSTing messagages using http over (non)persistent connections.
+    * The package currently supports URLs that are in following format only:
+    *
+    *    http://host[:port][/path][/filename][?query_string]
+    */
+
+   -- A PL/SQL record type that represents a HTTP request
+   TYPE req IS RECORD ( url            VARCHAR2(32767) -- Requested URL
+                      , method         VARCHAR2(64)    -- Requested method
+                      , http_version   VARCHAR2(64)    -- Requested HTTP version
+                      , private_hndl   PLS_INTEGER     -- For internal use only
+                      );
+
+   -- A PL/SQL record type that represents a HTTP response
+   TYPE resp IS RECORD ( status_code   PLS_INTEGER     -- Response status code
+                       , reason_phrase VARCHAR2(256)   -- Response reason phrase
+                       , http_version  VARCHAR2(64)    -- Response HTTP version
+                       , private_hndl  PLS_INTEGER     -- For internal use only
+                       );
+
+   /**
+    * Sets whether future HTTP requests should support the HTTP 1.1 persistent-
+    * connection or not, and the maximum numbers of persistent connections
+    * to be maintained in the current database user session.
+    *
+    * PARAMETERS
+    *    enable    Set enable to TRUE to enable persistent connection support.
+    *              FALSE otherwise.
+    *    max_conns Sets the maximum number of persistent connections that will
+    *              be maintained in the current session.
+    *
+    * EXCEPTIONS
+    *    None.
+    *
+    * NOTES
+    *    The default value of the maximum number of persistent connections
+    *    in a database session is zero.
+    */
+   PROCEDURE set_persistent_conn_support( enable    IN BOOLEAN
+                                        , max_conns IN PLS_INTEGER DEFAULT 0
+                                        );
+
+   /**
+    * Closes a group of HTTP persistent connections maintained by
+    * the CMN_HTTP package in the current database session.
+    *
+    * PARAMETERS
+    *    host       The host for which persistent connections are to be closed.
+    *    port       The port number for which persistent connections are to be
+    *               closed.
+    *
+    * EXCEPTIONS
+    *    None.
+    *
+    * NOTES
+    *    No support for proxy and ssl related parameters like UTL_HTTP equivalent.
+    *
+    *    Use of a NULL value in a parameter indicates that the connection should
+    *    be closed for all posible values of the parameter.
+    */
+   PROCEDURE close_persistent_conns( host       IN VARCHAR2    DEFAULT NULL
+                                   , port       IN PLS_INTEGER DEFAULT NULL
+                                   );
+
+   /**
+    * Sets whether get_response should raise an exception when the Web server
+    * returns a status code that indicates an error (namely, a status code in
+    * the 4xx or 5xx ranges). For example, when the requested URL is not found
+    * in the destination Web server, a 404 (document not found) response status
+    * code is returned.  In general, a 4xx or 5xx response is considered an
+    * error response.  If response error check is set, get_response will raise
+    * the HTTP_CLIENT_ERROR or HTTP_SERVER_ERROR exception if the status code
+    * indicates an error. Otherwise, get_response will not raise the exception
+    * if the status codes indicates an error. Response error check is turned off
+    * by default.
+    *
+    * PARAMETERS
+    *    enable    Set to TRUE to check for response error. FALSE otherwise.
+    *
+    * EXCEPTIONS
+    *    None.
+    *
+    * NOTES
+    *    None.
+    */
+   PROCEDURE set_response_error_check( enable IN BOOLEAN DEFAULT FALSE);
+
+   /**
+    * Sets the CMN_HTTP package to raise a detailed exception.
+    * Functionality not yet implemented (and not used by VIBES)
+    *
+    * PARAMETERS
+    *    enable    Set to TRUE to raise a detailed exception directly.
+    *              FALSE otherwise.
+    *
+    * EXCEPTIONS
+    *    None.
+    *
+    * NOTES
+    *    None.
+    */
+   PROCEDURE set_detailed_excp_support( enable IN BOOLEAN DEFAULT FALSE);
+
+   /**
+    * Sets the default time-out value for all future HTTP requests that the
+    * CMN_HTTP package should attempt reading the HTTP response from the
+    * Web server. 
+    * The default value of the time-out is 60 seconds.
+    *
+    * PARAMETERS
+    *    timeout   The network transfer time-out value (in seconds).
+    *
+    * EXCEPTIONS
+    *    None.
+    *
+    * NOTES
+    *    None.
+    */
+   PROCEDURE set_transfer_timeout( timeout IN PLS_INTEGER DEFAULT 60);
+
+   /**
+    * Retrieves the default time-out value for all future HTTP requests.
+    *
+    * PARAMETERS
+    *   timeout   The network transfer time-out value (in seconds).
+    *
+    * EXCEPTIONS
+    *    None.
+    * NOTES
+    *    None.
+    */
+   PROCEDURE get_transfer_timeout( timeout OUT PLS_INTEGER);
+
+   /**
+    * Begins a new HTTP request. When the function returns, the CMN_HTTP
+    * package has established the network connection to the target Web server.
+    * and has sent the HTTP request line. The PL/SQL program should continue
+    * the request by calling some other API to complete the request.
+    *
+    * PARAMETERS
+    *    url           The URL of the HTTP request.
+    *    method        The method to be performed on the resource identified by
+    *                  the URL. Must be 'POST'.
+    *    http_version  The HTTP protocol version to use to send the request.
+    *                  The parameter is set to NULL by default, which maps to
+    *                  HTTP 1.1. No other protocol is supported.
+    *
+    * EXCEPTIONS
+    *
+    * When detailed-exception is disabled:
+    *    request_failed    the request fails to execute
+    *
+    * When detailed-exception is enabled:
+    *    bad_argument      when some of the arguments passed are not valid.
+    *    bad_url           when the URL is not valid.
+    *    unknown_scheme    when the request scheme is not known.
+    *    too_many_requests when there are too many open requests.
+    *    http_client_error when the Web server returns a 4xx response
+    *    http_server_error when the Web server returns a 5xx response
+    *
+    *    - plus miscellaneous network exceptions.
+    *
+    * NOTES
+    *    Proxy and authentication and schemes other than http are not supported
+    *    The general format for url would be
+    *           http://<host>[:<port>]/[...].
+    *    To connect to the Web server, the CMN_HTTP must have the "connect" ACL
+    *    privilege to the host.
+    */
+   FUNCTION begin_request( url             IN VARCHAR2
+                         , method          IN VARCHAR2 DEFAULT 'GET'
+                         , http_version    IN VARCHAR2 DEFAULT NULL
+                         )
+      RETURN req;
+
+   /**
+    * Sets a HTTP request header. The request header is sent to the Web server
+    * in buffered mode, i.e. may be delivered in same frame as body and as late
+    * as in the get_response() call.
+    *
+    * PARAMETERS
+    *   r             The HTTP request
+    *   name          The name of the HTTP request header
+    *   value         The value of the HTTP request header
+    *
+    * EXCEPTIONS
+    *
+    * When detailed-exception is disabled:
+    *   request_failed    the request fails to execute
+    *
+    * When detailed-exception is enabled:
+    *    bad_argument      when some of the arguments passed are not valid.
+    *    illegal_call      when the request body is already sent
+    *    - plus miscellaneous network and runtime exceptions.
+    * NOTES
+    *    Standard UTL_HTTP package claims to send header as soon as it is set.
+    *    This does not appear to be true, but could be simulated by flushing
+    *    the buffer after recognising header end.
+    */
+   PROCEDURE set_header( r       IN OUT NOCOPY req
+                       , name    IN            VARCHAR2
+                       , value   IN            VARCHAR2 DEFAULT NULL
+                       );
+
+  /**
+   * Enables (or disables) the support for the HTTP 1.1 persistent-connection
+   * in this request.
+   *
+   * PARAMETERS
+   *    r             The HTTP request
+   *    enable        TRUE to keep the network connection persistent.
+   *                  FALSE otherwise.
+   *
+   * EXCEPTIONS
+   *
+   * When detailed-exception is disabled:
+   *    request_failed    the request fails to execute
+   *
+   * When detailed-exception is enabled:
+   *    bad_argument      when some of the arguments passed are not valid.
+   *    illegal_call      when the request body is already sent
+   *    - plus miscellaneous network exceptions.
+   *
+   * NOTES
+   *    The default value of the maximum number of persistent connections
+   *    in a database session is zero.  To truly enable persistent connections,
+   *    the user must also set the maximum number of persistent connections to
+   *    a positive value or no connections will be kept persistent.
+   */
+   PROCEDURE set_persistent_conn_support( r      IN OUT NOCOPY req
+                                        , enable IN     BOOLEAN DEFAULT FALSE
+                                        );
+
+   /**
+    * Writes some text data in the HTTP request body. As soon as some data is
+    * sent as the HTTP request body, the HTTP request headers section is
+    * completed. Text data is automatically converted from the database
+    * character set to the request body character set.
+    *
+    * PARAMETERS
+    *    r         The HTTP request
+    *    data      The text data to send in the HTTP request body
+    *
+    * EXCEPTIONS
+    *
+    * When detailed-exception is disabled:
+    *    request_failed    the request fails to execute
+    *
+    * When detailed-exception is enabled:
+    *    bad_argument      when some of the arguments passed are not valid.
+    *    - plus miscellaneous network exceptions.
+    * NOTES
+    *    A HTTP client must always let the remote Web server to know the length
+    *    of the request body it is sending. If the amount of data is known
+    *    beforehand, the user can set the "Content-Length" header in the request,
+    *    where the length of the content is measured in bytes instead of
+    *    characters. 
+    *    If the user sends the "Content-Length" header, the user should note
+    *    that the length specify in the header should be the byte-length of the
+    *    textual request body after it is converted from the database character
+    *    set to the request body character set.
+    */
+   PROCEDURE write_text( r    IN OUT NOCOPY req
+                       , data IN            VARCHAR2 CHARACTER SET ANY_CS
+                       );
+
+   /**
+    * Ends the HTTP request. In the not-so-normal situation when a PL/SQL
+    * program wants to terminates the HTTP request without completing the
+    * request and waiting for the response, the program can call this procedure
+    * to terminate the request. Otherwise, the program should go through the
+    * normal sequence of beginning a request, getting the response, and
+    * closing the response. The network connection will always be closed and
+    * will not be reused.
+    *
+    * PARAMETERS
+    *    r            The HTTP request
+    *
+    * EXCEPTIONS
+    *
+    * When detailed-exception is disabled:
+    *    request_failed    the request fails to execute
+    *
+    * When detailed-exception is enabled:
+    *    bad_argument      when some of the arguments passed are not valid.
+    *    - plus miscellaneous network exceptions.
+    * NOTES
+    *    None.
+    */
+   PROCEDURE end_request( r IN OUT NOCOPY req);
+
+   /**
+    * Reads the HTTP response. When this procedure returns, the status line
+    * and the HTTP response headers have been read and processed. The status
+    * code, reason phrase and the HTTP protocol version are stored in the
+    * response record. This function completes the HTTP headers section.
+    *
+    * PARAMETERS
+    *   r                     The HTTP request
+    *
+    * EXCEPTIONS
+    *
+    * When detailed-exception is disabled:
+    *   request_failed    the request fails to execute
+    *
+    * When detailed-exception is enabled:
+    *   bad_argument      when some of the arguments passed are not valid.
+    *   When response error check is enabled:
+    *     http_client_error   when the response code is in 400 range
+    *     http_server_error   when the response code is in 500 range
+    *   - plus miscellaneous network exceptions.
+    * NOTES
+    *   - The request will be ended when this functions returns regardless of
+    *     whether an exception is raised or not.  There is no need to end
+    *     the request with end_request.
+    *   - return_info_response parameter is not implemented
+    */
+   FUNCTION get_response( r IN OUT NOCOPY req)
+      RETURN resp;
+
+   /**
+    * Ends the HTTP response. This completes the HTTP request and response.
+    * Unless HTTP 1.1 persistent connection is used in this request, the
+    * network connection will also be closed.
+    *
+    * PARAMETERS
+    *    r            The HTTP response
+    *
+    * EXCEPTIONS
+    *
+    * When detailed-exception is disabled:
+    *    request_failed    the request fails to execute
+    *
+    * When detailed-exception is enabled:
+    *    bad_argument      when some of the arguments passed are not valid.
+    *    - plus miscellaneous network exceptions.
+    * NOTES
+    *    None.
+    */
+   PROCEDURE end_response( r IN OUT NOCOPY resp);
+
+   -- Extension
+   /**
+    * Sets the default idle time-out value for all future persistent HTTP
+    * connections that the CMN_HTTP package attempts to set up.
+    * This time-out should be set lower than the idleTimeout value of the
+    * Web server to prevent extreme case that server closes it's write socket
+    * just at the moment client POSTed a new message.
+    * The default value of the time-out is 4 seconds.
+    *
+    * PARAMETERS
+    *    timeout   The network idle time-out value (in seconds).
+    *
+    * EXCEPTIONS
+    *    None.
+    *
+    * NOTES
+    *    The time-out value of 4 seconds was chosen since some Web servers have
+    *    an idleTimeout value of 5 seconds.
+    */
+   PROCEDURE set_idle_timeout( timeout IN PLS_INTEGER DEFAULT 4 );
+
+   /**
+    * Retrieves the default idle time-out value for all future HTTP requests.
+    *
+    * PARAMETERS
+    *   timeout   The network idle time-out value (in seconds).
+    *
+    * EXCEPTIONS
+    *    None.
+    * NOTES
+    *    None.
+    */
+   PROCEDURE get_idle_timeout( timeout OUT PLS_INTEGER);
+
+   /**
+    * Sets the maximum time-out value that the CMN_HTTP package may wait
+    * attempting to re-use the connection.
+    * This time-out should be set lower than the idleTimeout value of the
+    * Web server to prevent extreme case that server closes it's write socket
+    * just at the moment client POSTed a new message.
+    * The default value of the time-out is 4 seconds.
+    *
+    * PARAMETERS
+    *    r         The HTTP request
+    *    timeout   The network transfer time-out value (in seconds).
+    *
+    * EXCEPTIONS
+    *    None.
+    *
+    * NOTES
+    *    The time-out value of 4 seconds was chosen since some Web servers have
+    *    an idleTimeout value of 5 seconds.
+    */
+   PROCEDURE set_idle_timeout( r       IN OUT NOCOPY req
+                             , timeout IN PLS_INTEGER DEFAULT 4
+                             );
+END cmn_http;
+/
+
+
+
+
+package body cmn_http
+is
+
+g_transfer_timeout         pls_integer := 60;
+g_idle_timeout             pls_integer := 4;  
+g_persistent_conn_support  boolean     := false;
+g_response_error_check     boolean     := false;
+g_detailed_excp_support    boolean     := false;
+
+
+c_state_unknown  constant pls_integer := -1;  
+c_state_idle     constant pls_integer := 0;   
+c_state_request  constant pls_integer := 1;   
+c_state_header   constant pls_integer := 2;   
+c_state_body     constant pls_integer := 3;   
+c_state_response constant pls_integer := 4;   
+
+
+type t_connection is record ( tcp_conn    utl_tcp.connection
+                            , state       pls_integer
+                            , tx_timeout  pls_integer
+                            , lnk_timeout pls_integer
+                            , disconnect  timestamp(3)
+                            );
+
+type t_connections is table of t_connection index by pls_integer;
+g_connections        t_connections;
+c_max_conns constant pls_integer := 100;
+g_max_conns          pls_integer := 0;
+
+
+procedure close_connection( i_conn_idx pls_integer)
+is
+   l_tcp_conn utl_tcp.connection;
+begin
+   l_tcp_conn := g_connections(i_conn_idx).tcp_conn;
+   g_connections.delete(i_conn_idx);
+   utl_tcp.close_connection( c => l_tcp_conn );
+exception
+   when others then null;
+end;
+
+
+procedure set_persistent_conn_support( enable    in boolean
+                                     , max_conns in pls_integer := 0
+                                     )
+is
+   l_max_conns      pls_integer;
+   l_persistent_cnt pls_integer := 0;
+   l_conn_idx       pls_integer;
+begin
+   l_max_conns := case when enable then max_conns else 0 end;
+
+   if l_max_conns < g_max_conns
+   then
+      l_conn_idx := g_connections.first;
+      while l_conn_idx > 0
+      loop
+         if g_connections(l_conn_idx).state in ( c_state_idle
+                                               , c_state_unknown
+                                               )
+         then
+            if l_persistent_cnt >= l_max_conns
+            then
+               close_connection( l_conn_idx );
+            else
+               l_persistent_cnt := l_persistent_cnt + 1;
+            end if;
+         end if;
+         l_conn_idx := g_connections.next(l_conn_idx);
+      end loop;
+   end if;
+      
+   g_persistent_conn_support := enable;
+   g_max_conns               := l_max_conns;
+end;
+
+procedure close_persistent_conns( host       in varchar2    default null
+                                , port       in pls_integer default null
+                                )
+is
+   l_conn_idx pls_integer;
+   l_conn     utl_tcp.connection;
+begin
+   l_conn_idx := g_connections.first;
+   while l_conn_idx > 0
+   loop
+      if g_connections(l_conn_idx).state = c_state_unknown
+         or     ( host is null or host = g_connections(l_conn_idx).tcp_conn.remote_host)
+            and ( port is null or port = g_connections(l_conn_idx).tcp_conn.remote_port)
+      then
+         close_connection( l_conn_idx);
+      end if;
+
+      l_conn_idx := g_connections.next(l_conn_idx);
+   end loop;
+end;
+   
+procedure set_response_error_check( enable in boolean := false)
+is
+begin
+   g_response_error_check := enable;
+end;
+
+procedure set_detailed_excp_support( enable in boolean := false)
+is
+begin
+   g_detailed_excp_support := enable;
+end;
+
+procedure set_transfer_timeout( timeout in pls_integer := 60)
+is
+begin
+   if timeout is not null
+   then
+      g_transfer_timeout := timeout;
+   end if;
+end;
+
+procedure get_transfer_timeout( timeout out pls_integer)
+is
+begin
+   timeout := g_transfer_timeout;
+end;
+
+function begin_request( url             in varchar2
+                      , method          in varchar2 default 'GET'
+                      , http_version    in varchar2 default null
+                      )
+   return req
+is
+   l_host        varchar2(255);
+   l_host_start  pls_integer;
+   l_host_end    pls_integer;
+   l_host_length pls_integer;
+   l_port        pls_integer;
+   l_port_start  pls_integer;
+   l_path        varchar2(32767);
+   
+   l_req         req;
+   l_conn        t_connection;
+   l_tcp_conn    utl_tcp.connection;
+   l_conn_idx    pls_integer;
+   l_len         pls_integer;
+   l_ret         pls_integer;
+   l_dummy       varchar2(32767);
+begin
+   
+   if    method <> 'POST'
+      or http_version <> utl_http.http_version_1_1
+   then
+      raise sys.utl_http.bad_argument;
+   end if;
+    
+   
+   
+   
+   if    url not like 'http://%'
+      or url like 'http://%@%/%'
+   then
+      raise sys.utl_http.unknown_scheme;
+   end if;
+
+   l_path := substr( url, instr( url, '/', 8));        
+
+   
+   
+   l_host_start := instr(url, '//') + 2;
+   l_host_end   := instr(url, '/', instr(url, '//') + 2);
+   if l_host_end = 0
+   then
+      
+      l_host_end   := instr(url, '?', instr(url, '//') + 2);
+   end if;
+   if l_host_end > 0
+   then
+      
+      l_host_length := l_host_end - l_host_start;
+      l_host := substr( url
+                      , l_host_start
+                      , l_host_length
+                      );
+   else
+      
+      l_host := substr( url
+                      , l_host_start
+                      );
+   end if;
+   l_port_start := instr(l_host, ':');
+   if l_port_start > 0
+   then
+      
+      l_port := substr(l_host, l_port_start+1);
+      l_host := substr(l_host, 1, l_port_start-1);
+   else
+      l_port := sys.utl_http.default_http_port;
+   end if;
+
+   if l_path is null or l_host is null or l_port <= 0
+   then
+      raise sys.utl_http.bad_url;
+   end if;
+
+   l_conn_idx := null;
+   if g_persistent_conn_support
+   then
+      
+      l_conn_idx := g_connections.first;
+      while l_conn_idx > 0
+            and (   g_connections(l_conn_idx).state not in ( c_state_idle
+			                                   , c_state_unknown
+						           )
+                 or g_connections(l_conn_idx).tx_timeout <> g_transfer_timeout
+                 or g_connections(l_conn_idx).lnk_timeout <> g_idle_timeout
+                 or g_connections(l_conn_idx).tcp_conn.remote_host <> l_host
+                 or g_connections(l_conn_idx).tcp_conn.remote_port <> l_port
+                )
+      loop
+         l_conn_idx := g_connections.next( l_conn_idx );
+      end loop;
+      
+      if l_conn_idx > 0
+      then
+         if    g_connections(l_conn_idx).state = c_state_unknown
+            or g_connections(l_conn_idx).disconnect <= sys_extract_utc(systimestamp)
+         then
+            
+            close_connection( l_conn_idx );
+            l_conn_idx := null;
+         else
+            l_tcp_conn := g_connections(l_conn_idx).tcp_conn;
+         
+            
+            
+            
+            begin
+               
+               
+               
+               
+               
+               loop
+                  l_len := utl_tcp.available( c => l_tcp_conn);
+                  exit when l_len <= 0;
+                  l_dummy := utl_tcp.get_text( c => l_tcp_conn);
+               end loop;
+            exception
+               when others
+               then
+                  
+                  close_persistent_conns( host => l_host
+                                        , port => l_port
+                                        );
+                  l_conn_idx := null;
+            end;
+         end if;
+      end if;
+   end if;
+   
+   if l_conn_idx is null
+   then
+      if g_connections.count >= c_max_conns
+      then
+         raise sys.utl_http.too_many_requests;
+      end if;
+
+      begin
+         l_tcp_conn := utl_tcp.open_connection( remote_host     => l_host
+                                              , remote_port     => l_port
+                                              , in_buffer_size  => 32000
+                                              , out_buffer_size => 32000
+                                              , tx_timeout      => g_transfer_timeout
+                                              , charset         => 'AL32UTF8'
+                                              );
+         l_conn.tcp_conn    := l_tcp_conn;
+         l_conn.state       := c_state_idle;
+         l_conn.tx_timeout  := g_transfer_timeout;
+         l_conn.lnk_timeout := g_idle_timeout;
+         l_conn.disconnect  := sys_extract_utc(systimestamp) + numtodsinterval(g_idle_timeout, 'SECOND');
+
+         l_conn_idx := 1;
+         while g_connections.exists(l_conn_idx)
+         loop
+            l_conn_idx:= l_conn_idx + 1;
+         end loop;
+
+         g_connections(l_conn_idx) := l_conn;
+      exception
+         when sys.utl_tcp.network_access_denied
+         then
+            raise sys.utl_http.network_access_denied;
+         when others
+         then
+            if g_response_error_check
+            then
+               raise sys.utl_http.illegal_call;
+            else
+               raise sys.utl_http.request_failed;
+            end if;
+      end;
+   end if;
+
+   begin
+      g_connections(l_conn_idx).state := c_state_unknown;
+      l_ret := utl_tcp.write_line( c => l_tcp_conn, data => method||' '||l_path||' '||http_version);
+      l_ret := utl_tcp.write_line( c => l_tcp_conn, data => 'Host: '||l_host||':'||l_port);
+      if not g_persistent_conn_support
+      then
+         l_ret := utl_tcp.write_line( c => l_tcp_conn, data => 'Connection: close');
+      end if;
+   exception
+      when others
+      then
+         if g_response_error_check
+         then
+            raise sys.utl_http.illegal_call;
+         else
+            raise sys.utl_http.request_failed;
+         end if;
+   end;
+
+   g_connections(l_conn_idx).state := c_state_header;
+
+   l_req.url := url;
+   l_req.method := method;
+   l_req.http_version := http_version;
+   l_req.private_hndl := l_conn_idx;  
+   
+   return l_req;
+exception
+   when others then
+      if l_conn_idx > 0
+      then
+         close_persistent_conns( host => l_host
+                               , port => l_port
+                               );
+      else
+         begin
+            utl_tcp.close_connection( c => l_tcp_conn );
+         exception
+            when others then null;
+         end;
+      end if;
+
+      raise;
+end;
+
+procedure set_header( r       in out nocopy req
+                    , name    in            varchar2
+                    , value   in            varchar2 default null
+                    )
+is
+   l_ret   pls_integer;
+   l_state pls_integer;
+begin
+   l_state := g_connections(r.private_hndl).state;
+   g_connections(r.private_hndl).state := c_state_unknown;
+   l_ret := utl_tcp.write_line( c    => g_connections(r.private_hndl).tcp_conn
+                              , data => name||': '||value
+                              );
+   g_connections(r.private_hndl).state := l_state;
+exception
+   when others
+   then
+      if g_response_error_check
+      then
+         raise sys.utl_http.illegal_call;
+      else
+         raise sys.utl_http.request_failed;
+      end if;
+end;
+
+procedure set_persistent_conn_support( r      in out nocopy req
+                                     , enable in     boolean default false
+                                     )
+is
+   l_ret   pls_integer;
+   l_state pls_integer;
+begin
+   if g_persistent_conn_support and not enable
+   then
+      l_state := g_connections(r.private_hndl).state;
+      g_connections(r.private_hndl).state := c_state_unknown;
+      l_ret := utl_tcp.write_line( c    => g_connections(r.private_hndl).tcp_conn
+                                 , data => 'Connection: close'
+                                 );
+      g_connections(r.private_hndl).state := l_state;
+   end if;
+exception
+   when others
+   then
+      if g_response_error_check
+      then
+         raise sys.utl_http.illegal_call;
+      else
+         raise sys.utl_http.request_failed;
+      end if;
+end;
+
+procedure write_text( r    in out nocopy req
+                    , data in            varchar2 character set any_cs
+                    )
+is
+   l_ret   pls_integer;
+   l_state pls_integer;
+begin
+   l_state := g_connections(r.private_hndl).state;
+   g_connections(r.private_hndl).state := c_state_unknown;
+
+   if l_state = c_state_header
+   then
+      l_ret := utl_tcp.write_line( c => g_connections(r.private_hndl).tcp_conn);
+   end if;
+
+   l_ret := utl_tcp.write_text( c    => g_connections(r.private_hndl).tcp_conn
+                              , data => data
+                              );
+
+   g_connections(r.private_hndl).state := c_state_body;
+exception
+   when others
+   then
+      if g_response_error_check
+      then
+         raise sys.utl_http.http_client_error;
+      else
+         raise sys.utl_http.request_failed;
+      end if;
+end;
+
+procedure end_request( r in out nocopy req)
+is
+begin
+   close_connection( r.private_hndl );
+   r.private_hndl := null;
+end;
+
+function get_response( r in out nocopy req)
+   return resp
+is
+   l_tcp_conn utl_tcp.connection;
+   l_status   varchar2(32767);
+   l_resp     resp;
+   l_state    pls_integer;
+begin
+   l_state := g_connections(r.private_hndl).state;
+   g_connections(r.private_hndl).state := c_state_unknown;
+
+   l_tcp_conn := g_connections(r.private_hndl).tcp_conn;
+   
+   utl_tcp.flush( c => l_tcp_conn);
+
+   l_status := utl_tcp.get_line( c => l_tcp_conn, remove_crlf => true);
+   l_resp.http_version  := substr(l_status, 1, instr(l_status, ' ')-1);
+   l_resp.status_code   := to_number(substr(l_status, instr(l_status, ' ')+1, 3));
+   l_resp.reason_phrase := substr(l_status, instr(l_status, ' ', 1, 2)+1, 256);
+   l_resp.private_hndl  := r.private_hndl;
+
+   if g_response_error_check
+   then
+      if l_resp.status_code between 400 and 499
+      then
+         raise sys.utl_http.http_client_error;
+      elsif l_resp.status_code between 500 and 599
+      then
+         raise sys.utl_http.http_server_error;
+      end if;
+   end if;
+   
+   g_connections(r.private_hndl).state := l_state;
+
+   return l_resp;
+exception
+   when utl_http.http_client_error or utl_http.http_server_error
+   then
+      raise;
+   when others
+   then
+      if g_response_error_check
+      then
+         raise sys.utl_http.http_client_error;
+      else
+         raise sys.utl_http.request_failed;
+      end if;
+end;
+
+procedure end_response( r in out nocopy resp)
+is
+   l_tcp_conn  utl_tcp.connection;
+   l_dummy     varchar2(32767);
+begin
+   
+   l_tcp_conn := g_connections(r.private_hndl).tcp_conn;
+
+   begin
+      g_connections(r.private_hndl).state := c_state_unknown;
+
+      
+      
+      while utl_tcp.available( c => l_tcp_conn) > 0
+      loop
+         l_dummy := utl_tcp.get_line( c => l_tcp_conn);
+      end loop;
+      
+      g_connections(r.private_hndl).state := c_state_idle;
+      g_connections(r.private_hndl).disconnect := sys_extract_utc(systimestamp) + numtodsinterval(g_connections(r.private_hndl).lnk_timeout, 'SECOND');
+   exception
+      when sys.utl_tcp.end_of_input
+      then
+         close_connection( r.private_hndl );
+      when others
+      then
+         close_persistent_conns( host => l_tcp_conn.remote_host
+                               , port => l_tcp_conn.remote_port
+                               );
+   end;
+         
+   r.private_hndl := null;
+exception
+   when others then null;
+end;
+
+
+procedure set_idle_timeout( timeout in pls_integer default 4)
+is
+begin
+   if timeout is not null
+   then
+      g_idle_timeout := timeout;
+   end if;
+end;
+
+procedure get_idle_timeout( timeout out pls_integer)
+is
+begin
+   timeout := g_idle_timeout;
+end;
+
+procedure set_idle_timeout( r       in out nocopy req
+	                  , timeout in pls_integer default 4
+                          )
+is
+begin
+   if timeout is not null
+   then
+      g_connections(r.private_hndl).lnk_timeout := timeout;
+      g_connections(r.private_hndl).disconnect := sys_extract_utc(systimestamp) + numtodsinterval(timeout, 'SECOND');
+   end if;
+exception
+   when others then null;
+end;
+
+
+end cmn_http;
+/

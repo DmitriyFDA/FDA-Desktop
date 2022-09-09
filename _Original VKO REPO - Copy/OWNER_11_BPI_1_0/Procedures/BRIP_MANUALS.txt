@@ -1,0 +1,7 @@
+procedure bpir_manuals is
+v_title varchar2(50) := 'Manuals';
+
+begin
+  ui_menu.a_level_sub_menu(v_title);
+end;
+/

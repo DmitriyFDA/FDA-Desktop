@@ -1,0 +1,10 @@
+function list_lookup( i_list  in varchar2
+                                      , i_value in pdm_package_attributes.value%type
+                                      )
+return boolean
+is
+begin
+   return true;
+
+end list_lookup;
+/

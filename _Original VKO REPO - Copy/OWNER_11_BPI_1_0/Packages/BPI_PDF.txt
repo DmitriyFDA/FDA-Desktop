@@ -1,0 +1,1325 @@
+create or replace package BPI_PDF is
+
+function pct(p_val number, p_total number, p_template varchar2 := '999.9') return varchar2;
+function contains(p_string varchar2, p_char varchar2)  return varchar2;
+
+function ScreeningReport(p_start date, p_end date) return blob;
+function EquipmentAlarmsList(p_start date, p_end date) return blob;
+function ApplicationPerformance(p_start date, p_end date) return blob;
+
+function EquipmentAlarmsSum(p_start date, p_end date) return blob;
+function FlightSummary(p_start date, p_end date) return blob;
+function HWAlarmsList(p_start date, p_end date) return blob;
+function HWAlarmsSum(p_start date, p_end date) return blob;
+function ManualEncoding(p_start date, p_end date) return blob;
+function SortReport(p_start date, p_end date) return blob;
+function SWAlarmsList(p_start date, p_end date) return blob;
+function SWAlarmsSum(p_start date, p_end date) return blob;
+function ThroughputInput(p_start date, p_end date) return blob;
+function ThroughputOutput(p_start date, p_end date) return blob;
+function TrackingPerformance(p_start date, p_end date) return blob;
+ 
+end;
+/
+
+
+
+
+package body bpi_pdf is
+
+function pct(p_val number, p_total number, p_template varchar2 := '999.9') return varchar2 is
+l_pct number := 0;
+l_str varchar2(10);
+begin
+  if p_total = 0 then
+    return null;
+  end if;
+  l_pct := (p_val/p_total) * 100;
+  l_str := to_char(l_pct, p_template)||'%';
+  if substr(l_str, 1, 3) = '100' then
+    return '100%'; 
+  else
+    return l_str;
+  end if;
+end;
+
+
+
+function contains(p_string varchar2, p_char varchar2)  return varchar2 is
+n number := 0;
+begin
+  if p_string is null or p_char is null then
+    return 'N';
+  end if;
+  n := instr(p_string, p_char);
+  if n > 0 then
+    return 'Y';
+  else
+    return 'N';
+  end if;
+end;
+
+
+
+
+procedure init_a3_landscape(p_title varchar2) is
+begin
+  pdfreports.init;
+  pdfreports.set_page_proc('
+  begin
+  PDFReports.set_font(''helvetica'', 14);
+  PDFReports.text2xy(25, 800, '''||p_title||''');
+  PDFReports.put_image(''vi_logo2.gif'', 1190-201, 842-28-20, 201, 28, ''S'');
+  PDFReports.draw_line(25, 790, 1190-25, 790, 3, ''FF9900'');
+  PDFReports.draw_line(25, 35, 1190-25, 35, 1);
+  PDFReports.set_font(''helvetica'', 8);
+  PDFReports.text2xy(25, 23, ''Page #PAGE_NR# of "PAGE_COUNT#'');
+  PDFReports.text2xy(1190-130, 23, ''Created ''||to_char(sysdate,''DD-Mon-YYYY HH24:MI:SS''));
+  PDFReports.set_font(''helvetica'', ''B'', 15); 
+  end;');
+  pdfreports.set_page_format('A3');
+  pdfreports.set_page_orientation('LANDSCAPE');
+  pdfreports.set_margins(2.8,1.5,1.9,1.5,'cm');
+end;
+
+
+procedure screeningreport_header(p_subtitle varchar2, p_x number, p_y number, p_h1_height number, p_h2_height number) is
+l_x number := p_x;
+l_y number := p_y;
+l_offset number := 0;
+begin
+
+
+
+
+
+
+
+
+
+
+  
+  pdfreports.set_color('0000ff');
+  l_offset := 0;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 80 + 50 + 50, p_height => p_h1_height
+  , p_text => p_subtitle
+  , p_wrap => 'N', p_horizontal_align => 'C', p_vertical_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => '98FB98'); 
+  
+  l_offset := l_offset + 80 + 50 + 50;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 50 + (8 * 60), p_height => p_h1_height
+  , p_text => 'VIS Machines'
+  , p_wrap => 'N', p_horizontal_align => 'C', p_vertical_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'DCDCDC');  
+  
+  l_offset := l_offset + 50 + (8 * 60);
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 2 * 60, p_height => p_h1_height
+  , p_text => ''
+  , p_wrap => 'N', p_horizontal_align => 'C', p_vertical_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'DCDCDC');  
+  
+  l_offset := l_offset + (2 * 60);
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 50 + (3 * 60), p_height => p_h1_height
+  , p_text => 'CTX Machines'
+  , p_wrap => 'N', p_horizontal_align => 'C', p_vertical_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'DCDCDC');  
+  
+  
+  pdfreports.set_color('000000'); 
+  l_y := p_y - p_h1_height;
+  l_offset := 0;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 80 + 50, p_height => p_h2_height
+  , p_text => 'Machine'||chr(10)||'System'||chr(10)||'ID'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+ 
+  l_offset := l_offset + 80 + 50;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 50, p_height => p_h2_height
+  , p_text => 'Total'||chr(10)||'Tracked'||chr(10)||'(VIS/CTX)'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 50;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 50, p_height => p_h2_height
+  , p_text => 'VIS'||chr(10)||'Scan'||chr(10)||'Total'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 50;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L1'||chr(10)||'Clear'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L1'||chr(10)||'Reject'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L1'||chr(10)||'Unknown'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L2'||chr(10)||'Clear'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L2'||chr(10)||'Reject'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L2'||chr(10)||'Unknown'||chr(10)||'(BNA)'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L2'||chr(10)||'Operator'||chr(10)||'Time Out'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'Sent to L3'||chr(10)||'while'||chr(10)||'cleared'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'FFF8DC'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'Machine fault'||chr(10)||'bag count'||chr(10)||'(VIS/CTX)'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'DCDCDC');  
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'Deregistered'||chr(10)||'(mistracked'||chr(10)||'/flushed)'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'DCDCDC');  
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 50, p_height => p_h2_height
+  , p_text => 'CTX'||chr(10)||'Scan'||chr(10)||'Total'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'ADD8E6'); 
+  
+  l_offset := l_offset + 50;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L3'||chr(10)||'Clear'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'ADD8E6'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L3'||chr(10)||'Reject'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'ADD8E6'); 
+  
+  l_offset := l_offset + 60;
+  pdfreports.draw_cell
+  ( p_x => l_x + l_offset, p_y => l_y, p_width => 60, p_height => p_h2_height
+  , p_text => 'L3'||chr(10)||'Unknown'||chr(10)||'(fault)'
+  , p_wrap => 'Y', p_horizontal_align => 'C', p_horizontal_margin => 5, p_vertical_margin => 2
+  , p_fill_color => 'ADD8E6'); 
+
+end;
+
+function screeningreport(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_rows pdfreports.type_table_rows;
+l_col_headings varchar2(2000) := '';
+l_col_aligns varchar2(2000) := '';
+l_col_totals pdfreports.type_number_table := pdfreports.type_number_table();
+l_col_widths pdfreports.type_number_table := pdfreports.type_number_table();
+l_head_widths pdfreports.type_number_table := pdfreports.type_number_table();
+l_head_strings pdfreports.type_string_table := pdfreports.type_string_table();
+l_x number;
+l_y number;
+l_offset number;
+l_line_height number;
+l_cell_height number := 18;
+l_fill varchar2(10) := 'EEEEEE';
+l_top varchar2(10) := 'FF0000';
+l_left varchar2(10) := '0000FF';
+l_str varchar2(50) := '';
+begin
+  l_query := 'select d.END_USER_ID as screening_station_id, d.stype as station_type
+, a.TOTAL_TRACKED
+, a.L1_CLEARED + a.L1_REJECT + a.L1_UNKNOWN as VIS_Scan_Total
+, a.L1_CLEARED
+, bpi_pdf.pct(a.L1_CLEARED, a.TOTAL_TRACKED) as L1_CLEARED_PCT
+, a.L1_REJECT
+, bpi_pdf.pct(a.L1_REJECT, a.TOTAL_TRACKED) as L1_REJECT_PCT
+, a.L1_UNKNOWN
+, bpi_pdf.pct(a.L1_UNKNOWN, a.TOTAL_TRACKED) as L1_UNKNOWN_PCT
+, a.L2_CLEARED
+, bpi_pdf.pct(a.L2_CLEARED, a.TOTAL_TRACKED) as L2_CLEARED_PCT
+, a.L2_REJECT
+, bpi_pdf.pct(a.L2_REJECT, a.TOTAL_TRACKED) as L2_REJECT_PCT
+, a.L2_UNKNOWN
+, bpi_pdf.pct(a.L2_UNKNOWN, a.TOTAL_TRACKED) as L2_UNKNOWN_PCT
+, a.L2_OPERATOR_TIME_OUT
+, bpi_pdf.pct(a.L2_OPERATOR_TIME_OUT, a.TOTAL_TRACKED) as L2_OPERATOR_TIME_OUT_PCT
+, a.MACHINE_FAULT
+, bpi_pdf.pct(a.MACHINE_FAULT, a.TOTAL_TRACKED) as MACHINE_FAULT_PCT
+, a.SENT_TO_L3_WHILE_CLEARED
+, bpi_pdf.pct(a.SENT_TO_L3_WHILE_CLEARED, a.TOTAL_TRACKED) as SENT_TO_L3_WHILE_CLEARED_PCT
+, a.BAGS_DEREGISTERED
+, bpi_pdf.pct(a.BAGS_DEREGISTERED, a.TOTAL_TRACKED) as BAGS_DEREGISTERED_PCT
+, a.L3_CLEARED + a.L3_REJECT + a.L3_UNKNOWN as CTX_Scan_Total
+, a.L3_CLEARED
+, bpi_pdf.pct(a.L3_CLEARED, a.L3_CLEARED + a.L3_REJECT + a.L3_UNKNOWN) as L3_CLEARED_PCT
+, a.L3_REJECT
+, bpi_pdf.pct(a.L3_REJECT, a.L3_CLEARED + a.L3_REJECT + a.L3_UNKNOWN) as L3_REJECT_PCT
+, a.L3_UNKNOWN 
+, bpi_pdf.pct(a.L3_UNKNOWN, a.L3_CLEARED + a.L3_REJECT + a.L3_UNKNOWN) as L3_UNKNOWN_PCT
+from (
+select nodeid, sum(TOTAL_TRACKED) as TOTAL_TRACKED
+, sum(L1_CLEARED) as L1_CLEARED
+, sum(L1_REJECT) as L1_REJECT
+, sum(L1_UNKNOWN) as L1_UNKNOWN
+, sum(L2_CLEARED) as L2_CLEARED
+, sum(L2_REJECT) as L2_REJECT
+, sum(L2_UNKNOWN) as L2_UNKNOWN
+, sum(L2_OPERATOR_TIME_OUT) as L2_OPERATOR_TIME_OUT
+, sum(MACHINE_FAULT) as MACHINE_FAULT
+, sum(SENT_TO_L3_WHILE_CLEARED) as SENT_TO_L3_WHILE_CLEARED
+, sum(BAGS_DEREGISTERED) as BAGS_DEREGISTERED
+, sum(L3_CLEARED) as L3_CLEARED
+, sum(L3_REJECT) as L3_REJECT
+, sum(L3_UNKNOWN) as L3_UNKNOWN
+FROM 
+( SELECT NODEID 
+, TOTAL_TRACKED
+, L1_CLEARED
+, L1_REJECT
+, L1_UNKNOWN
+, L2_CLEARED
+, L2_REJECT
+, L2_UNKNOWN
+, L2_OPERATOR_TIME_OUT
+, MACHINE_FAULT
+, SENT_TO_L3_WHILE_CLEARED
+, BAGS_DEREGISTERED
+, L3_CLEARED
+, L3_REJECT
+, L3_UNKNOWN 
+FROM FACT_SCREENINGRES_AGG_M5
+where eventts >= period.local2gmt(to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')) and eventts <= period.local2gmt(to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS''))
+union 
+SELECT NODEID,0,0,0,0,0,0,0,0,0,0,0,0,0,0 
+from DIM_NODE_AREA_ZONE_EQUIPMENT where STYPE like ''HBS%'')
+GROUP BY NODEID
+) a, DIM_NODE_AREA_ZONE_EQUIPMENT d
+where a.nodeid = d.nodeid
+order by 2,1';
+
+  init_a3_landscape('CATSA Screening Report');
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(30, 750, 'Screening Results between '||l_start_dt||' and '||l_end_dt||'.');
+  pdfreports.set_font('helvetica', 8);
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+  pdfreports.query_to_rows(l_query, l_rows, l_col_headings, l_col_aligns, l_col_totals);
+  
+  if l_rows is null or l_rows.count = 0 or l_rows(1).count = 0 or l_col_headings is null or l_col_aligns is null then
+    
+    pdfreports.write_text('No data', p_x_top_left => 30, p_y_top_left => 730);
+    pdfreports.write_text(p_text => l_col_headings, p_x_top_left => 30, p_y_top_left => 710);
+    pdfreports.write_text(p_text => l_query, p_x_top_left => 30, p_y_top_left => 690);
+    l_blob := pdfreports.return_pdf;
+    pdfreports.free_pdf;
+    return l_blob;
+  end if;
+  
+  l_col_widths.extend(32);
+  l_col_widths(1) := 80;
+  l_col_widths(2) := 50;
+  l_col_widths(3) := 50;
+  l_col_widths(4) := 50;
+  for i in 5..32 loop
+    l_col_widths(i) := 30;
+  end loop;
+  l_col_widths(25) := 50;
+    
+  l_x := 30;
+  l_y := 760;
+  
+  for r in 1..l_rows.count loop
+    
+    if (r = 1) or ((l_y - l_cell_height) < pdfreports.get(pdfreports.current_margin_bottom)) then
+      if r > 1 then
+        pdfreports.new_page;
+        l_y := pdfreports.get(pdfreports.current_page_height) - pdfreports.get(pdfreports.current_margin_top);
+      end if;
+      
+      screeningreport_header
+      ( p_subtitle => l_start_dt||' to '||l_end_dt
+      , p_x => l_x, p_y => l_y
+      , p_h1_height => 20, p_h2_height => 35
+      );
+      l_y := l_y - 20 -35;
+      
+    end if;
+    
+    
+    l_offset := 0;
+    for c in 1..l_rows(r).count loop
+
+      l_fill := 'F5F5F5';  
+      if c = 4 then
+        
+        if not (instr(l_rows(r)(2), '1') > 0  or instr(l_rows(r)(2), '2') > 0) then
+          l_fill := 'B0C4DE'; 
+        end if;
+      elsif c > 4 and c <= 10 then
+        
+        if not instr(l_rows(r)(2), '1') > 0 then
+          l_fill := 'B0C4DE'; 
+        end if;
+      elsif c >= 11 and c <= 20 then
+        
+        if not instr(l_rows(r)(2), '2') > 0 then
+          l_fill := 'B0C4DE'; 
+        end if;
+      elsif c >= 25 and c <= 32 then
+        
+        if not instr(l_rows(r)(2), '3') > 0 then
+          l_fill := 'B0C4DE'; 
+        end if;
+      end if;
+      
+      if l_fill = 'B0C4DE' then
+        pdfreports.set_color('B0C4DE'); 
+      else
+        pdfreports.set_color('000000'); 
+      end if;
+      
+      l_top := 'B0C4DE';
+      if r = 1 then
+        l_top := '000000';
+      end if;
+      l_left := 'B0C4DE';
+      if c in (1,4,21,25) then
+        l_left := '000000';
+      end if;
+
+      pdfreports.draw_cell
+      ( p_x => l_x + l_offset
+      , p_y => l_y
+      , p_width => l_col_widths(c)
+      , p_height => l_cell_height
+      , p_text => l_rows(r)(c)
+      , p_wrap => 'N'
+      , p_horizontal_align => 'R'
+      , p_vertical_align => 'C'
+      , p_horizontal_margin => 3
+      , p_vertical_margin => 2
+      , p_fill_color => l_fill
+      , p_line_width => 0.5
+      , p_top_line_color => l_top
+      , p_left_line_color => l_left
+      , p_right_line_color => '000000'
+      , p_bottom_line_color => '000000' );
+      
+      l_offset := l_offset + l_col_widths(c);
+      
+    end loop;
+    l_y := l_y - l_cell_height;
+    
+  end loop;
+    
+  
+  if ((l_y - 20 - 35 - l_cell_height) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := pdfreports.get(pdfreports.current_page_height) - pdfreports.get(pdfreports.current_margin_top);
+  end if;
+  
+  screeningreport_header
+  ( p_subtitle => 'Totals'
+  , p_x => l_x, p_y => l_y
+  , p_h1_height => 20, p_h2_height => 35
+  );
+  l_y := l_y - 20 -35;
+  l_offset := 0;
+  for c in 1..l_rows(1).count loop
+    
+    if c = 1 then
+      l_str := 'Airport totals';
+    else
+      l_str := trim(to_char(l_col_totals(c)));
+    end if;
+    
+    if c > 5 and c < 25 and l_str is null then
+      l_str := bpi_pdf.pct(l_col_totals(c-1), l_col_totals(3));
+    end if;
+    if c > 26 and l_str is null then
+      l_str := bpi_pdf.pct(l_col_totals(c-1), l_col_totals(25));
+    end if;
+    
+    pdfreports.draw_cell
+    ( p_x => l_x + l_offset
+    , p_y => l_y
+    , p_width => l_col_widths(c)
+    , p_height => l_cell_height
+    , p_text => l_str
+    , p_wrap => 'N'
+    , p_horizontal_align => 'R'
+    , p_vertical_align => 'C'
+    , p_horizontal_margin => 3
+    , p_vertical_margin => 2
+    , p_fill_color => 'F5F5F5'  
+    , p_line_width => 0.5
+    , p_top_line_color => '000000'
+    , p_left_line_color => '000000'
+    , p_right_line_color => '000000'
+    , p_bottom_line_color => '000000' );
+    
+    l_offset := l_offset + l_col_widths(c);
+    
+  end loop;
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function applicationperformance(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select coalesce(d1.DESCRIPTION,  d2.DESCRIPTION) as APPLICATION, INFOS, WARNINGS, ERRORS, FATALS  
+from (
+select APPLICATIONELEMENTID, PROCESSID
+, sum(NUMBER_OF_LOGS) as LOGS 
+, sum(case when LOGMESSAGESEVERITY = ''FATAL'' then NUMBER_OF_LOGS else 0 end) as FATALS 
+, sum(case when LOGMESSAGESEVERITY = ''ERROR'' then NUMBER_OF_LOGS else 0 end) as ERRORS 
+, sum(case when LOGMESSAGESEVERITY = ''WARNING'' then NUMBER_OF_LOGS else 0 end) as WARNINGS 
+, sum(case when LOGMESSAGESEVERITY = ''INFO'' then NUMBER_OF_LOGS else 0 end) as INFOS 
+from FACT_APPLOGGING_AGG_D1 
+where EVENTTS >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and EVENTTS <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+group by APPLICATIONELEMENTID, PROCESSID 
+) a, DIM_APPLICATIONS d1, DIM_APPLICATIONS d2
+where a.APPLICATIONELEMENTID = d1.APPLICATIONELEMENTID
+and a.PROCESSID = d2.PROCESS_ID 
+order by LOGS desc';
+
+  init_a3_landscape('Application Performance');
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(30, 750, 'Application Performance between '||l_start_dt||' and '||l_end_dt||'.');
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.draw_msvbar_chart
+  ( p_x_top_left => 100
+  , p_y_top_left => 735
+  , p_width => 900
+  , p_height => 600
+  , p_query => l_query
+  , p_series_columns => 'Infos, Warnings, Errors,Fatals'
+  , p_color_plan => 'Fatals=FF0077,Errors=DD7700,Warnings=00FF99,Infos=0077BB'
+  , p_gap => 8
+  , p_stack => true
+  , p_show_legend => true
+  );
+  
+  pdfreports.new_page;
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.text2xy(100, 770, 'The underlying source data of the chart:');
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 100
+  , p_y_top_left => 750
+  , p_query => l_query
+  , p_line_color => '000000'
+  , p_header_bg_color => 'FFDDDD'
+  , p_bg_color => 'FF77FF'
+  , p_alt_bg_color => 'EEEE77'
+  );
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 40;
+  
+  pdfreports.text2xy(100, l_y, 'Most recent Application Logging (limited to 100 records):');
+  pdfreports.set_font('helvetica', 8);
+  l_query := 'select * from (select rownum as ROW_NUMBER, ID, INSERTTS as INSERT_TIME_STAMP, UPDATETS, EVENTTS, D1_PERIODID, HOST
+, PROCESSID, LOGMESSAGESEVERITY, LOGMESSAGEID, APPLICATIONELEMENTID, SESSIONID
+, SUBCOMPONENT, THREADID, NUMBER_OF_LOGS 
+from FACT_APPLOGGING_AGG_D1 
+where EVENTTS >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and EVENTTS <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+order by EVENTTS DESC) where rownum <= 100';
+  
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 100
+  , p_y_top_left => l_y - 20
+  , p_query => l_query
+  , p_total_columns => '15'
+  );
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function equipmentalarmslist(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select ISC_ID, SEVERITY, ERROR_TYPE, DESCRIPTION 
+, DT_CAME_IN, DT_WENT_OUT
+, to_char(mod(trunc(DURATION_WENT_OUT/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(DURATION_WENT_OUT/60), 60),''09'')||'':''||to_char(mod(round(DURATION_WENT_OUT), 60),''09'') as duration
+, DT_ACK_BY_OPERATOR
+, to_char(mod(trunc(DURATION_ACK/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(DURATION_ACK/60), 60),''09'')||'':''||to_char(mod(round(DURATION_ACK), 60),''09'') as duration_ack
+from FACT_ALARM_SUMMARIES_V
+where DT_CAME_IN >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and DT_CAME_IN <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+order by 1';
+  
+  init_a3_landscape('Equipment Alarms List');
+  
+  
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(440, 755, 'Equipment Alarms List');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(30, 733, 'Generated: '||replace(to_char(sysdate, 'Day DD-Mon-YYYY HH24:MI'),'  ', ' '));
+  pdfreports.set_color('EE8800');
+  pdfreports.text2xy(30, 710, 'PERIOD COVERED');
+  pdfreports.set_color('000000');
+  pdfreports.text2xy(30, 694, 'Start time:'); pdfreports.text2xy(130, 694, to_char(p_start, 'DD-Mon-YYYY HH24:MI'));
+  pdfreports.text2xy(30, 678, 'End time:'); pdfreports.text2xy(130, 678, to_char(p_end, 'DD-Mon-YYYY HH24:MI'));
+  
+  
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 30
+  , p_y_top_left => 658
+  , p_query => l_query
+  , p_column_headings => 'Equipment ID,Severity,Alarm Type, Description ,Start Time,End Time,Duration,Acknowledge#Time,Time taken#to acknowledge'
+  , p_column_widths => ',,,200'
+  , p_column_alignments => ',,,,R,R,R,R,R'
+  , p_header_bg_color => 'EEDD77'
+  , p_bg_color => 'EEEEEE'
+  , p_alt_bg_color => 'DDDDFF'
+  , p_cell_margin => 3
+  );
+
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 20;
+  if ((l_y - 300) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := 700;
+  end if;
+  
+  pdfreports.draw_rectangle_top_left
+  ( p_x => 150
+  , p_y => l_y
+  , p_width => 800
+  , p_height => 300
+  , p_line_color => 'FF9900'
+  , p_line_width => 1
+  );
+  pdfreports.set_font('helvetica', 'B', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y -  20, p_text => 'EQUIPMENT ALARMS LIST - REPORT DESCRIPTION');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  80, p_text => 'Equipment ID:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 100, p_text => 'Severity:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 120, p_text => 'Alarm Type:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 140, p_text => 'Description:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 160, p_text => 'Start Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 180, p_text => 'End Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 200, p_text => 'Duration:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 220, p_text => 'Acknowledge Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 240, p_text => 'Time taken to acknowledge:');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  40, p_text => 'The report shows information about the alarms detected within the selected Start Time and End Time:');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  -  80, p_text => 'AREA.ZONE.EQUIPMENT/SECTION');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 100, p_text => 'Severity of the alarm: SAFETY, HIGH, MEDIUM, LOW or INFO');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 120, p_text => 'The identification of the error type: OPERATIONAL or TECHNICAL');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 140, p_text => 'Description as it appears in the alarm list');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 160, p_text => 'Timestamp when the alarm is detected');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 180, p_text => 'Timestamp when the alarm is resolved');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 200, p_text => 'Duration until the alarm is completed (End Time - Start Time, format hh :mm :ss)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 220, p_text => 'Timestamp when the alarm is acknowledged by the operator');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 240, p_text => 'The time it took to acknowledge the alarm (Acknowledge Time - Start Time, format hh :mm :ss)');
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function equipmentalarmssum(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select ISC_ID as Equipment_ID, SEVERITY, ERROR_TYPE as Alarm_Type, DESCRIPTION
+, to_char(mod(trunc(total_duration/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(total_duration/60), 60),''09'')||'':''||to_char(mod(round(total_duration), 60),''09'') as total_duration
+, to_char(mod(trunc(average_duration/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(average_duration/60), 60),''09'')||'':''||to_char(mod(round(average_duration), 60),''09'') as average_duration
+from 
+( select ISC_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+  , trunc(sum(duration_went_out),6) as total_duration
+  , trunc(avg(duration_went_out),6) as average_duration
+  from FACT_ALARM_SUMMARIES_V
+  where DT_CAME_IN >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and DT_CAME_IN <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+  group by ISC_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+) order by 1';
+  
+  init_a3_landscape('Equipment Alarms Summary');
+  
+  
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(440, 755, 'Equipment Alarms Summary');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(30, 733, 'Generated: '||replace(to_char(sysdate, 'Day DD-Mon-YYYY HH24:MI'),'  ', ' '));
+  pdfreports.set_color('EE8800');
+  pdfreports.text2xy(30, 710, 'PERIOD COVERED');
+  pdfreports.set_color('000000');
+  pdfreports.text2xy(30, 694, 'Start time:'); pdfreports.text2xy(130, 694, to_char(p_start, 'DD-Mon-YYYY HH24:MI'));
+  pdfreports.text2xy(30, 678, 'End time:'); pdfreports.text2xy(130, 678, to_char(p_end, 'DD-Mon-YYYY HH24:MI'));
+  
+  
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 30
+  , p_y_top_left => 658
+  , p_query => l_query
+  , p_column_headings => 'Equipment ID,Severity,Alarm Type, Description ,Total#Duration,Average#Duration'
+  , p_column_widths => ',,,200'
+  , p_column_alignments => ',,,,R,R'
+  , p_header_bg_color => 'EEDD77'
+  , p_bg_color => 'EEEEEE'
+  , p_alt_bg_color => 'DDDDFF'
+  , p_cell_margin => 3
+  );
+  
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 20;
+  if ((l_y - 300) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := 700;
+  end if;
+  
+  pdfreports.draw_rectangle_top_left
+  ( p_x => 150
+  , p_y => l_y
+  , p_width => 800
+  , p_height => 240
+  , p_line_color => 'FF9900'
+  , p_line_width => 1
+  );
+  pdfreports.set_font('helvetica', 'B', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  20, p_text => 'EQUIPMENT ALARMS SUMMARY - REPORT DESCRIPTION');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  80, p_text => 'Equipment ID:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 100, p_text => 'Severity:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 120, p_text => 'Alarm Type:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 140, p_text => 'Description:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 160, p_text => 'Total Duration:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 180, p_text => 'Average Duration:');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  40, p_text => 'The report shows information about the alarms resolved within the selected Start Time and End Time:');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  -  80, p_text => 'AREA.ZONE.EQUIPMENT/SECTION');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 100, p_text => 'Severity of the alarm: SAFETY, HIGH, MEDIUM, LOW or INFO');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 120, p_text => 'The identification of the error type: OPERATIONAL or TECHNICAL');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 140, p_text => 'Description as it appears in the alarm list');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 160, p_text => 'Duration until the alarm is resolved (End Time - Start Time, format hh :mm :ss)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 180, p_text => 'Average alarm duration (format hh :mm :ss)');
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function flightsummary(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select FLIGHTNR, FLIGHTDATE, FLIGHTDAYOFWEEK, ARRIVALORDEPARTURE
+, DESTINATION_AIRPORT as arrival_code, INTERNATIONALORDOMESTIC, ONWARDFLIGHTS
+, to_char(STD,''MM-DD HH24:MI'') as std, to_char(ETD,''MM-DD HH24:MI'') as etd
+, to_char(EARLY_OPEN_DT,''MM-DD HH24:MI''), to_char(EARLY_CLOSE_DT,''MM-DD HH24:MI'')
+, EARLY_ALLOCATED_SORT as early_sort
+, to_char(INTIME_OPEN_DT,''MM-DD HH24:MI'') as planned_open, to_char(INTIME_CLOSE_DT,''MM-DD HH24:MI'') as planned_close
+, SEGREGATION as planned_segregations 
+, to_char(EXPEDITE_OPEN_DT,''MM-DD HH24:MI''), to_char(EXPEDITE_CLOSE_DT,''MM-DD HH24:MI'')
+, EXPEDITE_ALLOCATED_SORT
+, to_char(TOOLATE_OPEN_DT,''MM-DD HH24:MI''), to_char(TOOLATE_CLOSE_DT,''MM-DD HH24:MI'')
+, TOOLATE_ALLOCATED_SORT
+, to_char(LATEST_BSM_DT,''MM-DD HH24:MI:SS''), TOTAL_NUMBER_OF_BAGS, NUMBER_OF_BSMS_RECEIVED
+from FACT_FLIGHT_SUMMARIES_V
+where STD >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and STD <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+order by 1,2';
+  
+  init_a3_landscape('Flights Summary');
+  
+  
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(440, 755, 'Flights Summary');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(30, 733, 'Generated: '||replace(to_char(sysdate, 'Day DD-Mon-YYYY HH24:MI'),'  ', ' '));
+  pdfreports.set_color('EE8800');
+  pdfreports.text2xy(30, 710, 'PERIOD COVERED');
+  pdfreports.set_color('000000');
+  pdfreports.text2xy(30, 694, 'Start time:'); pdfreports.text2xy(130, 694, to_char(p_start, 'DD-Mon-YYYY HH24:MI'));
+  pdfreports.text2xy(30, 678, 'End time:'); pdfreports.text2xy(130, 678, to_char(p_end, 'DD-Mon-YYYY HH24:MI'));
+  
+  
+  pdfreports.set_font('helvetica', 8);
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 30
+  , p_y_top_left => 658
+  , p_query => l_query
+  , p_column_headings => 'Flight#Number,Flight#Date,Day#of#Week,Arrival#or#Departure,Airport#Code,Internat#-ional or#Domestic,Onward#Flight,STD,ETD'
+    ||',Early#Open,Early#Close,Early#Sort,Planned#Open,Planned#Close,Planned#Segregations'
+    ||',Expedite#Open,Expedite#Close,Expedite#Sort,Too#Late#Open,Too#Late#Close,Too#Late#Sort'
+    ||',Latest#BSM#Date Time,## Bags#Processed,## BSMs#Received'
+  , p_column_alignments => ',,,,,,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R,R'
+  , p_header_bg_color => 'EEDD77'
+  , p_bg_color => 'EEEEEE'
+  , p_alt_bg_color => 'DDDDFF'
+  , p_cell_margin => 3
+  );
+  
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 20;
+  if ((l_y - 400) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := 700;
+  end if;
+  
+  pdfreports.draw_rectangle_top_left
+  ( p_x => 110
+  , p_y => l_y
+  , p_width => 880
+  , p_height => 400
+  , p_line_color => 'FF9900'
+  , p_line_width => 1
+  );
+  pdfreports.set_font('helvetica', 'B', 12);
+  pdfreports.text2xy(p_x => 120, p_y => l_y  -  20, p_text => 'FLIGHTS SUMMARY - REPORT DESCRIPTION');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  -  80, p_text => 'Flight Number:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 100, p_text => 'Flight Date:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 120, p_text => 'Day of Week:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 140, p_text => 'Arrival or Departure:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 160, p_text => 'Airport Code:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 180, p_text => 'International or Domestic:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 200, p_text => 'Onward Flight:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 220, p_text => 'STD:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 240, p_text => 'ETD:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 260, p_text => 'Early Open/Close/Sort:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 280, p_text => 'Planned Open/Close/Segregations:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 300, p_text => 'Expedite Open/Close/Sort:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 320, p_text => 'Too Late Open/Close/Sort:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 340, p_text => 'Latest BSM Date Time:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 360, p_text => '# Bags Processed:');
+  pdfreports.text2xy(p_x => 120, p_y => l_y  - 380, p_text => '# BSMs Received:');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(p_x => 120, p_y => l_y  -  40, p_text => 'The report shows information about the alarms resolved within the selected Start Time and End Time:');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  -  80, p_text => 'Airline and Flight number');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 100, p_text => 'Scheduled flight date');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 120, p_text => 'Scheduled day of the week (e.g. MON, TUE, WED, FRI, THU, SAT, SUN)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 140, p_text => 'Specifies whether the flight is arriving (A) or departing (D)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 160, p_text => 'Three letter airport code as published in the IATA Airline Coding Directory');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 180, p_text => 'Specifies how the flight is operated: C=Common Travel Area, D=Domestic, E=European, I=International, T=TransBorder');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 200, p_text => '-');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 220, p_text => 'Scheduled time of departure');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 240, p_text => 'Estimated time of departure');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 260, p_text => 'Early Open/Close/Sort Date and Time in format: MM-DD HH:MI');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 280, p_text => 'Planned Open/Close/Segregations Date and Time in format: MM-DD HH:MI');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 300, p_text => 'Expedite Open/Close/Sort Date and Time in format: MM-DD HH:MI');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 320, p_text => 'Too Late Open/Close/Sort Date and Time in format: MM-DD HH:MI');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 340, p_text => 'Latest BSM Date Time in format: MM-DD HH:MI:SS');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 360, p_text => 'The number of bags processed');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 380, p_text => 'The number of BSMs received');
+        
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function hwalarmslist(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select HOST_ID, SEVERITY, ERROR_TYPE, DESCRIPTION 
+, DT_CAME_IN, DT_WENT_OUT
+, to_char(mod(trunc(DURATION_WENT_OUT/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(DURATION_WENT_OUT/60), 60),''09'')||'':''||to_char(mod(round(DURATION_WENT_OUT), 60),''09'') as duration
+, DT_ACK_BY_OPERATOR
+, to_char(mod(trunc(DURATION_ACK/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(DURATION_ACK/60), 60),''09'')||'':''||to_char(mod(round(DURATION_ACK), 60),''09'') as duration_ack
+from FACT_HW_ALARM_SUMMARIES_V
+where DT_CAME_IN >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and DT_CAME_IN <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+order by 1';
+  
+  init_a3_landscape('Hardware Alarms List');
+  
+  
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(440, 755, 'Hardware Alarms List');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(30, 733, 'Generated: '||replace(to_char(sysdate, 'Day DD-Mon-YYYY HH24:MI'),'  ', ' '));
+  pdfreports.set_color('EE8800');
+  pdfreports.text2xy(30, 710, 'PERIOD COVERED');
+  pdfreports.set_color('000000');
+  pdfreports.text2xy(30, 694, 'Start time:'); pdfreports.text2xy(130, 694, to_char(p_start, 'DD-Mon-YYYY HH24:MI'));
+  pdfreports.text2xy(30, 678, 'End time:'); pdfreports.text2xy(130, 678, to_char(p_end, 'DD-Mon-YYYY HH24:MI'));
+  
+  
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 30
+  , p_y_top_left => 658
+  , p_query => l_query
+  , p_column_headings => 'Host Name,Severity,Alarm Type, Description ,Start Time,End Time,Duration,Acknowledge#Time,Time taken#to acknowledge'
+  , p_column_widths => ',,,200'
+  , p_column_alignments => ',,,,R,R,R,R,R'
+  , p_header_bg_color => 'EEDD77'
+  , p_bg_color => 'EEEEEE'
+  , p_alt_bg_color => 'DDDDFF'
+  , p_cell_margin => 3
+  );
+
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 20;
+  if ((l_y - 300) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := 700;
+  end if;
+  
+  pdfreports.draw_rectangle_top_left
+  ( p_x => 150
+  , p_y => l_y
+  , p_width => 800
+  , p_height => 300
+  , p_line_color => 'FF9900'
+  , p_line_width => 1
+  );
+  pdfreports.set_font('helvetica', 'B', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y -  20, p_text => 'HARDWARE ALARMS LIST - REPORT DESCRIPTION');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  80, p_text => 'Host Name:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 100, p_text => 'Severity:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 120, p_text => 'Alarm Type:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 140, p_text => 'Description:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 160, p_text => 'Start Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 180, p_text => 'End Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 200, p_text => 'Duration:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 220, p_text => 'Acknowledge Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 240, p_text => 'Time taken to acknowledge:');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  40, p_text => 'The report shows information about the alarms detected within the selected Start Time and End Time:');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  -  80, p_text => 'Host name of the IT device');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 100, p_text => 'Severity of the alarm: SAFETY, HIGH, MEDIUM, LOW or INFO');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 120, p_text => 'The identification of the error type: OPERATIONAL or TECHNICAL');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 140, p_text => 'Description as it appears in the alarm list');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 160, p_text => 'Timestamp when the alarm is detected');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 180, p_text => 'Timestamp when the alarm is resolved');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 200, p_text => 'Duration until the alarm is completed (End Time - Start Time, format hh :mm :ss)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 220, p_text => 'Timestamp when the alarm is acknowledged by the operator');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 240, p_text => 'The time it took to acknowledge the alarm (Acknowledge Time - Start Time, format hh :mm :ss)');
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function hwalarmssum(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select HOST_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+, to_char(mod(trunc(total_duration/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(total_duration/60), 60),''09'')||'':''||to_char(mod(round(total_duration), 60),''09'') as total_duration
+, to_char(mod(trunc(average_duration/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(average_duration/60), 60),''09'')||'':''||to_char(mod(round(average_duration), 60),''09'') as average_duration
+from 
+( select HOST_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+  , trunc(sum(duration_went_out),6) as total_duration
+  , trunc(avg(duration_went_out),6) as average_duration
+  from FACT_HW_ALARM_SUMMARIES_V
+  where DT_CAME_IN >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and DT_CAME_IN <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+  group by HOST_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+) order by 1';
+  
+  init_a3_landscape('Hardware Alarms Summary');
+  
+  
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(440, 755, 'Hardware Alarms Summary');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(30, 733, 'Generated: '||replace(to_char(sysdate, 'Day DD-Mon-YYYY HH24:MI'),'  ', ' '));
+  pdfreports.set_color('EE8800');
+  pdfreports.text2xy(30, 710, 'PERIOD COVERED');
+  pdfreports.set_color('000000');
+  pdfreports.text2xy(30, 694, 'Start time:'); pdfreports.text2xy(130, 694, to_char(p_start, 'DD-Mon-YYYY HH24:MI'));
+  pdfreports.text2xy(30, 678, 'End time:'); pdfreports.text2xy(130, 678, to_char(p_end, 'DD-Mon-YYYY HH24:MI'));
+  
+  
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 30
+  , p_y_top_left => 658
+  , p_query => l_query
+  , p_column_headings => 'Host Name,Severity,Alarm Type, Description ,Total#Duration,Average#Duration'
+  , p_column_widths => ',,,200'
+  , p_column_alignments => ',,,,R,R'
+  , p_header_bg_color => 'EEDD77'
+  , p_bg_color => 'EEEEEE'
+  , p_alt_bg_color => 'DDDDFF'
+  , p_cell_margin => 3
+  );
+
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 20;
+  if ((l_y - 240) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := 700;
+  end if;
+  
+  pdfreports.draw_rectangle_top_left
+  ( p_x => 150
+  , p_y => l_y
+  , p_width => 800
+  , p_height => 240
+  , p_line_color => 'FF9900'
+  , p_line_width => 1
+  );
+  pdfreports.set_font('helvetica', 'B', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  20, p_text => 'HARDWARE ALARMS SUMMARY - REPORT DESCRIPTION');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  80, p_text => 'Host Name:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 100, p_text => 'Severity:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 120, p_text => 'Alarm Type:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 140, p_text => 'Description:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 160, p_text => 'Total Duration:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 180, p_text => 'Average Duration:');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  40, p_text => 'The report shows information about the alarms resolved within the selected Start Time and End Time:');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  -  80, p_text => 'Host name of the IT device');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 100, p_text => 'Severity of the alarm: SAFETY, HIGH, MEDIUM, LOW or INFO');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 120, p_text => 'The identification of the error type: OPERATIONAL or TECHNICAL');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 140, p_text => 'Description as it appears in the alarm list');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 160, p_text => 'Duration until the alarm is resolved (End Time - Start Time, format hh :mm :ss)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 180, p_text => 'Average alarm duration (format hh :mm :ss)');
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function manualencoding(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+begin
+  l_query := '';
+  init_a3_landscape('Manual Encoding Activity');
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(30, 750, 'Manual Encoding Activity between '||l_start_dt||' and '||l_end_dt||'.');
+  pdfreports.set_font('helvetica', 12);
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function sortreport(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+begin
+  l_query := '';
+  init_a3_landscape('Sort Report');
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(30, 750, 'Sort Report between '||l_start_dt||' and '||l_end_dt||'.');
+  pdfreports.set_font('helvetica', 12);
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function swalarmslist(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select APP_ELEM_ID, SEVERITY, ERROR_TYPE, DESCRIPTION 
+, DT_CAME_IN, DT_WENT_OUT
+, to_char(mod(trunc(DURATION_WENT_OUT/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(DURATION_WENT_OUT/60), 60),''09'')||'':''||to_char(mod(round(DURATION_WENT_OUT), 60),''09'') as duration
+, DT_ACK_BY_OPERATOR
+, to_char(mod(trunc(DURATION_ACK/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(DURATION_ACK/60), 60),''09'')||'':''||to_char(mod(round(DURATION_ACK), 60),''09'') as duration_ack
+from FACT_APPL_ALARM_SUMMARIES_V
+where DT_CAME_IN >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and DT_CAME_IN <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+order by 1';
+  
+  init_a3_landscape('Software Alarms List');
+  
+  
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(440, 755, 'Software Alarms List');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(30, 733, 'Generated: '||replace(to_char(sysdate, 'Day DD-Mon-YYYY HH24:MI'),'  ', ' '));
+  pdfreports.set_color('EE8800');
+  pdfreports.text2xy(30, 710, 'PERIOD COVERED');
+  pdfreports.set_color('000000');
+  pdfreports.text2xy(30, 694, 'Start time:'); pdfreports.text2xy(130, 694, to_char(p_start, 'DD-Mon-YYYY HH24:MI'));
+  pdfreports.text2xy(30, 678, 'End time:'); pdfreports.text2xy(130, 678, to_char(p_end, 'DD-Mon-YYYY HH24:MI'));
+  
+  
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 30
+  , p_y_top_left => 658
+  , p_query => l_query
+  , p_column_headings => 'Application#Element ID,Severity,Alarm Type, Description ,Start Time,End Time,Duration,Acknowledge#Time,Time taken#to acknowledge'
+  , p_column_widths => ',,,200'
+  , p_column_alignments => ',,,,R,R,R,R,R'
+  , p_header_bg_color => 'EEDD77'
+  , p_bg_color => 'EEEEEE'
+  , p_alt_bg_color => 'DDDDFF'
+  , p_cell_margin => 3
+  );
+
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 20;
+  if ((l_y - 300) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := 700;
+  end if;
+  
+  pdfreports.draw_rectangle_top_left
+  ( p_x => 150
+  , p_y => l_y
+  , p_width => 800
+  , p_height => 300
+  , p_line_color => 'FF9900'
+  , p_line_width => 1
+  );
+  pdfreports.set_font('helvetica', 'B', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y -  20, p_text => 'SOFTWARE ALARMS LIST - REPORT DESCRIPTION');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  80, p_text => 'Application Element ID:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 100, p_text => 'Severity:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 120, p_text => 'Alarm Type:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 140, p_text => 'Description:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 160, p_text => 'Start Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 180, p_text => 'End Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 200, p_text => 'Duration:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 220, p_text => 'Acknowledge Time:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 240, p_text => 'Time taken to acknowledge:');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  40, p_text => 'The report shows information about the alarms detected within the selected Start Time and End Time:');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  -  80, p_text => 'Unique identifier of the application element for which the alarm is reported');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 100, p_text => 'Severity of the alarm: SAFETY, HIGH, MEDIUM, LOW or INFO');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 120, p_text => 'The identification of the error type: OPERATIONAL or TECHNICAL');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 140, p_text => 'Description as it appears in the alarm list');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 160, p_text => 'Timestamp when the alarm is detected');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 180, p_text => 'Timestamp when the alarm is resolved');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 200, p_text => 'Duration until the alarm is completed (End Time - Start Time, format hh :mm :ss)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 220, p_text => 'Timestamp when the alarm is acknowledged by the operator');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 240, p_text => 'The time it took to acknowledge the alarm (Acknowledge Time - Start Time, format hh :mm :ss)');
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function swalarmssum(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+l_y number;
+begin
+  l_query := 'select APP_ELEM_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+, to_char(mod(trunc(total_duration/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(total_duration/60), 60),''09'')||'':''||to_char(mod(round(total_duration), 60),''09'') as total_duration
+, to_char(mod(trunc(average_duration/3600), 3600*60),''9999'')||'':''||to_char(mod(trunc(average_duration/60), 60),''09'')||'':''||to_char(mod(round(average_duration), 60),''09'') as average_duration
+from 
+( select APP_ELEM_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+  , trunc(sum(duration_went_out),6) as total_duration
+  , trunc(avg(duration_went_out),6) as average_duration
+  from FACT_APPL_ALARM_SUMMARIES_V
+  where DT_CAME_IN >= to_date('''||l_start_dt||''', ''DD-Mon-YYYY HH24:MI:SS'') and DT_CAME_IN <= to_date('''||l_end_dt||''', ''DD-Mon-YYYY HH24:MI:SS'')
+  group by APP_ELEM_ID, SEVERITY, ERROR_TYPE, DESCRIPTION
+) order by 1';
+  
+  init_a3_landscape('Software Alarms Summary');
+  
+  
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(440, 755, 'Software Alarms Summary');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(30, 733, 'Generated: '||replace(to_char(sysdate, 'Day DD-Mon-YYYY HH24:MI'),'  ', ' '));
+  pdfreports.set_color('EE8800');
+  pdfreports.text2xy(30, 710, 'PERIOD COVERED');
+  pdfreports.set_color('000000');
+  pdfreports.text2xy(30, 694, 'Start time:'); pdfreports.text2xy(130, 694, to_char(p_start, 'DD-Mon-YYYY HH24:MI'));
+  pdfreports.text2xy(30, 678, 'End time:'); pdfreports.text2xy(130, 678, to_char(p_end, 'DD-Mon-YYYY HH24:MI'));
+  
+  
+  pdfreports.set_font('helvetica', 12);
+  pdfreports.draw_table_grid
+  ( p_x_top_left => 30
+  , p_y_top_left => 658
+  , p_query => l_query
+  , p_column_headings => 'Application#Element ID,Severity,Alarm Type, Description ,Total#Duration,Average#Duration'
+  , p_column_widths => ',,,200'
+  , p_column_alignments => ',,,,R,R'
+  , p_header_bg_color => 'EEDD77'
+  , p_bg_color => 'EEEEEE'
+  , p_alt_bg_color => 'DDDDFF'
+  , p_cell_margin => 3
+  );
+
+  
+  l_y := pdfreports.get(pdfreports.current_y_position) - 20;
+  if ((l_y - 240) < pdfreports.get(pdfreports.current_margin_bottom)) then
+    pdfreports.new_page;
+    l_y := 700;
+  end if;
+  
+  pdfreports.draw_rectangle_top_left
+  ( p_x => 150
+  , p_y => l_y
+  , p_width => 800
+  , p_height => 240
+  , p_line_color => 'FF9900'
+  , p_line_width => 1
+  );
+  pdfreports.set_font('helvetica', 'B', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  20, p_text => 'SOFTWARE ALARMS SUMMARY - REPORT DESCRIPTION');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  80, p_text => 'Application Element ID:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 100, p_text => 'Severity:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 120, p_text => 'Alarm Type:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 140, p_text => 'Description:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 160, p_text => 'Total Duration:');
+  pdfreports.text2xy(p_x => 160, p_y => l_y  - 180, p_text => 'Average Duration:');
+  pdfreports.set_font('helvetica', 'N', 12);
+  pdfreports.text2xy(p_x => 160, p_y => l_y  -  40, p_text => 'The report shows information about the alarms resolved within the selected Start Time and End Time:');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  -  80, p_text => 'Unique identifier of the application element for which the alarm is reported');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 100, p_text => 'Severity of the alarm: SAFETY, HIGH, MEDIUM, LOW or INFO');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 120, p_text => 'The identification of the error type: OPERATIONAL or TECHNICAL');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 140, p_text => 'Description as it appears in the alarm list');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 160, p_text => 'Duration until the alarm is resolved (End Time - Start Time, format hh :mm :ss)');
+  pdfreports.text2xy(p_x => 330, p_y => l_y  - 180, p_text => 'Average alarm duration (format hh :mm :ss)');
+    
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function throughputinput(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+begin
+  l_query := '';
+  init_a3_landscape('Throughput Report - Input');
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(30, 750, 'Throughput Report - Input between '||l_start_dt||' and '||l_end_dt||'.');
+  pdfreports.set_font('helvetica', 12);
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function throughputoutput(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+begin
+  l_query := '';
+  init_a3_landscape('Throughput Report - Output');
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(30, 750, 'Throughput Report - Output between '||l_start_dt||' and '||l_end_dt||'.');
+  pdfreports.set_font('helvetica', 12);
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+function trackingperformance(p_start date, p_end date) return blob is
+l_blob blob;
+l_query varchar2(32767);
+l_start_dt varchar2(50) := to_char(p_start, 'DD-Mon-YYYY HH24:MI:SS');
+l_end_dt varchar2(50) := to_char(p_end, 'DD-Mon-YYYY HH24:MI:SS');
+begin
+  l_query := '';
+  init_a3_landscape('Tracking Performance');
+  pdfreports.set_font('helvetica', 'B', 14);
+  pdfreports.text2xy(30, 750, 'Tracking Performance between '||l_start_dt||' and '||l_end_dt||'.');
+  pdfreports.set_font('helvetica', 12);
+  l_blob := pdfreports.return_pdf;
+  pdfreports.free_pdf;
+  return l_blob;
+end;
+
+
+end;
+/

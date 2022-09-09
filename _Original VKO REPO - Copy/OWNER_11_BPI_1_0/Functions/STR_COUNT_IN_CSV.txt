@@ -1,0 +1,21 @@
+function str_count_in_csv(str in varchar2, csv in varchar2) return number is
+l_str varchar2(100) := ltrim(rtrim(str));
+l_csv varchar2(16000) := ltrim(rtrim(csv));
+l_count number(5) := 0;
+n integer;
+begin
+  if (l_str is null) then return 0; end if;
+  if (l_csv is null) then return 0;  end if;
+  if (l_str = '') then return 0;  end if;
+  if (l_csv = '') then return 0;  end if;
+  if (l_str = l_csv) then return 0;  end if;
+  l_str := ',' || l_str || ',';
+  l_csv := ',' || l_csv || ',';
+  n := instr(l_csv, l_str);
+  while n > 0 loop
+    l_count := l_count + 1;
+    n := instr(l_csv, l_str, n+1);
+  end loop;
+  return l_count;
+end;
+/

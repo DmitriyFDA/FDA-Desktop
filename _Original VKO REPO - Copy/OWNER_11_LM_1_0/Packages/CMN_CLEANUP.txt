@@ -1,0 +1,3501 @@
+create or replace PACKAGE cmn_cleanup
+IS
+
+   TYPE tt_tables      IS TABLE OF user_tables.table_name%TYPE           INDEX BY VARCHAR2(30);
+   TYPE tt_keys        IS TABLE OF user_constraints.constraint_name%TYPE INDEX BY VARCHAR2(30);
+
+   PROCEDURE partition;
+   
+   PROCEDURE cleanup( i_cst_name IN cmn_cleanup_sets.name%TYPE );
+
+   PROCEDURE commit_and_check_halt_signal;
+   
+   FUNCTION set_cleanup_lock( i_set IN BOOLEAN )
+   RETURN   BOOLEAN;
+
+   FUNCTION hdl_resetdynamicdatarequest( i_message XMLTYPE )
+   RETURN XMLTYPE;
+   
+   PROCEDURE create_shadow_tables( i_cst_name IN cmn_cleanup_sets.name%TYPE );
+
+   -- Function to generate a ResetDynamicDataResponse message
+   FUNCTION gen_resetdynamicdataresponse( i_result IN VARCHAR2 )
+   RETURN XMLTYPE;
+
+END cmn_cleanup;
+/
+
+
+
+
+package body cmn_cleanup
+is
+
+   subtype st_proc_name is varchar2( 61 );
+   
+   g_con_package                 constant st_proc_name   := 'cmn_cleanup';
+
+   g_con_table_placeholder       constant varchar2( 40 ) := ':TABLE';
+   g_con_alias_placeholder       constant varchar2( 40 ) := ':ALIAS';
+   g_con_clause_placeholder      constant varchar2( 40 ) := ':WHERE';
+   g_con_procname_placeholder    constant varchar2( 40 ) := ':PROC_NAME';
+   g_con_commitsize_placeholder  constant varchar2( 40 ) := ':COMMITSIZE';
+   g_con_maxdeletes_placeholder  constant varchar2( 40 ) := ':MAXDELETES';
+   g_con_batchsize_placeholder   constant varchar2( 40 ) := ':BATCHSIZE';
+   g_con_commitsleep_placeholder constant varchar2( 40 ) := ':COMMITSLEEP';
+   
+   
+   procedure execute_ddl( b_command in varchar2 )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.execute_ddl';
+
+   begin
+	  viu_module.enter_module( i_module  => l_con_proc_name, i_debug_info => b_command );
+
+      
+      execute immediate b_command;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end execute_ddl;
+
+   
+   procedure compile_schema
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.compile_schema';
+
+      
+      cursor c_invalid_objects
+      is
+      select aot.owner
+      from   user_objects uot 
+      ,      all_objects  aot
+      where  uot.object_id = aot.object_id
+      and    uot.status    = cmn_constant.g_con_state_invalid
+      and    rownum = 1;
+
+      l_invalid_objects          c_invalid_objects%rowtype;
+      l_found                    boolean;
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      open  c_invalid_objects;
+      fetch c_invalid_objects
+      into  l_invalid_objects;
+      
+      l_found := c_invalid_objects%found;
+      close c_invalid_objects;
+      
+      if l_found
+      then
+         
+         dbms_utility.compile_schema( schema      => l_invalid_objects.owner
+                                    , compile_all => false
+                                    );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_invalid_objects%isopen
+         then
+            close c_invalid_objects;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end compile_schema;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure insert_info_log( i_ifo_nr          in viu_info_logs.ifo_nr%type
+                            , i_info_arguments  in viu_info_logs.info_arguments%type
+                            , i_additional_data in viu_info_logs.additional_data%type
+                            , i_severity        in viu_info_logs.severity%type
+                            , i_proc_name       in viu_info_logs.calling_procedure%type
+                            )
+   is
+      
+      pragma autonomous_transaction;
+
+      l_con_tablename  constant user_tables.table_name%type := 'VIU_INFO_LOGS';
+      
+      l_dml      clob := '( id, ifo_application, ifo_nr, datetime_created
+                           , username, sessionid, calling_procedure, nesting_level
+                           , severity, info_arguments, additional_data
+                           )
+                           VALUES ( :id, :ifo_application, :ifo_nr, :datetime_created
+                                  , :username, :sessionid, :calling_procedure, :nesting_level
+                                  , :severity, :info_arguments, :additional_data
+                                  )';
+   begin
+      
+
+      
+      begin
+         execute immediate 'INSERT INTO ' || l_con_tablename || l_dml
+         using viu_ilg_seq.nextval, 'CMN', i_ifo_nr
+             , cmn_common.default_timestamp, user, userenv('SESSIONID')
+             , i_proc_name, 0,  i_severity, i_info_arguments, i_additional_data;
+         
+         
+      exception
+         when others
+         then
+            rollback;
+
+            execute immediate 'INSERT INTO ' || substr( l_con_tablename, 1, cmn_constant.g_con_max_baselength) ||
+                              cmn_constant.g_con_default_table_suffix || l_dml
+            using viu_ilg_seq.nextval, 'CMN', i_ifo_nr
+                , cmn_common.default_timestamp, user, userenv('SESSIONID')
+                , i_proc_name, 0,  i_severity, i_info_arguments, i_additional_data;
+                                      
+      end;
+
+      commit;
+
+   exception
+      when others
+      then
+         rollback;
+         
+   end insert_info_log;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function check_table( i_table_name in user_tables.table_name%type
+                       , i_warn       in boolean
+                       )
+   return boolean
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.check_table';
+
+      
+      cursor c_table( b_table_name in user_tables.table_name%type )
+      is
+      select 1
+      from   user_tables ute
+      where  table_name = upper(b_table_name)
+      union
+      select 1
+      from   user_views uvw
+      where  view_name = upper(b_table_name);
+      
+      
+      r_table                    c_table%rowtype;
+      l_result                   boolean;
+     
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      open  c_table( b_table_name => i_table_name );
+      fetch c_table
+      into  r_table;
+      l_result := c_table%found;
+      close c_table;
+
+      if  not l_result
+      and i_warn
+      then
+         
+         insert_info_log( i_ifo_nr           => viu_constant.c_ifo_cmncleanupstopped
+                        , i_info_arguments   => null
+                        , i_additional_data  => 'Table or view ' || i_table_name ||
+                                                ' is configured for cleanup but does not exist'
+                        , i_severity         => viu_info.c_severity_warning
+                        , i_proc_name        => l_con_proc_name
+                        );
+      end if;
+           
+      viu_module.leave_module (i_module => l_con_proc_name);
+      
+      return l_result;
+
+   exception
+      when others
+      then
+         if c_table%isopen
+         then
+            close c_table;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end check_table;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function object_type( i_object_name in user_objects.object_name%type )
+   return user_objects.object_name%type
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.object_type';
+
+      
+      cursor c_object( b_object_name in user_objects.object_name%type )
+      is
+         select object_type
+         from   user_objects uot
+         where  object_name = upper(b_object_name);
+      
+      r_object                   c_object%rowtype;
+      l_found                    boolean;
+     
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      open  c_object( b_object_name => i_object_name );
+      fetch c_object
+      into  r_object;
+      l_found := c_object%found;
+      close c_object;
+
+      if  not l_found
+      then
+         viu_info.raise_info (i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_additional_data   => 'Object ' || i_object_name || ' does not exist'
+                             );
+      end if;
+           
+      viu_module.leave_module (i_module => l_con_proc_name);
+      
+      return r_object.object_type;
+
+   exception
+      when others
+      then
+         if c_object%isopen
+         then
+            close c_object;
+         end if;
+         
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end object_type;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function column_list( i_table_name in user_tables.table_name%type )
+   return varchar2
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.column_list';
+
+      
+      cursor c_column_list( b_table_name in user_tables.table_name%type )
+      is
+         select listagg( column_name, ',' ) within group (order by column_id) column_list
+         from   user_tab_cols tcl
+         where  table_name     = upper(b_table_name)
+         and    virtual_column = cmn_constant.g_con_yesnofull_no;
+
+      r_column_list              c_column_list%rowtype;
+      l_found                    boolean;
+     
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      open  c_column_list( b_table_name => i_table_name );
+      fetch c_column_list
+      into  r_column_list;
+      l_found := ( r_column_list.column_list is not null );
+      close c_column_list;
+
+      if  not l_found
+      then
+         viu_info.raise_info (i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_additional_data   => 'Table ' || i_table_name || ' does not exist'
+                             );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+      
+      return r_column_list.column_list;
+
+   exception
+      when others
+      then
+         if c_column_list%isopen
+         then
+            close c_column_list;
+         end if;
+         
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end column_list;
+
+   
+   procedure check_halt_signal
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name   := g_con_package || '.check_halt_signal';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+      
+      
+      if acl_application_control.current_session_is_job
+      then
+         acl_application_control.check_halt_signal;
+
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_halt_signal;
+
+   
+   procedure commit_and_check_halt_signal
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name   := g_con_package || '.commit_and_check_halt_signal';
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if acl_application_control.current_session_is_job
+      then
+         acl_application_control.commit_and_check_halt_signal;
+
+      else
+         commit;
+
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     =>  l_con_proc_name
+                                , i_debug_info =>  sqlerrm
+                                );
+
+         viu_info.raise_info (i_calling_procedure =>  l_con_proc_name);
+   end commit_and_check_halt_signal;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_indexes( i_base_table_name in user_tables.table_name%type
+                                     , i_suffix          in varchar2
+                                     )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_indexes';
+
+      
+      
+      
+      cursor c_indexes( b_base_table_name in user_tables.table_name%type
+                      , b_suffix          in varchar2
+                      )
+      is
+      select index_name
+      ,      dbms_metadata.get_ddl('INDEX', index_name) index_ddl
+      from   user_indexes
+      where  table_name = upper(b_base_table_name || cmn_constant.g_con_default_table_suffix)
+      and    index_name not like cmn_constant.g_con_constraint_sys || '%'
+      and    index_name not in ( select replace(index_name, '_' || b_suffix,  cmn_constant.g_con_default_table_suffix )
+                                 from   user_indexes
+                                 where  table_name = upper(b_base_table_name || '_' || b_suffix)
+                               );
+
+      l_ddl                      clob;
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      for r_indexes in c_indexes( b_base_table_name => i_base_table_name
+                                , b_suffix          => i_suffix
+                                )
+      loop
+         
+         l_ddl := regexp_replace( r_indexes.index_ddl
+                                , cmn_constant.g_con_default_table_suffix
+                                , '_' || i_suffix
+                                , 1, 0, 'c'
+                                );
+
+         
+         execute_ddl( b_command => l_ddl );
+
+         
+         insert_info_log( i_ifo_nr           => viu_constant.c_ifo_cmnpartitioninginfo
+                        , i_info_arguments   => null
+                        , i_additional_data  => 'New index for table partition ' ||
+                                                i_base_table_name                || '_' || i_suffix ||
+                                                ' created. Template index: '     || r_indexes.index_name
+                        , i_severity         => viu_info.c_severity_notification
+                        , i_proc_name        => l_con_proc_name
+                        );
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+      
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_indexes;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_triggers( i_base_table_name in user_tables.table_name%type
+                                      , i_suffix          in varchar2
+                                      )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_triggers';
+
+      
+      cursor c_triggers( b_table_name in user_tables.table_name%type )
+      is
+      select trigger_name
+      ,      dbms_metadata.get_ddl('TRIGGER', trigger_name) trigger_ddl
+      from   user_triggers
+      where  table_name = upper(b_table_name);
+
+      l_ddl                      clob;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      for r_triggers in c_triggers( b_table_name => i_base_table_name || cmn_constant.g_con_default_table_suffix )
+      loop
+         
+         l_ddl := regexp_replace( r_triggers.trigger_ddl
+                                , cmn_constant.g_con_default_table_suffix
+                                , '_' || i_suffix
+                                , 1, 0, 'c'
+                                );
+
+         
+         l_ddl := regexp_replace( l_ddl
+                                , 'ALTER.*'
+                                , ''
+                                , 1, 0, 'cm'
+                                );
+         
+         
+         execute_ddl( b_command => l_ddl );
+
+         
+         insert_info_log( i_ifo_nr           => viu_constant.c_ifo_cmnpartitioninginfo
+                        , i_info_arguments   => null
+                        , i_additional_data  => 'New trigger for table partition ' ||
+                                                i_base_table_name                  || '_' || i_suffix ||
+                                                ' created. Template trigger: '     || r_triggers.trigger_name
+                        , i_severity         => viu_info.c_severity_notification
+                        , i_proc_name        => l_con_proc_name
+                        );
+      end loop;
+
+
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+      
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_triggers;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_grants( i_base_table_name in user_tables.table_name%type
+                                    , i_suffix          in varchar2
+                                    )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_grants';
+
+      
+      cursor c_grants( b_table_name in user_tables.table_name%type )
+      is
+      select dbms_metadata.get_dependent_ddl('OBJECT_GRANT', table_name) grants
+      from   user_tables
+      where  table_name = upper(b_table_name);
+
+      l_ddl                      clob;
+      l_ddl_work                 clob;
+      l_grant_created            boolean := false;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      for r_grants in c_grants( b_table_name => i_base_table_name || cmn_constant.g_con_default_table_suffix )
+      loop
+         
+         l_ddl := regexp_replace( r_grants.grants
+                                , cmn_constant.g_con_default_table_suffix
+                                , '_' || i_suffix
+                                , 1, 0, 'c'
+                                );
+
+         
+         l_ddl := regexp_replace( l_ddl
+                                , chr(10) || chr(13) || '*'
+                                , ';'
+                                , 1, 0, 'm'
+                                );
+
+         
+         while upper(l_ddl) like '%GRANT%'
+         loop
+            
+            l_ddl_work := regexp_replace( l_ddl
+                                        , ';.*'
+                                        , ''
+                                        , 1, 1, ''
+                                        );
+
+            
+            if upper(l_ddl_work) like '%GRANT%'
+            then
+               execute_ddl( b_command => l_ddl_work );
+               
+               l_grant_created := true;
+            end if;
+   
+            
+            l_ddl := regexp_replace( l_ddl
+                                   , l_ddl_work || ';*'
+                                   , ''
+                                   , 1, 1, ''
+                                   );
+
+         end loop;
+
+         if l_grant_created
+         then
+            
+            insert_info_log( i_ifo_nr           => viu_constant.c_ifo_cmnpartitioninginfo
+                           , i_info_arguments   => null
+                           , i_additional_data  => 'New grant(s) for table partition ' ||
+                                                   i_base_table_name                   || '_' || i_suffix ||
+                                                   ' created'
+                           , i_severity         => viu_info.c_severity_notification
+                           , i_proc_name        => l_con_proc_name
+                           );
+         
+         end if;
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+      
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_grants;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_statistics( i_base_table_name in user_tables.table_name%type
+                                        , i_suffix          in varchar2
+                                        , i_tablespace_name in user_tablespaces.tablespace_name%type
+                                        )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_statistics';
+      l_con_stat_table  constant user_tables.table_name%type := 'savestats';
+
+      l_ddl                      clob;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      execute immediate('ALTER SESSION SET recyclebin = OFF');
+
+      
+      begin
+         dbms_stats.drop_stat_table( ownname  => sys_context('USERENV', 'CURRENT_SCHEMA')
+                                     , stattab  => l_con_stat_table
+                                     );
+      exception
+         when others
+         then
+            null;  
+      end;
+      
+      
+      dbms_stats.create_stat_table( ownname  => sys_context('USERENV', 'CURRENT_SCHEMA')
+                                  , stattab  => l_con_stat_table
+                                  , tblspace => i_tablespace_name
+                                  );
+
+      
+      dbms_stats.export_table_stats( ownname => sys_context('USERENV', 'CURRENT_SCHEMA')
+                                   , tabname => i_base_table_name || cmn_constant.g_con_default_table_suffix
+                                   , stattab => l_con_stat_table
+                                   );
+
+      
+      l_ddl := 'UPDATE ' || l_con_stat_table         ||
+               ' SET    C1 = REGEXP_REPLACE( C1'     ||
+                                           ', '''    || cmn_constant.g_con_default_table_suffix ||
+                                           ''', ''_' || i_suffix                                ||
+                                           ''', 1, 0, ''c'')';
+
+      execute_ddl( b_command => l_ddl );
+
+      
+      dbms_stats.unlock_table_stats( ownname => sys_context('USERENV', 'CURRENT_SCHEMA')
+                                   , tabname => i_base_table_name || '_' || i_suffix
+                                   );
+
+      
+      dbms_stats.import_table_stats( ownname  => sys_context('USERENV', 'CURRENT_SCHEMA')
+                                   , tabname => i_base_table_name || '_' || i_suffix
+                                   , stattab => l_con_stat_table
+                                   );
+
+      
+      dbms_stats.lock_table_stats( ownname => sys_context('USERENV', 'CURRENT_SCHEMA')
+                                 , tabname => i_base_table_name || '_' || i_suffix
+                                 );
+
+      
+      begin
+         dbms_stats.drop_stat_table( ownname  => sys_context('USERENV', 'CURRENT_SCHEMA')
+                                     , stattab  => l_con_stat_table
+                                     );
+      exception
+         when others
+         then
+            null;  
+      end;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+      
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_statistics;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_main_view( i_table_name      in user_tables.table_name%type
+                                       , i_base_table_name in user_tables.table_name%type
+                                       , i_suffix          in varchar2
+                                       )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_main_view';
+
+      l_ddl                      clob;
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      l_ddl := 'CREATE OR REPLACE FORCE VIEW ' || i_table_name      ||
+               ' AS SELECT * FROM '            || i_base_table_name || '_' || i_suffix;
+
+      
+      execute_ddl( b_command => l_ddl );
+
+      
+      insert_info_log( i_ifo_nr           => viu_constant.c_ifo_cmnpartitioninginfo
+                     , i_info_arguments   => null
+                     , i_additional_data  => 'New main view '        || i_table_name      ||
+                                             ' for table partition ' || i_base_table_name || '_' || i_suffix ||
+                                             ' created'
+                     , i_severity         => viu_info.c_severity_notification
+                     , i_proc_name        => l_con_proc_name
+                     );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+      
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_main_view;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_prev_view( i_base_table_name in user_tables.table_name%type
+                                       , i_suffix          in varchar2
+                                       )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_prev_view';
+
+      
+      
+      cursor c_previous_view_table( b_table_name in user_tables.table_name%type
+                                  , b_suffix     in varchar2
+                                  )
+      is
+      select table_name
+      from   ( select table_name
+               ,      rownum     as row_number
+               from   ( 
+                        select ute.table_name as table_name
+                        from   user_tables ute
+                        where  ( regexp_like( ute.table_name
+                                           , '^' || upper(b_table_name) || '_' || '\d{' || cmn_constant.g_con_len_partition_date_fmt || '}'
+                                           , 'c'
+                                           )
+                                 or
+                                 ute.table_name = b_table_name || cmn_constant.g_con_default_table_suffix
+                               )
+                        and    ( b_suffix is null
+                                 or
+                                 
+                                 upper(ute.table_name) >= b_table_name || '_' || b_suffix
+                               )
+                        
+                        order  by case when ute.table_name = b_table_name || cmn_constant.g_con_default_table_suffix
+                                     then 2
+                                     else 1
+                                  end
+                        ,      ute.table_name desc 
+                      )
+             )
+      where  row_number = 2; 
+
+      l_ddl                      clob;
+      l_previous_view_table      c_previous_view_table%rowtype;
+      l_found                    boolean;
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      open  c_previous_view_table( b_table_name => i_base_table_name
+                                 , b_suffix     => i_suffix
+                                 );
+      fetch c_previous_view_table
+      into  l_previous_view_table;
+      l_found := c_previous_view_table%found;
+      close c_previous_view_table;
+
+      if l_found
+      then
+         
+         l_ddl := 'CREATE OR REPLACE FORCE VIEW ' || i_base_table_name || cmn_constant.g_con_previous_view_suffix ||
+                  ' AS SELECT * FROM ' || l_previous_view_table.table_name;
+
+         
+         execute_ddl( b_command => l_ddl );
+
+         
+         insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmnpartitioninginfo
+                        , i_info_arguments  => null
+                        , i_additional_data => 'New previous-table view ' || i_base_table_name || cmn_constant.g_con_previous_view_suffix || ' created'
+                        , i_severity        => viu_info.c_severity_notification
+                        , i_proc_name       => l_con_proc_name
+                        );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_previous_view_table%isopen
+         then
+            close c_previous_view_table;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+      
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_prev_view;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_summary_view( i_base_table_name in user_tables.table_name%type
+                                          , i_suffix          in varchar2
+                                          )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_summary_view';
+      
+      l_max_nr_of_partitions constant number := 70;
+
+      
+      
+      
+      
+      cursor c_overall_view_tables( b_table_name           in user_tables.table_name%type
+                                  , b_suffix               in varchar2
+                                  , b_max_nr_of_partitions in number
+                                  )
+      is
+      select listagg( 'SELECT * FROM ' || ilv.table_name
+                    , ' UNION ALL '
+                    ) within group (order by ilv.ord
+                                            ,ilv.table_name desc
+                                   )
+      from (select 1 ord
+                  ,ute.table_name
+            from   user_tables ute
+            where  regexp_like( ute.table_name
+                                    , '^' || upper(b_table_name) || '_' || '\d{' || cmn_constant.g_con_len_partition_date_fmt || '}'
+                                    , 'c'
+                                    )
+            and    ( b_suffix is null
+               or
+               ( 
+                 upper(ute.table_name) >= b_table_name || '_' || b_suffix
+                 or
+                 
+                 ute.table_name in ( select name
+                                     from   user_dependencies
+                                     where  referenced_name = ute.table_name
+                                     and    name != upper(b_table_name || cmn_constant.g_con_summary_view_suffix)
+                                     and    type  = cmn_constant.g_con_object_type_view
+                                   )
+               )
+             )
+            union all
+            select 2
+                  ,b_table_name || '_DFTMARKER'
+            from dual
+            ) ilv
+      where rownum <= b_max_nr_of_partitions;
+      l_ddl                      clob;
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      open  c_overall_view_tables( b_table_name           => i_base_table_name
+                                 , b_suffix               => i_suffix
+                                 , b_max_nr_of_partitions => l_max_nr_of_partitions
+                                 );
+      fetch c_overall_view_tables
+      into  l_ddl;
+      close c_overall_view_tables;
+      if regexp_count(l_ddl, 'SELECT') = l_max_nr_of_partitions
+      then
+         
+         insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmnpartitioninginfo
+                        , i_info_arguments  => null
+                        , i_additional_data => 'Maximum number of partitions ('||l_max_nr_of_partitions||') reached for building view '|| i_base_table_name || cmn_constant.g_con_summary_view_suffix || '. (previous data not available in this view)'
+                        , i_severity        => viu_info.c_severity_notification
+                        , i_proc_name       => l_con_proc_name
+                        );
+      end if;
+      
+      
+      l_ddl := 'CREATE OR REPLACE FORCE VIEW ' || i_base_table_name || cmn_constant.g_con_summary_view_suffix || ' AS ' || l_ddl;
+
+      
+      execute_ddl( b_command => l_ddl );
+
+      
+      insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmnpartitioninginfo
+                     , i_info_arguments  => null
+                     , i_additional_data => 'New overall view '     || i_base_table_name || cmn_constant.g_con_summary_view_suffix || ' created'
+                     , i_severity        => viu_info.c_severity_notification
+                     , i_proc_name       => l_con_proc_name
+                     );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_overall_view_tables%isopen
+         then
+            close c_overall_view_tables;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+      
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_summary_view;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_partition_table( i_rt_cae  in cmn_v_cleanup_attributes%rowtype
+                                   , i_suffix  in varchar2
+                                   )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_partition_table';
+
+      l_ddl                      clob;
+      l_table_name               cmn_cleanup_tables.table_name%type;
+      l_success                  boolean;
+      l_index                    integer;
+      l_safety_timestamp         timestamp;
+      l_safety_interval          varchar2(16) := 'd00h00m15s00f000';
+      l_tablespace_name          user_tablespaces.tablespace_name%type;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      check_halt_signal;
+
+      
+      l_table_name := upper(substr( i_rt_cae.table_name, 1, cmn_constant.g_con_max_baselength ));
+
+      
+      l_ddl := dbms_metadata.get_ddl( object_type => cmn_constant.g_con_object_type_table
+                                    , name        => l_table_name || cmn_constant.g_con_default_table_suffix
+                                    );
+
+      
+      l_ddl := regexp_replace( l_ddl
+                             , cmn_constant.g_con_default_table_suffix
+                             , '_' || i_suffix
+                             , 1, 0, 'c'
+                             );
+
+      
+      
+      l_success := false;
+      l_index := 0;
+      l_safety_timestamp := cmn_common.default_timestamp + cmn_common.varchar_to_interval( i_int => i_rt_cae.lifetime )
+                                                         - cmn_common.varchar_to_interval( i_int => l_safety_interval );
+
+      while not l_success
+      and   cmn_common.default_timestamp < l_safety_timestamp
+      loop
+      
+         begin
+            l_index := l_index + 1;
+
+            execute_ddl( b_command => l_ddl );
+
+            l_success := true;
+         exception
+         when cmn_constant.exc_resource_busy
+         then
+           
+           acl_common.sleep(1e-1);
+
+         when others
+         then
+           insert_info_log( i_ifo_nr   => viu_constant.c_ifo_cmnpartitioninginfo
+                     , i_info_arguments  	=> null
+                     , i_additional_data 	=> 'New table partition could not be created: ' || l_table_name || '_' || i_suffix || ' in ' || l_index || ' attempt(s). ' || sqlerrm
+                     , i_severity        	=> viu_info.c_severity_error
+                     , i_proc_name       	=> l_con_proc_name
+                     );
+           viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+         end;
+      end loop;
+
+      insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmnpartitioninginfo
+                     , i_info_arguments  => null
+                     , i_additional_data => 'New table partition created: ' || l_table_name || '_' || i_suffix || ' in ' || l_index || ' attempt(s)'
+                     , i_severity        => viu_info.c_severity_notification
+                     , i_proc_name       => l_con_proc_name
+                     );
+
+      
+      l_tablespace_name := regexp_replace( l_ddl
+                                         , '^.*TABLESPACE +"?(\w+)"?.*$'
+                                         , '\1', 1, 1, 'mn'
+                                         );
+
+      
+      cmn_cleanup.create_partition_indexes( i_base_table_name => l_table_name
+                                          , i_suffix          => i_suffix
+                                          );
+
+      
+      cmn_cleanup.create_partition_triggers( i_base_table_name => l_table_name
+                                           , i_suffix          => i_suffix
+                                           );
+
+      
+      cmn_cleanup.create_partition_grants( i_base_table_name => l_table_name
+                                         , i_suffix          => i_suffix
+                                         );
+
+      
+      cmn_cleanup.create_partition_statistics( i_base_table_name => l_table_name
+                                             , i_suffix          => i_suffix
+                                             , i_tablespace_name => l_tablespace_name
+                                             );
+
+      
+      cmn_cleanup.create_partition_main_view( i_table_name      => i_rt_cae.table_name
+                                            , i_base_table_name => l_table_name
+                                            , i_suffix          => i_suffix
+                                            );
+
+      
+      cmn_cleanup.create_partition_prev_view( i_base_table_name => l_table_name
+                                            , i_suffix          => null
+                                            );
+
+      
+      cmn_cleanup.create_partition_summary_view( i_base_table_name => l_table_name
+                                               , i_suffix          => null
+                                               );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_partition_table;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure partition
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.partition';
+
+      
+      cursor c_partition_tables
+      is
+      select *
+      from   cmn_v_cleanup_attributes
+      where  delete_strategy = cmn_constant.g_con_cup_type_partition;
+
+      
+      cursor c_latest_partition_table( b_table_name in cmn_cleanup_tables.table_name%type )
+      is
+      select *
+      from ( select table_name
+             from   user_tables ute
+             where  regexp_like( ute.table_name
+                               , '^' || upper(b_table_name) || '_' || '\d{' || cmn_constant.g_con_len_partition_date_fmt || '}'
+                               , 'c'
+                               )
+             and    upper(ute.table_name) != upper( b_table_name || cmn_constant.g_con_default_table_suffix )
+             order  by ute.table_name desc
+           )
+      where rownum = 1;
+
+      r_latest_partition_table   c_latest_partition_table%rowtype;
+      l_found_table              boolean;
+      l_table_too_old            boolean;
+      l_timestamp_str_curr       varchar2(10);
+      l_timestamp_str_limit      varchar2(10);
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+      
+      
+      check_halt_signal;
+
+      dbms_application_info.set_module( module_name  => l_con_proc_name
+                                      , action_name  => 'Starting partitioning'
+                                      );
+
+      
+      l_timestamp_str_curr := to_char( cmn_common.default_timestamp, cmn_constant.g_con_partition_date_format );
+
+      
+      for r_partition_tables in c_partition_tables
+      loop
+         if r_partition_tables.lifetime is not null
+         then
+            if check_table( i_table_name => r_partition_tables.table_name
+                          , i_warn       => true
+                          )
+            then
+               l_table_too_old := false;
+
+               
+               open  c_latest_partition_table( b_table_name => substr( r_partition_tables.table_name, 1, cmn_constant.g_con_max_baselength ) );
+               fetch c_latest_partition_table
+               into  r_latest_partition_table;
+               l_found_table := c_latest_partition_table%found;
+               close c_latest_partition_table;
+
+               
+               if l_found_table
+               then
+                  
+                  l_timestamp_str_limit := to_char( cmn_common.default_timestamp
+                                                    - cmn_common.varchar_to_interval( i_int => r_partition_tables.lifetime )
+                                                    + cmn_common.varchar_to_interval( i_int => cmn_constant.g_con_lifetime_offset ) 
+                                                  , cmn_constant.g_con_partition_date_format
+                                                  );
+
+                  
+                  l_table_too_old := ( r_latest_partition_table.table_name <
+                                       ( substr( upper(r_partition_tables.table_name), 1, cmn_constant.g_con_max_baselength ) || '_' || l_timestamp_str_limit )
+                                     );
+
+               end if;
+
+               if not l_found_table
+               or l_table_too_old
+               then
+                  create_partition_table( i_rt_cae => r_partition_tables
+                                        , i_suffix => l_timestamp_str_curr
+                                        );
+
+               end if;
+            end if;
+         else
+            insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmncleanupstopped
+                           , i_info_arguments  => r_partition_tables.table_name
+                           , i_additional_data => 'LIFETIME not configured for ' || r_partition_tables.table_name
+                           , i_severity        => viu_info.c_severity_error
+                           , i_proc_name       => l_con_proc_name
+                           );
+         
+         end if;
+
+         commit_and_check_halt_signal;
+
+      end loop;
+
+      
+      compile_schema;
+
+      commit_and_check_halt_signal;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when viu_constant.exc_aclprocessstopped
+      then
+         
+         
+
+         if c_latest_partition_table%isopen
+         then
+            close c_latest_partition_table;
+         end if;
+
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+      when others
+      then
+         if c_latest_partition_table%isopen
+         then
+            close c_latest_partition_table;
+         end if;
+
+         
+         
+
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.handle_info( i_calling_procedure => l_con_proc_name );
+
+   end partition;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure cleanup_partition_table( i_rt_cae in cmn_v_cleanup_attributes%rowtype )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.cleanup_partition_table';
+
+      
+      cursor c_obsolete_partition_table( b_table_name    in cmn_v_cleanup_attributes.table_name%type
+                                       , b_str_timestamp in varchar2
+                                       )
+      is
+      select ute.table_name
+      from   user_tables ute
+      where  regexp_like( ute.table_name
+                        , '^' ||upper(b_table_name) || '_' || '\d{' || to_char(cmn_constant.g_con_len_partition_date_fmt)|| '}'
+                        , 'c'
+                        )
+      and    upper(ute.table_name) != upper(b_table_name) || cmn_constant.g_con_default_table_suffix
+      and    ute.table_name         < upper(b_table_name) || '_' || b_str_timestamp
+      order  by ute.table_name;
+
+      
+      cursor c_table_usage( b_used_table_name  in user_tables.table_name%type
+                          , b_using_table_name in user_tables.table_name%type
+                          )
+      is
+      select name
+      from   user_dependencies
+      where  referenced_name = upper(b_used_table_name)
+      and    name != upper(b_using_table_name || cmn_constant.g_con_summary_view_suffix)
+      and    type  = cmn_constant.g_con_object_type_view;
+
+      
+      cursor c_table_fks( b_table_name    in cmn_v_cleanup_attributes.table_name%type
+                        )
+      is
+      select constraint_name
+      from   user_constraints
+      where  table_name      = b_table_name
+      and    constraint_type = 'R'   
+      ;
+      
+      l_ddl                      clob;
+      l_table_name               cmn_cleanup_tables.table_name%type;
+      l_timestamp_str_limit      varchar2(10);
+      l_table_dropped            boolean := false;
+      r_table_usage              c_table_usage%rowtype;
+      l_usage_found              boolean;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      if i_rt_cae.retention is not null
+      then
+         
+         check_halt_signal;
+
+         dbms_application_info.set_module( module_name  => l_con_proc_name
+                                         , action_name  => 'Performing cleanup of table ' || i_rt_cae.table_name
+                                         );
+
+         
+         l_table_name := upper(substr( i_rt_cae.table_name, 1, cmn_constant.g_con_max_baselength ));
+
+         
+         l_timestamp_str_limit := to_char( cmn_common.default_timestamp
+                                           - cmn_common.varchar_to_interval( i_int => i_rt_cae.retention )
+                                         , cmn_constant.g_con_partition_date_format
+                                         );
+
+         
+         for r_obsolete_partition_table in c_obsolete_partition_table( b_table_name    => substr( i_rt_cae.table_name, 1, cmn_constant.g_con_max_baselength)
+                                                                     , b_str_timestamp => l_timestamp_str_limit
+                                                                     )
+         loop
+            begin
+               if not l_table_dropped
+               then
+                  
+                  cmn_cleanup.create_partition_prev_view( i_base_table_name => l_table_name
+                                                        , i_suffix          => l_timestamp_str_limit
+                                                        );
+
+                  
+                  cmn_cleanup.create_partition_summary_view( i_base_table_name => l_table_name
+                                                           , i_suffix          => l_timestamp_str_limit
+                                                           );
+               end if;
+
+               l_table_dropped := true;
+
+               
+               open c_table_usage( b_used_table_name  => r_obsolete_partition_table.table_name
+                                 , b_using_table_name => l_table_name
+                                 );
+               fetch c_table_usage
+               into  r_table_usage;
+               l_usage_found := c_table_usage%found;
+               close c_table_usage;
+               
+               if l_usage_found
+               then
+                  
+                  insert_info_log( i_ifo_nr          => viu_constant.c_ifo_deletefailed
+                                 , i_info_arguments  => r_obsolete_partition_table.table_name
+                                 , i_additional_data => 'Dropping table ' || r_obsolete_partition_table.table_name || ' prevented because usage by ' || r_table_usage.name || ' exists'
+                                 , i_severity        => viu_info.c_severity_warning
+                                 , i_proc_name       => l_con_proc_name
+                                 );
+               else
+                  
+                  for rec_table_fks in c_table_fks( b_table_name => r_obsolete_partition_table.table_name)
+                  loop
+                     l_ddl := 'ALTER TABLE '      || r_obsolete_partition_table.table_name
+                           || ' DROP CONSTRAINT ' || rec_table_fks.constraint_name;
+                     
+                     execute_ddl( b_command => l_ddl );
+                  end loop;
+                  
+                  
+                  l_ddl := 'DROP TABLE ' || r_obsolete_partition_table.table_name || ' PURGE';
+
+                  execute_ddl( b_command => l_ddl );
+
+                  
+                  insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmnpartitioninginfo
+                                 , i_info_arguments  => null
+                                 , i_additional_data => 'Dropping table ' || r_obsolete_partition_table.table_name || ' during cleanup succeeded'
+                                 , i_severity        => viu_info.c_severity_notification
+                                 , i_proc_name       => l_con_proc_name
+                                 );
+
+               end if;
+
+            exception
+               when others
+               then
+                  
+                  insert_info_log( i_ifo_nr          => viu_constant.c_ifo_deletefailed
+                                 , i_info_arguments  => r_obsolete_partition_table.table_name
+                                 , i_additional_data => 'Dropping table ' || r_obsolete_partition_table.table_name || ' during cleanup failed: ' || sqlerrm
+                                 , i_severity        => viu_info.c_severity_error
+                                 , i_proc_name       => l_con_proc_name
+                                 );
+            end;
+         end loop;
+
+         if not l_table_dropped
+         then
+            
+            insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmnpartitioninginfo
+                           , i_info_arguments  => null
+                           , i_additional_data => 'Cleanup op partition table ' || i_rt_cae.table_name || ' not needed'
+                           , i_severity        => viu_info.c_severity_notification
+                           , i_proc_name       => l_con_proc_name
+                           );
+         else
+            
+            compile_schema;
+         end if;
+      
+      else
+         
+         insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmncleanupstopped
+                        , i_info_arguments  => i_rt_cae.table_name
+                        , i_additional_data => 'RETENTION not configured for ' || i_rt_cae.table_name ||
+                                               '. Cleanup NOT executed.'
+                        , i_severity        => viu_info.c_severity_error
+                        , i_proc_name       => l_con_proc_name
+                        );
+
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_table_usage%isopen
+         then
+            close c_table_usage;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end cleanup_partition_table;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure cleanup_regular_table( i_rt_cae            in cmn_v_cleanup_attributes%rowtype
+                                  , i_cleanup_timestamp in timestamp
+                                  )
+   is
+      l_con_proc_name            constant st_proc_name := g_con_package || '.cleanup_regular_table';
+      
+      l_del_function    constant clob := '
+      DECLARE
+         TYPE t_rowids IS TABLE OF ROWID;
+         
+         l_con_proc_name            CONSTANT VARCHAR2(61) := ''' || g_con_package || '.cleanup_regular_table (anonymous block)'';' ||
+         '
+         l_rowids                 t_rowids;
+         l_nr_deleted_tried       INTEGER := 0;
+         l_nr_deleted_real        INTEGER := 0;
+         l_nr_deleted_incr        INTEGER := 0;
+         l_nr_failed              INTEGER;
+         l_start_time             TIMESTAMP := cmn_common.default_timestamp;
+         l_end_time               TIMESTAMP;
+         l_continue               BOOLEAN := TRUE;
+
+         CURSOR c_:ALIAS
+         IS
+            SELECT ROWID
+            FROM   :TABLE :ALIAS
+            WHERE  ROWNUM <= :BATCHSIZE
+            AND    (:WHERE);
+
+         exc_snapshot_too_old     EXCEPTION;
+         PRAGMA EXCEPTION_INIT( exc_snapshot_too_old, -1555 );
+         exc_bulk_dml             EXCEPTION;
+         PRAGMA EXCEPTION_INIT( exc_bulk_dml, -24381 );
+
+      BEGIN
+         WHILE l_continue
+         LOOP
+            -- Reset the error counter, failures from the previous loop will be fetched again
+            l_nr_failed := 0;
+            
+            OPEN c_:ALIAS;
+
+            l_nr_deleted_incr := 0;
+            LOOP
+               BEGIN
+                  FETCH c_:ALIAS BULK COLLECT INTO l_rowids LIMIT :COMMITSIZE;
+               EXCEPTION
+                  WHEN exc_snapshot_too_old
+                  THEN
+                     EXIT;
+                  WHEN OTHERS
+                  THEN
+                     RAISE;
+               END;
+
+               EXIT WHEN l_rowids.COUNT = 0;
+               l_nr_deleted_incr := l_nr_deleted_incr + l_rowids.COUNT;
+
+               BEGIN
+                  FORALL i IN 1..l_rowids.COUNT SAVE EXCEPTIONS
+                     DELETE
+                     FROM   :TABLE
+                     WHERE  ROWID = l_rowids(i);
+               EXCEPTION
+                  WHEN exc_bulk_dml
+                  THEN
+                     l_nr_failed := l_nr_failed + SQL%BULK_EXCEPTIONS.COUNT;
+
+                     -- Make sure that we do not end up in an infinite loop when stuck parent records build up
+                     IF SQL%BULK_EXCEPTIONS.COUNT = :COMMITSIZE
+                     THEN
+                        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_CmnCleanupStopped
+                                              , i_calling_procedure => l_con_proc_name
+                                              , i_severity          => viu_info.c_severity_error
+                                              , i_info_arguments    => NULL
+                                              , i_additional_data   => ''Cleanup of table :TABLE was stopped due to excessive records that could not be deleted'' ||
+                                                                       ''. Number of failed deletes in last loop-run: '' || SQL%BULK_EXCEPTIONS.COUNT ||
+                                                                       ''. This will block future cleanup actions!''
+                                              );
+
+                        l_continue := FALSE;
+                     END IF;
+               END;
+
+               cmn_cleanup.commit_and_check_halt_signal;
+
+               IF :COMMITSLEEP > 0
+               THEN
+                  -- volb-109: dbms_lock.sleep(:COMMITSLEEP/1000);
+                  acl_common.sleep(:COMMITSLEEP/1000);
+               END IF;
+            END LOOP;
+
+            CLOSE c_:ALIAS;
+
+            l_nr_deleted_tried := l_nr_deleted_tried + l_nr_deleted_incr;
+            l_nr_deleted_real  := l_nr_deleted_real  + l_nr_deleted_incr - l_nr_failed;
+
+            -- Only continue if number of records equals batch size
+            -- and total deleted does not exceed maximum (Note: BATCHSIZE is
+            -- always defined due to COALESCE below)
+            IF  l_continue
+            AND ( l_nr_deleted_incr  <  :BATCHSIZE
+                  OR
+                  l_nr_deleted_tried >= :MAXDELETES
+                )
+            THEN
+               l_continue := FALSE;
+            END IF;
+         END LOOP;
+
+         IF l_nr_failed > 0
+         THEN
+            -- Log a notification
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_CmnCleanupDeleteFailed
+                                  , i_calling_procedure => '':PROC_NAME''
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_info_arguments    => '':TABLE''
+                                  , i_additional_data   => ''Failure count: '' || l_nr_failed
+                                  );
+         END IF;
+
+         -- Mark the end time
+         l_end_time := cmn_common.default_timestamp;
+
+         -- Log a notification
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_CmnCleanUpReport
+                               , i_calling_procedure => '':PROC_NAME''
+                               , i_severity          => viu_info.c_severity_notification
+                               , i_info_arguments    => l_nr_deleted_real || ''##:TABLE''
+                               , i_additional_data   => ''Time taken: '' || TO_CHAR(l_end_time - l_start_time)
+                               );
+      EXCEPTION
+         WHEN OTHERS
+         THEN
+            -- Rollback the whole block
+            rollback;
+
+            -- Log a warning
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_CmnCleanupStopped
+                                  , i_calling_procedure => '':PROC_NAME''
+                                  , i_severity          => viu_info.c_severity_error
+                                  , i_additional_data   => ''Cleanup failed for :TABLE. '' || SQLERRM
+                                  );
+                  
+      END;
+';
+
+      l_del_workfunction         clob;
+      l_retention_timestamp      timestamp;
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      if not ( i_rt_cae.retention is null
+               and
+               ( instr( i_rt_cae.clause, cmn_constant.g_con_timestamp_placeholder, 1, 1 ) > 0 )
+             )
+      then
+
+         
+         check_halt_signal;
+
+         dbms_application_info.set_module( module_name  => l_con_proc_name
+                                         , action_name  => 'Performing cleanup of table ' || i_rt_cae.table_name
+                                         );
+
+         
+         if i_rt_cae.retention is not null
+         then
+            l_retention_timestamp := i_cleanup_timestamp - cmn_common.varchar_to_interval( i_int => i_rt_cae.retention );
+         end if;
+
+         
+         l_del_workfunction := l_del_function;
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_table_placeholder
+                                             , i_rt_cae.table_name
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_alias_placeholder
+                                             , i_rt_cae.table_alias
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_clause_placeholder
+                                             , i_rt_cae.clause
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_procname_placeholder
+                                             , l_con_proc_name
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_commitsize_placeholder
+                                             , nvl(i_rt_cae.commit_size, cmn_constant.g_con_default_commit_size)
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_batchsize_placeholder
+                                             , coalesce(i_rt_cae.batch_size, i_rt_cae.commit_size, cmn_constant.g_con_default_commit_size)
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_commitsleep_placeholder
+                                             , nvl(i_rt_cae.commit_sleep, '0')
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+         l_del_workfunction := regexp_replace( l_del_workfunction
+                                             , g_con_maxdeletes_placeholder
+                                             , nvl(to_char(i_rt_cae.max_nof_deletes), 'NULL')
+                                             , 1, 0
+                                             , 'cmn'
+                                             );
+
+         
+         if instr( l_del_workfunction
+                 , cmn_constant.g_con_timestamp_placeholder
+                 , 1, 1
+                 ) > 0
+         then
+            
+            execute immediate l_del_workfunction
+            using   l_retention_timestamp;
+
+         elsif instr( l_del_workfunction
+                    , cmn_constant.g_con_job_start_placeholder
+                    , 1, 1
+                    ) > 0
+         then
+            
+            execute immediate l_del_workfunction
+            using   i_cleanup_timestamp;
+
+         else
+            
+            execute immediate l_del_workfunction;
+
+         end if;
+      else
+         
+         insert_info_log( i_ifo_nr          => viu_constant.c_ifo_cmncleanupstopped
+                        , i_info_arguments  => i_rt_cae.table_name
+                        , i_additional_data => 'RETENTION not configured for ' || i_rt_cae.table_name ||
+                                               ' while the CLAUSE expects it. Cleanup NOT executed.'
+                        , i_severity        => viu_info.c_severity_error
+                        , i_proc_name       => l_con_proc_name
+                        );
+      end if;
+
+      commit_and_check_halt_signal;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end cleanup_regular_table;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure truncate_table( i_cst_id       in     cmn_cleanup_sets.id%type
+                           , i_table_name   in     user_tables.table_name%type
+                           , i_timeout      in     timestamp
+                           , io_tt_keys     in out tt_keys
+                           , io_tt_tables   in out tt_tables
+                           )
+   is
+      l_con_proc_name     constant st_proc_name := g_con_package || '.truncate_table';
+      
+      
+      cursor c_cascaded_tables( b_table_name in user_tables.table_name%type )
+      is
+         select uct_fk.table_name
+         ,      uct_fk.constraint_name
+         ,      uct_fk.delete_rule
+         from   user_constraints uct_fk
+         ,      user_constraints uct_pk
+         where  uct_fk.r_constraint_name = uct_pk.constraint_name
+         and    uct_fk.constraint_type   = cmn_constant.g_con_constraint_type_ref
+         and    uct_pk.table_name        = upper(b_table_name);
+
+      
+      cursor c_referred_tables( b_table_name in user_tables.table_name%type )
+      is
+         select uct_fk.table_name from_table
+         ,      uct_pk.table_name to_table
+         ,      uct_fk.constraint_name
+         from   user_constraints uct_fk
+         ,      user_constraints uct_pk
+         where  uct_fk.r_constraint_name = uct_pk.constraint_name
+         and    uct_fk.constraint_type   = cmn_constant.g_con_constraint_type_ref
+         and    uct_fk.table_name        = upper(b_table_name);
+
+      
+      cursor c_cae( b_cst_id     in cmn_cleanup_sets.id%type
+                  , b_table_name in user_tables.table_name%type
+                  )
+      is
+         select *
+         from   cmn_v_cleanup_attributes vcae
+         where  vcae.cst_id            = b_cst_id
+         and    upper(vcae.table_name) = upper(b_table_name);
+
+      
+      cursor c_view_tables( b_view_name in user_views.view_name%type )
+      is
+         select *
+         from   user_dependencies udy
+         where  type            = cmn_constant.g_con_object_type_view
+         and    referenced_type = cmn_constant.g_con_object_type_table
+         and    name            = upper(b_view_name);
+
+      l_rt_cae                     cmn_v_cleanup_attributes%rowtype;
+      l_cleanup_timestamp          timestamp := cmn_common.default_timestamp;
+      l_ddl                        clob;
+      l_found_cae                  boolean;
+      l_object_type                user_objects.object_type%type;
+      l_column_list                varchar2(4096);
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      if  i_timeout is not null
+      and l_cleanup_timestamp >= i_timeout
+      then
+         
+         viu_info.raise_info (i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_additional_data   => 'Timeout for cleanup set was reached during reset. The database may be in an incomplete state!'
+                             );
+
+      elsif not io_tt_tables.exists( upper(i_table_name) )
+      then
+         
+         l_object_type := object_type( i_object_name => i_table_name );
+         
+         
+         if l_object_type = cmn_constant.g_con_object_type_view
+         then
+            
+            for r_view_tables in c_view_tables( b_view_name => i_table_name )
+            loop
+               truncate_table( i_cst_id       => i_cst_id
+                             , i_table_name   => r_view_tables.referenced_name
+                             , i_timeout      => i_timeout
+                             , io_tt_tables   => io_tt_tables
+                             , io_tt_keys     => io_tt_keys
+                             );
+            end loop;
+
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_notification
+                                  , i_additional_data   => 'View ' || upper(i_table_name) || ' was truncated through its referenced tables'
+                                  );
+
+            
+            io_tt_tables( upper(i_table_name) ) := 1;
+
+         else
+            
+            for r_cascaded_tables in c_cascaded_tables( b_table_name => i_table_name )
+            loop
+               
+               l_ddl := 'ALTER TABLE ' || r_cascaded_tables.table_name || ' DISABLE CONSTRAINT ' || r_cascaded_tables.constraint_name;
+               execute_ddl( b_command => l_ddl );
+
+               
+               viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.c_severity_notification
+                                     , i_additional_data   => 'Disabled foreign key ' || r_cascaded_tables.constraint_name ||
+                                                              ' from table '          || r_cascaded_tables.table_name      ||
+                                                              ' to ' || i_table_name
+                                     );
+
+               if not io_tt_keys.exists( r_cascaded_tables.constraint_name )
+               then
+                  
+                  io_tt_keys( r_cascaded_tables.constraint_name ) := r_cascaded_tables.table_name;
+
+                  if r_cascaded_tables.delete_rule = cmn_constant.g_con_delete_rule_cascade
+                  then
+                     
+                     truncate_table( i_cst_id       => i_cst_id
+                                   , i_table_name   => r_cascaded_tables.table_name
+                                   , i_timeout      => i_timeout
+                                   , io_tt_tables   => io_tt_tables
+                                   , io_tt_keys     => io_tt_keys
+                                   );
+                  end if;
+               end if;
+            end loop;
+
+            
+            l_ddl := 'TRUNCATE TABLE ' || i_table_name || ' DROP STORAGE';
+            begin
+               execute_ddl( b_command => l_ddl );
+
+            exception
+               when others
+               then
+                  
+                  viu_info.raise_info (i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.c_severity_error
+                                     , i_additional_data   => 'Truncate of table ' || upper(i_table_name) || ' failed.'
+                                      );
+            end;
+
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_notification
+                                  , i_additional_data   => 'Table ' || upper(i_table_name) || ' was truncated'
+                                  );
+
+            
+            io_tt_tables( upper(i_table_name) ) := 1;
+
+            
+            open  c_cae( b_cst_id     => i_cst_id
+                       , b_table_name => i_table_name
+                       );
+            fetch c_cae
+            into  l_rt_cae;
+            l_found_cae := c_cae%found;
+            close c_cae;
+
+            if  l_found_cae
+            and l_rt_cae.shadow_table_name is not null
+            then
+               
+               for r_referred_tables in c_referred_tables( b_table_name => i_table_name )
+               loop
+                  
+                  l_ddl := 'ALTER TABLE ' || r_referred_tables.from_table || ' DISABLE CONSTRAINT ' || r_referred_tables.constraint_name;
+                  execute_ddl( b_command => l_ddl );
+
+                  
+                  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                        , i_calling_procedure => l_con_proc_name
+                                        , i_severity          => viu_info.c_severity_notification
+                                        , i_additional_data   => 'Disabled foreign key ' || r_referred_tables.constraint_name ||
+                                                                 ' from table '          || r_referred_tables.from_table      ||
+                                                                 ' to ' || r_referred_tables.to_table
+                                        );
+
+                  
+                  io_tt_keys( r_referred_tables.constraint_name ) := r_referred_tables.from_table;
+
+               end loop;
+
+               
+               l_column_list :=  column_list( i_table_name => i_table_name );
+
+               l_ddl := 'INSERT /*+ append */ INTO ' || i_table_name || '(' || l_column_list || ') SELECT ' || l_column_list || ' FROM ' || l_rt_cae.shadow_table_name;
+
+               execute_ddl( b_command => l_ddl );
+
+               
+               commit;
+
+               
+               viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.c_severity_notification
+                                     , i_additional_data   => 'Table ' || i_table_name || ' has been restored'
+                                     );
+
+            end if;
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_cae%isopen
+         then
+            close c_cae;
+         end if;
+         
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end truncate_table;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure cleanup( i_cst_name in cmn_cleanup_sets.name%type )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.cleanup';
+
+      
+      cursor c_cleanup_tables( b_cst_name in cmn_cleanup_sets.name%type )
+      is
+         select *
+         from   cmn_v_cleanup_attributes
+         where  upper(cst_name) = upper(b_cst_name)
+         order  by sequence;
+
+      
+      cursor c_disabled_constraints
+      is
+         select count(*)
+         from   user_constraints
+         where  status != cmn_constant.g_con_constraint_sts_enabled;
+
+
+      type t_cleanup_tables is table of c_cleanup_tables%rowtype;
+
+      l_cleanup_tables           t_cleanup_tables;
+      l_cleanup_timestamp        timestamp := cmn_common.default_timestamp;
+      l_found                    boolean;
+      l_rt_cst                   cmn_cleanup_sets%rowtype;
+      l_tt_tables                tt_tables;
+      l_tt_keys                  tt_keys;
+      l_ddl                      clob;
+      l_constraint_name          user_constraints.constraint_name%type;
+      l_current_session_is_job   boolean;
+      l_constraint_count         integer;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+      
+      l_current_session_is_job := acl_application_control.current_session_is_job;
+
+      
+      l_found := cmn_cst_tapi_pck.cst_select_row_uk_1( i_cst_name => upper(i_cst_name)
+                                                     , o_rt_cst   => l_rt_cst
+                                                     );
+
+      if not l_found
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmncleanupstopped
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_additional_data   => 'No cleanup set exists for scope ' || nvl(i_cst_name, 'NULL')
+                             );
+
+      else
+         
+         if l_current_session_is_job
+         then
+            
+            check_halt_signal;
+
+            
+            acl_cleanup.cleanup;
+
+            
+            check_halt_signal;
+
+         end if;
+
+         dbms_application_info.set_module( module_name  => l_con_proc_name
+                                         , action_name  => 'Starting cleanup'
+                                         );
+
+         
+         open  c_cleanup_tables( b_cst_name => i_cst_name );
+         fetch c_cleanup_tables bulk collect into l_cleanup_tables;
+         close c_cleanup_tables;
+         
+         
+         for i in 1..l_cleanup_tables.count
+         loop
+            if check_table( i_table_name => l_cleanup_tables(i).table_name
+                          , i_warn       => true
+                          )
+            then
+               if l_cleanup_tables(i).delete_strategy = cmn_constant.g_con_cup_type_partition
+               then
+                  cleanup_partition_table( i_rt_cae => l_cleanup_tables(i) );
+                  
+               elsif l_cleanup_tables(i).delete_strategy = cmn_constant.g_con_cup_type_rowdelete
+               then
+                  cleanup_regular_table( i_rt_cae            => l_cleanup_tables(i)
+                                       , i_cleanup_timestamp => l_cleanup_timestamp
+                                       );
+       
+               elsif l_cleanup_tables(i).delete_strategy = cmn_constant.g_con_cup_type_truncate
+               then
+                  
+                  if not l_tt_tables.exists(l_cleanup_tables(i).table_name)
+                  then
+                     truncate_table( i_cst_id       => l_cleanup_tables(i).cst_id
+                                   , i_table_name   => l_cleanup_tables(i).table_name
+                                   , i_timeout      => case
+                                                          when l_cleanup_tables(i).timeout is null
+                                                          then
+                                                             null
+                                                          else
+                                                             l_cleanup_timestamp +  cmn_common.varchar_to_interval(l_cleanup_tables(i).timeout)
+                                                        end
+                                   , io_tt_tables   => l_tt_tables
+                                   , io_tt_keys     => l_tt_keys
+                                   );
+
+                  end if;
+               end if;
+            end if;
+         end loop;
+
+         
+         l_constraint_name := l_tt_keys.first;
+         while l_constraint_name is not null
+         loop
+            l_ddl := 'ALTER TABLE ' || l_tt_keys(l_constraint_name) || ' ENABLE CONSTRAINT ' || l_constraint_name;
+            execute_ddl( b_command => l_ddl );
+            
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_notification
+                                  , i_additional_data   => 'Foreign key ' || l_constraint_name || ' has been enabled'
+                                  );
+
+            l_constraint_name := l_tt_keys.next( l_constraint_name );
+         end loop;
+         
+         
+         open  c_disabled_constraints;
+         fetch c_disabled_constraints into l_constraint_count;
+         close c_disabled_constraints;
+         
+         if l_constraint_count > 0
+         then
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_additional_data   => 'Disabled constraints exist after Cleanup'
+                                  );
+         end if;
+
+         
+         compile_schema;
+         
+         commit_and_check_halt_signal;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when viu_constant.exc_aclprocessstopped
+      then
+         if c_cleanup_tables%isopen
+         then
+            close c_cleanup_tables;
+         end if;
+         if c_disabled_constraints%isopen
+         then
+            close c_disabled_constraints;
+         end if;
+
+         
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+      when others
+      then
+         
+
+         if c_cleanup_tables%isopen
+         then
+            close c_cleanup_tables;
+         end if;
+         if c_disabled_constraints%isopen
+         then
+            close c_disabled_constraints;
+         end if;
+
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         
+         if l_current_session_is_job
+         then
+            
+            viu_info.handle_info( i_calling_procedure => l_con_proc_name );
+         else
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+         end if;
+
+   end cleanup;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function lock_handle( i_lock_name in varchar2 )
+   return varchar2
+   is
+      pragma autonomous_transaction;
+
+      l_con_proc_name   constant st_proc_name := g_con_package || '.lock_handle';
+      
+      l_lock_handle              varchar2(100);
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      dbms_lock.allocate_unique( lockname  => i_lock_name
+                               , lockhandle => l_lock_handle
+                               );
+      
+      
+      commit;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      
+      return l_lock_handle;
+
+   exception
+      when others
+      then
+         
+         rollback;
+         
+         viu_module.leave_module (i_module => l_con_proc_name);
+         
+         return null;
+         
+   end lock_handle;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function set_cleanup_lock( i_set in boolean )
+   return boolean
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.set_cleanup_lock';
+      l_lock_name       constant varchar2(40) := sys_context('USERENV','CURRENT_SCHEMAID') ||
+                                                 cmn_constant.g_reset_lockhandle;
+
+      l_lock_result              integer;
+      l_lock_handle              integer;
+      l_result                   boolean;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      l_lock_handle := cmn_cleanup.lock_handle( i_lock_name => l_lock_name );
+
+      if i_set
+      then
+         
+         l_lock_result := dbms_lock.request
+                             ( lockhandle         => l_lock_handle
+                             , release_on_commit  => false
+                             , timeout            => 0 
+                             );
+
+         
+         l_result := ( l_lock_result = cmn_constant.g_con_lock_success );
+
+      else
+         
+         l_lock_result := dbms_lock.release( lockhandle => l_lock_handle );
+
+         
+         l_result := ( l_lock_result in ( cmn_constant.g_con_unlock_success
+                                        , cmn_constant.g_con_unlock_not_found
+                                        )
+                     );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+      
+      return l_result;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.handle_info( i_calling_procedure => l_con_proc_name );
+         
+         return false;
+
+   end set_cleanup_lock;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function gen_resetdynamicdataresponse( i_result in varchar2 )
+   return xmltype
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.gen_resetdynamicdataresponse';
+
+      l_xml_message              xmltype;
+      l_default_message          xmltype := xmltype('<ResetDynamicDataResponse xmlns="http://www.vanderlande.com/AMCWebService"><Result>FAIL_OTHER</Result></ResetDynamicDataResponse>');
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      select xmlroot( xmlelement( "ResetDynamicDataResponse"
+                                , xmlattributes('http://www.vanderlande.com/AMCWebService' as "xmlns")
+                                , xmlelement( "Result"
+                                            , i_result
+                                            )
+                                )
+                    , version cmn_constant.g_con_xmlroot
+                    )
+      into   l_xml_message
+      from   dual;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_xml_message;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.handle_info( i_calling_procedure => l_con_proc_name );
+         
+         return l_default_message;
+
+   end gen_resetdynamicdataresponse;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure stop_application( o_running out boolean
+                             , o_success out boolean
+                             )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.stop_application';
+      
+      
+      cursor c_aet( b_aet_type in acl_application_elements.aet_type%type )
+      is
+         select aet.id_cust
+         from   acl_application_elements aet
+         where  aet_type = b_aet_type;
+
+      r_aet_switch               c_aet%rowtype;
+      r_aet_atn                  c_aet%rowtype;
+      l_success                  boolean;
+      l_dummy                    boolean;
+      l_rt_ace                   acl_aet_control_request_types%rowtype;
+      l_rt_asm                   acl_aet_statuses_dom%rowtype;
+      l_found_switch             boolean;
+      l_found_atn                boolean;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+      
+      
+      o_success := true;
+      
+      
+      l_dummy := acl_ace_tapi_pck.ace_select_row( i_ace_id => acl_constant.g_con_ace_name_stop
+                                                , o_rt_ace => l_rt_ace
+                                                );
+
+      
+      l_dummy := acl_asm_tapi_pck.asm_select_row( i_asm_id => acl_constant.g_con_asm_name_started
+                                                , o_rt_asm => l_rt_asm
+                                                );
+
+      
+      open  c_aet( b_aet_type => acl_constant.g_con_aet_type_switch );
+      fetch c_aet into r_aet_switch;
+      l_found_switch := c_aet%found;
+      close c_aet;
+
+      
+      if l_found_switch
+      then
+         
+         if acl_application_control.get_status_value( i_aet_id_cust => r_aet_switch.id_cust ).id_cust = l_rt_asm.id_cust
+         then
+            o_running := true;
+
+            
+            open  c_aet( b_aet_type => acl_constant.g_con_aet_type_application );
+            fetch c_aet into r_aet_atn;
+            l_found_atn := c_aet%found;
+            close c_aet;
+
+            if l_found_atn
+            then
+               
+               acl_application_control.handle_request( i_aet_id_cust => r_aet_atn.id_cust
+                                                     , i_ace_id_cust => l_rt_ace.id_cust
+                                                     , o_success     => l_success
+                                                     );
+
+               
+               if not l_success
+               then
+                  
+                  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                                        , i_calling_procedure => l_con_proc_name
+                                        , i_severity          => viu_info.c_severity_warning
+                                        , i_additional_data   => 'Error during stopping of APPLICATION: ' || r_aet_atn.id_cust ||
+                                                                 '. Please check all processes.'
+                                        );
+
+                  o_success := false;
+               end if;
+            end if;
+         else
+            o_running := false;
+
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+   exception
+      when others
+      then
+         if c_aet%isopen
+         then
+            close c_aet;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end stop_application;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure start_application( o_success out boolean )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.start_application';
+      
+      
+      cursor c_aet
+      is
+         select aet.id_cust
+         from   acl_application_elements aet
+         where  aet_type = acl_constant.g_con_aet_type_application;
+
+      r_aet                      c_aet%rowtype;
+      l_success                  boolean;
+      l_dummy                    boolean;
+      l_rt_ace                   acl_aet_control_request_types%rowtype;
+      l_found                    boolean;
+      
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+      
+      
+      o_success := true;
+      
+      
+      l_dummy := acl_ace_tapi_pck.ace_select_row( i_ace_id => acl_constant.g_con_ace_name_start
+                                                , o_rt_ace => l_rt_ace
+                                                );
+
+      open  c_aet;
+      fetch c_aet into r_aet;
+      l_found := c_aet%found;
+      close c_aet;
+
+      
+      if l_found
+      then
+         
+         begin
+            acl_application_control.handle_request( i_aet_id_cust => r_aet.id_cust
+                                                  , i_ace_id_cust => l_rt_ace.id_cust
+                                                  , o_success     => l_success
+                                                  );
+         exception
+            when others
+            then
+               
+               l_success := false;
+
+               
+               viu_info.handle_info( i_calling_procedure => l_con_proc_name );
+         end;
+            
+         
+         if not l_success
+         then
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_additional_data   => 'Error during starting of APPLICATION: ' || r_aet.id_cust ||
+                                                           '. Please check all processes.'
+                                  );
+            
+            o_success := false;
+
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end start_application;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function hdl_resetdynamicdatarequest( i_message xmltype )
+   return xmltype
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.hdl_resetdynamicdatarequest';
+      
+      l_result_message           xmltype;
+      l_scope                    varchar2(100);
+      l_rt_cst                   cmn_cleanup_sets%rowtype;
+      l_found                    boolean;
+      l_lock_released            boolean;
+      l_success                  boolean;
+      l_running                  boolean;
+      l_message_result           varchar2(100) := cmn_constant.g_con_reset_result_success;
+      l_default_result_message   xmltype;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      l_default_result_message := gen_resetdynamicdataresponse( i_result => cmn_constant.g_con_reset_result_failed );
+
+      
+      l_scope := cmn_xml_util.extract_value( i_xml   => i_message
+                                           , i_xpath => cmn_constant.g_con_xpath_ddr_scope
+                                           );
+
+      
+      l_found := cmn_cst_tapi_pck.cst_select_row_uk_1( i_cst_name => upper(l_scope)
+                                                     , o_rt_cst   => l_rt_cst
+                                                     );
+
+      if not l_found
+      then
+         
+         l_message_result := cmn_constant.g_con_reset_result_success;
+
+         
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_notification
+                               , i_additional_data   => 'No cleanup set exists for scope ' || nvl(l_scope, 'NULL')
+                               );
+
+      elsif l_rt_cst.ind_check_enabled = cmn_constant.g_con_yesno_yes
+      and   nvl( cmn_common.get_parameter_value( i_prr_name  => cmn_constant.g_con_reset_enabled )
+               , cmn_constant.g_con_yesno_no
+               ) != cmn_constant.g_con_yesno_yes
+      then
+         
+         l_message_result := cmn_constant.g_con_reset_result_disabled;
+
+         
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_warning
+                               , i_additional_data   => 'Reset functionality is not enabled'
+                               );
+
+      elsif l_rt_cst.ind_serialize = cmn_constant.g_con_yesno_yes
+      and   not cmn_cleanup.set_cleanup_lock( i_set => true )
+      then
+         
+         l_message_result := cmn_constant.g_con_reset_result_failed;
+
+         
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_warning
+                               , i_additional_data   => 'Another cleanup action is in progress'
+                               );
+
+      else
+         
+         if l_rt_cst.ind_stop_start_aet = cmn_constant.g_con_yesno_yes
+         then
+            cmn_cleanup.stop_application( o_running => l_running
+                                        , o_success => l_success
+                                        );
+            
+            if not l_success
+            then
+               l_message_result := cmn_constant.g_con_reset_result_failed;
+            end if;
+         end if;
+
+         
+         if l_rt_cst.ind_stop_start_aet = cmn_constant.g_con_yesno_no
+         or l_success
+         then
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_notification
+                                  , i_additional_data   => 'Starting cleanup. Scope: ' || l_scope
+                                  );
+
+            
+            cmn_cleanup.cleanup( i_cst_name => l_scope );
+         end if;
+
+         
+         if  l_rt_cst.ind_stop_start_aet = cmn_constant.g_con_yesno_yes
+         and l_running
+         then
+            cmn_cleanup.start_application( o_success => l_success );
+
+            if not l_success
+            then
+               l_message_result := cmn_constant.g_con_reset_result_failed;
+
+               
+               viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.c_severity_warning
+                                     , i_additional_data   => 'Not all stopped processes were started. Please refer to other errors.'
+                                     );
+            end if;
+         end if;
+         
+         
+         l_lock_released := cmn_cleanup.set_cleanup_lock( i_set => false );
+         
+         if not l_lock_released
+         then
+            l_message_result := cmn_constant.g_con_reset_result_failed;
+
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetfailed
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_additional_data   => 'The reset lock was not successfully released'
+                                  );
+         end if;
+      end if;
+
+      l_result_message := gen_resetdynamicdataresponse( i_result => l_message_result );
+
+      
+      viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_notification
+                            , i_additional_data   => 'Reset finished with result ' || l_message_result ||
+                                                     '. When not successful, then please refer to the error log.'
+                            );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_result_message;
+
+   exception
+      when others
+      then
+         
+         l_lock_released := cmn_cleanup.set_cleanup_lock( i_set => false );
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.handle_info( i_calling_procedure => l_con_proc_name );
+        
+         return l_default_result_message;
+
+   end hdl_resetdynamicdatarequest;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_shadow_tables( i_cst_name in cmn_cleanup_sets.name%type )
+   is
+      l_con_proc_name   constant st_proc_name := g_con_package || '.create_shadow_tables';
+
+      
+      cursor c_shadow_tables( b_cst_name in cmn_cleanup_sets.name%type )
+      is
+         select distinct cte.table_name
+         ,      cse.shadow_table_name
+         ,      ute.tablespace_name
+         from   user_tables            ute
+         ,      cmn_cleanup_tables     cte
+         ,      cmn_cleanup_set_tables cse
+         ,      cmn_cleanup_sets       cst
+         where  cse.cte_id            =  cte.id
+         and    cse.cst_id            =  cst.id
+         and    cse.shadow_table_name is not null
+         and    upper(cte.table_name) =  ute.table_name
+         and    ( b_cst_name is null
+                  or
+                  cst.name   =  b_cst_name
+                );
+
+      type t_shadow_tables is table of c_shadow_tables%rowtype;
+
+      l_ddl                      clob;
+      l_shadow_tables            t_shadow_tables;
+
+   begin
+      viu_module.enter_module( i_module  => l_con_proc_name );
+
+      
+      open  c_shadow_tables( b_cst_name => i_cst_name );
+      fetch c_shadow_tables bulk collect into l_shadow_tables;
+      close c_shadow_tables;
+
+      
+      for i in 1 .. l_shadow_tables.count
+      loop
+         if l_shadow_tables(i).shadow_table_name is null
+         then
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnpartitioninginfo
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_additional_data   => 'No shadow table name defined for table name ' || l_shadow_tables(i).table_name
+                                  );
+
+         else
+            if check_table( i_table_name => l_shadow_tables(i).shadow_table_name
+                          , i_warn       => false
+                          )
+            then
+               
+               l_ddl := 'DROP TABLE ' || l_shadow_tables(i).shadow_table_name || ' PURGE';
+
+               execute_ddl( b_command => l_ddl );
+
+            end if;
+
+            
+            l_ddl := 'CREATE TABLE '               || l_shadow_tables(i).shadow_table_name ||
+                     ' TABLESPACE '                || l_shadow_tables(i).tablespace_name   ||
+                     ' AS SELECT * FROM ' || l_shadow_tables(i).table_name;
+
+            execute_ddl( b_command => l_ddl );
+
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnpartitioninginfo
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_notification
+                                  , i_additional_data   => 'Created shadow table ' || l_shadow_tables(i).shadow_table_name ||
+                                                           ' for table '           || l_shadow_tables(i).table_name
+                                  );
+         end if;
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+   exception
+      when others
+      then
+         if c_shadow_tables%isopen
+         then
+            close c_shadow_tables;
+         end if;
+
+         rollback;
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end create_shadow_tables;
+
+end cmn_cleanup;
+/

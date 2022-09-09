@@ -1,0 +1,900 @@
+create or replace PACKAGE LM_BAGS_IN_SEGMENT IS
+
+TYPE G_RT_BAGSINSEGMENTGROUP IS RECORD
+ (LNK_ID_CUST LM_LINKS.ID_CUST%TYPE
+ ,HAA_ID_CUST_DESTINATION LM_HANDLING_AREAS.ID_CUST%TYPE
+ ,EXECUTION_TIME LM_HAA_ACCESS_ATTRIBUTES.EVENT_TIME%TYPE
+ ,BAGSAMOUNT LM_HAA_ACCESS_ATTRIBUTES.BAGS_AMOUNT_ARRIVING%TYPE
+ ,MIN_TRAVEL_TIME LM_HAA_ACCESS_ATTRIBUTES.MINIMUM_TRAVEL_TIME%TYPE
+ ,MAX_TRAVEL_TIME LM_HAA_ACCESS_ATTRIBUTES.MAXIMUM_TRAVEL_TIME%TYPE
+);
+
+TYPE G_IT_BAGSINSEGMENTGROUP IS TABLE OF Lm_Bags_In_Segment.G_RT_BAGSINSEGMENTGROUP INDEX BY BINARY_INTEGER;
+
+G_CON_PACKAGE CONSTANT LM_CONSTANT.ST_PROC_NAME := 'LM_BAGS_IN_SEGMENT';
+
+/* BIT_001: Handle a bags in segment message */
+PROCEDURE HANDLE_BAGS_IN_SEGMENT;
+/* BIT_002: get message attributes */
+PROCEDURE GET_MESSAGE_ATTRIBUTES
+ (I_IT_BIT IN Lm_Interface.G_IT_IMA
+ ,O_EVENT_TIME OUT LM_HAA_ACCESS_ATTRIBUTES.EVENT_TIME%TYPE
+ ,O_IT_BAGSINSEGMENTGROUP OUT Lm_Bags_In_Segment.G_IT_BAGSINSEGMENTGROUP
+ ,O_IMS_ID OUT LM_IFC_MESSAGES.ID%TYPE
+ );
+/* BIT_003: Create and send bags in segment messages */
+PROCEDURE SEND_BAGS_IN_SEGMENT;
+END LM_BAGS_IN_SEGMENT;
+/
+
+
+
+
+package body lm_bags_in_segment is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function construct_bagsinsegmentgroup(i_execution_time       in lm_haa_access_attributes.event_time%type
+                                     ,i_bagsamount           in lm_haa_access_attributes.bags_amount_arriving%type
+                                     ,i_brp_id               in lm_bagsamount_report_groups.id%type
+                                     ,i_has_id               in lm_handling_area_accesses.id%type
+                                     ,i_lnk_id_cust          in lm_links.id_cust%type
+                                     ,i_dest_haa_ind_current in lm_handling_areas.ind_current%type
+                                     ,i_dest_haa_id_cust     in lm_handling_areas.id_cust%type
+                                     ,i_minimum_travel_time  in lm_brp_compositions.minimum_travel_time%type
+                                     ,i_maximum_travel_time  in lm_brp_compositions.maximum_travel_time%type
+                                     ,i_lst_sct              in xmltype
+                                     ,i_nt_pon_id            in nt_pon_id
+                                      ) return xmltype
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.CONSTRUCT_BAGSINSEGMENTGROUP';
+   l_element xmltype;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   select xmlelement
+            ( "BagsInSegmentGroup"
+            , xmlelement
+              ( "GroupContent"
+              , nvl2( i_has_id
+                    , xmlelement( "LinkID", i_lnk_id_cust)
+                    , i_lst_sct
+                    )
+              )
+            , xmlelement
+              ( "GroupData"
+              , xmlconcat
+                ( xmlelement( "ExecutionTime", lm_common.timestamp_to_varchar(i_execution_time))
+                  
+                  
+                , case
+                  when
+                     i_has_id is not null
+                     and
+                     (i_brp_id is not null
+                      or
+                      i_dest_haa_ind_current = lm_constant.g_con_yesno_yes
+                     )
+                  then
+                     
+                     xmlelement( "DestinationHandlingArea", i_dest_haa_id_cust)
+                  else
+                     
+                     
+                     
+                     (select xmlagg
+                             ( xmlelement( "Destination", pon.id_cust)
+                               order by 1
+                             )
+                      from   table(i_nt_pon_id) p1
+                      ,      lm_physical_destinations pon
+                      where  pon.id = p1.column_value
+                     )
+                  end
+                , xmlelement( "BagsAmount"   , i_bagsamount)
+                  
+                ,xmlconcat
+                     ( nvl2( i_minimum_travel_time
+                           , xmlelement( "MinimumTravelTime", i_minimum_travel_time)
+                           , null
+                           )
+                     , nvl2( i_maximum_travel_time
+                           , xmlelement( "MaximumTravelTime", i_maximum_travel_time)
+                           , null
+                           )
+                     )
+                )
+              )
+            )
+   into   l_element
+   from   dual;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+   return l_element;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end construct_bagsinsegmentgroup;
+                                      
+
+procedure handle_bags_in_segment
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name         constant lm_constant.st_proc_name := g_con_package || '.HANDLE_BAGS_IN_SEGMENT';
+
+   l_event_time            lm_haa_access_attributes.event_time%type;
+   l_it_bagsinsegmentgroup lm_bags_in_segment.g_it_bagsinsegmentgroup;
+   l_ims_id                lm_ifc_messages.id%type;
+   l_found                 boolean;
+   l_rt_lnk                lm_links%rowtype;
+   l_rt_haa                lm_handling_areas%rowtype;
+   l_rt_has                lm_handling_area_accesses%rowtype;
+   l_rt_hae                lm_haa_access_attributes%rowtype;
+   l_current_time          timestamp := lm_common.default_timestamp;
+   l_allowed_interval      interval day to second;
+   l_time_difference       interval day to second;
+   l_rows                  number;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   l_allowed_interval := lm_common.varchar_to_interval(i_int => lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_max_msg_time_diff));
+
+   
+   lm_bags_in_segment.get_message_attributes( i_it_bit                 => lm_interface.g_it_message_content
+                                            , o_event_time             => l_event_time
+                                            , o_it_bagsinsegmentgroup  => l_it_bagsinsegmentgroup
+                                            , o_ims_id                 => l_ims_id
+                                            );
+
+   
+   
+   for idx_bit in l_it_bagsinsegmentgroup.first .. l_it_bagsinsegmentgroup.last
+   loop
+      
+      l_found := lm_lnk_tapi_pck.lnk_select_row_uk2( i_lnk_id_cust => l_it_bagsinsegmentgroup(idx_bit).lnk_id_cust
+                                                   , o_rt_lnk      => l_rt_lnk
+                                                   );
+      
+      l_found := lm_haa_tapi_pck.haa_select_row_uk1( i_haa_id_cust => l_it_bagsinsegmentgroup(idx_bit).haa_id_cust_destination
+                                                   , o_rt_haa      => l_rt_haa
+                                                   );
+
+      
+      l_found := lm_has_tapi_pck.has_select_row_uk1( i_has_lnk_id => l_rt_lnk.id
+                                                   , i_has_haa_id => l_rt_haa.id
+                                                   , o_rt_has     => l_rt_has
+                                                   );
+      if not l_found
+      then
+         viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_nohandlingareaaccess
+                               , i_calling_procedure  => l_con_proc_name
+                               , i_severity           => viu_info.c_severity_warning
+                               , i_info_arguments     => l_it_bagsinsegmentgroup(idx_bit).lnk_id_cust || '##'
+                                                         || l_it_bagsinsegmentgroup(idx_bit).haa_id_cust_destination
+                               , i_additional_data    => 'Message id: ' || l_ims_id
+                               );
+      else
+         
+         
+         
+         
+         l_time_difference := l_it_bagsinsegmentgroup(idx_bit).execution_time - l_current_time;
+         if l_time_difference > l_allowed_interval
+         then
+            
+            viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_futurebagsinsegment
+                                  , i_calling_procedure  => l_con_proc_name
+                                  , i_severity           => viu_info.c_severity_warning
+                                  , i_info_arguments     => l_it_bagsinsegmentgroup(idx_bit).lnk_id_cust || '##'
+                                                            || l_it_bagsinsegmentgroup(idx_bit).haa_id_cust_destination || '##'
+                                                            || l_time_difference || '##'
+                                                            || l_allowed_interval
+                                  , i_additional_data    => 'Message id: ' || l_ims_id
+                                  );
+         else
+            
+            
+            l_found := lm_hae_tapi_pck.hae_select_row_uk1
+                            (i_hae_has_id              => l_rt_has.id
+                            ,i_hae_minimum_travel_time => l_it_bagsinsegmentgroup(idx_bit).min_travel_time
+                            ,o_rt_hae                  => l_rt_hae);
+            if not l_found
+            then
+               
+               l_rt_hae.id                   := null;
+               l_rt_hae.has_id               := l_rt_has.id;
+               l_rt_hae.event_time           := l_it_bagsinsegmentgroup(idx_bit).execution_time;
+               l_rt_hae.bags_amount_arriving := l_it_bagsinsegmentgroup(idx_bit).bagsamount;
+               l_rt_hae.minimum_travel_time  := l_it_bagsinsegmentgroup(idx_bit).min_travel_time;
+               l_rt_hae.maximum_travel_time  := l_it_bagsinsegmentgroup(idx_bit).max_travel_time;
+
+               lm_hae_tapi_pck.hae_insert_row( io_rt_hae => l_rt_hae);
+            else
+               
+                  if l_it_bagsinsegmentgroup(idx_bit).execution_time < l_rt_hae.event_time
+                  then
+                    
+                    
+                    viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_obsoletebagsinsegment
+                                           , i_calling_procedure  => l_con_proc_name
+                                           , i_severity           => viu_info.c_severity_warning
+                                           , i_info_arguments     => l_it_bagsinsegmentgroup(idx_bit).lnk_id_cust || '##'
+                                                                     || l_it_bagsinsegmentgroup(idx_bit).haa_id_cust_destination || '##'
+                                                                     || lm_common.timestamp_to_varchar( i_timestamp => l_it_bagsinsegmentgroup(idx_bit).execution_time)
+                                           , i_additional_data    => 'Message id: ' || l_ims_id
+                                           );
+                  else
+                     
+                     l_rt_hae.event_time           := l_it_bagsinsegmentgroup(idx_bit).execution_time;
+                     l_rt_hae.bags_amount_arriving := l_it_bagsinsegmentgroup(idx_bit).bagsamount;
+                     l_rt_hae.maximum_travel_time  := l_it_bagsinsegmentgroup(idx_bit).max_travel_time;
+
+                     l_rows := lm_hae_tapi_pck.hae_update_row( i_hae_id  => l_rt_hae.id
+                                                             , io_rt_hae => l_rt_hae
+                                                             );
+                  end if; 
+            end if; 
+         end if; 
+      end if; 
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end handle_bags_in_segment;
+
+procedure get_message_attributes
+ (i_it_bit in lm_interface.g_it_ima
+ ,o_event_time out lm_haa_access_attributes.event_time%type
+ ,o_it_bagsinsegmentgroup out lm_bags_in_segment.g_it_bagsinsegmentgroup
+ ,o_ims_id out lm_ifc_messages.id%type
+ )
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.GET_MESSAGE_ATTRIBUTES';
+
+l_bit_index binary_integer := 0;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   for idx_ma in i_it_bit.first .. i_it_bit.last
+   loop
+      case i_it_bit( idx_ma ).attribute
+         when 'EventTime'
+         then
+            o_event_time := lm_common.varchar_to_timestamp( i_timestamp => i_it_bit( idx_ma ).value );
+         when 'BagsInSegmentGroup/GroupContent/LinkID'
+         then
+            l_bit_index := l_bit_index + 1;
+            o_it_bagsinsegmentgroup(l_bit_index).lnk_id_cust := i_it_bit( idx_ma ).value;
+         when 'BagsInSegmentGroup/GroupData/ExecutionTime'
+         then
+            o_it_bagsinsegmentgroup(l_bit_index).execution_time := lm_common.varchar_to_timestamp( i_timestamp => i_it_bit( idx_ma ).value );
+         when 'BagsInSegmentGroup/GroupData/DestinationHandlingArea'
+         then
+            o_it_bagsinsegmentgroup(l_bit_index).haa_id_cust_destination := i_it_bit( idx_ma ).value;
+         when 'BagsInSegmentGroup/GroupData/BagsAmount'
+         then
+            o_it_bagsinsegmentgroup(l_bit_index).bagsamount := i_it_bit( idx_ma ).value;
+         when 'BagsInSegmentGroup/GroupData/MinimumTravelTime'
+         then
+            o_it_bagsinsegmentgroup(l_bit_index).min_travel_time := i_it_bit( idx_ma ).value;
+         when 'BagsInSegmentGroup/GroupData/MaximumTravelTime'
+         then
+            o_it_bagsinsegmentgroup(l_bit_index).max_travel_time := i_it_bit( idx_ma ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_bit( idx_ma ).value;
+         else
+            if i_it_bit( idx_ma ).attribute in ( 'BagsInSegmentGroup/GroupContent/Segment/AreaID'
+                                               , 'BagsInSegmentGroup/GroupContent/Segment/SegmentID'
+                                               , 'BagsInSegmentGroup/GroupData/Destination'
+                                               )
+            then
+               
+               viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_messageattributeerror
+                                  , i_calling_procedure  => l_con_proc_name
+                                  , i_severity           => viu_info.c_severity_error
+                                  , i_additional_data    => 'For incoming BagsInSegment; Attribute  '''
+                                                            || i_it_bit( idx_ma ).attribute
+                                                            || ''' (Value: '''
+                                                            || i_it_bit( idx_ma ).value
+                                                            || ''') is not allowed.'
+                                  );
+            elsif i_it_bit( idx_ma ).attribute not in ( 'Header/MessageTime'
+                                                      , 'Header/Source/ProcessID'
+                                                      , 'Header/Source/InstanceID'
+                                                      , 'Header/Target/ProcessID'
+                                                      , 'Header/Target/InstanceID'
+                                                      , 'Header/OperatorID')
+            then
+               
+               
+               viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure  => l_con_proc_name
+                                     , i_severity           => viu_info.c_severity_warning
+                                     , i_additional_data    => 'Message: BagsInSegment; Attribute: '''
+                                                               || i_it_bit( idx_ma ).attribute
+                                                               || '''; Value: '''
+                                                               || i_it_bit( idx_ma ).value
+                                                               || ''''
+                                     );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes;
+
+procedure send_bags_in_segment
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.SEND_BAGS_IN_SEGMENT';
+
+   
+
+   cursor c_brn_group(i_pty_id in lm_brp_compositions.pty_id%type)
+   is
+   select ilv.nt_brn_id
+         ,ilv.pon_id
+         ,ilv.haa_id
+         ,ilv.has_id
+   from (select cast(collect(brn.id) as nt_id_coll ) nt_brn_id
+         ,      brn.pon_id
+         ,      brn.haa_id
+         ,      brn.has_id
+         from   lm_brp_compositions brn
+         where  brn.pty_id = i_pty_id
+         and    brn.type_of_count = lm_constant.g_con_brp_type_bags_in_segment
+         and    brn.brp_id is not null
+         group by brn.pon_id
+                 ,brn.haa_id
+                 ,brn.has_id
+        ) ilv;
+          
+
+   
+   cursor c_hae_uk1
+   ( i_has_id              in lm_haa_access_attributes.has_id%type
+    ,i_minimum_travel_time in lm_haa_access_attributes.minimum_travel_time%type
+   )
+   is
+   select hae.id
+   from   lm_haa_access_attributes hae
+   where  hae.has_id = i_has_id
+   and    (     hae.minimum_travel_time           = i_minimum_travel_time
+            or (hae.minimum_travel_time is null and i_minimum_travel_time is null));
+
+   
+   cursor c_brn_parties
+   is
+   
+   select pty.id
+         ,pty.id_cust
+         ,pty.instance_id
+   from   lm_parties pty
+   where  pty.id in
+         (select brn.pty_id
+          from   lm_brp_compositions brn
+          where  brn.pty_id = pty.id
+         )
+   order by pty.id;
+
+   cursor c_brp_composition
+   (i_brp_id in lm_brp_compositions.id%type
+   ,i_pon_id in lm_physical_destinations.id%type
+   ,i_haa_id in lm_handling_areas.id%type
+   ,i_has_id in lm_handling_area_accesses.id%type
+   ,i_pty_id in lm_parties.id%type
+   )
+   is
+   select brn.id
+   ,      brn.brp_id
+   ,      brn.pon_id
+   ,      brn.haa_id
+   ,      brn.has_id
+   ,      brn_hae.hae_minimum_travel_time  hae_minimum_travel_time
+   ,      brn.minimum_travel_time          brn_minimum_travel_time
+   ,      brn.maximum_travel_time          brn_maximum_travel_time
+   ,      lnk.id_cust                      lnk_id_cust
+   ,      haa_dest.id                      dest_haa_id
+   ,      haa_dest.id_cust                 dest_haa_id_cust
+   ,      nvl( haa_dest.ind_current
+             , lm_constant.g_con_yesno_no) dest_haa_ind_current
+   ,      han.stn_id                       dest_haa_stn_id
+   from   lm_brp_compositions       brn
+   ,      lm_handling_area_accesses has
+   ,      lm_handling_area_stations han
+   ,      lm_links                  lnk
+   ,      lm_handling_areas         haa_dest
+   ,      ( select  hae.minimum_travel_time  hae_minimum_travel_time
+            ,       brn.id                   brn_id
+            from lm_haa_access_attributes  hae
+            ,    lm_brp_compositions       brn
+            where brn.brp_id is null
+            and   brn.has_id = hae.has_id) brn_hae
+   where  brn.pty_id = i_pty_id
+   and    brn.has_id = has.id (+)
+   and    has.lnk_id = lnk.id (+)
+   and    has.haa_id = haa_dest.id (+)
+   and    brn.id     = brn_hae.brn_id (+)
+   and    has.id     = han.has_id (+)
+   and    brn.type_of_count = lm_constant.g_con_brp_type_bags_in_segment
+   and    (        brn.brp_id is null and i_brp_id is null
+           or (    brn.brp_id is not null
+               and  brn.brp_id = i_brp_id
+               and (brn.pon_id = i_pon_id or (brn.pon_id is null and i_pon_id is null))
+               and (brn.haa_id = i_haa_id or (brn.haa_id is null and i_haa_id is null))
+               and (brn.has_id = i_has_id or (brn.has_id is null and i_has_id is null))
+              )
+          )
+   order by brn.id;
+
+   
+   cursor c_lst_sct
+    (i_brp_id in lm_bagsamount_report_groups.id%type
+    )
+    is
+   
+   select xmlagg
+          ( xmlelement
+            ( "Segment"
+            , xmlelement( "AreaID", sct.id_cust)
+            , xmlelement( "SegmentID", lst.id_cust)
+            )
+            order by lst.id_cust, sct.id_cust
+          )
+   from   lm_segment_group_members sgm
+   ,      lm_logical_segments lst
+   ,      lm_technical_segments tst
+   ,      lm_system_components sct
+   where  sgm.lst_id = lst.id
+   and    tst.lst_id = lst.id
+   and    tst.sct_id = sct.id
+   and    sgm.brp_id = i_brp_id;
+
+   
+
+
+
+   cursor c_pons_by_haa
+    (i_haa_id lm_handling_areas.id%type
+    ,i_stn_id lm_stations.id%type
+    )
+    is
+   
+   
+   select pon.id
+   from   lm_handling_area_stations han
+   ,      lm_station_reachabilities sry
+   ,      lm_physical_destinations  pon
+   where  han.haa_id = i_haa_id
+   and    sry.stn_id = han.stn_id
+   and    sry.pon_id = pon.id
+   and    sry.mom_id = lm_constant.g_con_mom_mom_mode_normal
+   and    (  han.stn_id = i_stn_id
+          or i_stn_id is null
+          )
+   order by pon.id;
+   
+   l_data_found          boolean;
+   l_send_message        boolean;
+   l_idx                 binary_integer;
+   l_message             xmltype;
+   l_lst_sct             xmltype;
+   l_ims_id              lm_ifc_messages.id%type;
+   l_msg_part            nt_xml;
+   l_nt_pon_id           nt_pon_id;
+   l_nt_counted_packages nt_counted_packages := nt_counted_packages();
+   l_rt_hae              lm_haa_access_attributes%rowtype;
+   r_hae_uk1             c_hae_uk1%rowtype;
+   l_rt_brn              c_brp_composition%rowtype;
+   l_execution_time      lm_haa_access_attributes.event_time%type;
+   l_bagsamount          lm_haa_access_attributes.bags_amount_arriving%type;
+   l_nt_brp_id           nt_id_coll := nt_id_coll();
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   for l_rt_pty in c_brn_parties
+   loop
+      l_message  := null;
+      l_msg_part := nt_xml();
+      l_idx := 0;
+      l_send_message := false;
+     
+      
+      
+      for r_brn_group in c_brn_group(i_pty_id => l_rt_pty.id)
+      loop
+         l_execution_time := lm_common.default_timestamp;
+
+         
+         
+         lm_topology_administration.count_bags_in_segment_group( i_nt_brn_id           => r_brn_group.nt_brn_id
+                                                                ,o_nt_brp_id           => l_nt_brp_id
+                                                                ,o_nt_counted_packages => l_nt_counted_packages
+                                                                ,o_nt_pon_id           => l_nt_pon_id);
+
+         
+         
+         
+         
+         for idx in l_nt_brp_id.first .. l_nt_brp_id.last
+         loop
+            l_lst_sct    := null;
+            l_bagsamount := null;
+            
+            
+            open c_brp_composition(i_brp_id => l_nt_brp_id(idx)
+                                  ,i_pon_id => r_brn_group.pon_id
+                                  ,i_haa_id => r_brn_group.haa_id
+                                  ,i_has_id => r_brn_group.has_id
+                                  ,i_pty_id => l_rt_pty.id);
+            fetch c_brp_composition
+            into l_rt_brn;
+            close c_brp_composition;
+            
+            
+            
+            if l_rt_brn.has_id is null
+            then
+               
+               open c_lst_sct( i_brp_id  => l_rt_brn.brp_id );
+               
+               fetch c_lst_sct
+               into  l_lst_sct;
+               close c_lst_sct; 
+            end if;
+
+            l_bagsamount := l_nt_counted_packages(idx);
+
+            
+            l_send_message := true;
+            l_msg_part.extend;
+            l_idx := l_idx + 1;
+            l_msg_part(l_idx) :=  lm_bags_in_segment.construct_bagsinsegmentgroup
+                                     (i_execution_time       => l_execution_time
+                                     ,i_bagsamount           => l_bagsamount
+                                     ,i_brp_id               => l_rt_brn.brp_id
+                                     ,i_has_id               => l_rt_brn.has_id
+                                     ,i_lnk_id_cust          => l_rt_brn.lnk_id_cust
+                                     ,i_dest_haa_ind_current => l_rt_brn.dest_haa_ind_current
+                                     ,i_dest_haa_id_cust     => l_rt_brn.dest_haa_id_cust
+                                     ,i_minimum_travel_time  => l_rt_brn.brn_minimum_travel_time
+                                     ,i_maximum_travel_time  => l_rt_brn.brn_maximum_travel_time
+                                     ,i_lst_sct              => l_lst_sct
+                                     ,i_nt_pon_id            => l_nt_pon_id
+                                     );
+
+         end loop; 
+      end loop;    
+
+      
+      
+      for l_rt_brn in c_brp_composition(i_brp_id => null
+                                       ,i_pon_id => null
+                                       ,i_haa_id => null
+                                       ,i_has_id => null
+                                       ,i_pty_id => l_rt_pty.id)
+      loop
+         l_data_found := false;
+         
+         
+         open c_hae_uk1 (i_has_id              => l_rt_brn.has_id
+                        ,i_minimum_travel_time => l_rt_brn.hae_minimum_travel_time);
+
+         fetch c_hae_uk1
+         into  r_hae_uk1;
+         if c_hae_uk1%found
+         then
+            
+            l_data_found := lm_hae_tapi_pck.hae_select_row( i_hae_id => r_hae_uk1.id
+                                                          , o_rt_hae => l_rt_hae);
+         else
+            viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_nobagsinsegmentdatafound
+                                  , i_calling_procedure  => l_con_proc_name
+                                  , i_severity           => viu_info.c_severity_warning
+                                  , i_info_arguments     => l_rt_brn.lnk_id_cust || '##'
+                                                         || l_rt_brn.dest_haa_id_cust
+                                  , i_additional_data    => 'Report group composition id='||l_rt_brn.id
+                                                         || ' subgroup: has '||l_rt_brn.has_id
+                                                         || ' min travel time '||l_rt_brn.hae_minimum_travel_time
+                                  );
+         end if;
+         close c_hae_uk1;
+
+         
+         
+         
+         open c_pons_by_haa( i_haa_id => nvl(l_rt_brn.haa_id, l_rt_brn.dest_haa_id)
+                           , i_stn_id => l_rt_brn.dest_haa_stn_id
+                           );
+         fetch c_pons_by_haa bulk collect
+         into  l_nt_pon_id;
+         close c_pons_by_haa;
+
+         
+         if l_data_found
+         then
+            l_send_message := true;
+            l_msg_part.extend;
+            l_idx := l_idx + 1;
+            l_msg_part(l_idx) :=  lm_bags_in_segment.construct_bagsinsegmentgroup
+                                     (i_execution_time       => l_rt_hae.event_time
+                                     ,i_bagsamount           => l_rt_hae.bags_amount_arriving
+                                     ,i_brp_id               => l_rt_brn.brp_id
+                                     ,i_has_id               => l_rt_brn.has_id
+                                     ,i_lnk_id_cust          => l_rt_brn.lnk_id_cust
+                                     ,i_dest_haa_ind_current => l_rt_brn.dest_haa_ind_current
+                                     ,i_dest_haa_id_cust     => l_rt_brn.dest_haa_id_cust
+                                     ,i_minimum_travel_time  => l_rt_hae.minimum_travel_time
+                                     ,i_maximum_travel_time  => l_rt_hae.maximum_travel_time
+                                     ,i_lst_sct              => l_lst_sct
+                                     ,i_nt_pon_id            => l_nt_pon_id
+                                     );
+
+         end if;
+      end loop;
+
+      
+      if l_send_message
+      then
+
+         
+         select xmlagg(bitgrps.column_value)
+         into   l_message
+         from   table(l_msg_part) bitgrps;
+
+         
+         l_ims_id := lm_interface.prepare_and_send_message
+                    ( i_imd_name        => 'BagsInSegment'
+                    , i_message         => l_message
+                    , i_event_time      => lm_common.default_timestamp
+                    , i_pty_id_cust     => l_rt_pty.id_cust
+                    , i_pty_instance_id => l_rt_pty.instance_id
+                    , i_sct_id          => null
+                   );
+      end if;
+   end loop;
+   commit;  
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   
+
+
+
+
+
+
+
+   when lm_constant.exc_internal_error
+   then
+      if c_brp_composition%isopen
+      then
+         close c_brp_composition;
+      end if;
+      if c_pons_by_haa%isopen
+      then
+         close c_pons_by_haa;
+      end if;
+      if c_lst_sct%isopen
+      then
+         close c_lst_sct;
+      end if;
+      if c_hae_uk1%isopen
+      then
+         close c_hae_uk1;
+      end if;
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      
+      lm_common.abort_application_fatal;
+      
+
+   when others
+   then
+
+      rollback;
+
+      if c_brp_composition%isopen
+      then
+         close c_brp_composition;
+      end if;
+      if c_pons_by_haa%isopen
+      then
+         close c_pons_by_haa;
+      end if;
+      if c_lst_sct%isopen
+      then
+         close c_lst_sct;
+      end if;
+      if c_hae_uk1%isopen
+      then
+         close c_hae_uk1;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.handle_info;
+
+end send_bags_in_segment;
+
+
+
+end lm_bags_in_segment;
+/

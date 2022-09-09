@@ -1,0 +1,679 @@
+create or replace PACKAGE lm_cfg_sct
+IS
+g_con_package        CONSTANT VARCHAR2( 30 ) := 'LM_CFG_SCT';
+
+PROCEDURE load_area_data;
+PROCEDURE load_zone_data;
+PROCEDURE load_section_data;
+
+PROCEDURE link_sct_to_segments;
+
+END lm_cfg_sct;
+/
+
+
+
+
+package body lm_cfg_sct is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure check_area( i_area_id            in  lm_system_components.id%type
+                    , i_area_id_cust       in  number
+                    , i_zone_id_cust       in  number
+                    , i_section_id_cust    in  number
+                    , i_isc_identification in  lm_system_components.id_cust_full%type
+                    , o_rt_sct             out lm_system_components%rowtype
+                    )
+is
+   l_con_proc_name   constant lm_constant.st_proc_name
+                                 := g_con_package || '.check_area';
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   if i_area_id_cust = 0
+   then
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_configuration
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   => 'Create area, area = 0: '|| i_isc_identification
+         );
+   end if;
+   
+   
+   if i_zone_id_cust > 0 or i_section_id_cust > 0
+   then
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_configuration
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   => 'Create area, zone or section > 0: ' || i_isc_identification
+         );
+   end if;
+
+   
+   o_rt_sct.id       := i_area_id;
+   o_rt_sct.id_cust  := i_area_id_cust;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end check_area;
+
+
+
+
+
+
+
+
+procedure check_zone( i_area_id            in  lm_system_components.id%type
+                    , i_zone_id            in  lm_system_components.id%type
+                    , i_zone_id_cust       in  number
+                    , i_section_id_cust    in  number
+                    , i_isc_identification in  lm_system_components.id_cust_full%type
+                    , o_rt_sct             out lm_system_components%rowtype
+                    )
+is
+   l_con_proc_name   constant lm_constant.st_proc_name
+                                 := g_con_package || '.check_zone';
+
+   l_rt_sct lm_system_components%rowtype;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   if i_zone_id_cust = 0
+   then
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_configuration
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   => 'Create zone, zone = 0: '|| i_isc_identification
+         );
+   end if;
+   
+   
+   if i_section_id_cust > 0
+   then
+      viu_info.raise_info
+         ( i_ifo_nr                 => viu_constant.c_ifo_configuration
+         , i_calling_procedure      => l_con_proc_name
+         , i_severity               => viu_info.c_severity_error
+         , i_additional_data         => 'Create zone, section > 0: ' || i_isc_identification
+         );
+   end if;
+
+   
+   
+   if    not lm_sct_tapi_pck.sct_select_row( i_sct_id => i_area_id
+                                           , o_rt_sct => l_rt_sct
+                                           )
+         
+      or l_rt_sct.sct_type <> lm_constant.g_con_sct_type_ara
+   then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   =>    'Create zone: '             || i_isc_identification
+                                     || ', parent area not found: ' || i_area_id
+            );
+   end if;
+
+   
+   o_rt_sct.id               := i_zone_id;
+   o_rt_sct.id_cust          := i_zone_id_cust;
+   o_rt_sct.sct_id_zone_area := i_area_id;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end check_zone;
+
+
+
+
+
+
+
+
+procedure check_section( i_zone_id            in  lm_system_components.id%type
+                       , i_section_id         in  lm_system_components.id%type
+                       , i_section_id_cust    in  number
+                       , i_isc_identification in  lm_system_components.id_cust_full%type
+                       , o_rt_sct             out lm_system_components%rowtype
+                       )
+is
+   l_con_proc_name   constant lm_constant.st_proc_name
+                                 := g_con_package || '.check_section';
+
+   l_rt_sct lm_system_components%rowtype;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   if i_section_id_cust = 0
+   then
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_configuration
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   => 'Create section, section = 0: '|| i_isc_identification
+         );
+   end if;
+
+   
+   
+   if    not lm_sct_tapi_pck.sct_select_row( i_sct_id => i_zone_id
+                                           , o_rt_sct => l_rt_sct
+                                           )
+      or l_rt_sct.sct_type <> lm_constant.g_con_sct_type_zne
+   then
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_configuration
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   =>    'Create section: '          || i_isc_identification
+                                  || ', parent zone not found: ' || i_zone_id
+         );
+   end if;
+
+   
+   o_rt_sct.id                  := i_section_id;
+   o_rt_sct.id_cust             := i_section_id_cust;
+   o_rt_sct.sct_id_section_zone := i_zone_id;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end check_section;
+
+
+
+
+
+
+
+procedure parse_isc_identification
+   ( i_sct_type           in  lm_system_components.sct_type%type
+   , i_isc_identification in  lm_system_components.id_cust_full%type
+   , o_rt_sct             out lm_system_components%rowtype
+   )
+is
+   l_con_proc_name   constant lm_constant.st_proc_name
+                                 := g_con_package || '.parse_isc_identification';
+
+   l_area_id_cust    number;
+   l_zone_id_cust    number;
+   l_section_id_cust number;
+   l_area_id         lm_system_components.id%type;
+   l_zone_id         lm_system_components.id%type;
+   l_section_id      lm_system_components.id%type;
+   l_separator1      number (10);
+   l_separator2      number (10);
+   l_separator3      number (10);
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   if not regexp_like( i_isc_identification
+                     , lm_constant.g_con_cfg_isc_regexp
+                     )
+   then
+      viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_configuration
+                         , i_calling_procedure => l_con_proc_name
+                         , i_severity          => viu_info.c_severity_error
+                         , i_additional_data   => 'Not conform regular expression: ' || i_isc_identification
+                         );
+   end if;
+
+   
+   
+   
+   
+   l_separator1 := instr (i_isc_identification, lm_constant.g_con_cfg_isc_separator, 1, 1);
+   l_separator2 := instr (i_isc_identification, lm_constant.g_con_cfg_isc_separator, 1, 2);
+   l_separator3 := instr (i_isc_identification, lm_constant.g_con_cfg_isc_separator, 1, 3);
+
+   
+   l_area_id_cust := substr ( i_isc_identification, 1, l_separator1 - 1);
+   l_area_id      := l_area_id_cust * lm_constant.g_con_cfg_area_factor;
+
+   
+   l_zone_id_cust := substr ( i_isc_identification, l_separator1 + 1, l_separator2 - l_separator1 - 1);
+   l_zone_id      := l_area_id + (l_zone_id_cust * lm_constant.g_con_cfg_zone_factor);
+
+   
+   l_section_id_cust := substr ( i_isc_identification, l_separator2 + 1, l_separator3 - l_separator2 - 1);
+   l_section_id      := l_zone_id + l_section_id_cust;
+
+   
+   if i_sct_type = lm_constant.g_con_sct_type_ara
+   then
+      check_area( i_area_id            => l_area_id
+                , i_area_id_cust       => l_area_id_cust
+                , i_zone_id_cust       => l_zone_id_cust
+                , i_section_id_cust    => l_section_id_cust
+                , i_isc_identification => i_isc_identification
+                , o_rt_sct             => o_rt_sct
+                );
+
+   
+   elsif i_sct_type = lm_constant.g_con_sct_type_zne
+   then
+      check_zone ( i_area_id            => l_area_id
+                 , i_zone_id            => l_zone_id
+                 , i_zone_id_cust       => l_zone_id_cust
+                 , i_section_id_cust    => l_section_id_cust
+                 , i_isc_identification => i_isc_identification
+                 , o_rt_sct             => o_rt_sct
+                 );
+
+   else 
+      check_section( i_zone_id            => l_zone_id
+                   , i_section_id         => l_section_id
+                   , i_section_id_cust    => l_section_id_cust
+                   , i_isc_identification => i_isc_identification
+                  , o_rt_sct              => o_rt_sct
+                   );
+   end if;
+
+   
+   o_rt_sct.sct_type     := i_sct_type;
+   o_rt_sct.id_cust_full := i_isc_identification;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end parse_isc_identification;
+
+
+
+
+
+
+
+procedure load_area_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_area_data';
+
+   l_rt_sct     lm_system_components%rowtype;
+   l_start_time timestamp := lm_common.default_timestamp;
+   l_#sct       integer;
+
+   
+   cursor c_isc
+   is
+      select sct.id
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable( '/project_definition/iscs/isc[@integration_level="area"]'
+                       passing pd.data
+                       columns id        varchar2(30) path '@id' 
+                     ) sct
+   ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_isc in c_isc
+   loop
+
+      
+      parse_isc_identification( i_sct_type           => lm_constant.g_con_sct_type_ara
+                              , i_isc_identification => l_rec_isc.id
+                              , o_rt_sct             => l_rt_sct
+                              );
+
+      
+      lm_sct_tapi_pck.sct_insert_row( io_rt_sct => l_rt_sct );
+
+   end loop;
+
+   
+   select count(*)
+   into   l_#sct
+   from   lm_system_components sct
+   where  sct.sct_type = lm_constant.g_con_sct_type_ara
+   ;
+   lm_config.log_processing_time( i_message_name    => 'Areas'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#sct||' (area) lm_system_components'
+                                );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_area_data;
+
+
+
+
+
+
+
+procedure load_zone_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_zone_data';
+
+   l_rt_sct     lm_system_components%rowtype;
+   l_start_time timestamp := lm_common.default_timestamp;
+   l_#sct       integer;
+
+   
+   cursor c_isc
+   is
+      select sct.id
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable( '/project_definition/iscs/isc/isc[@integration_level="zone"]'
+                       passing pd.data
+                       columns id varchar2(30) path '@id' 
+                     ) sct
+   ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_isc in c_isc
+   loop
+
+      
+      parse_isc_identification( i_sct_type           => lm_constant.g_con_sct_type_zne
+                              , i_isc_identification => l_rec_isc.id
+                              , o_rt_sct             => l_rt_sct
+                              );
+
+      
+      lm_sct_tapi_pck.sct_insert_row( io_rt_sct => l_rt_sct );
+   end loop;
+
+   
+   select count(*)
+   into   l_#sct
+   from   lm_system_components sct
+   where  sct.sct_type = lm_constant.g_con_sct_type_zne
+   ;
+   lm_config.log_processing_time( i_message_name    => 'Zones'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#sct||' (zone) lm_system_components'
+                                );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_zone_data;
+
+
+
+
+
+
+
+procedure load_section_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_section_data';
+
+   l_rt_sct     lm_system_components%rowtype;
+   l_start_time timestamp := lm_common.default_timestamp;
+   l_#sct       integer;
+
+   
+   cursor c_isc
+   is
+      select sct.id
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable( '/project_definition/iscs/isc/isc/isc[@integration_level="object" or @integration_level="section"]'
+                       passing pd.data
+                       columns id varchar2(30) path '@id' 
+                     ) sct
+   ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_isc in c_isc
+   loop
+
+      
+      parse_isc_identification( i_sct_type           => lm_constant.g_con_sct_type_sen
+                              , i_isc_identification => l_rec_isc.id
+                              , o_rt_sct             => l_rt_sct
+                              );
+
+      
+      lm_sct_tapi_pck.sct_insert_row( io_rt_sct => l_rt_sct );
+
+   end loop;
+
+   
+   select count(*)
+   into   l_#sct
+   from   lm_system_components sct
+   where  sct.sct_type = lm_constant.g_con_sct_type_sen
+   ;
+   lm_config.log_processing_time( i_message_name    => 'Sections'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#sct||' (section) lm_system_components'
+                                );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_section_data;
+
+
+
+
+
+
+
+procedure link_sct_to_segment ( i_sct_id     in lm_system_components.id%type
+                              , i_tst_sct_id in lm_technical_segments.sct_id%type
+                              , i_tst_lst_id in lm_technical_segments.lst_id%type
+                              )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.link_sct_to_segment';
+
+   l_rt_sct             lm_system_components%rowtype;
+   l_rt_tst             lm_technical_segments%rowtype;
+   l_rows               number;
+   l_dummy              boolean;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   l_dummy := lm_sct_tapi_pck.sct_select_row( i_sct_id => i_sct_id
+                                            , o_rt_sct => l_rt_sct
+                                            );
+
+   
+   if lm_tst_tapi_pck.tst_select_row_uk2( i_tst_sct_id => i_tst_sct_id
+                                        , i_tst_lst_id => i_tst_lst_id
+                                        , o_rt_tst     => l_rt_tst
+                                        )
+   then
+
+      
+      l_rt_sct.tst_id := l_rt_tst.id;
+      l_rows := lm_sct_tapi_pck.sct_update_row( i_sct_id  => l_rt_sct.id
+                                              , io_rt_sct => l_rt_sct
+                                              );
+   end if;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end link_sct_to_segment;
+
+
+
+
+
+
+
+procedure link_sct_to_segments
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.link_sct_to_segments';
+
+   
+   
+   
+   cursor c_zone
+   is
+      select zne.id
+      ,      zne.sct_id_zone_area as area_id
+      ,      segment.status_segment_id
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable( '/project_definition/iscs/isc/isc'
+                       passing pd.data
+                       columns zone_xml xmltype      path '/isc'
+                       ,       zone_id  varchar2(30) path '@id' 
+                     ) zone
+      ,      xmltable( '/isc/segment_reference'
+                        passing zone.zone_xml
+                        columns status_segment_id number path '@status_segment_id'
+                     ) segment
+      ,      lm_system_components zne
+      where  zne.id_cust_full = zone.zone_id
+   ;
+
+   
+   
+   
+   cursor c_section
+   is
+      select sen.id
+      ,      segment.status_segment_id
+      ,      ( select zne.sct_id_zone_area
+               from   lm_system_components zne
+               where  sen.sct_id_section_zone = zne.id
+             ) area_id
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable( '/project_definition/iscs/isc/isc/isc'
+                       passing pd.data
+                       columns section_xml xmltype      path '/isc'
+                       ,       section_id  varchar2(30) path '@id' 
+                     ) section
+      ,      xmltable( '/isc/segment_reference'
+                        passing section.section_xml
+                        columns status_segment_id number path '@status_segment_id'
+                     ) segment
+      ,      lm_system_components sen
+      where  sen.id_cust_full =  section.section_id
+   ;
+
+   l_start_time timestamp := lm_common.default_timestamp;
+   l_#sct       integer;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_zone in c_zone
+   loop
+      link_sct_to_segment ( i_sct_id     => l_rec_zone.id
+                          , i_tst_sct_id => l_rec_zone.area_id
+                          , i_tst_lst_id => l_rec_zone.status_segment_id
+                          );
+   end loop;
+
+   
+   for l_rec_section in c_section
+   loop
+      link_sct_to_segment ( i_sct_id     => l_rec_section.id
+                          , i_tst_sct_id => l_rec_section.area_id
+                          , i_tst_lst_id => l_rec_section.status_segment_id
+                          );
+   end loop;
+
+   
+   select count(*)
+   into   l_#sct
+   from   lm_system_components sct
+   where  sct.tst_id is not null
+   ;
+   lm_config.log_processing_time( i_message_name    => 'Link lm_system_components to lm_technical_segments'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Linked: '||l_#sct||' lm_system_components to lm_technical_segments'
+                                );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end link_sct_to_segments;
+
+end lm_cfg_sct;
+/

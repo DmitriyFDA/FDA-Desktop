@@ -1,0 +1,12 @@
+function comma_count(str in varchar2) return number is
+n1 number(9) := 0;
+n2 number(9) := 0;
+begin
+  if str is null then return 0; end if;
+  n1 := length(str);
+  n2 := length(replace(str, ','));
+  return (n1 - n2);
+exception when others then
+  return -1;
+end;
+/

@@ -1,0 +1,534 @@
+create or replace PACKAGE bpi_cleanup
+IS
+   g_con_package CONSTANT VARCHAR2(61) := 'BPI_CLEANUP';
+
+   -- Cleans up all tables specified in the BPI_HOUSEKEEP_PARAMETERS table
+   PROCEDURE cleanup_all;
+
+   -- Clears all sensitive/privacy related column values specified in the BPI_HOUSEKEEP_PARAMETERS table
+   PROCEDURE clear_all_sensitive_data;
+
+   -- Performs reset from VSC including BPI-specific actions
+   FUNCTION hdl_resetdynamicdatarequest( i_message XMLTYPE )
+   RETURN XMLTYPE;
+
+END bpi_cleanup;
+/
+
+
+
+
+package body bpi_cleanup
+is
+
+   g_con_reset_scope_reporting  varchar2(100) := 'REPORTING_ANALYSIS';
+
+
+procedure cleanup_table( i_tablename  in bpi_housekeep_parameters.table_name%type
+                       , i_datefield  in bpi_housekeep_parameters.del_field%type
+                       , i_maxtime    in timestamp
+                       , i_commitrate in bpi_housekeep_parameters.del_commit_rate%type
+                       )
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.cleanup_table';
+
+   l_stmt          varchar2(2000);
+   l_commitrate    integer := nvl(i_commitrate, 1000);
+   l_count         integer := 0;
+   l_total_deleted integer := 0;
+   l_startts       timestamp := sys_extract_utc(systimestamp);
+   l_mintime       timestamp;
+begin
+   begin
+      bpi_trace.enter_module(i_module => l_con_proc);
+    
+      execute immediate 'SELECT MIN('||i_datefield||') FROM '
+                        ||i_tablename||' WHERE '
+                        ||i_datefield||' < :1'
+         into l_mintime
+         using i_maxtime;
+
+      l_stmt := 'DELETE /*+ INDEX_RS_ASC(t) */ FROM '
+                ||i_tablename||' t WHERE '
+                ||i_datefield||' >= :1 AND '||i_datefield||' < :2 '
+                ||'AND ROWNUM '||'<= :3';
+      while l_mintime < i_maxtime
+      loop
+         loop
+            execute immediate l_stmt using l_mintime, l_mintime + numtodsinterval(1, 'HOUR'), i_commitrate;
+            l_count := sql%rowcount;
+            commit;
+
+            l_total_deleted := l_total_deleted + l_count;
+            exit when l_count = 0 or l_count is null; 
+         
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                                  , i_calling_procedure => l_con_proc
+                                  , i_severity          => viu_info.c_severity_debug
+                                  , i_info_arguments    => 'Total Deleted: '||to_char(l_total_deleted)
+                                  , i_additional_data   => l_stmt
+                                  );
+         end loop;
+
+         
+         l_mintime := l_mintime + numtodsinterval(1, 'HOUR');
+      end loop;
+
+      viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                            , i_calling_procedure => l_con_proc
+                            , i_severity          => viu_info.c_severity_notification
+                            , i_info_arguments    => null
+                            , i_additional_data   => l_con_proc
+                                                     ||', Table: '||i_tablename
+                                                     ||', Date Field: '||i_datefield
+                                                     ||', Max Time: '||to_char(i_maxtime, 'YYYYMMDD HH24:MI:SS')
+                                                     ||', Commit Rate: '||to_char(nvl(i_commitrate,0))
+                                                     ||chr(10)||'Number of removed rows: '||to_char(l_total_deleted)||'.'
+                                                     ||chr(10)||'Duration: '||bpi_util.vc2(sys_extract_utc(systimestamp) - l_startts)||'. '
+                            );
+   exception
+      when others then
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hkpcantcleanup
+                               , i_calling_procedure => l_con_proc
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    => i_tablename||','
+                                                        ||i_datefield||','
+                                                        ||to_char(i_maxtime, 'YYYYMMDD HH24:MI:SS')||','
+                                                        ||to_char(i_commitrate)
+                               , i_additional_data   => substr( l_stmt||chr(10)||'ERROR: '||sqlerrm
+                                                                      ||chr(10)||dbms_utility.format_error_backtrace
+                                                              , 1
+                                                              , 4000
+                                                              )
+                               );
+   end;
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure cleanup_all
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.cleanup_all';
+
+   l_startts  timestamp := sys_extract_utc(systimestamp);
+   l_end_time timestamp;
+
+   cursor c_hprs
+   is
+      select upper(trim(table_name))          as table_name
+      ,      upper(trim(del_retention_unit))  as del_retention_unit
+      ,      nvl(del_retention, 0)            as del_retention
+      ,      del_field
+      ,      del_commit_rate
+      from   bpi_housekeep_parameters
+      where  cleanup_method = 'D';
+
+   type    t_hprs is table of c_hprs%rowtype;
+   l_hprs  t_hprs;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hkpcantcleanup
+                            , i_calling_procedure => l_con_proc
+                            , i_severity          => viu_info.c_severity_notification
+                            , i_additional_data   => 'Table clean up started. Initiated by user '||user||'.'
+                            );
+
+      
+      
+      open  c_hprs;
+      fetch c_hprs bulk collect into l_hprs;
+      close c_hprs;
+
+      for i in 1..l_hprs.count
+      loop
+         if l_hprs(i).del_retention_unit is null or l_hprs(i).del_retention_unit not in ('H','D','M','Y')
+         then
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hkpcantcleanup
+                                  , i_calling_procedure => l_con_proc
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_additional_data   => 'Warning: Table clean up is not possible for table '||l_hprs(i).table_name
+                                                           ||', DEL_RETENTION_UNIT is not configured correctly. Must be H, D, M or Y.'
+                                  );
+         elsif l_hprs(i).del_retention < 1
+         then
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hkpcantcleanup
+                                  , i_calling_procedure => l_con_proc
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_additional_data   => 'Warning: Table clean up is not possible for table '||l_hprs(i).table_name
+                                                           ||', DEL_RETENTION is not configured correctly. Must be a value greater than 0.'
+                                  );
+         else
+            begin
+               l_end_time := case l_hprs(i).del_retention_unit
+                                when 'H' then
+                                   period.startts(l_startts, 'H1') - numtodsinterval(l_hprs(i).del_retention, 'HOUR')
+                                when 'D' then
+                                   period.startts(l_startts, 'D1') - numtodsinterval(l_hprs(i).del_retention, 'DAY')
+                                when 'M' then
+                                   period.startts(l_startts, 'D1') - numtoyminterval(l_hprs(i).del_retention, 'MONTH')
+                                when 'Y' then
+                                   period.startts(l_startts, 'D1') - numtoyminterval(l_hprs(i).del_retention, 'YEAR')
+                                else null
+                             end;
+
+               cleanup_table( i_tablename  => l_hprs(i).table_name
+                            , i_datefield  => l_hprs(i).del_field
+                            , i_maxtime    => l_end_time
+                            , i_commitrate => l_hprs(i).del_commit_rate
+                            );
+        
+            exception
+               when others then
+                  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hkpcantcleanup
+                                        , i_calling_procedure => l_con_proc
+                                        , i_severity          => viu_info.c_severity_warning
+                                        , i_additional_data   => substr( 'Warning: Table clean up failed for table '||l_hprs(i).table_name
+                                                                         ||', '||to_char(l_end_time,'yyyymmdd hh24:mi:ss')
+                                                                         ||chr(10)||'ERROR: '||sqlerrm
+                                                                         ||chr(10)||dbms_utility.format_error_backtrace
+                                                                       , 1
+                                                                       , 4000
+                                                                       )
+                                        );
+            end;
+         end if;
+      end loop;
+
+      viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hkpcantcleanup
+                            , i_calling_procedure => l_con_proc
+                            , i_severity          => viu_info.c_severity_notification
+                            , i_additional_data   => 'Table clean up finished. Initiated by user '
+                                                     ||user||'. Total duration: '
+                                                     ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                            );
+   exception
+      when others then
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hkpcantcleanup
+                               , i_calling_procedure => l_con_proc
+                               , i_severity          => viu_info.c_severity_error
+                               , i_additional_data   => substr( 'Table clean up failed. ERROR: '||sqlerrm
+                                                                ||chr(10)||dbms_utility.format_error_backtrace
+                                                              , 1
+                                                              , 4000
+                                                              )
+                               );
+   end;
+
+   
+   cmn_common.set_parameter_value ('QlikviewInitialReloadRA', 'Y');
+   
+
+  
+  
+  
+  commit;
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure clear_sensitive_data (i_tablename in varchar2, i_persfields in varchar2, i_datefield in varchar2, i_maxtime in date, i_commitrate in number) is
+l_con_proc constant varchar2(61) := g_con_package||'.clear_sensitive_data';
+l_ts1 timestamp := sys_extract_utc(systimestamp);
+stmnt varchar2(8000);
+l_commit_rate number := nvl(i_commitrate, 1000);
+l_total_updated number := 0;
+l_rowid_count number := 0;
+l_persfieldssetnull varchar2(2000);
+l_persfieldsarenotnull varchar2(2000);
+l_sep1 varchar2(10) := 'SET ';
+l_sep2 varchar2(10) := ' AND ';
+begin
+  viu_module.enter_module(i_module => l_con_proc, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  begin
+    for c_rec in (select val from table(csv.vals(i_persfields))) loop
+      l_persfieldssetnull := l_persfieldssetnull||l_sep1||c_rec.val||'=NULL';
+      l_sep1 := ',';
+      l_persfieldsarenotnull := l_persfieldsarenotnull||l_sep2||c_rec.val||' IS NOT NULL';
+    end loop;
+    stmnt := 'BEGIN UPDATE '||i_tablename||' '||l_persfieldssetnull||' WHERE '||i_datefield||' < :1'||l_persfieldsarenotnull||' AND ROWNUM '||'< :2; :3 := SQL%ROWCOUNT; END;';
+    loop
+      execute immediate stmnt using i_maxtime, (i_commitrate + 1), out l_rowid_count;
+      commit;
+      l_total_updated := l_total_updated + l_rowid_count;
+      exit when l_rowid_count = 0;
+      viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_debug
+                         , i_info_arguments         => 'Total Updated: '||to_char(l_total_updated)
+                         , i_additional_data        =>  stmnt);
+    end loop;
+    
+    viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc
+                         ||', Table: '||i_tablename
+                         ||', Clean Columns: '||i_persfields
+                         ||', Date Field: '||i_datefield
+                         ||', Max Time: '||to_char(i_maxtime, 'YYYYMMDD HH24:MI:SS')
+                         ||', '||' number of updated rows: '||to_char(l_total_updated)||'. '
+                         ||chr(10)||'Duration: '||to_char(sys_extract_utc(systimestamp) - l_ts1)||'.'
+                         ||chr(10)||stmnt );
+  exception when others then
+    viu_info.operator_info( i_ifo_nr              => viu_constant.c_ifo_hkpcantclear
+                       , i_calling_procedure      => l_con_proc
+                       , i_severity               => viu_info.c_severity_warning
+                       , i_info_arguments         => i_tablename||',('||i_persfields||'),'||i_datefield||','||to_char(i_maxtime, 'YYYYMMDD HH24:MI:SS')
+                       , i_additional_data        => substr(stmnt||chr(10)||'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000)
+                       );
+  end;
+  viu_module.leave_module( i_module => l_con_proc );
+end;
+
+
+
+procedure clear_all_sensitive_data is
+l_con_proc constant varchar2(61) := g_con_package||'.clear_all_sensitive_data';
+l_ts1 timestamp := sys_extract_utc(systimestamp);
+l_end_time date;
+type params_tt is table of bpi_housekeep_parameters%rowtype;
+params params_tt;
+l_table_name bpi_housekeep_parameters.table_name%type;
+l_retention_unit bpi_housekeep_parameters.del_retention_unit%type;
+l_retention bpi_housekeep_parameters.del_retention%type;
+begin
+   viu_module.enter_module(i_module => l_con_proc, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  begin
+    viu_info.operator_info( i_ifo_nr           => viu_constant.c_ifo_hkpcantcleanup
+                        , i_calling_procedure  => l_con_proc
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_additional_data    => 'Table clean up started. Initiated by user '||user||'.'
+                        );
+    
+    select * bulk collect into params from bpi_housekeep_parameters where cleanup_method = 'C' order by table_name asc;
+    
+    for i in 1..params.count loop
+      l_table_name := upper(trim(params(i).table_name));
+      l_retention_unit := upper(trim(params(i).del_retention_unit));
+      l_retention := nvl(params(i).del_retention, 0);
+      if l_retention_unit is null or l_retention_unit not in ('H','D','M','Y') then
+        viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_hkpcantcleanup
+          , i_calling_procedure  => l_con_proc
+          , i_severity           => viu_info.c_severity_warning
+          , i_additional_data    => 'Warning: Table clear is not possible for table '||l_table_name||', DEL_RETENTION_UNIT is not configured correctly. Must be H, D M or Y.'
+          );
+      elsif l_retention < 1 then
+        viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_hkpcantcleanup
+          , i_calling_procedure  => l_con_proc
+          , i_severity           => viu_info.c_severity_warning
+          , i_additional_data    => 'Warning: Table clear not possible for table '||l_table_name||', DEL_RETENTION is not configured correctly. Must be a value greater than 0.'
+          );
+      else
+        begin
+          if l_retention_unit = 'H' then
+            l_end_time := period.startts(sys_extract_utc(systimestamp), 'H1') - numtodsinterval(l_retention, 'HOUR');
+          elsif l_retention_unit = 'D' then
+            l_end_time := period.startts(sys_extract_utc(systimestamp), 'D1') - numtodsinterval(l_retention, 'DAY');
+          elsif l_retention_unit = 'M' then
+            l_end_time := period.startts(sys_extract_utc(systimestamp), 'D1') - numtoyminterval(l_retention, 'MONTH');
+          elsif l_retention_unit = 'Y' then
+            l_end_time := period.startts(sys_extract_utc(systimestamp), 'D1') - numtoyminterval(l_retention, 'YEAR');
+          end if;
+
+          clear_sensitive_data(l_table_name, params(i).sensitive_field_cleanup, params(i).del_field, l_end_time, params(i).del_commit_rate);
+
+        exception when others then
+          viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_hkpcantclear
+          , i_calling_procedure  => l_con_proc
+          , i_severity           => viu_info.c_severity_warning
+          , i_additional_data    =>  substr('Warning: Table clear failed for table '||l_table_name||', '||to_char(l_end_time,'YYYYMMDD HH24:MI:SS')
+                                     ||chr(10)||'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000)
+          );
+        end;
+      end if;
+    end loop;
+    viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_hkpcantclear
+                        , i_calling_procedure  => l_con_proc
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_additional_data    => 'Table clear finished. Initiated by user '||user||'. Total duration: '||to_char(sys_extract_utc(systimestamp) - l_ts1)
+                        );
+  exception when others then
+    viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_hkpcantclear
+      , i_calling_procedure  => l_con_proc
+      , i_severity           => viu_info.c_severity_error
+      , i_additional_data    =>  substr('Table clear failed. ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000)
+      );
+  end;
+  
+  
+  
+  
+  commit;
+  
+  
+  viu_module.leave_module( i_module      => l_con_proc );
+end;
+
+function hdl_resetdynamicdatarequest( i_message xmltype )
+return xmltype
+is
+   l_con_proc_name   constant varchar2(61) := g_con_package || '.hdl_resetdynamicdatarequest';
+   
+   l_result_message           xmltype;
+   l_default_result_message   xmltype;
+   l_scope                    varchar2(100);
+
+begin
+   viu_module.enter_module( i_module  => l_con_proc_name );
+
+   
+   l_default_result_message := cmn_cleanup.gen_resetdynamicdataresponse( i_result => cmn_constant.g_con_reset_result_failed );
+
+   
+   l_scope := cmn_xml_util.extract_value( i_xml   => i_message
+                                        , i_xpath => cmn_constant.g_con_xpath_ddr_scope
+                                        );
+
+   
+   viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                         , i_calling_procedure => l_con_proc_name
+                         , i_severity          => viu_info.c_severity_notification
+                         , i_additional_data   => 'Invoking CMN cleanup handler.'
+                         );
+
+   
+   cmn_common.set_parameter_value( i_prr_name  => 'ResetActive'
+                                 , i_pve_value => 'Y'
+                                 );
+
+   
+   l_result_message := cmn_cleanup.hdl_resetdynamicdatarequest(i_message => i_message);
+
+
+   
+   cmn_common.set_parameter_value( i_prr_name  => 'ResetActive'
+                                 , i_pve_value => 'N'
+                                 );
+
+   
+   
+   if instr(l_result_message.getclobval(),cmn_constant.g_con_reset_result_success) > 0
+   and l_scope = g_con_reset_scope_reporting
+   then
+      
+      cmn_common.set_parameter_value( i_prr_name  => 'QlikviewInitialReloadProject'
+                                    , i_pve_value => cmn_constant.g_con_yesno_yes
+                                    );
+      
+      viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_notification
+                            , i_additional_data   => 'Initial reload Qlikview has been set.'
+                            );
+      
+   end if;
+
+   
+   viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnresetreport
+                         , i_calling_procedure => l_con_proc_name
+                         , i_severity          => viu_info.c_severity_notification
+                         , i_additional_data   => 'End of BPI specific handler.'
+                         );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+
+   return l_result_message;
+
+exception
+   when others
+   then
+      
+      cmn_common.set_parameter_value( i_prr_name  => 'ResetActive'
+                                    , i_pve_value => 'N'
+                                    );
+                                 
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+
+      viu_info.handle_info( i_calling_procedure => l_con_proc_name );
+     
+      return l_default_result_message;
+
+end hdl_resetdynamicdatarequest;
+
+
+
+end bpi_cleanup;
+/

@@ -1,0 +1,511 @@
+create or replace PACKAGE cmn_program AS
+/******************************************************************************
+   NAME:       cmn_program
+   PURPOSE:
+
+   REVISIONS:
+   Ver        Date        Author           Description
+   ---------  ----------  ---------------  ------------------------------------
+   1.0        21-11-2006             1. Created this package.
+******************************************************************************/
+
+procedure create_all_programs;
+
+procedure drop_all_programs;
+
+function get_program_name( i_program_id in cmn_programs.id%type) return cmn_programs.name%type;
+
+END cmn_program;
+/
+
+
+
+
+package body cmn_program
+as
+   
+
+
+
+
+
+
+
+
+
+   g_con_package        constant char( 13 ) := 'cmn_program';
+
+   
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+   procedure create_program( i_program_id in cmn_programs.id%type )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.synchronize_programs';
+      l_pgm_rec                     cmn_programs%rowtype;
+      l_enabled                     boolean := false;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      if cmn_pgm_tapi_pck.pgm_select_row( i_pgm_id      => i_program_id,
+                                          o_rt_pgm      => l_pgm_rec
+                                        )
+      then
+         if upper( l_pgm_rec.enabled ) = cmn_constant.g_con_yesno_yes
+         then
+            l_enabled  := true;
+         end if;
+
+         if l_pgm_rec.ssr_id is null
+         then
+            dbms_scheduler.create_program( program_name             => l_pgm_rec.name,
+                                           program_type             => l_pgm_rec.program_type,
+                                           program_action           => l_pgm_rec.action,
+                                           number_of_arguments      => l_pgm_rec.number_of_arguments,
+                                           enabled                  => l_enabled,
+                                           comments                 => l_pgm_rec.comments
+                                         );
+         else
+            dbms_scheduler.create_program( program_name             => l_pgm_rec.name,
+                                           program_type             => l_pgm_rec.program_type,
+                                           program_action           => cmn_constant.g_con_dequeue_program,
+                                           number_of_arguments      => 1,
+                                           enabled                  => false,
+                                           comments                 => l_pgm_rec.comments
+                                         );
+            dbms_scheduler.define_program_argument( program_name           => l_pgm_rec.name,
+                                                    argument_position      => 1,
+                                                    argument_type          => 'number',
+													default_value          => l_pgm_rec.ssr_id
+                                                  );
+            dbms_scheduler.enable(l_pgm_rec.name);
+         end if;
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end create_program;
+
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   procedure remove_program( i_program_name in varchar2 )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.remove_program';
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+      
+      dbms_scheduler.drop_program( program_name      => i_program_name,
+                                   force             => true
+                                 );
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end remove_program;
+
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_all_programs
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.create_programs';
+
+      cursor c_spm
+      is
+         select   *
+         from     user_scheduler_programs
+         order by program_name;
+
+      cursor c_pgm
+      is
+         select   *
+         from     cmn_programs pgm
+         order by pgm.name;
+
+      r_spm                         c_spm%rowtype;
+      r_pgm                         c_pgm%rowtype;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      open c_spm;
+
+      fetch c_spm
+      into  r_spm;
+
+      
+      open c_pgm;
+
+      fetch c_pgm
+      into  r_pgm;
+
+      
+      while c_spm%found
+       and c_pgm%found
+      loop
+         if upper(r_pgm.name) = upper(r_spm.program_name)
+         then
+            fetch c_pgm
+            into  r_pgm;
+
+            fetch c_spm
+            into  r_spm;
+         else
+            create_program( r_pgm.id );
+
+            fetch c_pgm
+            into  r_pgm;
+         end if;
+      end loop;
+
+      while c_pgm%found
+      loop
+         create_program( r_pgm.id );
+
+         fetch c_pgm
+         into  r_pgm;
+      end loop;
+
+      close c_pgm;
+
+      close c_spm;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         if c_pgm%isopen
+         then
+            close c_pgm;
+         end if;
+
+         if c_spm%isopen
+         then
+            close c_spm;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end create_all_programs;
+
+   
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+   function get_program_name( i_program_id in cmn_programs.id%type )
+      return cmn_programs.name%type
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.get_program_name';
+      l_pgm_rec                     cmn_programs%rowtype;
+      l_return                      cmn_programs.name%type := null;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      if cmn_pgm_tapi_pck.pgm_select_row( i_pgm_id      => i_program_id,
+                                          o_rt_pgm      => l_pgm_rec
+                                        )
+      then
+         l_return  := l_pgm_rec.name;
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end get_program_name;
+   
+
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+   procedure drop_program( i_program_id in cmn_programs.id%type )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.synchronize_programs';
+      l_pgm_rec                     cmn_programs%rowtype;
+      l_enabled                     boolean := false;
+	  i integer;
+	  l_number_of_arguments integer;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      if cmn_pgm_tapi_pck.pgm_select_row( i_pgm_id      => i_program_id,
+                                          o_rt_pgm      => l_pgm_rec
+                                        )
+      then
+	     dbms_scheduler.disable(name =>l_pgm_rec.name,force => true);
+		 
+		 if (l_pgm_rec.ssr_id is not null)
+		 then
+		   l_number_of_arguments := 1;
+		 else
+		    l_number_of_arguments := nvl(l_pgm_rec.number_of_arguments,0);
+         end if;
+		 
+	     for i in 1 .. l_number_of_arguments
+		 loop
+		    dbms_scheduler.drop_program_argument(program_name => l_pgm_rec.name, argument_position => i);
+		 end loop;
+		 
+		 dbms_scheduler.drop_program(program_name => l_pgm_rec.name, force => true);
+		 
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end drop_program;
+   
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+   procedure drop_all_programs
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.synchronize_programs';
+
+      cursor c_spm
+      is
+         select   *
+         from     user_scheduler_programs
+         order by program_name;
+
+      cursor c_pgm
+      is
+         select   *
+         from     cmn_programs pgm
+         order by pgm.name;
+
+      r_spm                         c_spm%rowtype;
+      r_pgm                         c_pgm%rowtype;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      open c_spm;
+
+      fetch c_spm
+      into  r_spm;
+
+      
+      open c_pgm;
+
+      fetch c_pgm
+      into  r_pgm;
+
+      
+      while c_spm%found
+       and c_pgm%found
+      loop
+         if upper(r_pgm.name) = upper(r_spm.program_name)
+         then
+            drop_program( r_pgm.id );
+            fetch c_pgm
+            into  r_pgm;
+
+            fetch c_spm
+            into  r_spm;
+  		
+         else
+
+
+            fetch c_pgm
+            into  r_pgm;
+         end if;
+      end loop;
+
+      close c_pgm;
+
+      close c_spm;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         if c_pgm%isopen
+         then
+            close c_pgm;
+         end if;
+
+         if c_spm%isopen
+         then
+            close c_spm;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end drop_all_programs;
+   
+end cmn_program;
+/

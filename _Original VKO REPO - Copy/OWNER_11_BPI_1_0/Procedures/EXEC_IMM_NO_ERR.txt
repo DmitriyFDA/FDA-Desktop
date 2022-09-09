@@ -1,0 +1,13 @@
+procedure exec_imm_no_err(stm in varchar2) is
+l_stm varchar2(2000) := trim(stm);
+l_len integer;
+begin
+  l_len := length(l_stm);
+  if substr(l_stm, l_len, 1) = ';' then
+    l_stm := substr(l_stm, 1, l_len-1);
+  end if;
+  
+  execute immediate l_stm;
+exception when others then null;
+end;
+/

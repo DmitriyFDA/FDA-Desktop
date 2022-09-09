@@ -1,0 +1,566 @@
+create or replace PACKAGE lm_cfg_lane_based_ebs
+IS
+
+   g_con_package       CONSTANT lm_constant.st_proc_name := 'LM_CFG_LANE_BASED_EBS';
+
+   PROCEDURE load_lanes;
+   PROCEDURE load_lane_groups;
+   
+   FUNCTION get_lane_groups
+   RETURN nt_lane_groups;
+   PROCEDURE upd_lane_groups
+   ( i_operator_id    IN VARCHAR2
+   , i_ip_address     IN VARCHAR2
+   , i_nt_lane_groups IN nt_lane_groups
+   );
+
+END lm_cfg_lane_based_ebs;
+/
+
+
+
+
+package body lm_cfg_lane_based_ebs
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure load_lanes
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_lanes';
+
+   
+   
+   
+   
+   
+   cursor c_lne
+   is
+      select lne.stn_id
+      ,      lne.stn_id_part_of
+      ,      lne.lst_id
+      ,      cast( multiset( select tst.id
+                             from   lm_technical_segments    tst
+                             ,      lm_physical_destinations pon
+                             ,      lm_sections_v            sen
+                             ,      lm_zones_v               zne
+                             where  tst.lst_id  = lne.lst_id
+                             and    pon.id      = lne.stn_id
+                             and    pon.sct_id  = sen.section_id
+                             and    sen.zone_id = zne.zone_id
+                             and    zne.area_id = tst.sct_id
+                           ) as nt_id_coll
+                 ) nt_tst
+      ,      to_number(null) tst_id   
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/LaneBasedEBS/Lanes/Lane'
+                       passing cfg.data
+                       columns stn_id           integer       path 'StationID/text()'
+                       ,       stn_id_part_of   integer       path 'StationIDPartOf/text()'
+                       ,       lst_id           integer       path 'StatusSegmentID/text()'
+                     ) lne
+      ;
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   cursor c_lbs_type
+   is
+   select stn.id
+   ,      count(distinct lne.stn_id)         as nr_of_lanes
+   ,      sum( case
+                when nde1.pon_id = nde2.pon_id
+                then 1
+                else 0
+               end
+             )                               as nr_of_dereg_nodes
+   ,     cast( collect(case
+                        when nde1.pon_id = nde2.pon_id
+                        then nde2.id
+                       end
+                      ) as nt_id_coll)       as nt_nde_dereg
+   from   lm_stations               stn    
+   ,      lm_ebs_lanes              lne
+   ,      lm_station_reachabilities sry
+   ,      lm_physical_destinations  pon1   
+   ,      lm_nodes                  nde1   
+   ,      lm_route_segments         rst
+   ,      lm_nodes                  nde2   
+   where  lne.stn_id_part_of    = stn.id
+   and    lne.stn_id            = sry.stn_id
+   and    sry.mom_id            = lm_constant.g_con_mom_mom_mode_normal
+   and    sry.pon_id            = pon1.id
+   and    nde1.pon_id           = pon1.id
+   and    rst.nde_id_end_node   = nde1.id
+   and    rst.nde_id_start_node = nde2.id
+   group by stn.id;
+
+   type nt_ebs_lanes                   is table of c_lne%rowtype;
+   l_nt_ebs_lanes                      nt_ebs_lanes;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_ebs_type                          lm_stations.bagstore_type%type;
+   
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_lne;
+   fetch c_lne bulk collect into l_nt_ebs_lanes;
+   close c_lne;
+
+   
+   for idx_lne in 1 .. l_nt_ebs_lanes.count
+   loop
+      
+      lm_config.check_station(i_stn_id => l_nt_ebs_lanes(idx_lne).stn_id);
+      lm_config.check_station_store_pd(i_stn_id => l_nt_ebs_lanes(idx_lne).stn_id_part_of);
+      lm_config.check_logical_segment(i_lst_id => l_nt_ebs_lanes(idx_lne).lst_id);
+
+      
+      
+      
+      
+      
+      if l_nt_ebs_lanes(idx_lne).nt_tst.count <> 1
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'EBS Lane '||l_nt_ebs_lanes(idx_lne).stn_id
+                                  || ' is not properly configured. Status Segment '
+                                  || l_nt_ebs_lanes(idx_lne).lst_id
+                                  || ' is part of '||l_nt_ebs_lanes(idx_lne).nt_tst.count
+                                  || ' areas.'
+            );
+      end if;
+      
+      
+      
+      l_nt_ebs_lanes(idx_lne).tst_id := l_nt_ebs_lanes(idx_lne).nt_tst(1);   
+   end loop;
+   
+   
+   forall idx in 1 .. l_nt_ebs_lanes.count
+      insert
+      into   lm_ebs_lanes
+      (      stn_id
+      ,      stn_id_part_of
+      ,      tst_id
+      ,      ind_available
+      ) values
+      (      l_nt_ebs_lanes(idx).stn_id
+      ,      l_nt_ebs_lanes(idx).stn_id_part_of
+      ,      l_nt_ebs_lanes(idx).tst_id
+      ,      lm_constant.g_con_yesno_yes       
+      );
+
+   
+   
+   for rec_lbs in c_lbs_type
+   loop
+      case rec_lbs.nr_of_dereg_nodes
+         when 0
+         then
+            l_ebs_type := lm_constant.g_con_store_type_lane;
+         when rec_lbs.nr_of_lanes
+         then
+            l_ebs_type := lm_constant.g_con_store_type_lane_no_trk;
+            for idx_nde in 1 .. rec_lbs.nt_nde_dereg.count
+            loop
+               update lm_nodes
+               set    ind_suspend_deregistration = lm_constant.g_con_yesno_yes
+               where  id = rec_lbs.nt_nde_dereg(idx_nde);
+            end loop;
+         else
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'EBS Station '||rec_lbs.id
+                                     || ' is not properly configured. It consists of '
+                                     || rec_lbs.nr_of_lanes
+                                     || ' lanes of which '||rec_lbs.nr_of_dereg_nodes
+                                     || ' have a deregistration node. This should be 0 (zero) or all lanes.'
+               );
+      end case;
+      update lm_stations
+      set    bagstore_type = l_ebs_type
+      where  id = rec_lbs.id;
+   end loop;
+   lm_config.log_processing_time( i_message_name    => 'EBSLanes'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_ebs_lanes.count||' lm_ebs_lanes'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_lne%isopen
+      then
+         close c_lne;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_lanes;
+
+
+
+
+
+
+procedure load_lane_groups
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_lane_groups';
+
+   
+   cursor c_lap
+   is
+      select lap.group_id
+      ,      lap.name
+      ,      nvl(lap.description, lap.name) description
+      ,      lap.task_type
+      ,      to_number(null) tdn_id
+      ,      pcm.name        pcm_name
+      ,      lap.priority
+      ,      lap.max_alloc_lanes
+      ,      lap.release_pct
+      ,      lm_config.duration_to_dsinterval(lap.release_int) release_int
+      ,      lm_config.duration_to_dsinterval(lap.offset) offset
+      ,      lm_config.duration_to_dsinterval(lap.time_window) time_window
+      ,      lap.nr_timeslots
+      ,      cast( multiset( select station_id
+                             from   xmltable( 'Members/StationID'
+                                              passing lap.stations_xml
+                                              columns station_id integer path '/text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_stations
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/LaneBasedEBS/LaneGroups/LaneGroup'
+                       passing cfg.data
+                       columns group_id           integer       path 'ID/text()'
+                       ,       name               varchar2(100) path 'Name/text()'
+                       ,       description        varchar2(240) path 'Description/text()'
+                       ,       task_type          varchar2(20)  path 'Task/text()'
+                       ,       physical_class     varchar2(2)   path 'PhysicalClass/text()'
+                       ,       priority           integer       path 'Priority/text()'
+                       ,       max_alloc_lanes    integer       path 'MaximumAllocableLanes/text()'
+                       ,       release_pct        integer       path 'ReleaseThresholdPercentage/text()'
+                       ,       release_int        varchar2(100) path 'ForceReleaseTimeLimit/text()'
+                       ,       offset             varchar2(100) path 'Offset/text()'
+                       ,       time_window        varchar2(100) path 'TimeWindow/text()'
+                       ,       nr_timeslots       integer       path 'NumberOfTimeSlots/text()'
+                       ,       stations_xml       xmltype       path 'Members'
+                     ) lap
+      ,      lm_physical_class_dom pcm
+      where  lap.physical_class = pcm.name (+)  
+      ;
+
+   type nt_ebs_lane_groups             is table of c_lap%rowtype;
+   type nt_lgr                         is table of lm_ebs_lane_group_members%rowtype;
+   
+   l_nt_ebs_lane_groups                nt_ebs_lane_groups;
+   l_nt_lgr                            nt_lgr := nt_lgr();
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   
+   l_idx_lgr                           binary_integer;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_lap;
+   fetch c_lap bulk collect into l_nt_ebs_lane_groups;
+   close c_lap;
+
+   
+   for idx_lap in 1 .. l_nt_ebs_lane_groups.count
+   loop
+      
+      l_nt_ebs_lane_groups(idx_lap).tdn_id
+          := lm_config.check_task_definition(i_tdn_type => l_nt_ebs_lane_groups(idx_lap).task_type);
+
+
+      l_idx_lgr := l_nt_lgr.count;
+      l_nt_lgr.extend(l_nt_ebs_lane_groups(idx_lap).nt_stations.count);
+      for idx in 1 .. l_nt_ebs_lane_groups(idx_lap).nt_stations.count
+      loop
+         lm_config.check_ebs_lane(i_lne_stn_id => l_nt_ebs_lane_groups(idx_lap).nt_stations(idx));
+        
+         
+         l_nt_lgr(l_idx_lgr + idx).lap_id     := l_nt_ebs_lane_groups(idx_lap).group_id;
+         l_nt_lgr(l_idx_lgr + idx).lne_stn_id := l_nt_ebs_lane_groups(idx_lap).nt_stations(idx);
+      end loop;
+   end loop;
+   
+   
+   forall idx in 1 .. l_nt_ebs_lane_groups.count
+      insert
+      into   lm_ebs_lane_groups
+      (      id
+      ,      name
+      ,      description
+      ,      tdn_id
+      ,      pcm_name
+      ,      priority
+      ,      maximum_allocable_lanes
+      ,      release_lane_threshold_pct
+      ,      force_release_time_limit
+      ,      offset
+      ,      time_window
+      ,      number_of_timeslots
+      ) values
+      (      l_nt_ebs_lane_groups(idx).group_id
+      ,      l_nt_ebs_lane_groups(idx).name
+      ,      l_nt_ebs_lane_groups(idx).description
+      ,      l_nt_ebs_lane_groups(idx).tdn_id
+      ,      l_nt_ebs_lane_groups(idx).pcm_name
+      ,      l_nt_ebs_lane_groups(idx).priority
+      ,      l_nt_ebs_lane_groups(idx).max_alloc_lanes
+      ,      l_nt_ebs_lane_groups(idx).release_pct
+      ,      l_nt_ebs_lane_groups(idx).release_int
+      ,      l_nt_ebs_lane_groups(idx).offset
+      ,      l_nt_ebs_lane_groups(idx).time_window
+      ,      l_nt_ebs_lane_groups(idx).nr_timeslots
+      );
+
+   
+   forall idx in 1 .. l_nt_lgr.count
+      insert
+      into   lm_ebs_lane_group_members
+      (      lap_id
+      ,      lne_stn_id
+      ) values
+      (      l_nt_lgr(idx).lap_id
+      ,      l_nt_lgr(idx).lne_stn_id
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'EBSLaneGroups'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_ebs_lane_groups.count||' lm_ebs_lane_groups'
+                                                    || ' and '||l_nt_lgr.count||' lm_ebs_lane_group_members'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_lap%isopen
+      then
+         close c_lap;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_lane_groups;
+
+
+
+
+
+
+function get_lane_groups
+return nt_lane_groups
+is
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.get_lane_groups';
+   
+   l_nt_lap nt_lane_groups := nt_lane_groups();
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   select rt_lane_group( lap.id
+                       , lap.name
+                       , lap.offset
+                       , lap.number_of_timeslots * lap.time_window
+                         
+                       )
+   bulk collect
+   into    l_nt_lap
+   from    lm_ebs_lane_groups lap
+   ,       lm_task_definitions tdn
+   where   lap.tdn_id = tdn.id
+   and     tdn.storage_method = lm_constant.g_con_tdn_storage_method_time
+   ;
+   
+   viu_module.leave_module( i_module => l_con_proc_name );
+   return l_nt_lap;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end get_lane_groups;
+
+
+
+
+
+
+procedure upd_lane_groups
+( i_operator_id    in varchar2
+, i_ip_address     in varchar2
+, i_nt_lane_groups in nt_lane_groups
+)
+is
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.upd_lane_groups';
+
+   l_rt_lap                       lm_ebs_lane_groups%rowtype;
+   l_event_time                   timestamp(3) := lm_common.default_timestamp;
+   l_audit_value                  varchar2(4000);
+   l_lap_update                   number;
+   
+   procedure append_audit_value( i_text         in     varchar2
+                               , io_audit_value in out varchar2
+                               )
+   is
+      l_sep constant varchar2(2) := chr(10); 
+   begin
+      if io_audit_value is null
+      then
+         io_audit_value := i_text;
+      else
+         io_audit_value := io_audit_value || l_sep || i_text;
+      end if;
+   end;
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   
+   
+   for rec_lap in (select lap.id
+                   ,      lap.name
+                   ,      lap.offset                                as offset_old
+                   ,      lap2.offset                               as offset_new
+                   ,      lap.time_window                           as time_window_old
+                   ,      cast(lap2.window/lap.number_of_timeslots
+                              as interval day(3) to second(3))      as time_window_new  
+                   ,      lap.number_of_timeslots * lap.time_window as grp_window_old
+                   ,      lap2.window                               as grp_window_new
+                   from   table(i_nt_lane_groups)    lap2
+                   ,      lm_ebs_lane_groups lap
+                   where  lap.id = lap2.id
+                   order by lap.priority, lap.id  
+                                                  
+                  )
+   loop
+      if    rec_lap.offset_old <> rec_lap.offset_new
+         or rec_lap.time_window_old <> rec_lap.time_window_new
+      then
+         
+         
+         if lm_lap_tapi_pck.lap_select_row_upd( i_lap_id => rec_lap.id
+                                              , o_rt_lap => l_rt_lap
+                                              )
+         then
+            
+            
+            
+            if rec_lap.offset_new is null or rec_lap.offset_new < to_dsinterval('0 0:0:0.0')
+            then
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_invalidlanegroupattr
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         => rec_lap.name ||'##'
+                                                             || nvl(to_char(rec_lap.offset_new), '<null>') || '##'
+                                                             || 'Offset'
+                                  );
+            elsif rec_lap.grp_window_new is null or rec_lap.grp_window_new <= to_dsinterval('0 0:0:0.0')
+            then
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_invalidlanegroupattr
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         => rec_lap.name ||'##'
+                                                             || nvl(to_char(rec_lap.grp_window_new), '<null>') || '##'
+                                                             || 'Window'
+                                  );
+            end if;
+            
+            append_audit_value( 'Updates for EBS Lane Group '||rec_lap.name||':'
+                              , l_audit_value
+                              );
+            if rec_lap.offset_old <> rec_lap.offset_new
+            then
+               l_rt_lap.offset := rec_lap.offset_new;
+               append_audit_value( '- Offset changed from '||rec_lap.offset_old||' to '||rec_lap.offset_new
+                                 , l_audit_value
+                                 );
+            end if;
+            if rec_lap.time_window_old <> rec_lap.time_window_new
+            then
+               l_rt_lap.time_window := rec_lap.time_window_new;
+               append_audit_value( '- Time window changed from '||rec_lap.time_window_old||' to '||rec_lap.time_window_new
+                                 , l_audit_value
+                                 );
+            end if;
+            l_lap_update := lm_lap_tapi_pck.lap_update_row( i_lap_id  => l_rt_lap.id
+                                                          , io_rt_lap => l_rt_lap
+                                                          );
+            
+         end if;  
+      end if;     
+   end loop;
+   
+   
+   
+   
+   if l_audit_value is not null
+   then
+      lm_report_diagnostic_data.send_audit_log_message( i_operator_id => i_operator_id
+                                                      , i_event_time  => l_event_time
+                                                      , i_ip_address  => i_ip_address
+                                                      , i_event       => 'Update EBS lane group(s)'
+                                                      , i_description => l_audit_value
+                                                      );
+   end if;
+   
+   viu_module.leave_module( i_module     => l_con_proc_name
+                          , i_debug_info => sqlerrm
+                          );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end upd_lane_groups;
+
+end lm_cfg_lane_based_ebs;
+/

@@ -1,0 +1,288 @@
+create or replace PACKAGE wpf_reports IS
+
+-- public constant declarations
+g_con_package CONSTANT VARCHAR2(61) := 'wpf_reports';
+
+-- procedure used to generate reports
+PROCEDURE generateflightreport(i_report_name IN VARCHAR2
+                             , i_flight_number IN VARCHAR2
+                             , i_schedule_date IN VARCHAR2
+                             , i_schedule_time IN VARCHAR2
+                             ,o_report_data OUT SYS_REFCURSOR
+                             );
+
+END wpf_reports;
+/
+
+
+
+
+package body wpf_reports
+is
+
+procedure generateflightreport( i_report_name    in varchar2
+                              , i_flight_number  in varchar2
+                              , i_schedule_date  in varchar2
+                              , i_schedule_time  in varchar2
+                              , o_report_data    out sys_refcursor
+                             )
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.generateflightreport';
+   l_airline  fact_bagtrace_hist.depairline%type;
+   l_flightnr fact_bagtrace_hist.depflight%type;
+   l_sufifx   fact_bagtrace_hist.depflight%type;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+   
+   l_airline  := regexp_replace(i_flight_number, '^([0-9A-Z]{2}[A-Z]?)?([0-9]{3,4})([A-Z])?$', '\1');
+   l_flightnr := regexp_replace(i_flight_number, '^([0-9A-Z]{2}[A-Z]?)?([0-9]{3,4})([A-Z])?$', '\2');
+   l_sufifx   := regexp_substr(i_flight_number, '[A-Z]$');
+
+   begin
+      if upper(i_report_name) = 'ARRIVAL' then
+        open o_report_data for select fbs.xlpc "Tag"
+                                        ,fbs.arv_flightnr "Flight"
+                                        ,ffs.aircrafttypecode "AircrafTtype"
+                                        ,to_char(period.gmt2local(fbs.arv_scheduled_flight_time),'yyyy-mm-dd') "SDA"
+                                        ,to_char(period.gmt2local(fbs.arv_scheduled_flight_time),'HH24:MI') "STA"
+                                        ,fbs.airport_code_arrival "Origin"
+                                        ,cmn_common.get_parameter_value('AIRPORT_CODE') "Destination"
+                                        ,decode(fbs.physical_class,'ST','Standard','OG','OOG','OS','ODD','SP','Special','SC','Semi-Conveyable') "Type"
+                                        ,null "ULD"
+                                        ,null "Offload"
+                                        ,replace(replace(fbs.bag_exception_type,'ExceptionType=',''),chr(10),'')   "Exception"
+                                        ,case when fbs.dep_flightnr is not null and fbs.arv_flightnr is not null then
+                                                to_char(period.gmt2local(fbs.enter_dt),'HH24:MI')||' '||
+                                                case when fbs.nodeid_entry is not null and naze_entry.end_user_id is not null    then naze_entry.end_user_id
+                                                     when fbs.iscid_entry  is not null and isc_entry.customer_id is not null     then isc_entry.customer_id
+                                                     when fbs.nodeid_entry is not null or  fbs.iscid_entry is not null           then '..'
+                                                end
+                                         end "TransferInput"
+                                        ,case when fbs.arv_flightnr is not null and fbs.dep_flightnr is null then
+                                                to_char(period.gmt2local(fbs.enter_dt),'HH24:MI')||' '||
+                                                case when fbs.nodeid_entry is not null and naze_entry.end_user_id is not null    then naze_entry.end_user_id
+                                                     when fbs.iscid_entry  is not null and isc_entry.customer_id is not null     then isc_entry.customer_id
+                                                     when fbs.nodeid_entry is not null or  fbs.iscid_entry is not null           then '..'
+                                                end
+                                         end "ReclaimInput"
+                                  from fact_bag_summaries fbs, fact_flight_summaries ffs,
+                                       dim_node_area_zone_equipment naze_entry, dim_iscs isc_entry
+                                  where fbs.arv_flightnr                                                      = ffs.flightnr
+                                  and   fbs.arv_scheduled_flight_time                                         = ffs.std
+                                  and   fbs.nodeid_entry                                                      = naze_entry.nodeid (+)
+                                  and   fbs.iscid_entry                                                       = isc_entry.id (+)
+                                  and   ffs.arrivalordeparture                                                = 'A'
+                                  and   fbs.arv_flightnr                                                      = nvl(i_flight_number,fbs.arv_flightnr)
+                                  and   to_char(period.gmt2local(fbs.arv_scheduled_flight_time),'yyyy-mm-dd') = nvl(i_schedule_date,to_char(period.gmt2local(fbs.arv_scheduled_flight_time),'yyyy-mm-dd'))
+                                  and   to_char(period.gmt2local(fbs.arv_scheduled_flight_time),'HH24:MI')    = nvl(i_schedule_time,to_char(period.gmt2local(fbs.arv_scheduled_flight_time),'HH24:MI'))
+                                union
+                                  select tag
+                                        ,flight
+                                        ,aircrafttype
+                                        ,sda
+                                        ,sta
+                                        ,origin
+                                        ,destination
+                                        ,type
+                                        ,uld
+                                        ,offload
+                                        ,exception
+                                        ,transferinput
+                                        ,reclaiminput
+                                  from (select nvl(xlpc,to_number(lpc)) tag , max(fbh.eventts) over (partition by nvl(xlpc,to_number(lpc))) maxtime, fbh.eventts events
+                                              ,fbh.arvairline||fbh.arvflight flight
+                                              ,ffs.aircrafttypecode aircrafttype
+                                              ,to_char(period.gmt2local(ffs.std),'yyyy-mm-dd') sda
+                                              ,to_char(period.gmt2local(ffs.std),'HH24:MI') sta
+                                              ,fbh.arvairportcode origin
+                                              ,cmn_common.get_parameter_value('AIRPORT_CODE') destination
+                                              ,decode(fbh.physicalclass,'ST','Standard','OG','OOG','OS','ODD','SP','Special','SC','Semi-Conveyable') type
+                                              ,null uld
+                                              ,null offload
+                                              ,replace(replace(fbh.l_bagexceptiondata,'ExceptionType=',''),chr(10),'') exception
+                                              ,null transferinput
+                                              ,null reclaiminput
+                                         from  fact_bagtrace_hist fbh, fact_flight_summaries ffs
+                                         where fbh.arvairline||fbh.arvflight = ffs.flightnr
+                                         and   fbh.arvflightdate             = ffs.flightdate
+                                         and   fbh.arvairline                = l_airline
+                                         and   fbh.arvflight                 = l_flightnr||l_sufifx
+                                         and   fbh.arvflightdate             = i_schedule_date
+                                         and   ffs.arrivalordeparture        = 'A'
+                                         and   fbh.bag_message_id            = 'BSM'
+                                         and   fbh.xpid                      = '-2'
+                                         and   fbh.bagrunid                  is null)
+                                  where maxtime = events
+                                union
+                                  select tag
+                                        ,flight
+                                        ,aircrafttype
+                                        ,sda
+                                        ,sta
+                                        ,origin
+                                        ,destination
+                                        ,type
+                                        ,uld
+                                        ,offload
+                                        ,exception
+                                        ,transferinput
+                                        ,reclaiminput
+                                  from (select nvl(xlpc,to_number(lpc)) tag , max(fb.eventts) over (partition by nvl(xlpc,to_number(lpc))) maxtime, fb.eventts events
+                                              ,fb.arvairline||fb.arvflight flight
+                                              ,ffs.aircrafttypecode aircrafttype
+                                              ,to_char(period.gmt2local(ffs.std),'yyyy-mm-dd') sda
+                                              ,to_char(period.gmt2local(ffs.std),'HH24:MI') sta
+                                              ,fb.arvairportcode origin
+                                              ,cmn_common.get_parameter_value('AIRPORT_CODE') destination
+                                              ,decode(fb.physicalclass,'ST','Standard','OG','OOG','OS','ODD','SP','Special','SC','Semi-Conveyable') type
+                                              ,null uld
+                                              ,null offload
+                                              ,replace(replace(fb.l_bagexceptiondata,'ExceptionType=',''),chr(10),'') exception
+                                              ,null transferinput
+                                              ,null reclaiminput
+                                        from  fact_bagtrace fb, fact_flight_summaries ffs
+                                        where fb.arvairline||fb.arvflight  = ffs.flightnr
+                                        and   fb.arvflightdate             = ffs.flightdate
+                                        and   fb.arvairline                = l_airline
+                                        and   fb.arvflight                 = l_flightnr||l_sufifx
+                                        and   fb.arvflightdate             = i_schedule_date
+                                        and   ffs.arrivalordeparture       = 'A'
+                                        and   fb.bag_message_id            = 'BSM'
+                                        and   fb.bagrunid                  is null)
+                                  where maxtime = events;
+                                
+      elsif upper(i_report_name) = 'DEPARTURE' then
+        open o_report_data for select fbs.xlpc "Tag"
+                                        ,fbs.dep_flightnr "Flight"
+                                        ,ffs.aircrafttypecode "AircraftType"
+                                        ,to_char(period.gmt2local(fbs.dep_scheduled_flight_time),'yyyy-mm-dd') "Date1"
+                                        ,to_char(period.gmt2local(fbs.dep_scheduled_flight_time),'HH24:MI') "STD"
+                                        ,fbs.airport_code_departure "Destination"
+                                        ,cmn_common.get_parameter_value('AIRPORT_CODE') "DepartureFrom"
+                                        ,decode(fbs.physical_class,'ST','Standard','OG','OOG','OS','ODD','SP','Special','SC','Semi-Conveyable') "Type"
+                                        ,null "ULD"
+                                        ,null "Load"
+                                        ,replace(replace(fbs.bag_exception_type,'ExceptionType=',''),chr(10),'')   "Exception"
+                                        ,case when fbs.dep_flightnr is not null and fbs.arv_flightnr is null then
+                                                to_char(period.gmt2local(fbs.enter_dt),'HH24:MI')||' '||
+                                                case when fbs.nodeid_entry is not null and naze_entry.end_user_id is not null    then naze_entry.end_user_id
+                                                     when fbs.iscid_entry  is not null and isc_entry.customer_id is not null     then isc_entry.customer_id
+                                                     when fbs.nodeid_entry is not null or  fbs.iscid_entry is not null           then '..'
+                                                end
+                                         end  "CheckIn"
+                                        ,case fbs.completion_status when 'D' then to_char(period.gmt2local(fbs.final_status_dt),'HH24:MI') else null end ||' '||
+                                              case when fbs.nodeid_exit is not null and naze_exit.end_user_id is not null    then naze_exit.end_user_id
+                                                   when fbs.iscid_exit  is not null and isc_exit.customer_id is not null then isc_exit.customer_id
+                                                   when fbs.nodeid_exit is not null or  fbs.iscid_exit is not null           then '..'
+                                              end  "MakeUp"
+                                        ,case when fbs.dep_flightnr is not null and fbs.arv_flightnr is not null then
+                                                to_char(period.gmt2local(fbs.enter_dt),'HH24:MI')||' '||
+                                                case when fbs.nodeid_entry is not null and naze_entry.end_user_id is not null    then naze_entry.end_user_id
+                                                     when fbs.iscid_entry  is not null and isc_entry.customer_id is not null     then isc_entry.customer_id
+                                                     when fbs.nodeid_entry is not null or  fbs.iscid_entry is not null           then '..'
+                                                end
+                                         end "TransferInput"
+                                  from fact_bag_summaries fbs, fact_flight_summaries ffs,
+                                       dim_node_area_zone_equipment naze_entry, dim_iscs isc_entry,
+                                       dim_node_area_zone_equipment naze_exit, dim_iscs isc_exit
+                                  where fbs.dep_flightnr                                                      = ffs.flightnr
+                                  and   fbs.dep_scheduled_flight_time                                         = ffs.std
+                                  and   fbs.nodeid_entry                                                      = naze_entry.nodeid (+)
+                                  and   fbs.iscid_entry                                                       = isc_entry.id (+)
+                                  and   fbs.nodeid_exit                                                       = naze_exit.nodeid (+)
+                                  and   fbs.iscid_exit                                                        = isc_exit.id (+)
+                                  and   ffs.arrivalordeparture                                                = 'D'
+                                  and   fbs.dep_flightnr                                                      = nvl(i_flight_number,fbs.dep_flightnr)
+                                  and   to_char(period.gmt2local(fbs.dep_scheduled_flight_time),'yyyy-mm-dd') = nvl(i_schedule_date,to_char(period.gmt2local(fbs.dep_scheduled_flight_time),'yyyy-mm-dd'))
+                                  and   to_char(period.gmt2local(fbs.dep_scheduled_flight_time),'HH24:MI')    = nvl(i_schedule_time,to_char(period.gmt2local(fbs.dep_scheduled_flight_time),'HH24:MI'))
+                                union
+                                  select tag
+                                        ,flight
+                                        ,aircrafttype
+                                        ,date1
+                                        ,std
+                                        ,destination
+                                        ,departurefrom
+                                        ,type
+                                        ,uld
+                                        ,load
+                                        ,exception
+                                        ,checkin
+                                        ,makeup
+                                        ,transferinput
+                                  from (select nvl(xlpc,to_number(lpc)) tag , max(fbh.eventts) over (partition by nvl(xlpc,to_number(lpc))) maxtime, fbh.eventts events
+                                              ,fbh.depairline||fbh.depflight flight
+                                              ,ffs.aircrafttypecode aircrafttype
+                                              ,to_char(period.gmt2local(ffs.std),'yyyy-mm-dd') date1
+                                              ,to_char(period.gmt2local(ffs.std),'HH24:MI') std
+                                              ,fbh.depairportcode destination
+                                              ,cmn_common.get_parameter_value('AIRPORT_CODE') departurefrom
+                                              ,decode(fbh.physicalclass,'ST','Standard','OG','OOG','OS','ODD','SP','Special','SC','Semi-Conveyable') type
+                                              ,null uld
+                                              ,null load
+                                              ,replace(replace(fbh.l_bagexceptiondata,'ExceptionType=',''),chr(10),'') exception
+                                              ,null checkin
+                                              ,null makeup
+                                              ,null transferinput
+                                        from  fact_bagtrace_hist fbh, fact_flight_summaries ffs
+                                        where fbh.depairline||fbh.depflight = ffs.flightnr
+                                        and   fbh.depflightdate             = ffs.flightdate
+                                        and   fbh.depairline                = l_airline
+                                        and   fbh.depflight                 = l_flightnr||l_sufifx
+                                        and   fbh.depflightdate             = i_schedule_date
+                                        and   ffs.arrivalordeparture        = 'D'
+                                        and   fbh.bag_message_id            = 'BSM'
+                                        and   fbh.xpid                      = '-2'
+                                        and   fbh.bagrunid                  is null)
+                                  where maxtime = events
+                                union
+                                  select tag
+                                        ,flight
+                                        ,aircrafttype
+                                        ,date1
+                                        ,std
+                                        ,destination
+                                        ,departurefrom
+                                        ,type
+                                        ,uld
+                                        ,load
+                                        ,exception
+                                        ,checkin
+                                        ,makeup
+                                        ,transferinput
+                                  from (select nvl(xlpc,to_number(lpc)) tag , max(fb.eventts) over (partition by nvl(xlpc,to_number(lpc))) maxtime, fb.eventts events
+                                              ,fb.depairline||fb.depflight flight
+                                              ,ffs.aircrafttypecode aircrafttype
+                                              ,to_char(period.gmt2local(ffs.std),'yyyy-mm-dd') date1
+                                              ,to_char(period.gmt2local(ffs.std),'HH24:MI') std
+                                              ,fb.depairportcode destination
+                                              ,cmn_common.get_parameter_value('AIRPORT_CODE') departurefrom
+                                              ,decode(fb.physicalclass,'ST','Standard','OG','OOG','OS','ODD','SP','Special','SC','Semi-Conveyable') type
+                                              ,null uld
+                                              ,null load
+                                              ,replace(replace(fb.l_bagexceptiondata,'ExceptionType=',''),chr(10),'') exception
+                                              ,null checkin
+                                              ,null makeup
+                                              ,null transferinput
+                                        from  fact_bagtrace fb, fact_flight_summaries ffs
+                                        where fb.depairline||fb.depflight  = ffs.flightnr
+                                        and   fb.depflightdate             = ffs.flightdate
+                                        and   fb.depairline                = l_airline
+                                        and   fb.depflight                 = l_flightnr||l_sufifx
+                                        and   fb.depflightdate             = i_schedule_date
+                                        and   ffs.arrivalordeparture       = 'D'
+                                        and   fb.bag_message_id            = 'BSM'
+                                        and   fb.bagrunid                  is null)
+                                  where maxtime = events;
+                                  
+      end if;
+  
+   exception
+      when others then
+         bpi_log.handle_error( i_con_proc  => l_con_proc);
+   end;
+
+   bpi_trace.leave_module( i_module => l_con_proc);
+ end;
+end wpf_reports;
+/

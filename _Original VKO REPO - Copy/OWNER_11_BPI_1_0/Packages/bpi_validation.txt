@@ -1,0 +1,314 @@
+create or replace PACKAGE bpi_validation
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'bpi_validation';
+
+FUNCTION check_statistics
+      RETURN number;
+	  
+FUNCTION check_housekeep_index
+      RETURN number;
+	  
+FUNCTION check_housekeep_parameters
+      RETURN number;
+	  
+FUNCTION check_metric_occurences
+      RETURN number;
+
+FUNCTION check_missing_dynamic_tables
+      RETURN number;
+	 
+FUNCTION check_missing_part_tables
+      RETURN number;
+
+FUNCTION check_missing_wc_tables
+      RETURN number;
+
+FUNCTION check_xml_config
+      RETURN number;
+
+	  
+END bpi_validation;
+/
+
+
+
+
+package body bpi_validation
+is
+
+function check_statistics return number is
+l_err number := 0; l_num number := 0;
+begin
+  l_num := 0;
+
+  dbms_output.enable;
+  dbms_output.put_line('Checking for tables that do not have STATIC STATISTICS');
+  for c_rec in (select 'WARNING: No STATIC STATISTICS loaded for table '||table_name as error
+                from  user_tables
+                where table_name not in (select upper(c1)
+                                         from   stats_table
+                                         where  type='T')
+                and   table_name not in ('STATS_TABLE','TEST_PARTITION', 'CLOBSTORE', 'PDFPERIODEXPORTS', 'PDFPERIODREPORTS', 'PDFSTORE', 'FACT_SCREENING_RESULTS_REPORTS', 'FACT_SCREEN_REPORTS_AGG_M5')
+                and   table_name not like 'ERR$%'
+                order by table_name)
+  loop
+     dbms_output.put_line(c_rec.error);
+     l_num := l_num + 1;
+  end loop;
+  
+  l_err := l_err + l_num;
+  
+  
+  
+  return l_num;
+  
+end;
+
+
+
+
+
+function check_housekeep_index return number is
+l_err number := 0; l_num number := 0;
+begin
+
+  l_num := 0;
+  dbms_output.enable;
+  dbms_output.put_line('Checking BPI HOUSEKEEP tables with CLEANUP_METHOD=D that do not have an index on the DEL_FIELD column');
+  for c_rec in (select 'ERROR: '||a.table_name||' has missing index on '||a.del_field as error
+                from   bpi_housekeep_parameters a
+                where  a.cleanup_method = 'D'
+                and    not exists ( select 1
+                                    from  user_ind_columns
+                                    where table_name=trim(upper(a.table_name))
+                                    and   column_name=trim(upper(a.del_field)))
+                order by 1)
+  loop
+     dbms_output.put_line(c_rec.error);
+     l_num := l_num + 1;
+  end loop;
+  
+  l_err := l_err + l_num;
+  
+  
+  
+  
+  return l_num;
+end;
+
+
+
+
+function check_housekeep_parameters return number is
+l_err number := 0; l_num number := 0;
+begin
+
+    
+  l_num := 0;
+  
+  dbms_output.enable;
+  dbms_output.put_line('Checking for tables configured in BPI_HOUSEKEEP_PARAMETERS that do not exist');
+  for c_rec in (select 'ERROR: Non existing table '||table_name||' configured in BPI_HOUSEKEEP_PARAMETERS' as error
+                from   bpi_housekeep_parameters
+                where  upper(table_name) not in (select tname from tab)
+                order  by table_name)
+  loop
+     dbms_output.put_line(c_rec.error);
+     l_num := l_num + 1;
+  end loop;
+  
+  l_err := l_err + l_num;
+  
+  
+  
+   
+  return l_num;
+end;
+
+
+
+
+function check_metric_occurences return number is
+l_err number := 0; l_num number := 0;
+begin
+
+   
+  l_num := 0;
+  
+  dbms_output.enable;
+  dbms_output.put_line('Checking for possible missing METRIC_OCCURRENCES');
+  for c_rec in (select 'Warning: '||a.metric_name||'.'||c.column_name||' is not defined' as warning
+                from   metric_config a, user_tab_columns c
+                where  c.table_name = a.source_tables
+                and    c.data_type = 'NUMBER'
+                and    c.column_name not like '%ID'
+                and    c.column_name not like '%NODE'
+                and    c.column_name not like '%LEVEL'
+                and    a.period_type = 'H1'
+                and    a.source_tables like '%AGG_M5'
+                and    c.column_name not in ( select b.name
+                                              from   metric_config a, metric_occurrence b
+                                              where  a.metric_id = b.metric_id
+                                              and    a.period_type = 'H1'
+                                              and    a.source_tables like '%AGG_M5'
+                                            )
+                union
+                select 'Warning: '||a.metric_name||'.'||c.column_name||' is not defined' as warning
+                from   metric_config a, user_tab_columns c
+                where  c.table_name = a.source_tables
+                and    c.data_type = 'NUMBER'
+                and    c.column_name not like '%ID'
+                and    c.column_name not like '%NODE'
+                and    c.column_name not like '%LEVEL'
+                and    a.period_type = 'D1'
+                and    a.source_tables like '%AGG_H1'
+                and    c.column_name not in ( select b.name
+                                              from   metric_config a, metric_occurrence b
+                                              where  a.metric_id = b.metric_id
+                                              and    a.period_type = 'D1'
+                                              and    a.source_tables like '%AGG_H1'
+                                            )
+                order by 1)
+  loop
+     dbms_output.put_line(c_rec.warning);
+     l_num := l_num + 1;
+  end loop;
+  
+  
+  
+
+  return l_num;
+end;
+
+
+
+
+function check_missing_dynamic_tables return number is
+l_err number := 0; l_num number := 0;
+begin
+
+  l_num := 0;
+  dbms_output.enable;
+  dbms_output.put_line('Checking dynamic tables missing from BPI_HOUSEKEEP_PARAMETERS');
+  for c_rec in (select 'ERROR: Entry for '||tname||' is missing from BPI_HOUSEKEEP_PARAMETERS' as error
+                from  ( select tname
+                        from  (select tname
+                               from   tab
+                               where  (tname = 'PDFSTORE'or tname like 'WC_%' or tname like 'FACT_%')
+                               and    tname not like '%_V'
+                               and    tname not in ('FACT_MAINTENANCE_COUNTERS','FACT_TRAVELTIMES_BENCHMARK')
+                               )
+                       )
+                where tname not in ( select upper(table_name) as tname
+                                     from   bpi_housekeep_parameters
+                                     where  cleanup_method in ('D','P')
+                                   )
+                order by tname)
+  loop
+     dbms_output.put_line(c_rec.error);
+     l_num := l_num + 1;
+  end loop;
+  
+  l_err := l_err + l_num;
+  
+  
+  
+  
+  return l_num;
+end;
+
+
+
+
+function check_missing_part_tables return number is
+l_err number := 0; l_num number := 0;
+begin
+
+  
+  l_num := 0;
+  dbms_output.enable;
+  dbms_output.put_line('Checking partitioned tables missing from BPI_HOUSEKEEP_PARAMETERS');
+  for c_rec in (select 'ERROR: Entry for '||table_name||' is missing from BPI_HOUSEKEEP_PARAMETERS' as error
+                from   ( select table_name, count(*) as partition_count
+                         from   bpi_partitions
+                         where  table_name <> 'TEST_PARTITION'
+                         group  by table_name
+                       )
+                where  table_name not in ( select upper(table_name) as table_name
+                                           from   bpi_housekeep_parameters
+                                         )
+                order by table_name)
+  loop
+     dbms_output.put_line(c_rec.error);
+     l_num := l_num + 1;
+  end loop;
+  
+  l_err := l_err + l_num;
+  
+  
+  
+  return l_num;
+end;
+
+
+
+
+function check_missing_wc_tables return number is
+l_err number := 0; l_num number := 0;
+begin
+
+  
+  l_num := 0;
+  dbms_output.enable;
+  dbms_output.put_line('Checking if configured CORE tables are missing from schema');
+  for c_rec in (select 'ERROR: '||substr(upper(trim(tableprefix)||trim(rootnode)),1,30)||' is missing from schema' as error
+                from   xml2table_configuration
+                where  substr(upper(trim(tableprefix)||trim(rootnode)),1,30) not in (select table_name
+                                                                                     from   user_tables
+                                                                                     where  table_name like upper(trim(tableprefix))||'%'
+                                                                                     )
+                order by 1)
+  loop
+     dbms_output.put_line(c_rec.error);
+     l_num := l_num + 1;
+  end loop;
+  
+  l_err := l_err + l_num;
+  
+  
+  
+
+  return l_num;
+end;
+
+
+
+
+function check_xml_config return number is
+l_err number := 0; l_num number := 0;
+begin
+
+  dbms_output.enable;
+  dbms_output.put_line('Checking configuration');
+  
+  
+  l_num := 0;
+  dbms_output.put_line('Checking for errors in INSTALL_XML_MESSAGE_STORE_LOG');
+  for c_rec in (select 'ERROR: '||rootnode||' '||to_char(returncode)||': '||errormessage as error
+                from   install_xml_message_store_log
+                where  returncode not in(0,-2))
+  loop
+     dbms_output.put_line(c_rec.error);
+     l_num := l_num + 1;
+  end loop;
+  
+  l_err := l_err + l_num;
+
+  
+  
+
+  return l_num;
+end;
+
+end bpi_validation;
+/

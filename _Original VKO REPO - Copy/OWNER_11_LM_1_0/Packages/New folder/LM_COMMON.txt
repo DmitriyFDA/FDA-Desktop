@@ -1,0 +1,1975 @@
+create or replace PACKAGE LM_COMMON IS
+
+G_CON_PACKAGE CONSTANT LM_CONSTANT.ST_PROC_NAME := 'LM_COMMON';
+
+SUBTYPE g_interval_type IS INTERVAL DAY(9) TO SECOND(3);
+
+TYPE G_RT_BIR_INFO IS RECORD
+ (VERSION_NUMBER LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,BID LM_PACKAGES.BID%TYPE
+ ,BID_EXTENSION LM_PACKAGES.BID_EXTENSION%TYPE
+ ,PID LM_PACKAGES.PID%TYPE
+ ,VIRTUAL_BAG_ID LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,DESTINATION NT_STN_ID_CUST
+ ,LPC LM_PACKAGES.LPC%TYPE
+ ,LPC_EXTENSION LM_PACKAGES.LPC_EXTENSION%TYPE
+ ,FLIGHT_NR LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,SDD LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,STD LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,PHYSICAL_CLASS LM_PHYSICAL_CLASS_DOM.NAME%TYPE
+ ,SCREENINGINFO NT_SCREENINGINFO
+ ,BAG_STATUS LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,PRIORITY_INDICATOR LM_PACKAGES.PRIORITY_INDICATOR%TYPE
+ ,DESTINATION_HANDLING_AREA LM_HANDLING_AREAS.ID_CUST%TYPE
+);
+TYPE G_RT_BIR IS RECORD
+ (VERSION LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,VIRTUAL_BAG_INDICATOR LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,CARRIER NT_CARRIER
+ ,PID LM_PACKAGES.PID%TYPE
+ ,DESTINATION NT_STN_ID_CUST
+ ,DESTINATION_HANDLING_AREA LM_HANDLING_AREAS.ID_CUST%TYPE
+ ,BID LM_PACKAGES.BID%TYPE
+ ,BID_EXTENSION LM_PACKAGES.BID_EXTENSION%TYPE
+ ,LPC LM_PACKAGES.LPC%TYPE
+ ,LPC_EXTENSION LM_PACKAGES.LPC_EXTENSION%TYPE
+ ,PHYSICAL_CLASS LM_PHYSICAL_CLASS_DOM.NAME%TYPE
+ ,LENGTH LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,WIDTH  LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,HEIGHT LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,VOLUME LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,WEIGHT LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,SCREENINGINFO NT_SCREENINGINFO
+ ,BAG_STATUS LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,PRIORITY_INDICATOR LM_PACKAGES.PRIORITY_INDICATOR%TYPE
+ ,PROCESS_PLAN_ID_NAME LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,PRODUCT_NAME LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,AIRLINE LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,FLIGHTNUMBER LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,FLIGHTDATE LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,STD LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+);
+
+
+TYPE G_IT_PON_ID_CUST IS TABLE OF LM_PHYSICAL_DESTINATIONS.ID_CUST%TYPE INDEX BY BINARY_INTEGER;
+
+TYPE G_RT_INSTRUCTION IS RECORD
+( IT_PON_ID_CUST          LM_COMMON.G_IT_PON_ID_CUST
+ ,DESTINATION_HAA_ID_CUST LM_HANDLING_AREAS.ID_CUST%TYPE
+ ,PRIORITY_INDICATOR      LM_PACKAGES.PRIORITY_INDICATOR%TYPE
+ ,RELEASE_GROUP_ID        LM_RELEASE_GROUPS.ID%TYPE
+);
+
+TYPE G_RT_HLC_IDENTIFICATION IS RECORD
+( BID           LM_PACKAGES.BID%TYPE
+ ,BID_EXTENSION LM_PACKAGES.BID_EXTENSION%TYPE
+ ,LPC           LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,LPC_EXTENSION LM_PACKAGES.LPC_EXTENSION%TYPE
+);
+
+TYPE G_RT_FLIGHTINFORMATION IS RECORD
+( PROCESS_PLAN_NAME  LM_SEGREGATION_GROUPS.PROCESS_PLAN_NAME%TYPE
+ ,PRODUCT_NAME       LM_SEGREGATION_GROUPS.PRODUCT_NAME%TYPE
+ ,AIRLINE            LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,FLIGHTNUMBER       LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,FLIGHTDATE         LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,STD                LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+);
+                                                                                                                                                                                                        
+TYPE G_RT_RECOVERY IS RECORD
+( PHYSICAL_CLASS     LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,LENGTH             LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,WIDTH              LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,HEIGHT             LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,MEASUREDVOLUME     LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,WEIGHT             LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+ ,SCREENINGINFO      NT_SCREENINGINFO
+ ,BAG_STATUS         LM_PACKAGE_ATTRIBUTE_VALUES.VALUE%TYPE
+);
+
+TYPE G_RT_PACKAGE_INSTRUCTION IS RECORD
+(
+ INSTRUCTION           LM_COMMON.G_RT_INSTRUCTION
+,HLC_IDENTIFICATION    LM_COMMON.G_RT_HLC_IDENTIFICATION
+,FLIGHTINFORMATION     LM_COMMON.G_RT_FLIGHTINFORMATION
+,SCREENINGINSTRUCTION  NT_SCREENINGINSTRUCTION
+,RECOVERY              LM_COMMON.G_RT_RECOVERY
+);
+
+/* CMN_001: Get parameter value */
+FUNCTION GET_PARAMETER_VALUE
+ (I_PRR_NAME IN LM_PARAMETERS.NAME%TYPE
+ )
+ RETURN LM_PARAMETER_VALUES.VALUE%TYPE;
+/* CMN_002: return the CLOB value of a given XMLTYPE data type */
+FUNCTION GET_CLOB_VAL
+ (I_XMLTYPE_DATA IN XMLTYPE
+ )
+ RETURN CLOB;
+/* Returns a default timestamp. */
+FUNCTION DEFAULT_TIMESTAMP
+ RETURN TIMESTAMP;
+/* Get default date. */
+FUNCTION DEFAULT_DATE
+ RETURN DATE;
+/* CMN_005: Convert a timestamp into a specified string. */
+FUNCTION CONVERT_TIMESTAMP
+ (I_TIMESTAMP IN TIMESTAMP
+ ,I_FORMAT_SPECIFIER IN VARCHAR2
+ )
+ RETURN VARCHAR2 DETERMINISTIC;
+/* CMN_006 Convert varchar2 time interval to Interval datatype */
+FUNCTION VARCHAR_TO_INTERVAL
+ (I_INT IN VARCHAR2
+ )
+ RETURN INTERVAL DAY TO SECOND DETERMINISTIC;
+/* CMN_007 convert varchar2 to timestamp */
+FUNCTION VARCHAR_TO_TIMESTAMP
+ (I_TIMESTAMP IN VARCHAR2
+ )
+ RETURN TIMESTAMP DETERMINISTIC;
+/* CMN_008 convert varchar2 to date */
+FUNCTION VARCHAR_TO_DATE
+ (I_DATE IN VARCHAR2
+ )
+ RETURN DATE DETERMINISTIC;
+/* CMN_009 convert timestamp to varchar2 */
+FUNCTION TIMESTAMP_TO_VARCHAR
+ (I_TIMESTAMP IN TIMESTAMP
+ )
+ RETURN VARCHAR2 DETERMINISTIC;
+/* CMN_010 Convert date to varchar2 */
+FUNCTION DATE_TO_VARCHAR
+ (I_DATE IN DATE
+ )
+ RETURN VARCHAR2 DETERMINISTIC;
+FUNCTION round_timestamp_sec
+ (i_timestamp IN TIMESTAMP
+ )
+ RETURN TIMESTAMP DETERMINISTIC;
+/* CMN_011: Set the parametr value of a given parameter */
+PROCEDURE SET_PARAMETER_VALUE
+ (I_PRR_NAME IN LM_PARAMETERS.NAME%TYPE
+ ,I_PVE_VALUE IN LM_PARAMETER_VALUES.VALUE%TYPE
+ );
+/* Abort all CSCI_LM processes because a fatal error was encountered */
+PROCEDURE ABORT_APPLICATION_FATAL
+ (I_SQLCODE IN PLS_INTEGER := sqlcode
+ );
+/* Function that builds and returns a user-based signal */
+FUNCTION build_signal( i_signal_identifier IN VARCHAR2 ) RETURN  VARCHAR2;
+/* Procedure that sends a stop signal to a job */
+PROCEDURE stop_signal( i_signal_identifier IN VARCHAR2);
+/* Function to translate an interval to number */
+FUNCTION to_seconds(i_interval IN g_interval_type) RETURN NUMBER;
+/* Procedure to convert a (Area controller) BIR to a (HLC) BIR_Info. */
+PROCEDURE convert_bir
+ ( i_rt_bir      IN  lm_common.g_rt_bir
+  ,o_rt_bir_info OUT lm_common.g_rt_bir_info
+ );
+/* Function to guess timestamp from SDD + STD */
+FUNCTION STD_GUESS
+ (I_SDD IN VARCHAR2
+ ,I_STD IN VARCHAR2
+ )
+RETURN TIMESTAMP;
+/* Convert the (HLC) FlightNr element to an (area controller) Airline and FlightNumber.*/
+PROCEDURE convert_flightnr
+ ( i_flightnr  IN  VARCHAR2
+  ,o_airline  OUT  VARCHAR2
+  ,o_flightnr OUT  VARCHAR2
+ );
+/* Store received BIR into package attribute values */
+PROCEDURE store_bir
+ ( i_rt_bir         lm_common.g_rt_bir
+  ,i_pet_id         lm_package_events.id%TYPE
+  ,i_pkv_order      lm_package_attribute_values.id%TYPE DEFAULT 1
+  ,i_nt_attr_except nt_id_coll DEFAULT nt_id_coll()
+ );
+PROCEDURE store_bir
+ ( i_rt_bir         lm_common.g_rt_bir
+  ,i_pet_id         lm_package_events.id%TYPE
+  ,i_pkv_order      lm_package_attribute_values.id%TYPE DEFAULT 1
+  ,i_nt_attr_except nt_id_coll DEFAULT nt_id_coll()
+  ,o_nt_pon_id      OUT nt_pon_id
+ );
+ 
+/* Convert gdate to varchar2 */
+FUNCTION GDAY_DATE_TO_VARCHAR
+ (I_DATE IN DATE
+ )
+ RETURN VARCHAR2;
+
+FUNCTION user_info
+RETURN VARCHAR2;
+END LM_COMMON;
+/
+
+
+
+
+package body lm_common is
+
+
+function get_parameter_value
+ (i_prr_name in lm_parameters.name%type
+ )
+ return lm_parameter_values.value%type
+ is
+
+
+cursor c_pve_parameter_value
+ (b_prr_name in lm_parameters.name%type
+ )
+ is
+select pvev.value
+from   lm_parameters                prr
+     , lm_parameter_values_active_v pvev
+where  prr.id = pvev.prr_id
+and    prr.name = b_prr_name;
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.get_parameter_value';
+
+rec_pve_parameter_value c_pve_parameter_value%rowtype;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   open c_pve_parameter_value (i_prr_name);
+
+   fetch c_pve_parameter_value
+   into  rec_pve_parameter_value;
+
+   if c_pve_parameter_value%found
+   then
+      close c_pve_parameter_value;
+   else
+      close c_pve_parameter_value;
+
+      viu_info.raise_info (i_ifo_nr =>               viu_constant.c_ifo_noparameterentry
+                         , i_calling_procedure =>    l_con_proc_name
+                         , i_severity =>             viu_info.c_severity_error
+                         , i_info_arguments =>       i_prr_name
+                          );
+   end if;
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+   return (rec_pve_parameter_value.value);
+exception
+   when others
+   then
+      if c_pve_parameter_value%isopen
+      then
+         close c_pve_parameter_value;
+      end if;
+
+      viu_module.leave_module (i_module =>    l_con_proc_name);
+      viu_info.raise_info (i_calling_procedure =>    l_con_proc_name);
+end get_parameter_value;
+
+function get_clob_val
+ (i_xmltype_data in xmltype
+ )
+ return clob
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.get_clob_val';
+
+l_return_value clob;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   if i_xmltype_data is not null
+   then
+      l_return_value  := i_xmltype_data.getclobval;
+   else
+      l_return_value  := null;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_return_value;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_clob_val;
+
+function default_timestamp
+ return timestamp
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.DEFAULT_TIMESTAMP';
+
+l_return_value timestamp;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+
+   l_return_value  :=
+           to_timestamp( to_char( sys_extract_utc( systimestamp )
+                                , lm_constant.g_con_cmn_timestamp_format
+                                )
+                       , lm_constant.g_con_cmn_timestamp_format
+                       );
+   return l_return_value;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end default_timestamp;
+
+function default_date
+ return date
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.DEFAULT_DATE';
+
+l_return_value date;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   l_return_value := sysdate;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_return_value;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end default_date;
+
+function convert_timestamp
+ (i_timestamp in timestamp
+ ,i_format_specifier in varchar2
+ )
+ return varchar2
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.convert_timestamp';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return to_char( i_timestamp
+                 , i_format_specifier
+                 );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end convert_timestamp;
+
+function varchar_to_interval
+ (i_int in varchar2
+ )
+ return interval day to second
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.varchar_to_interval';
+
+l_interval interval day(9) to second;
+l_int varchar2(256);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   begin
+      l_int := replace( lower( i_int ), 'd', '' );
+      l_int := replace( l_int, 'h', ' ' );
+      l_int := replace( l_int, 'm', ':' );
+      l_int := replace( l_int, 's', ':' );
+      l_int := replace( l_int, 'f', '.' );
+   
+      
+      l_interval := to_dsinterval( l_int );
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_intervalconversionerror
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Interval: ' || i_int
+                            );
+   end;
+            
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_interval;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end varchar_to_interval;
+
+function varchar_to_timestamp
+ (i_timestamp in varchar2
+ )
+ return timestamp
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.varchar_to_timestamp';
+
+l_timestamp timestamp;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   begin
+      
+      
+      
+      l_timestamp := to_timestamp( i_timestamp
+                                 , lm_constant.g_con_cmn_in_timestamp_format
+                                 );
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_varchartotimestamp
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Timestamp: ' || i_timestamp
+                            );
+   end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_timestamp;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end varchar_to_timestamp;
+
+function varchar_to_date
+ (i_date in varchar2
+ )
+ return date
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.varchar_to_date';
+
+l_date date;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   begin
+      l_date := to_date( i_date
+                       , lm_constant.g_con_cmn_format_date
+                       );
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_varchartodate
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Date: ' || i_date
+                            );
+   end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_date;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end varchar_to_date;
+
+function timestamp_to_varchar
+ (i_timestamp in timestamp
+ )
+ return varchar2
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.timestamp_to_varchar';
+
+l_formatted_timestamp varchar2(240);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   begin
+      if i_timestamp is not null
+      then
+         
+         l_formatted_timestamp := to_char( i_timestamp, lm_constant.g_con_cmn_timestamp_format) ||
+         lm_constant.g_con_cmn_timestamp_suffix;
+      end if;
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_timestamptovarchar
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Timestamp: ' || i_timestamp
+                            );
+   end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_formatted_timestamp;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end timestamp_to_varchar;
+
+function date_to_varchar
+ (i_date in date
+ )
+ return varchar2
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.date_to_varchar';
+
+l_varchar_date varchar2(240);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   begin
+      l_varchar_date := to_char( i_date
+                               , lm_constant.g_con_cmn_format_date
+                               );
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_datetovarchar
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Date: ' || i_date
+                            );
+   end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_varchar_date;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end date_to_varchar;
+
+function round_timestamp_sec
+ (i_timestamp in timestamp
+ )
+ return timestamp deterministic
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.round_timestamp_sec';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   
+   
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return cast( cast( (i_timestamp + interval '0.5' second) as date) as timestamp);
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end round_timestamp_sec;
+
+
+procedure set_parameter_value
+ (i_prr_name in lm_parameters.name%type
+ ,i_pve_value in lm_parameter_values.value%type
+ )
+ is
+
+
+cursor c_get_parameter_value
+ (i_prr_name in lm_parameters.name%type
+ )
+ is
+select pvev.*
+from   lm_parameter_values_active_v  pvev
+     , lm_parameters                 prr
+where  pvev.prr_id = prr.id
+and    prr.name = i_prr_name;
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.set_parameter_value';
+
+rec_get_parameter_value c_get_parameter_value%rowtype;
+l_rt_pve lm_parameter_values%rowtype;
+l_rows_updated number;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   open c_get_parameter_value( i_prr_name      => i_prr_name );
+
+   fetch c_get_parameter_value
+   into  rec_get_parameter_value;
+
+   if c_get_parameter_value%found
+   then
+      close c_get_parameter_value;
+
+      
+      l_rt_pve        := rec_get_parameter_value;
+      l_rt_pve.value  := i_pve_value;
+      l_rows_updated  := lm_pve_tapi_pck.pve_update_row( i_pve_id       => l_rt_pve.id
+                                                       , io_rt_pve      => l_rt_pve
+                                                       );
+   else
+      close c_get_parameter_value;
+
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_noparameterentry
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_prr_name
+                         );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_get_parameter_value%isopen
+      then
+         close c_get_parameter_value;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end set_parameter_value;
+
+procedure abort_application_fatal
+ (i_sqlcode in pls_integer := sqlcode
+ )
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.Abort_Application_Fatal';
+
+
+l_acl_success boolean;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module(  i_module      => l_con_proc_name
+                           , i_debug_info  => 'i_sqlcode = " '||to_char(i_sqlcode) ||'"'
+                          );
+
+   
+
+
+
+
+
+
+
+
+
+   
+   viu_info.handle_info;
+
+   
+   viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_internalerror
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_sqlcode
+                         );
+   
+   rollback;
+
+   
+   
+   acl_application_control.handle_request( i_aet_id_cust       => lm_constant.get_aet_name_csci_lm
+                                         , i_ace_id_cust       => acl_common.get_request_type_abort
+                                         , i_error_description => acl_constant.g_con_aps_reason_fatalapperror
+                                         , o_success           => l_acl_success
+                                         );
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+exception
+   when others
+   then
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    'i_sqlcode = "'||to_char(i_sqlcode)
+                                                    || '" SQLERRM = "'||sqlerrm ||'"'
+                             );
+
+      viu_info.handle_info( i_calling_procedure      => l_con_proc_name );
+
+end abort_application_fatal;
+
+
+function build_signal( i_signal_identifier in varchar2 )
+return   varchar2
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name constant lm_constant.st_proc_name    := g_con_package || '.build_signal';
+
+   l_result_signal          varchar2(4096);
+   l_max_signal_length      number;
+begin
+   viu_module.enter_module( i_module  => l_con_proc_name );
+
+   
+   l_result_signal := user || i_signal_identifier;
+
+   l_max_signal_length := lm_constant.g_con_max_signal_length;
+
+   if length(l_result_signal) > l_max_signal_length
+   then
+      
+      viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_illegalsignallength
+                         , i_calling_procedure  => l_con_proc_name
+                         , i_severity           => viu_info.c_severity_error
+                         , i_info_arguments     => nvl(l_result_signal, 'NULL')
+                                                   || '## '
+                                                   || nvl(to_char(l_max_signal_length), 'NULL')
+                         );
+   end if;
+
+   viu_module.leave_module( i_module  => l_con_proc_name );
+
+   return l_result_signal;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      viu_info.raise_info( i_calling_procedure  => l_con_proc_name );
+end build_signal;
+
+procedure stop_signal( i_signal_identifier in varchar2)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name   constant lm_constant.st_proc_name  := g_con_package || '.stop_signal';
+   l_signal_name              varchar(4096);
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   
+   l_signal_name := lm_common.build_signal( i_signal_identifier => i_signal_identifier );
+
+   
+   dbms_alert.signal(l_signal_name, l_signal_name);
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module      => l_con_proc_name
+                             , i_debug_info  => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure  => l_con_proc_name );
+
+end stop_signal;
+
+function to_seconds(i_interval in g_interval_type) return number
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.to_seconds';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+  
+   return   ((extract(day    from i_interval)) *24*60*60*1)
+           +((extract(hour   from i_interval))    *60*60*1)
+           +((extract(minute from i_interval))       *60*1)
+           +((extract(second from i_interval))          *1);
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end to_seconds;
+
+procedure convert_bir
+ ( i_rt_bir      in  lm_common.g_rt_bir
+  ,o_rt_bir_info out lm_common.g_rt_bir_info
+ )
+ is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.convert_bir';
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   o_rt_bir_info.version_number            := i_rt_bir.version;
+   o_rt_bir_info.bid                       := i_rt_bir.bid;
+   o_rt_bir_info.bid_extension             := i_rt_bir.bid_extension;
+   o_rt_bir_info.pid                       := i_rt_bir.pid;
+   o_rt_bir_info.destination               := i_rt_bir.destination;
+   o_rt_bir_info.lpc                       := i_rt_bir.lpc;
+   o_rt_bir_info.lpc_extension             := i_rt_bir.lpc_extension;
+   o_rt_bir_info.flight_nr                 := i_rt_bir.airline || i_rt_bir.flightnumber;
+   o_rt_bir_info.sdd                       := lm_common.gday_date_to_varchar(lm_common.varchar_to_date(i_rt_bir.flightdate));
+   o_rt_bir_info.std                       := i_rt_bir.std;
+   o_rt_bir_info.physical_class            := i_rt_bir.physical_class;
+   o_rt_bir_info.screeninginfo             := i_rt_bir.screeninginfo;
+   o_rt_bir_info.bag_status                := i_rt_bir.bag_status;
+   o_rt_bir_info.priority_indicator        := i_rt_bir.priority_indicator;
+   o_rt_bir_info.destination_handling_area := i_rt_bir.destination_handling_area;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end convert_bir;
+
+function std_guess
+(i_sdd in varchar2
+,i_std in varchar2
+ )
+return timestamp
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.STD_guess';
+   l_today         timestamp;
+   l_std           timestamp;
+   l_sdd_is_today  boolean := true;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   l_today := lm_common.default_timestamp;
+
+   
+   
+   begin
+      
+      
+      
+      l_std := to_timestamp(    to_char(l_today, 'YYYYMM') 
+                             || substr(i_sdd, 4, 2)        
+                             || i_std                      
+                           , 'YYYYMMDDHH24:MI:SS.FF9"Z"'
+                           );
+      if trunc(l_std) <> trunc(l_today)
+      then
+         l_std := null;
+         l_sdd_is_today := false;
+      end if;
+   exception
+      when others
+      then
+         l_sdd_is_today := false;
+   end;
+   if not l_sdd_is_today
+   then
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      for rec_date in
+         (with search_dates as
+          (
+           select to_char(l_today - numtodsinterval(32 - rownum, 'DAY'),'---DD') daynumber
+           ,      l_today - numtodsinterval(32 - rownum, 'DAY')                  daydate
+           from   dual
+           connect by level <= 63
+          )
+          , possible_dates as
+          (select sde.daydate                              daydate
+           ,      sde.daydate - l_today                    diff
+           ,      rank() over
+                   (order by abs(extract(day from sde.daydate - l_today))
+                    ,        sde.daydate desc
+                   )                                       diff_rank
+           from   search_dates sde
+           where  sde.daynumber = i_sdd
+          )
+         select to_timestamp( to_char(pde.daydate, 'DDMMYYYY') || i_std
+                            , 'DDMMYYYYHH24:MI:SS.FF9"Z"'
+                            ) std
+         from   possible_dates pde
+         where  pde.diff_rank = 1
+        )
+      loop
+         l_std := rec_date.std;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_std;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end std_guess;
+
+procedure convert_flightnr
+ ( i_flightnr  in  varchar2
+  ,o_airline  out  varchar2
+  ,o_flightnr out  varchar2
+ )
+ is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.convert_flightnr';
+   l_pattern       varchar2(20);
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   l_pattern  := '[A-Z0-9]{2}[A-Z]?';
+   o_airline  := regexp_substr(i_flightnr,l_pattern);
+   o_flightnr := substr(i_flightnr,length(regexp_substr(i_flightnr,l_pattern)) + 1);
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end convert_flightnr;
+
+
+procedure store_bir
+ ( i_rt_bir         lm_common.g_rt_bir
+  ,i_pet_id         lm_package_events.id%type
+  ,i_pkv_order      lm_package_attribute_values.id%type default 1
+  ,i_nt_attr_except nt_id_coll default nt_id_coll()
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.store_bir';
+  l_nt_pon_id      nt_pon_id;
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+   
+   lm_common.store_bir( i_rt_bir         => i_rt_bir
+                       ,i_pet_id         => i_pet_id
+                       ,i_pkv_order      => i_pkv_order
+                       ,i_nt_attr_except => i_nt_attr_except
+                       ,o_nt_pon_id      => l_nt_pon_id
+                       );
+                        
+   viu_module.leave_module( i_module => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end store_bir;
+
+
+procedure store_bir
+ ( i_rt_bir         lm_common.g_rt_bir
+  ,i_pet_id         lm_package_events.id%type
+  ,i_pkv_order      lm_package_attribute_values.id%type default 1
+  ,i_nt_attr_except nt_id_coll default nt_id_coll()
+  ,o_nt_pon_id      out nt_pon_id
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.store_bir';
+   
+   l_pkv_order lm_package_attribute_values.pkv_order%type := i_pkv_order;
+   l_rt_pon    lm_physical_destinations%rowtype;
+   l_rt_rdn    lm_received_destinations%rowtype;
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+   
+   o_nt_pon_id :=  nt_pon_id();
+   
+   
+   if i_rt_bir.destination.count > 0
+   then
+      for idx in i_rt_bir.destination.first ..  i_rt_bir.destination.last
+      loop
+         
+         if lm_pon_tapi_pck.pon_select_row_uk1( i_pon_id_cust      => i_rt_bir.destination(idx)
+                                              , o_rt_pon           => l_rt_pon)
+         then
+            l_rt_rdn.id        := null;
+            l_rt_rdn.pet_id    := i_pet_id;
+            l_rt_rdn.pon_id    := l_rt_pon.id;
+            l_rt_rdn.rdn_order := idx;
+            lm_rdn_tapi_pck.rdn_insert_row ( io_rt_rdn => l_rt_rdn);
+            
+            o_nt_pon_id.extend;
+            o_nt_pon_id(o_nt_pon_id.count) := l_rt_pon.id;
+         else
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_physicaldesterror
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_additional_data        => 'Destination: ' || i_rt_bir.destination(idx)
+                                  );
+         end if;
+      end loop;
+   end if;
+   
+   if not lm_constant.g_con_pka_name_version_nr member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.version
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_version_nr
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+
+   if not lm_constant.g_con_pka_name_virtualbagind member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.virtual_bag_indicator
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_virtualbagind
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if i_rt_bir.carrier.count > 0
+   then
+      for idx in i_rt_bir.carrier.first .. i_rt_bir.carrier.last
+      loop
+         if not lm_constant.g_con_pka_name_carrier_id member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.carrier(idx).id
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_carrier_id
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+         if not lm_constant.g_con_pka_name_carrier_type member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.carrier(idx).type
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_carrier_type
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+      end loop;
+   end if;
+
+   if not lm_constant.g_con_pka_name_pid member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.pid
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_pid
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+                                                           
+   if not lm_constant.g_con_pka_name_bid member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.bid
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_bid
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_bid_extension member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.bid_extension
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_bid_extension
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_lpc member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.lpc
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_lpc
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_lpc_extension member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.lpc_extension
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_lpc_extension
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_physicalclass member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.physical_class
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_physicalclass
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+                            
+   if not lm_constant.g_con_pka_name_length member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.length
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_length
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+
+   if not lm_constant.g_con_pka_name_width member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.width
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_width
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_height member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.height
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_height
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+
+   if not lm_constant.g_con_pka_name_volume member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.volume
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_volume
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+              
+   if not lm_constant.g_con_pka_name_weight member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.weight
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_weight
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+                                                         
+   if i_rt_bir.screeninginfo.count > 0
+   then
+      for idx in i_rt_bir.screeninginfo.first .. i_rt_bir.screeninginfo.last
+      loop
+         if not lm_constant.g_con_pka_name_scr_inf_id member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.screeninginfo(idx).process_id
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_scr_inf_id
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+         if not lm_constant.g_con_pka_name_scr_inf_name member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.screeninginfo(idx).process_name
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_scr_inf_name
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+         if not lm_constant.g_con_pka_name_scr_inf_req_lvl member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.screeninginfo(idx).required_screening_level
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_scr_inf_req_lvl
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+         if not lm_constant.g_con_pka_name_scr_inf_rea_lvl member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.screeninginfo(idx).reached_screening_level
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_scr_inf_rea_lvl
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+         if not lm_constant.g_con_pka_name_scr_inf_fai_lvl member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.screeninginfo(idx).failed_screening_level
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_scr_inf_fai_lvl
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+         if not lm_constant.g_con_pka_name_scr_inf_pseu_id member of i_nt_attr_except
+         then
+            lm_package_administration.insert_package_attribute_value( i_value      => i_rt_bir.screeninginfo(idx).pseudo_id
+                                                                    , i_pka_id     => lm_constant.g_con_pka_name_scr_inf_pseu_id
+                                                                    , io_pkv_order => l_pkv_order
+                                                                    , i_pet_id     => i_pet_id
+                                                                    );
+         end if;
+      end loop;
+   end if;
+   
+   if not lm_constant.g_con_pka_name_bag_status member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.bag_status
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_bag_status
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+                     
+   if not lm_constant.g_con_pka_name_priorityindicat member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.priority_indicator
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_priorityindicat
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+
+   if not lm_constant.g_con_pka_name_proc_planidname member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.process_plan_id_name
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_proc_planidname
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+                       
+   if not lm_constant.g_con_pka_name_productname member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.product_name
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_productname
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_airline member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.airline
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_airline
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+
+   if not lm_constant.g_con_pka_name_flightnr member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.flightnumber
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_flightnr
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_flightdate member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.flightdate
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_flightdate
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+   
+   if not lm_constant.g_con_pka_name_std member of i_nt_attr_except
+   then
+      lm_package_administration.insert_package_attribute_value( i_value          => i_rt_bir.std
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_std
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => i_pet_id
+                                                              );
+   end if;
+
+   viu_module.leave_module( i_module => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end store_bir;
+
+
+function gday_date_to_varchar
+ (i_date in date
+ )
+ return varchar2
+ is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.gday_to_varchar';
+   l_varchar_date  varchar2(240);
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   begin
+      l_varchar_date := to_char( i_date
+                               , lm_constant.g_con_cmn_format_gday
+                               );
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_gdaytovarchar
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Date: ' || i_date
+                            );
+   end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_varchar_date;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end gday_date_to_varchar;
+
+
+
+
+
+
+function user_info return varchar2
+is
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.user_info';
+   
+   cursor c_sess
+   is
+   select 'User      : '||session_user || chr(10)
+   ||     'Os user   : '||os_user   || chr(10)
+   ||     'Module    : '||module || chr(10)
+   ||     'Host      : '||host   || chr(10)
+   ||     'Terminal  : '||terminal || chr(10)
+   ||     'IP Address: '||ip_address  as userinfo
+   from   acl_current_session_v;
+   
+   rec_sess                c_sess%rowtype;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   open c_sess;
+   fetch c_sess into rec_sess;
+   close c_sess;
+
+   viu_module.leave_module( i_module => l_con_proc_name );
+   return rec_sess.userinfo;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   close c_sess;
+end user_info;
+
+end lm_common;
+/

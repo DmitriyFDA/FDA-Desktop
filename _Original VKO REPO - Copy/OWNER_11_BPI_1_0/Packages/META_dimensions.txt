@@ -1,0 +1,492 @@
+create or replace PACKAGE META_dimensions IS
+  PROCEDURE process_META(i_filename varchar2, i_node in DBMS_XMLDOM.domnode, i_source_id in number, o_error out number);
+END META_dimensions;
+/
+
+
+
+package body meta_dimensions is
+  
+  g_con_package                 constant varchar2(30) := 'META_dimensions';
+  g_document_node               dbms_xmldom.domnode;
+  g_dimension_source_id         number := 0;
+  g_error                       number := 0;
+
+  g_sourceprocessid             varchar2(50);
+  g_meta_versionnumber          varchar2(50);
+
+
+procedure free_memory is
+begin
+  begin
+    dbms_xmldom.freenode(n => g_document_node);
+  exception when others then
+    null;
+  end;
+end;
+
+
+  procedure process_componenttype(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_componenttypeid varchar2(50) := '';
+  l_description varchar2(200) := '';
+  l_rows_processed integer := 0;
+  begin
+  dbms_xslprocessor.valueof (p_node, 'ComponentTypeID', l_componenttypeid);
+  dbms_xslprocessor.valueof (p_node, 'Description', l_description);
+
+    update dim_componenttype
+    set version_id = p_version_id
+      , description = l_description
+    where componenttypeid = l_componenttypeid and sourceprocessid = g_sourceprocessid;
+
+    l_rows_processed := sql%rowcount;
+
+    if l_rows_processed < 1 then
+       insert into dim_componenttype
+      ( componenttypeid
+      , sourceprocessid
+      , version_id
+      , description )
+    values
+     ( l_componenttypeid
+      , g_sourceprocessid
+      , p_version_id
+      , l_description );
+    end if;
+  end;
+
+
+  procedure create_componenttype(p_filename varchar2, p_new_version_id number) is
+  l_node_list             dbms_xmldom.domnodelist;
+  l_node_count            number (20);
+  l_node                  dbms_xmldom.domnode;
+  l_msg                   varchar2(2000);
+  begin
+    insert into hist_componenttype select * from dim_componenttype
+    where sourceprocessid = p_filename
+    and version_id > nvl((select max(version_id) from hist_componenttype where sourceprocessid = p_filename),0);
+
+   l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//ComponentTypeList/ComponentType');
+   l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+   plog ('Total of ComponentType nodes in input: ' || l_node_count, 'info');
+   for i in 0..(l_node_count - 1) loop
+     l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_componenttype(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+   end loop;
+   
+   select count(*) into l_node_count from dim_componenttype;
+   plog ('Total of records in DIM_ComponentType: ' || l_node_count, 'info');
+  exception when others then
+    l_msg := sqlerrm;
+   
+   plog( 'Error (create_ComponentType): '||l_msg, 'error' );
+   g_error := 100;
+  end;
+
+
+  procedure process_generalstatus(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_componenttypeid varchar2(50) := '';
+  l_symbolicname varchar2(50) := '';
+  l_description varchar2(200) := '';
+  l_mis_address varchar2(50) := '';
+  l_rows_processed integer := 0;
+  begin
+   dbms_xslprocessor.valueof (p_node, 'ComponentTypeID', l_componenttypeid);
+   dbms_xslprocessor.valueof (p_node, 'SymbolicName', l_symbolicname);
+   dbms_xslprocessor.valueof (p_node, 'Description', l_description);
+   dbms_xslprocessor.valueof (p_node, 'MIS_Address', l_mis_address);
+
+    update dim_generalstatus
+    set version_id = p_version_id
+      , symbolicname = l_symbolicname
+      , description = l_description
+    where componenttypeid = l_componenttypeid
+      and mis_address = l_mis_address
+      and sourceprocessid = g_sourceprocessid;
+
+    l_rows_processed := sql%rowcount;
+
+    if l_rows_processed < 1 then
+        insert into dim_generalstatus
+      ( componenttypeid
+      , mis_address
+      , sourceprocessid
+      , version_id
+      , symbolicname
+      , description )
+     values
+     ( l_componenttypeid
+      , l_mis_address
+      , g_sourceprocessid
+      , p_version_id
+      , l_symbolicname
+      , l_description );
+    end if;
+  end;
+
+
+  procedure create_generalstatus(p_filename varchar2, p_new_version_id number) is
+  l_node_list             dbms_xmldom.domnodelist;
+  l_node_count            number (20);
+  l_node                  dbms_xmldom.domnode;
+  l_msg                   varchar2(2000);
+  begin
+    insert into hist_generalstatus select * from dim_generalstatus
+    where sourceprocessid = p_filename
+    and version_id > nvl((select max(version_id) from hist_generalstatus where sourceprocessid = p_filename),0);
+
+   l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//GeneralStatusList/GeneralStatus');
+   l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+   plog ('Total of GeneralStatus nodes in input: ' || l_node_count, 'info');
+   for i in 0..(l_node_count - 1) loop
+     l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_generalstatus(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+   end loop;
+   
+   select count(*) into l_node_count from dim_generalstatus;
+   plog ('Total of records in DIM_GeneralStatus: ' || l_node_count, 'info');
+  exception when others then
+    l_msg := sqlerrm;
+   
+   plog( 'Error (create_GeneralStatus): '||l_msg, 'error' );
+   g_error := 101;
+  end;
+
+
+  procedure process_detailstatus(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_componenttypeid varchar2(50) := '';
+  l_symbolicname varchar2(50) := '';
+  l_description varchar2(200) := '';
+  l_mis_address varchar2(50) := '';
+  l_detailstatustype varchar2(50) := '';
+  l_alarmseverity varchar2(50) := '';
+  l_rows_processed integer := 0;
+  begin
+   dbms_xslprocessor.valueof (p_node, 'ComponentTypeID', l_componenttypeid);
+   dbms_xslprocessor.valueof (p_node, 'SymbolicName', l_symbolicname);
+   dbms_xslprocessor.valueof (p_node, 'Description', l_description);
+   dbms_xslprocessor.valueof (p_node, 'MIS_Address', l_mis_address);
+   dbms_xslprocessor.valueof (p_node, 'DetailStatusType', l_detailstatustype);
+    dbms_xslprocessor.valueof (p_node, 'AlarmSeverity', l_alarmseverity);
+
+    update dim_detailstatus
+    set version_id = p_version_id
+      , symbolicname = l_symbolicname
+      , detailstatustype = l_detailstatustype
+      , alarmseverity = l_alarmseverity
+      , description = l_description
+    where componenttypeid = l_componenttypeid
+      and mis_address = l_mis_address
+      and sourceprocessid = g_sourceprocessid;
+
+    l_rows_processed := sql%rowcount;
+
+    if l_rows_processed < 1 then
+     insert into dim_detailstatus
+      ( componenttypeid
+      , mis_address
+      , sourceprocessid
+      , version_id
+      , symbolicname
+      , detailstatustype
+      , alarmseverity
+      , description )
+     values
+     ( l_componenttypeid
+      , l_mis_address
+      , g_sourceprocessid
+      , p_version_id
+      , l_symbolicname
+      , l_detailstatustype
+      , l_alarmseverity
+      , l_description );
+    end if;
+  end;
+
+
+  procedure create_detailstatus(p_filename varchar2, p_new_version_id number) is
+  l_node_list             dbms_xmldom.domnodelist;
+  l_node_count            number (20);
+  l_node                  dbms_xmldom.domnode;
+  l_msg                   varchar2(2000);
+  begin
+    insert into hist_detailstatus select * from dim_detailstatus
+    where sourceprocessid = p_filename
+    and version_id > nvl((select max(version_id) from hist_detailstatus where sourceprocessid = p_filename),0);
+
+   l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//DetailStatusList/DetailStatus');
+   l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+   plog ('Total of DetailStatus nodes in input: ' || l_node_count, 'info');
+   for i in 0..(l_node_count - 1) loop
+     l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_detailstatus(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+   end loop;
+   
+   select count(*) into l_node_count from dim_detailstatus;
+   plog ('Total of records in DIM_DetailStatus: ' || l_node_count, 'info');
+  exception when others then
+    l_msg := sqlerrm;
+   
+   plog( 'Error (create_DetailStatus): '||l_msg, 'error' );
+   g_error := 102;
+  end;
+
+  procedure process_statistical(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_statisticalid varchar2(50) := '';
+  l_subjecttype varchar2(50) := '';
+  l_symbolicname varchar2(50) := '';
+  l_description varchar2(200) := '';
+  l_unit varchar2(50) := '';
+  l_statisticaltype varchar2(50) := '';
+  l_sampletype varchar2(50) := '';
+  l_sampletime varchar2(50) := '';
+  l_statisticalgroup varchar2(50) := '';
+  l_kpigroup varchar2(50) := '';
+  l_markcode varchar2(50) := '';
+  l_rows_processed integer := 0;
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_value varchar2(50) := '';
+  l_ch varchar2(1);
+  begin
+     dbms_xslprocessor.valueof (p_node, 'StatisticalID', l_statisticalid);
+     dbms_xslprocessor.valueof (p_node, 'SubjectType', l_subjecttype);
+     dbms_xslprocessor.valueof (p_node, 'SymbolicName', l_symbolicname);
+     dbms_xslprocessor.valueof (p_node, 'Description', l_description);
+     dbms_xslprocessor.valueof (p_node, 'Unit', l_unit);
+     dbms_xslprocessor.valueof (p_node, 'StatisticalPurpose/StatisticalGroup', l_statisticalgroup);
+     dbms_xslprocessor.valueof (p_node, 'StatisticalPurpose/KPIGroup', l_kpigroup);
+
+    
+    l_symbolicname := upper(replace(replace(l_symbolicname, ' ', ''),'_',''));
+
+    l_node_list := dbms_xslprocessor.selectnodes(p_node, 'StatisticalType');
+    l_node_count := dbms_xmldom.getlength(l_node_list);
+    if l_node_count > 0 then
+      l_sub_node := dbms_xmldom.item(l_node_list, 0);
+      dbms_xslprocessor.valueof(l_sub_node, 'Normal', l_value);
+      if trim(l_value) is null then
+         l_statisticaltype := 'Forecast';
+         dbms_xslprocessor.valueof(l_sub_node, 'Forecast/SampleType', l_sampletype);
+         dbms_xslprocessor.valueof(l_sub_node, 'Forecast/SampleTime', l_sampletime);
+      else
+        l_statisticaltype := 'Normal';
+        dbms_xslprocessor.valueof(l_sub_node, 'Normal/SampleType', l_sampletype);
+        dbms_xslprocessor.valueof(l_sub_node, 'Normal/SampleTime', l_sampletime);
+      end if;
+    end if;
+
+    if l_subjecttype is not null then
+      l_markcode := replace(l_subjecttype, g_sourceprocessid||'_', '');
+      
+      for i in 1..3 loop
+        l_ch := substr(l_markcode, -1);
+        if l_ch in ('0','1','2','3','4','5','6','7','8','9') then
+          l_markcode := substr(l_markcode, 1, length(l_markcode)-1);
+        end if;
+      end loop;
+    end if;
+
+    update dim_statistical
+    set version_id = p_version_id
+      , symbolicname = l_symbolicname
+      , description = l_description
+      , unit = l_unit
+      , statisticaltype = l_statisticaltype
+      , sampletype = l_sampletype
+      , sampletime = l_sampletime
+      , statisticalgroup = l_statisticalgroup
+      , kpigroup =   l_kpigroup
+      , markcode = l_markcode
+    where statisticalid = l_statisticalid and sourceprocessid = g_sourceprocessid and subjecttype = l_subjecttype;
+
+    l_rows_processed := sql%rowcount;
+
+    if l_rows_processed < 1 then
+      insert into dim_statistical
+      ( statisticalid
+      , sourceprocessid
+      , version_id
+      , subjecttype
+      , symbolicname
+      , description
+      , unit
+      , statisticaltype
+      , sampletype
+      , sampletime
+      , statisticalgroup
+      , kpigroup
+      , markcode )
+     values
+      ( l_statisticalid
+      , g_sourceprocessid
+      , p_version_id
+      , l_subjecttype
+      , l_symbolicname
+      , l_description
+      , l_unit
+      , l_statisticaltype
+      , l_sampletype
+      , l_sampletime
+      , l_statisticalgroup
+      , l_kpigroup
+      , l_markcode );
+    end if;
+  end;
+
+
+procedure create_statistical(p_filename varchar2, p_new_version_id number) is
+l_node_list             dbms_xmldom.domnodelist;
+l_node_count            number (20);
+l_node                  dbms_xmldom.domnode;
+l_msg                   varchar2(2000);
+begin
+  begin
+    insert into hist_statistical select * from dim_statistical
+                                         where sourceprocessid = p_filename
+                                           and version_id > nvl((select max(version_id)
+                                                                                  from hist_statistical
+                                                                                 where sourceprocessid = p_filename),0);
+
+     l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//StatisticalList/Statistical');
+     l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+     plog ('Total of Statistical nodes in input: ' || l_node_count, 'info');
+     for i in 0..(l_node_count - 1) loop
+      l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_statistical(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+     end loop;
+     
+     select count(*) into l_node_count from dim_statistical;
+     plog ('Total of records in DIM_STATISTICAL: ' || l_node_count, 'info');
+  exception when others then
+    l_msg := sqlerrm;
+     
+     plog( 'Error (create_statistical): '||l_msg, 'error' );
+     g_error := 103;
+  end;
+end;
+
+
+procedure update_version_enddates is
+l_count number := 1;
+cursor c_inactive_versions is
+select id from dimension_version where source_type='META' and enddate is null and id not in
+( select distinct version_id from
+  ( select distinct version_id from dim_detailstatus
+    union
+    select distinct version_id from dim_generalstatus
+    union
+    select distinct version_id from dim_componenttype
+    union
+    select distinct version_id from dim_statistical
+  )
+);
+begin
+  for c_rec in c_inactive_versions loop
+    update dimension_version set enddate = sysdate where id = c_rec.id;
+  end loop;
+end;
+
+
+procedure process_meta(i_filename in varchar2, i_node in dbms_xmldom.domnode, i_source_id in number, o_error out number) is
+l_con_proc_name constant varchar2(200) := g_con_package||'.process_META';
+l_node_list dbms_xmldom.domnodelist;
+l_node_count number (20); 
+l_attr_node dbms_xmldom.domnode;
+l_old_version_id number(19,0) := 0;
+l_new_version_id number(19,0) := 0;
+l_description varchar2(200) := '';
+l_filename varchar2(200) := '';
+l_msg viu_info_logs.additional_data%type;
+begin
+  viu_module.enter_module(l_con_proc_name,to_char(sys_extract_utc(systimestamp)));
+  o_error := 0;
+  begin
+    g_document_node := i_node;
+    g_dimension_source_id := i_source_id;
+
+    g_sourceprocessid := i_filename;
+    dbms_xslprocessor.valueof(g_document_node, '//VersionNumber', g_meta_versionnumber);
+
+    l_description := 'SourceProcessId="'||g_sourceprocessid||'" '
+    ||'META_VersionNumber="'||g_meta_versionnumber||'"';
+
+    if (g_meta_versionnumber is null) or (trim(g_meta_versionnumber) = '') then
+      plog('Error (process_META): No version information found (//VersionNumber)', 'error');
+      g_error := 11;
+    end if;
+
+    if (g_sourceprocessid is null) or (trim(g_sourceprocessid) = '') then
+      plog('Error (process_META): No ProcessId information found (//Header/Source/ProcessId)', 'error');
+      g_error := 14;
+    end if;
+
+    if g_error = 0 then
+    begin
+      select max(id) into l_old_version_id from dimension_version  where source_type = 'META'; 
+    exception when others then
+      l_old_version_id := 0;
+    end;
+
+    begin
+      select scr.filename
+      into   l_filename
+      from   dimension_source scr
+      where  scr.id = g_dimension_source_id;
+      exception when others then
+         l_filename := '';
+    end;
+    
+      
+      
+    begin
+      select dimension_seq.nextval into l_new_version_id from dual;
+      insert into dimension_version (id, source_id, source_type, startdate, enddate, versiontag, description, filename)
+      values (l_new_version_id, g_dimension_source_id, 'META', sysdate, null, g_sourceprocessid||'_'||g_meta_versionnumber, l_description, l_filename);
+      exception when others then
+        plog('Error (process_META) inserting DIMENSION_VERSION: '||sqlerrm, 'error');
+      g_error := 12;
+    end;
+    end if;
+
+    if g_error = 0 then
+      l_old_version_id := nvl(l_old_version_id, 0);
+
+      if l_old_version_id = 0 then
+        plog('Installing initial version (ID '||to_char(l_new_version_id)||')', 'info');
+      else
+        plog('Old version ID: '||to_char(l_old_version_id)||', new version ID: '||to_char(l_new_version_id), 'info');
+      end if;
+
+  
+
+      create_componenttype(i_filename, l_new_version_id);
+      create_generalstatus(i_filename, l_new_version_id);
+      create_detailstatus(i_filename, l_new_version_id);
+      create_statistical(i_filename, l_new_version_id);
+
+      topo_dimensions.fill_dim_maintenance_kpi;
+
+      update_version_enddates;
+
+  
+
+    end if;
+
+    plog ('META has been processed.', 'info');
+  exception	when others	then
+    l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    plog(l_msg, 'error');
+    g_error := 10;
+  end;
+  o_error := g_error;
+  viu_module.leave_module(l_con_proc_name);
+end;
+
+end meta_dimensions;
+/

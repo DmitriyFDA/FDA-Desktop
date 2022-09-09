@@ -1,0 +1,48 @@
+procedure processtopoapplfile(p_file in varchar2 default ' ') is
+v_msg      varchar2(32767);
+v_max_id   number(19);
+v_title    varchar2( 200) := 'Process TOPO APPL file '||p_file||', dd '||ts2str(sysdate);
+begin
+  begin
+    select nvl(max(id),0) into v_max_id from dimension_log_v;
+
+    
+    begin
+      dbms_scheduler.drop_job(job_name => 'PROG_LOAD_TOPOAPPL', force => true);
+    exception when others then
+      null;
+    end;
+    begin
+      dbms_scheduler.drop_schedule (schedule_name => 'RUN_IMMEDIATELY', force => true);
+    exception when others then
+      null;
+    end;
+
+    dbms_scheduler.create_schedule
+    ( schedule_name  => 'RUN_IMMEDIATELY'
+    , start_date    => null
+    , repeat_interval => 'FREQ=YEARLY'
+    , comments     => 'Run immediately. Once' );
+
+    dbms_scheduler.create_job
+    ( job_name => 'PROG_LOAD_TOPOAPPL'
+    , schedule_name => 'RUN_IMMEDIATELY'
+    , job_type => 'PLSQL_BLOCK'
+    , job_action => 'begin TOPO_APPL_dimensions.load_TOPO_APPL('''||p_file||'''); end;'
+    , number_of_arguments => 0
+    , enabled => true
+    , comments => 'job created at '||to_char(sysdate,'DD-MON-YY HH24:MI:SS'));
+
+    owa_util.redirect_url('DIMProcRunning?p_id='||ltrim(to_char(v_max_id))||chr(38)||'p_tag=TOPOAPPL');
+
+  exception when others then
+    htp.print(ui_menu.head_from_link('Process TOPOAPPL'));
+    v_msg := v_msg||'<br>'||sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

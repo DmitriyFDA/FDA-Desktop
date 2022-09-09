@@ -1,0 +1,20 @@
+procedure htpprintclob(pclob in out nocopy clob) is
+v_excel varchar2(32000);
+v_clob clob := pclob;
+begin
+  while length(v_clob) > 0 loop
+  begin
+    if length(v_clob) > 16000 then
+      v_excel:= substr(v_clob,1,16000);
+      htp.prn(v_excel);
+      v_clob:= substr(v_clob,length(v_excel)+1);
+    else
+      v_excel := v_clob;
+      htp.prn(v_excel);
+      v_clob:='';
+      v_excel := '';
+    end if;
+  end;
+  end loop;
+end;
+/

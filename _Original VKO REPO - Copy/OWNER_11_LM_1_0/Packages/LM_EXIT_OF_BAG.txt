@@ -1,0 +1,1178 @@
+create or replace PACKAGE lm_exit_of_bag IS
+   
+g_con_package constant lm_constant.st_proc_name := 'LM_EXIT_OF_BAG';
+
+/* BET_001: Handle exit of baggage item */
+PROCEDURE hdl_exit_of_baggage_item;
+
+/* BET_002: get message attributes */
+PROCEDURE get_message_attributes
+( i_it_dereg             IN     lm_interface.g_it_ima
+, o_pty_id_cust             OUT lm_parties.id_cust%TYPE
+, o_event_time              OUT lm_package_events.event_time%TYPE
+, o_area_id_cust            OUT lm_areas_v.id_cust%TYPE
+, o_zone_id_cust            OUT lm_zones_v.id_cust%TYPE
+, o_section_id_cust         OUT lm_sections_v.id_cust%TYPE
+, o_lic                     OUT lm_packages.lic%TYPE
+, o_deregister_reason       OUT lm_package_attribute_values.value%TYPE
+, o_rt_bir                  OUT lm_common.g_rt_bir
+, o_ims_id                  OUT lm_ifc_messages.id%TYPE
+);
+ 
+/* BET_003: store incoming data */
+PROCEDURE store_incoming_data
+( i_event_time           IN     lm_package_events.event_time%TYPE
+, i_pty_id               IN     lm_parties.id%TYPE
+, i_area_id_cust         IN     lm_areas_v.id_cust%TYPE
+, i_zone_id_cust         IN     lm_zones_v.id_cust%TYPE
+, i_section_id_cust      IN     lm_sections_v.id_cust%TYPE
+, i_lic                  IN     lm_packages.lic%TYPE
+, i_deregister_reason    IN     lm_package_attribute_values.value%TYPE
+, i_rt_bir               IN     lm_common.g_rt_bir
+, i_ims_id               IN     lm_ifc_messages.id%TYPE
+, i_msg_obsolete         IN     BOOLEAN
+, io_rec_package         IN OUT lm_packages%ROWTYPE
+, o_package_event_pon_id    OUT lm_physical_destinations.id%TYPE
+);
+
+/* BET_004: validate incoming data */
+PROCEDURE validate_incoming_data
+( i_pss_id               IN     lm_packages.pss_id%TYPE
+, i_area_id_cust         IN     lm_areas_v.id_cust%TYPE
+, i_zone_id_cust         IN     lm_zones_v.id_cust%TYPE
+, i_section_id_cust      IN     lm_sections_v.id_cust%TYPE
+, i_pid                  IN     lm_packages.pid%type
+, i_msg_event_time       IN     lm_package_events.event_time%TYPE
+, i_pty_id_cust          IN     lm_parties.id_cust%TYPE
+, o_pty_id                  OUT lm_parties.id%TYPE
+, o_msg_obsolete            OUT BOOLEAN
+);
+
+/* BET_005: handle missed events */
+PROCEDURE handle_missed_events
+( i_pid                  IN     lm_packages.pid%TYPE
+, i_rst_id               IN     lm_packages.rst_id%TYPE
+, i_area_id_cust         IN     lm_areas_v.id_cust%TYPE
+, i_zone_id_cust         IN     lm_zones_v.id_cust%TYPE
+, i_section_id_cust      IN     lm_sections_v.id_cust%TYPE
+, i_event_time           IN     lm_package_events.event_time%TYPE
+);
+
+/* BET_006: Send a BaggageEvent Tracking message */
+PROCEDURE send_report_of_tracking
+( i_rt_pae               IN     lm_packages%ROWTYPE
+, i_event_time           IN     lm_package_events.event_time%TYPE
+, i_area_id_cust         IN     lm_areas_v.id_cust%TYPE
+, i_zone_id_cust         IN     lm_zones_v.id_cust%TYPE
+, i_section_id_cust      IN     lm_sections_v.id_cust%TYPE
+, i_deregister_reason    IN     lm_package_attribute_values.value%TYPE
+);
+
+END lm_exit_of_bag;
+/
+
+
+
+
+package body lm_exit_of_bag is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure hdl_exit_of_baggage_item
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name       constant lm_constant.st_proc_name := g_con_package || '.HDL_EXIT_OF_BAGGAGE_ITEM';
+
+
+   l_pon_id                       lm_physical_destinations.id%type;
+   l_area_id_cust                 lm_areas_v.id_cust%type;
+   l_deregister_reason            lm_package_attribute_values.value%type;
+   l_found                        boolean;
+   l_ims_id                       lm_ifc_messages.id%type;
+   l_lic                          lm_packages.lic%type;
+   l_event_time                   lm_package_events.event_time%type;
+   l_pid                          lm_packages.pid%type;
+   l_rec_package                  lm_packages%rowtype;
+   l_section_id_cust              lm_sections_v.id_cust%type;
+   l_zone_id_cust                 lm_zones_v.id_cust%type;
+   l_msg_obsolete                 boolean;
+   l_pty_id_cust                  lm_parties.id_cust%type;
+   l_pty_id                       lm_parties.id%type;
+   l_rt_bir                       lm_common.g_rt_bir;
+   l_rst_id_old                   lm_route_segments.id%type;
+   l_nt_stn_id                    nt_stn_id;
+   l_rt_stn                       lm_stations%rowtype;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   lm_exit_of_bag.get_message_attributes(i_it_dereg          => lm_interface.g_it_message_content
+                                        ,o_pty_id_cust       => l_pty_id_cust
+                                        ,o_event_time        => l_event_time
+                                        ,o_area_id_cust      => l_area_id_cust
+                                        ,o_zone_id_cust      => l_zone_id_cust
+                                        ,o_section_id_cust   => l_section_id_cust
+                                        ,o_lic               => l_lic
+                                        ,o_deregister_reason => l_deregister_reason
+                                        ,o_rt_bir            => l_rt_bir
+                                        ,o_ims_id            => l_ims_id
+                                        );
+
+   l_pid := l_rt_bir.pid;
+   
+   l_found  := lm_pae_tapi_pck.pae_select_row_upd( i_pae_pid      => l_pid
+                                                 , o_rt_pae       => l_rec_package
+                                                 );
+   if not l_found
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_packagenotfound
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => l_pid
+                         , i_additional_data        => 'MessageId:' || l_ims_id
+                         );
+   end if;
+
+   
+   
+   
+   
+   l_rst_id_old := l_rec_package.rst_id;
+
+   
+   lm_exit_of_bag.validate_incoming_data( i_pss_id           => l_rec_package.pss_id
+                                        , i_area_id_cust     => l_area_id_cust
+                                        , i_zone_id_cust     => l_zone_id_cust
+                                        , i_section_id_cust  => l_section_id_cust
+                                        , i_pid              => l_pid
+                                        , i_msg_event_time   => l_event_time
+                                        , i_pty_id_cust      => l_pty_id_cust
+                                        , o_pty_id           => l_pty_id
+                                        , o_msg_obsolete     => l_msg_obsolete
+                                        );
+
+   
+   lm_exit_of_bag.store_incoming_data(i_event_time           => l_event_time
+                                     ,i_pty_id               => l_pty_id
+                                     ,i_area_id_cust         => l_area_id_cust
+                                     ,i_zone_id_cust         => l_zone_id_cust
+                                     ,i_section_id_cust      => l_section_id_cust
+                                     ,i_lic                  => l_lic
+                                     ,i_deregister_reason    => l_deregister_reason
+                                     ,i_rt_bir               => l_rt_bir
+                                     ,i_ims_id               => l_ims_id
+                                     ,i_msg_obsolete         => l_msg_obsolete
+                                     ,io_rec_package         => l_rec_package
+                                     ,o_package_event_pon_id => l_pon_id
+                                     );
+
+   
+   if     not l_msg_obsolete
+      and l_deregister_reason in (lm_constant.g_con_mae_end_of_tracing, lm_constant.g_con_mae_handover)
+      and l_rec_package.ind_suspended_deregistration is null
+   then
+      lm_exit_of_bag.handle_missed_events( i_pid             => l_rec_package.pid
+                                         , i_rst_id          => l_rst_id_old
+                                         , i_area_id_cust    => l_area_id_cust
+                                         , i_zone_id_cust    => l_zone_id_cust
+                                         , i_section_id_cust => l_section_id_cust
+                                         , i_event_time      => l_event_time
+                                         );
+   end if;
+
+   
+   
+   if l_rec_package.ind_suspended_deregistration is null
+   then
+      if l_pon_id is not null
+      then
+         
+         lm_topology_administration.translate_pon_to_stn( i_nt_pon_id => nt_pon_id(l_pon_id)
+                                                        , o_nt_stn_id => l_nt_stn_id
+                                                        );
+         l_found := lm_stn_tapi_pck.stn_select_row( i_stn_id => l_nt_stn_id(1)
+                                                  , o_rt_stn => l_rt_stn
+                                                  );
+      end if;
+      
+      lm_package_administration.send_task_report( i_event_time        => l_event_time
+                                                , i_bid               => l_rec_package.bid
+                                                , i_bid_extension     => l_rec_package.bid_extension
+                                                , i_pid               => l_pid
+                                                , i_area_id_cust      => l_area_id_cust
+                                                , i_zone_id_cust      => l_zone_id_cust
+                                                , i_stn_id_cust       => l_rt_stn.id_cust
+                                                , i_tasktype          => lm_constant.g_con_mae_deregistration
+                                                , i_register_reason   => null
+                                                , i_deregister_reason => l_deregister_reason
+                                                , i_rt_result         => null
+                                                , i_rt_bir            => l_rt_bir
+                                                );
+
+      
+      lm_exit_of_bag.send_report_of_tracking( i_rt_pae            => l_rec_package
+                                            , i_event_time        => l_event_time
+                                            , i_area_id_cust      => l_area_id_cust
+                                            , i_zone_id_cust      => l_zone_id_cust
+                                            , i_section_id_cust   => l_section_id_cust
+                                            , i_deregister_reason => l_deregister_reason
+                                            );
+
+   elsif l_rec_package.ind_suspended_deregistration = lm_constant.g_con_yesno_yes
+   then
+      
+      
+      lm_lbs_administration.handle_suspended_dereg(io_rt_pae => l_rec_package);
+   else
+      
+      null;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_exit_of_baggage_item;
+
+
+procedure get_message_attributes
+( i_it_dereg             in     lm_interface.g_it_ima
+, o_pty_id_cust             out lm_parties.id_cust%type
+, o_event_time              out lm_package_events.event_time%type
+, o_area_id_cust            out lm_areas_v.id_cust%type
+, o_zone_id_cust            out lm_zones_v.id_cust%type
+, o_section_id_cust         out lm_sections_v.id_cust%type
+, o_lic                     out lm_packages.lic%type
+, o_deregister_reason       out lm_package_attribute_values.value%type
+, o_rt_bir                  out lm_common.g_rt_bir
+, o_ims_id                  out lm_ifc_messages.id%type
+)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.GET_MESSAGE_ATTRIBUTES';
+
+   l_dest_counter           number := 0;
+   l_screeninginfo_counter  number := 0;
+   l_carrier_counter        number := 0;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   o_rt_bir.destination   := nt_stn_id_cust();
+   o_rt_bir.screeninginfo := nt_screeninginfo();
+   o_rt_bir.carrier       := nt_carrier();
+  
+   
+   for idx_msg in i_it_dereg.first .. i_it_dereg.last
+   loop
+      case i_it_dereg( idx_msg ).attribute
+         when 'Header/Source/ProcessID'
+         then
+            o_pty_id_cust  := i_it_dereg( idx_msg ).value;
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp => i_it_dereg( idx_msg ).value );
+         when 'PhysicalLocation/AreaID'
+         then
+            o_area_id_cust  := i_it_dereg( idx_msg ).value;
+         when 'PhysicalLocation/ZoneID'
+         then
+            o_zone_id_cust  := i_it_dereg( idx_msg ).value;
+         when 'PhysicalLocation/EquipmentID'
+         then
+            o_section_id_cust  := i_it_dereg( idx_msg ).value;
+         when 'LIC'
+         then
+            o_lic  := i_it_dereg( idx_msg ).value;
+         when 'DeregisterReason'
+         then
+            o_deregister_reason    := i_it_dereg( idx_msg ).value;
+         when 'BIR/Version'
+         then
+            o_rt_bir.version := i_it_dereg( idx_msg ).value;
+         when 'BIR/VirtualBagIndicator'
+         then
+            o_rt_bir.virtual_bag_indicator := i_it_dereg( idx_msg ).value;
+         when 'BIR/Carrier/ID'
+         then
+            l_carrier_counter := l_carrier_counter + 1;
+            o_rt_bir.carrier.extend;
+            
+            
+            o_rt_bir.carrier(l_carrier_counter) := new rt_carrier(i_id => i_it_dereg( idx_msg ).value);
+         when 'BIR/Carrier/Type'
+         then
+            o_rt_bir.carrier(l_carrier_counter).type := i_it_dereg( idx_msg ).value;
+         when 'BIR/PID'
+         then
+            o_rt_bir.pid := i_it_dereg( idx_msg ).value;
+         when 'BIR/Destination'
+         then
+            l_dest_counter := l_dest_counter + 1;
+            o_rt_bir.destination.extend;
+            o_rt_bir.destination( l_dest_counter) := i_it_dereg( idx_msg ).value;
+         when 'BIR/DestinationHandlingArea'
+         then
+            o_rt_bir.destination_handling_area  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageIdentifier/BID'
+         then
+            o_rt_bir.bid  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageIdentifier/BID_Extension'
+         then
+            o_rt_bir.bid_extension  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageTag/LPC'
+         then
+            o_rt_bir.lpc := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageTag/LPC_Extension'
+         then
+            o_rt_bir.lpc_extension  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageCharacteristics/PhysicalClass'
+         then
+            o_rt_bir.physical_class  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageCharacteristics/Size/Length'
+         then
+            o_rt_bir.length  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageCharacteristics/Size/Width'
+         then
+            o_rt_bir.width  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageCharacteristics/Size/Height'
+         then
+            o_rt_bir.height := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageCharacteristics/Volume'
+         then
+            o_rt_bir.volume  := i_it_dereg( idx_msg ).value;
+         when 'BIR/BaggageCharacteristics/Weight'
+         then
+            o_rt_bir.weight  := i_it_dereg( idx_msg ).value;
+         when 'BIR/ScreeningInfo/ScreeningProcess/ID'
+         then
+            l_screeninginfo_counter := l_screeninginfo_counter + 1;
+            o_rt_bir.screeninginfo.extend;
+            
+            
+            o_rt_bir.screeninginfo(l_screeninginfo_counter) :=
+               new rt_screeninginfo(i_process_id => i_it_dereg( idx_msg ).value);
+         when 'BIR/ScreeningInfo/ScreeningProcess/Name'
+         then
+            
+            
+            
+            
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).process_name  := i_it_dereg( idx_msg ).value;
+         when 'BIR/ScreeningInfo/RequiredScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).required_screening_level := i_it_dereg( idx_msg ).value;
+         when 'BIR/ScreeningInfo/ReachedScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).reached_screening_level  := i_it_dereg( idx_msg ).value;
+         when 'BIR/ScreeningInfo/FailedScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).failed_screening_level  :=  i_it_dereg( idx_msg ).value;
+         when 'BIR/ScreeningInfo/PseudoID'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).pseudo_id  :=  i_it_dereg( idx_msg ).value;
+         when 'BIR/BagStatus'
+         then
+            o_rt_bir.bag_status  := i_it_dereg( idx_msg ).value;
+         when 'BIR/PriorityIndicator'
+         then
+            o_rt_bir.priority_indicator  := i_it_dereg( idx_msg ).value;
+         when 'BIR/FlightInformation/SegregationID/ProcessPlanIDName'
+         then
+            o_rt_bir.process_plan_id_name  := i_it_dereg( idx_msg ).value;
+         when 'BIR/FlightInformation/SegregationID/ProductName'
+         then
+            o_rt_bir.product_name  := i_it_dereg( idx_msg ).value;
+         when 'BIR/FlightInformation/Flight/Airline'
+         then
+            o_rt_bir.airline  := i_it_dereg( idx_msg ).value;
+         when 'BIR/FlightInformation/Flight/FlightNumber'
+         then
+            o_rt_bir.flightnumber := i_it_dereg( idx_msg ).value;
+         when 'BIR/FlightInformation/Flight/Date'
+         then
+            o_rt_bir.flightdate := i_it_dereg( idx_msg ).value;
+         when 'BIR/FlightInformation/STD'
+         then
+            o_rt_bir.std := i_it_dereg( idx_msg ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_dereg( idx_msg ).value;
+         else
+            
+            if i_it_dereg( idx_msg ).attribute not in ( 'Header/MessageTime'
+                                                      , 'Header/Source/InstanceID'
+                                                      , 'Header/Target/ProcessID'
+                                                      , 'Header/Target/InstanceID'
+                                                      , 'Header/OperatorID'
+                                                      , 'BIR/AssignmentReason'
+                                                      )
+            then
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Undefined attribute='
+                                                                   || i_it_dereg( idx_msg ).attribute
+                                                                   || ' with Value='
+                                                                   || i_it_dereg( idx_msg ).value
+                                     );
+            end if;
+      end case;
+   end loop;
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes;
+
+
+procedure store_incoming_data
+( i_event_time           in     lm_package_events.event_time%type
+, i_pty_id               in     lm_parties.id%type
+, i_area_id_cust         in     lm_areas_v.id_cust%type
+, i_zone_id_cust         in     lm_zones_v.id_cust%type
+, i_section_id_cust      in     lm_sections_v.id_cust%type
+, i_lic                  in     lm_packages.lic%type
+, i_deregister_reason    in     lm_package_attribute_values.value%type
+, i_rt_bir               in     lm_common.g_rt_bir
+, i_ims_id               in     lm_ifc_messages.id%type
+, i_msg_obsolete         in     boolean
+, io_rec_package         in out lm_packages%rowtype
+, o_package_event_pon_id    out lm_physical_destinations.id%type
+)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.store_incoming_data';
+
+   
+   cursor c_determine_package_event_node
+     (i_zone_sct_id in lm_zones_v.zone_id%type
+     ,i_section_sct_id_cust in lm_sections_v.id_cust%type
+    )
+   is
+   
+   select nde.id
+   ,      nde.ind_suspend_deregistration
+   ,      nde.pon_id
+   from   lm_nodes nde
+   where  nde.sct_id                = i_zone_sct_id
+   and    nde.identifier_within_sct = i_section_sct_id_cust;
+
+   l_zone_id                lm_zones_v.zone_id%type;
+   l_sct_id                 lm_system_components.id%type;
+   l_rst_id                 lm_route_segments.id%type;
+   l_it_node_downstream_rst lm_topology_administration.g_it_rst;
+   l_it_node_upstream_rst   lm_topology_administration.g_it_rst;
+   l_rec_package_event      lm_package_events%rowtype;
+   l_rows                   number;
+   l_pkv_order              number := 0;
+   l_pss_id_old             lm_packages.pss_id%type := io_rec_package.pss_id;
+   l_nde_ind_suspend_dereg  lm_nodes.ind_suspend_deregistration%type;
+
+   function rst_id_in_coll( i_rst_coll in lm_topology_administration.g_it_rst
+                          , i_rst_id   in lm_route_segments.id%type
+                          )
+   return boolean is
+      l_found boolean := false;
+   begin
+      for idx in i_rst_coll.first..i_rst_coll.last
+      loop
+         if i_rst_id = i_rst_coll(idx)
+         then
+            l_found := true;
+            exit;
+         end if;
+      end loop;
+      return l_found;
+   end;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+   
+   l_sct_id  :=  lm_topology_administration.get_sct_id ( i_area_id_cust    => i_area_id_cust
+                                                       , i_zone_id_cust    => i_zone_id_cust
+                                                       , i_section_id_cust => i_section_id_cust
+                                                       );
+
+   
+   
+
+   
+   l_zone_id :=  lm_topology_administration.get_sct_id( i_area_id_cust    => i_area_id_cust
+                                                      , i_zone_id_cust    => i_zone_id_cust
+                                                      , i_section_id_cust => null
+                                                      );
+
+   
+   
+   
+   if not i_msg_obsolete
+   then
+      io_rec_package.lic     := i_lic;
+      io_rec_package.pty_id  := i_pty_id;
+   end if;
+   
+   
+   if i_deregister_reason in ( lm_constant.g_con_mae_end_of_tracing
+                             , lm_constant.g_con_mae_handover
+                             )
+   then   
+      io_rec_package.pss_id  := lm_constant.g_con_pss_name_closed;
+
+      
+      
+      
+      lm_topology_administration.get_nde_downstream_rst( i_area_id_cust          => i_area_id_cust
+                                                       , i_zone_id_cust          => i_zone_id_cust
+                                                       , i_identifier_within_sct => i_section_id_cust
+                                                       , o_it_rst                => l_it_node_downstream_rst
+                                                       );
+      if l_it_node_downstream_rst.count = 1
+      then
+         l_rst_id := l_it_node_downstream_rst(1);
+      elsif     l_it_node_downstream_rst.count > 1
+            and rst_id_in_coll( i_rst_coll => l_it_node_downstream_rst
+                              , i_rst_id   => io_rec_package.rst_id
+                              )
+      then
+         
+         l_rst_id := null;
+      else
+         
+         
+         lm_topology_administration.get_nde_upstream_rst( i_area_id_cust          => i_area_id_cust
+                                                        , i_zone_id_cust          => i_zone_id_cust
+                                                        , i_identifier_within_sct => i_section_id_cust
+                                                        , o_it_rst                => l_it_node_upstream_rst
+                                                        );
+         if l_it_node_upstream_rst.count = 1
+         then
+            l_rst_id := l_it_node_upstream_rst(1);
+         else
+            
+            
+            l_rst_id := null;
+         end if;
+      end if;
+   else   
+      io_rec_package.pss_id  := lm_constant.g_con_pss_name_missing;
+      
+      l_rst_id := null;
+   end if;
+
+   io_rec_package.date_modified := lm_common.default_timestamp;
+   io_rec_package.rst_id        := nvl( l_rst_id, io_rec_package.rst_id);
+   io_rec_package.carrier       := i_rt_bir.carrier;
+
+   
+
+   
+   
+   
+   
+
+   
+   
+   
+   
+   
+   open c_determine_package_event_node ( i_zone_sct_id         => l_zone_id
+                                       , i_section_sct_id_cust => i_section_id_cust
+                                       );
+   fetch c_determine_package_event_node
+   into  l_rec_package_event.nde_id
+   ,     l_nde_ind_suspend_dereg
+   ,     o_package_event_pon_id;
+   close c_determine_package_event_node;
+
+   
+   l_rec_package_event.id          := null;
+   l_rec_package_event.ete_id      := lm_constant.g_con_ete_name_deregistration;
+   l_rec_package_event.pty_id      := i_pty_id;
+   l_rec_package_event.pid         := io_rec_package.pid;
+   if l_rec_package_event.nde_id is null
+   then
+      l_rec_package_event.sct_id   := l_sct_id;
+   end if;
+   l_rec_package_event.rst_id      := l_rst_id;
+   l_rec_package_event.lic         := i_lic;
+   l_rec_package_event.ims_id      := i_ims_id;
+   l_rec_package_event.event_time  := i_event_time;
+   lm_pet_tapi_pck.pet_insert_row (io_rt_pet => l_rec_package_event);
+
+
+   if l_nde_ind_suspend_dereg = lm_constant.g_con_yesno_yes
+   then
+      
+      io_rec_package.pss_id := l_pss_id_old;
+      lm_package_administration.check_local_identifier( i_pid               => io_rec_package.pid
+                                                      , i_event_time        => i_event_time
+                                                      , i_lic               => i_lic
+                                                      , i_pty_id            => i_pty_id
+                                                      , o_pss_id            => io_rec_package.pss_id
+                                                      );
+      io_rec_package.ind_suspended_deregistration := lm_constant.g_con_yesno_yes;
+   end if;
+
+   
+   l_rows := lm_pae_tapi_pck.pae_update_row (io_rec_package.pid, io_rec_package);
+
+   
+   
+   lm_package_administration.insert_package_attribute_value (i_value          => i_deregister_reason
+                                                            ,i_pka_id         => lm_constant.g_con_pka_name_reason
+                                                            ,io_pkv_order     => l_pkv_order
+                                                            ,i_pet_id         => l_rec_package_event.id
+                                                            );
+   
+   lm_common.store_bir(i_rt_bir         => i_rt_bir
+                      ,i_pet_id         => l_rec_package_event.id
+                      ,i_pkv_order      => l_pkv_order
+                      ,i_nt_attr_except => nt_id_coll(lm_constant.g_con_pka_name_pid)
+                      );
+                                                            
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info (i_calling_procedure =>    l_con_proc_name);
+end store_incoming_data;
+
+
+procedure validate_incoming_data
+( i_pss_id               in     lm_packages.pss_id%type
+, i_area_id_cust         in     lm_areas_v.id_cust%type
+, i_zone_id_cust         in     lm_zones_v.id_cust%type
+, i_section_id_cust      in     lm_sections_v.id_cust%type
+, i_pid                  in     lm_packages.pid%type
+, i_msg_event_time       in     lm_package_events.event_time%type
+, i_pty_id_cust          in     lm_parties.id_cust%type
+, o_pty_id                  out lm_parties.id%type
+, o_msg_obsolete            out boolean
+)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.validate_incoming_data';
+
+   
+   cursor c_get_last_package_event
+    (i_pid in lm_package_events.pid%type
+    ,i_event_time in lm_package_events.event_time%type
+    )
+   is
+   select pet.id
+   from   lm_package_events pet
+   where  pet.pid = i_pid
+   and    pet.event_time > i_event_time;
+
+   l_pet_id                 lm_package_events.id%type;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   if    i_pss_id = lm_constant.g_con_pss_name_closed
+      or i_pss_id = lm_constant.g_con_pss_name_missing
+   then
+      viu_info.raise_info (i_ifo_nr =>               viu_constant.c_ifo_packageclosed
+                         , i_calling_procedure =>    l_con_proc_name
+                         , i_severity =>             viu_info.c_severity_error
+                         , i_info_arguments =>       i_pid
+                          );
+   end if;
+
+   
+   lm_topology_administration.chk_area_zone_section (i_area_id_cust =>       i_area_id_cust
+                                                   , i_zone_id_cust =>       i_zone_id_cust
+                                                   , i_section_id_cust =>    i_section_id_cust
+                                                    );
+                                                    
+   
+   o_pty_id := lm_lifesign.check_party(i_pty_id_cust     => i_pty_id_cust
+                                      ,i_pty_instance_id => null
+                                      );
+                                                    
+                                                    
+   
+   open c_get_last_package_event( i_pid             => i_pid
+                                , i_event_time      => i_msg_event_time
+                                );
+   fetch c_get_last_package_event
+   into  l_pet_id;
+   o_msg_obsolete := c_get_last_package_event%found;
+   close c_get_last_package_event;
+   if o_msg_obsolete
+   then
+      viu_info.operator_info (i_ifo_nr =>               viu_constant.c_ifo_obsoletemessage
+                             ,i_calling_procedure =>    l_con_proc_name
+                             ,i_severity =>             viu_info.c_severity_warning
+                             ,i_info_arguments =>       'Message ' || lm_constant.g_con_name_msg_deregisterpacka || ', PID "' || i_pid || '"'
+                             );
+   end if;
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when others
+   then
+      if c_get_last_package_event%isopen
+      then
+         close c_get_last_package_event;
+      end if;
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info (i_calling_procedure =>    l_con_proc_name);
+end validate_incoming_data;
+
+
+procedure handle_missed_events
+( i_pid                  in     lm_packages.pid%type
+, i_rst_id               in     lm_packages.rst_id%type
+, i_area_id_cust         in     lm_areas_v.id_cust%type
+, i_zone_id_cust         in     lm_zones_v.id_cust%type
+, i_section_id_cust      in     lm_sections_v.id_cust%type
+, i_event_time           in     lm_package_events.event_time%type
+)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.handle_missed_events';
+
+   l_found                  boolean;
+   l_pae_on_upstream_rst    boolean := false;
+   l_it_node_upstream_rst   lm_topology_administration.g_it_rst;
+   l_it_pid_missed          lm_package_administration.g_it_pid;
+   l_rt_rst_administered    lm_route_segments%rowtype;
+   l_rt_rst_actual          lm_route_segments%rowtype;
+   l_rt_nde_dereg           lm_nodes%rowtype;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   
+   
+   lm_topology_administration.get_nde_upstream_rst( i_area_id_cust          => i_area_id_cust
+                                                  , i_zone_id_cust          => i_zone_id_cust
+                                                  , i_identifier_within_sct => i_section_id_cust
+                                                  , o_it_rst                => l_it_node_upstream_rst
+                                                  );
+                                                  
+   
+   case l_it_node_upstream_rst.count
+   when 0
+   then
+      
+      viu_module.leave_module (i_module =>    l_con_proc_name);
+      return;
+   when 1
+   then
+      l_found := lm_rst_tapi_pck.rst_select_row( i_rst_id => l_it_node_upstream_rst(1)
+                                               , o_rt_rst => l_rt_rst_actual
+                                               );
+      l_found := lm_nde_tapi_pck.nde_select_row( i_nde_id => l_rt_rst_actual.nde_id_end_node
+                                               , o_rt_nde => l_rt_nde_dereg
+                                               );
+      if l_rt_nde_dereg.nde_type = lm_constant.g_con_nde_type_divert
+      then
+         
+         
+         
+         
+         viu_module.leave_module (i_module =>    l_con_proc_name);
+         return;
+      end if;
+   else
+      
+      
+      null;
+   end case;
+   
+   
+   for i in l_it_node_upstream_rst.first .. l_it_node_upstream_rst.last
+   loop
+      if l_it_node_upstream_rst(i) = i_rst_id
+      then
+         l_pae_on_upstream_rst := true;
+         exit;
+      end if;
+   end loop;
+   
+   if l_pae_on_upstream_rst
+   then
+      
+      
+      
+      
+      
+      
+      
+      lm_package_administration.select_earlier_packages_on_rst( i_rst_id => i_rst_id
+                                                              , i_pid    => i_pid
+                                                              , o_it_pid => l_it_pid_missed
+                                                              );
+      
+      if l_it_pid_missed.count > 0
+      then
+         for i in l_it_pid_missed.first .. l_it_pid_missed.last
+         loop
+            lm_package_administration.handle_missed_deregistration( i_pid             => l_it_pid_missed(i)
+                                                                  , i_rst_id          => i_rst_id
+                                                                  , i_event_time      => i_event_time
+                                                                  , i_pid_trigger     => i_pid
+                                                                  , i_area_id_cust    => i_area_id_cust
+                                                                  , i_zone_id_cust    => i_zone_id_cust
+                                                                  , i_section_id_cust => i_section_id_cust
+                                                                  );
+         end loop;
+      end if;
+   else
+      
+      
+      
+      
+      
+      
+      
+      l_found := lm_rst_tapi_pck.rst_select_row( i_rst_id => i_rst_id
+                                               , o_rt_rst => l_rt_rst_administered
+                                               );
+      
+      
+      if l_rt_rst_administered.ind_detect_missed_events = lm_constant.g_con_yesno_yes
+      then
+         
+         lm_package_administration.select_earlier_packages_on_rst( i_rst_id => i_rst_id
+                                                                 , i_pid    => i_pid
+                                                                 , o_it_pid => l_it_pid_missed
+                                                                 );
+         
+         if l_it_pid_missed.count > 0
+         then
+            for i in l_it_pid_missed.first .. l_it_pid_missed.last
+            loop
+               lm_package_administration.handle_missed_trackingreport( i_pid             => l_it_pid_missed(i)
+                                                                     , i_rst_id          => i_rst_id
+                                                                     , i_event_time      => i_event_time
+                                                                     , i_pid_trigger     => i_pid
+                                                                     , i_area_id_cust    => i_area_id_cust
+                                                                     , i_zone_id_cust    => i_zone_id_cust
+                                                                     , i_section_id_cust => i_section_id_cust
+                                                                     );
+            end loop;
+         end if; 
+      end if; 
+   end if;
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info (i_calling_procedure =>    l_con_proc_name);
+end handle_missed_events;
+
+
+procedure send_report_of_tracking
+( i_rt_pae               in     lm_packages%rowtype
+, i_event_time           in     lm_package_events.event_time%type
+, i_area_id_cust         in     lm_areas_v.id_cust%type
+, i_zone_id_cust         in     lm_zones_v.id_cust%type
+, i_section_id_cust      in     lm_sections_v.id_cust%type
+, i_deregister_reason    in     lm_package_attribute_values.value%type
+)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name            constant lm_constant.st_proc_name := g_con_package
+                                                                || '.SEND_REPORT_OF_TRACKING';
+
+   l_nt_stn_id_cust                    nt_stn_id_cust;
+   l_haa_id_cust                       lm_handling_areas.id_cust%type;
+   l_eta_dummy                         timestamp;
+   l_it_failed_dir_dummy               lm_tracking.g_it_faileddirection;
+   l_rt_pss                            lm_package_statuses%rowtype;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   
+   lm_topology_administration.determine_eta_stn( i_rt_pae         => i_rt_pae
+                                               , i_rst_id         => null
+                                               , i_event_type     => lm_constant.g_con_ete_name_deregistration
+                                               , i_event_time     => i_event_time
+                                               , o_nt_stn_id_cust => l_nt_stn_id_cust
+                                               , o_haa_id_cust    => l_haa_id_cust
+                                               , o_eta            => l_eta_dummy
+                                               );
+   
+   if lm_pss_tapi_pck.pss_select_row( i_pss_id => i_rt_pae.pss_id
+                                    , o_rt_pss => l_rt_pss
+                                    )
+   then
+      lm_package_administration.send_baggage_event( i_event_time          => i_event_time
+                                                  , i_pid                 => i_rt_pae.pid
+                                                  , i_bid                 => i_rt_pae.bid
+                                                  , i_bid_extension       => i_rt_pae.bid_extension
+                                                  , i_nt_carrier          => i_rt_pae.carrier
+                                                  , i_event_type          => lm_constant.g_con_mae_tracking
+                                                  , i_lst_id_cust         => null
+                                                  , i_area_id_cust        => i_area_id_cust
+                                                  , i_zone_id_cust        => i_zone_id_cust
+                                                  , i_section_id_cust     => i_section_id_cust
+                                                  , i_region              => null
+                                                  , i_region_exception    => null
+                                                  , i_rst_id              => i_rt_pae.rst_id
+                                                  , i_nt_stn_id_cust      => l_nt_stn_id_cust
+                                                  , i_haa_id_cust         => l_haa_id_cust
+                                                  , i_eta                 =>
+                                                                 case i_deregister_reason
+                                                                   when lm_constant.g_con_mae_missing
+                                                                   then
+                                                                      null
+                                                                   else
+                                                                      i_event_time
+                                                                 end
+                                                  , i_pss_id_cust         => l_rt_pss.name
+                                                  , i_it_failed_direction => l_it_failed_dir_dummy
+                                                  );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_report_of_tracking;
+
+end lm_exit_of_bag;
+/

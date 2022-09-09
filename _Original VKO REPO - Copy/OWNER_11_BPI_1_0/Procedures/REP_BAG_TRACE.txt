@@ -1,0 +1,55 @@
+procedure rep_bag_trace is
+type array_str is table of varchar2(2000) index by pls_integer;
+a_js array_str;
+v_msg varchar2(32767);
+begin
+
+  a_js( 1) := 'function radiocheck() { var selection = document.test.p_radio; var h1 = "";';
+  a_js( 2) := '  for (i=0; i<selection.length; i++) if (selection[i].checked == true) h1 = selection[i].value; return h1;';
+  a_js( 3) := '}';
+  a_js( 4) := 'function exec_rep1() { var h1=trimAll(p_lpc_or_pid.value)+"-"+trimAll(p_input.value);';
+  a_js( 5) := '                      var s1="REPORT_BAG_TRACE1?p_input="+h1+"@p_sortby="+trimAll(p_sortby.value)+"@p_radio="+radiocheck();';
+  a_js( 6) := '                      confirm_long_jump("Produce Report",s1);';
+  a_js( 7) := '}';
+  a_js( 8) := 'function exec_rep2() { var h1=trimAll(p_lpc_or_pid.value)+"-"+trimAll(p_input.value);';
+  a_js( 9) := '                      var s1="REPORT_BAG_TRACE2?p_input="+h1+"@p_sortby="+trimAll(p_sortby.value)+"@p_radio="+radiocheck();';
+  a_js(10) := '                      confirm_long_jump("Produce Report",s1);';
+  a_js(11) := '}';
+
+  htp.print(ui_menu.head_from_link('REP_BAG_TRACE'));
+  htp.print('<div class="operate"><br>');
+
+  htp.print('<SCRIPT>');
+  for i in 1..a_js.count loop
+    htp.print(replace(a_js(i), '@', chr(38)));
+  end loop;
+  htp.print('</SCRIPT>');
+
+  htp.print('<TABLE>');
+
+  htp.print('<tr><td/><td>');
+  htp.print('<SELECT NAME="p_lpc_or_pid" STYLE="font-size=17;">');
+  htp.print('<OPTION SELECTED value="LPC">LPC <OPTION value="BID"> BID <OPTION value="PID"> PID </SELECT>');
+  htp.print('<INPUT TYPE=TEXT NAME="p_input" STYLE="font-size=17;width: 120px">');
+
+  htp.print('<tr><td/><td>');
+  htp.print('<form name="test"><INPUT TYPE="radio" NAME="p_radio" value="FULL"> Full');
+  htp.print('<INPUT TYPE="radio" NAME="p_radio" value="TRANSPORT" CHECKED> Transport</form>');
+
+  htp.print('<br><br></tr><tr><td align="RIGHT">order by: </td><td>');
+  htp.print('<INPUT TYPE=TEXT NAME="p_sortby" value="EVENTTS desc" STYLE="font-size=11;width:200px;">');
+  htp.print('</tr>');
+
+  htp.print(gui.table_input_tail('-'));
+
+  htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="HTML Report" onClick=exec_rep1()>');
+  htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="CSV Report" onClick=exec_rep2()>');
+  
+  htp.print('<br><br>');
+
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

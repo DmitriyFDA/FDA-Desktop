@@ -1,0 +1,680 @@
+create or replace PACKAGE LM_TRANSPORTDIR_REPORT IS
+
+TYPE G_RT_TRT IS RECORD
+ (SECTION LM_SECTIONS_V.ID_CUST%TYPE
+ ,TRANSPORTDIRECTION LM_MODE_OF_OPERATION_DOM.MOM_MODE%TYPE
+);
+
+TYPE G_IT_TRT IS TABLE OF Lm_TransportDir_Report.G_RT_TRT INDEX BY BINARY_INTEGER;
+
+G_CON_PACKAGE CONSTANT LM_CONSTANT.ST_PROC_NAME := 'LM_TRANSPORTDIR_REPORT';
+
+/* TRT_002: Handle a received TransportDirectionReport message */
+PROCEDURE HDL_REPORT_OF_TRANSPORT_DIR;
+/* TRT_003: Get message attributes of TransportDirectionReport */
+PROCEDURE GET_MESSAGE_ATTRIBUTES_TDT
+ (I_IT_TDT IN Lm_Interface.G_IT_IMA
+ ,O_EVENT_TIME OUT LM_PACKAGE_EVENTS.EVENT_TIME%TYPE
+ ,O_AREA_ID_CUST OUT LM_AREAS_V.ID_CUST%TYPE
+ ,O_ZONE_ID_CUST OUT LM_ZONES_V.ID_CUST%TYPE
+ ,O_IT_TDT OUT Lm_TransportDir_Report.G_IT_TRT
+ ,O_IMS_ID OUT LM_IFC_MESSAGES.ID%TYPE
+ );
+/* TRT_004: Process the MODE OF OPERATION */
+FUNCTION PROCESS_MODE_OF_OPERATION
+ (I_AREA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ ,I_ZONE_ID_CUST IN LM_ZONES_V.ID_CUST%TYPE
+ ,I_SECTION_ID_CUST IN LM_SECTIONS_V.ID_CUST%TYPE
+ ,I_TRANSPORTDIRECTION IN LM_MODE_OF_OPERATION_DOM.MOM_MODE%TYPE
+ ,I_EVENT_TIME IN LM_MODES_OF_OPERATION.EVENT_TIME%TYPE
+ ,I_IMS_ID IN LM_IFC_MESSAGES.ID%TYPE
+ ,O_SCT_ID OUT LM_SYSTEM_COMPONENTS.ID%TYPE
+ ,O_MOM_ID OUT LM_MODES_OF_OPERATION.MOM_ID%TYPE
+ )
+ RETURN BOOLEAN;
+/* TRT_005: Process the TransportDirection of a SYSTEM_COMPONENT */
+PROCEDURE PROCESS_TRANSPORTDIRECTION
+ (I_EVENT_TIME IN LM_PACKAGE_EVENTS.EVENT_TIME%TYPE
+ ,I_AREA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ ,I_ZONE_ID_CUST IN LM_ZONES_V.ID_CUST%TYPE
+ ,I_IT_TDT IN Lm_TransportDir_Report.G_IT_TRT
+ ,I_IMS_ID IN LM_IFC_MESSAGES.ID%TYPE
+ );
+END LM_TRANSPORTDIR_REPORT;
+/
+
+
+
+
+package body lm_transportdir_report is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure hdl_report_of_transport_dir
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.hdl_report_of_transport_dir';
+
+   l_it_dst             lm_topology_administration.g_it_dst;
+   l_event_time         lm_modes_of_operation.event_time%type;
+   l_area_id_cust       lm_areas_v.id_cust%type;
+   l_zone_id_cust       lm_zones_v.id_cust%type;
+   l_it_tdt             lm_transportdir_report.g_it_trt;
+   l_sct_id             lm_system_components.id%type;
+   l_mom_id             lm_mode_of_operation_dom.id%type;
+   l_pon_id             lm_physical_destinations.id%type;
+   l_transportdirection lm_mode_of_operation_dom.mom_mode%type;
+   l_ims_id             lm_ifc_messages.id%type;
+   l_processed          boolean;
+   l_idx_dst            binary_integer := 1;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   lm_transportdir_report.get_message_attributes_tdt( i_it_tdt                  => lm_interface.g_it_message_content
+                                                    , o_event_time              => l_event_time
+                                                    , o_area_id_cust            => l_area_id_cust
+                                                    , o_zone_id_cust            => l_zone_id_cust
+                                                    , o_it_tdt                  => l_it_tdt
+                                                    , o_ims_id                  => l_ims_id
+                                                    );
+   
+   lm_transportdir_report.process_transportdirection( i_event_time              => l_event_time
+                                                    , i_area_id_cust            => l_area_id_cust
+                                                    , i_zone_id_cust            => l_zone_id_cust
+                                                    , i_it_tdt                  => l_it_tdt
+                                                    , i_ims_id                  => l_ims_id
+                                                    );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_report_of_transport_dir;
+
+procedure get_message_attributes_tdt
+ (i_it_tdt              in lm_interface.g_it_ima
+ ,o_event_time         out lm_package_events.event_time%type
+ ,o_area_id_cust       out lm_areas_v.id_cust%type
+ ,o_zone_id_cust       out lm_zones_v.id_cust%type
+ ,o_it_tdt             out lm_transportdir_report.g_it_trt
+ ,o_ims_id             out lm_ifc_messages.id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.get_message_attributes_tdt';
+   l_idx_tdt       binary_integer := 1;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   for idx_tdt in i_it_tdt.first .. i_it_tdt.last
+   loop
+      case i_it_tdt( idx_tdt ).attribute
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp      => i_it_tdt( idx_tdt ).value );
+         when 'PhysicalLocation/AreaID'
+         then
+            o_area_id_cust  := i_it_tdt( idx_tdt ).value;
+         when 'PhysicalLocation/ZoneID'
+         then
+            o_zone_id_cust  := i_it_tdt( idx_tdt ).value;
+         when 'PhysicalLocation/EquipmentID'
+         then
+            o_it_tdt( l_idx_tdt ).section             := i_it_tdt( idx_tdt ).value;
+         when 'TransportDirection'
+         then
+            o_it_tdt( l_idx_tdt ).transportdirection  := i_it_tdt( idx_tdt ).value;
+            l_idx_tdt                                 := l_idx_tdt + 1;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_tdt( idx_tdt ).value;
+         else
+            
+            if i_it_tdt( idx_tdt ).attribute not in ( 'Header/MessageTime'
+                                                    , 'Header/Source/ProcessID'
+                                                    , 'Header/Source/InstanceID'
+                                                    , 'Header/Target/ProcessID'
+                                                    , 'Header/Target/InstanceID'
+                                                    , 'Header/OperatorID'
+                                                    )
+            then
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_additional_data        =>    'Message: '
+                                                                || lm_constant.g_con_msg_availability
+                                                                || ' ; Attribute: '''
+                                                                || i_it_tdt( idx_tdt ).attribute
+                                                                || '''; Value: '''
+                                                                || i_it_tdt( idx_tdt ).value
+                                                                || ''''
+                                  );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes_tdt;
+
+function process_mode_of_operation
+ (i_area_id_cust in lm_areas_v.id_cust%type
+ ,i_zone_id_cust in lm_zones_v.id_cust%type
+ ,i_section_id_cust in lm_sections_v.id_cust%type
+ ,i_transportdirection in lm_mode_of_operation_dom.mom_mode%type
+ ,i_event_time in lm_modes_of_operation.event_time%type
+ ,i_ims_id in lm_ifc_messages.id%type
+ ,o_sct_id out lm_system_components.id%type
+ ,o_mom_id out lm_modes_of_operation.mom_id%type
+ )
+return boolean
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.Process_Mode_Of_Operation';
+   
+   
+   cursor c_get_sct_mode_of_op
+    (i_sct_id in lm_system_components.id%type
+    )
+   is
+   select sct.id sct_id
+        , mom.id mom_id
+        , mom.mom_mode mom_mode
+        , mon.event_time mon_event_time
+   from   lm_modes_of_operation mon
+        , lm_mode_of_operation_dom mom
+        , lm_system_components sct
+   where  mom.id(+) = mon.mom_id
+   and    mon.sct_id(+) = sct.id
+   and    sct.id = i_sct_id;
+
+
+   l_sct_id               lm_system_components.id%type;
+   l_rt_mon               lm_modes_of_operation%rowtype;
+   l_rt_mom               lm_mode_of_operation_dom%rowtype;
+   rec_get_sct_mode_of_op c_get_sct_mode_of_op%rowtype;
+   l_mom_found            boolean;
+   l_rows_processed       numeric;
+   l_processed            boolean := false;
+
+   pragma autonomous_transaction;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+    
+   
+   lm_topology_administration.chk_area_zone_section( i_area_id_cust         => i_area_id_cust
+                                                   , i_zone_id_cust         => i_zone_id_cust
+                                                   , i_section_id_cust      => i_section_id_cust
+                                                   );
+   
+   l_sct_id  :=
+      lm_topology_administration.get_sct_id( i_area_id_cust         => i_area_id_cust
+                                           , i_zone_id_cust         => i_zone_id_cust
+                                           , i_section_id_cust      => i_section_id_cust
+                                           );
+   
+   o_sct_id  := l_sct_id;
+   
+   open c_get_sct_mode_of_op( i_sct_id      => l_sct_id );
+
+   fetch c_get_sct_mode_of_op
+   into  rec_get_sct_mode_of_op;
+
+   close c_get_sct_mode_of_op;
+
+   
+   o_mom_id  := rec_get_sct_mode_of_op.mom_id;
+
+   if rec_get_sct_mode_of_op.mon_event_time is null
+   then
+      
+
+
+
+      l_mom_found          := lm_mom_tapi_pck.mom_select_row_uk1( i_mom_mom_mode      => i_transportdirection
+                                                                , o_rt_mom            => l_rt_mom
+                                                                );
+      l_rt_mon.mom_id      := l_rt_mom.id;
+      l_rt_mon.sct_id      := l_sct_id;
+      l_rt_mon.event_time  := i_event_time;
+      lm_mon_tapi_pck.mon_insert_row( io_rt_mon      => l_rt_mon );
+      
+      
+      
+      
+
+      if l_rt_mon.mom_id = lm_constant.g_con_mom_mom_mode_reverse
+      then
+         l_processed  := true;
+      end if;
+   elsif i_event_time < rec_get_sct_mode_of_op.mon_event_time
+   then
+      
+
+
+
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_obsoletemessage
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_warning
+                         , i_additional_data        => 'Message ' || lm_constant.g_con_msg_transportdirection || ', Message ID "' || i_ims_id || '"'
+                         );
+   elsif rec_get_sct_mode_of_op.mom_mode <> i_transportdirection
+   then
+      
+
+
+
+      l_mom_found          := lm_mom_tapi_pck.mom_select_row_uk1( i_mom_mom_mode      => i_transportdirection
+                                                                , o_rt_mom            => l_rt_mom
+                                                                );
+      l_rt_mon.mom_id      := l_rt_mom.id;
+      l_rt_mon.sct_id      := l_sct_id;
+      l_rt_mon.event_time  := i_event_time;
+      l_rows_processed     := lm_mon_tapi_pck.mon_update_row( i_mon_sct_id      => l_sct_id
+                                                            , io_rt_mon         => l_rt_mon
+                                                            );
+      l_processed          := true;
+   end if;
+
+   
+
+
+
+   commit; 
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+   return l_processed;
+   
+exception
+   when others
+   then
+      rollback;  
+
+      if c_get_sct_mode_of_op%isopen
+      then
+         close c_get_sct_mode_of_op;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end process_mode_of_operation;
+
+procedure process_transportdirection
+ (i_event_time in lm_package_events.event_time%type
+ ,i_area_id_cust in lm_areas_v.id_cust%type
+ ,i_zone_id_cust in lm_zones_v.id_cust%type
+ ,i_it_tdt in lm_transportdir_report.g_it_trt
+ ,i_ims_id in lm_ifc_messages.id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.PROCESS_TRANSPORTDIRECTION';
+
+   
+   cursor c_get_stn_in_stn_reach
+    (i_sct_id in lm_station_reachabilities.sct_id%type
+    ,i_mom_id in lm_station_reachabilities.mom_id%type
+    )
+    is
+   
+   
+   select sry.stn_id
+   ,      sry.pon_id
+   from   lm_station_reachabilities sry
+   where  sry.sct_id = i_sct_id
+   and    sry.mom_id = nvl(i_mom_id, lm_constant.g_con_mom_mom_mode_normal);
+
+
+   cursor c_last_active_pin_by_dest
+    (i_nt_pon in nt_pon_id
+    )
+   is
+   
+
+
+
+
+   select pae.pid pid
+   from   lm_packages pae
+   where  exists ( select ''
+                   from   
+                          lm_pin_active_of_package_v piev
+                   ,      lm_package_destinations pdn
+                   where  piev.id = pdn.pin_id
+                   and    piev.pid = pae.pid
+                   and    pdn.pon_id in ( select /*+ CARDINALITY(pon 10) */ *
+                                          from   table( i_nt_pon ) pon
+                                        )
+                   and    piev.pss_id in (lm_constant.g_con_pss_name_open, lm_constant.g_con_pss_name_suspect)
+                 );
+                 
+   
+   cursor c_pid_tin_with_finals
+    (i_nt_stn in nt_stn_id
+    )
+   is
+   
+
+
+
+
+   select tin.pid
+   ,      tin.id tin_id
+   ,      tin.event_time
+   from   lm_determined_stations dsn
+   ,      lm_task_instructions tin
+   where  dsn.tin_id = tin.id
+   and    tin.pss_id in ( lm_constant.g_con_pss_name_open, lm_constant.g_con_pss_name_suspect )
+   and    dsn.ind_final_expected = lm_constant.g_con_yesno_yes
+   and    dsn.stn_id in ( select *
+                          from   table( i_nt_stn )
+                        );
+
+   l_sct_id    lm_system_components.id%type;
+   l_mom_id    lm_modes_of_operation.mom_id%type;
+   l_rt_ssh    c_get_stn_in_stn_reach%rowtype;
+   l_nt_stn    nt_stn_id := nt_stn_id();
+   l_nt_pon    nt_pon_id := nt_pon_id();
+   l_it_tdt    lm_transportdir_report.g_it_trt := i_it_tdt;
+   l_processed boolean := false;
+   l_dummy     boolean;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+
+
+
+
+   if l_it_tdt( 1 ).section is null
+   then
+      
+
+
+
+       l_processed  :=
+            lm_transportdir_report.process_mode_of_operation( i_area_id_cust            => i_area_id_cust
+                                                            , i_zone_id_cust            => i_zone_id_cust
+                                                            , i_section_id_cust         => null
+                                                            , i_transportdirection      => l_it_tdt( 1 ).transportdirection
+                                                            , i_event_time              => i_event_time
+                                                            , i_ims_id                  => i_ims_id
+                                                            , o_sct_id                  => l_sct_id
+                                                            , o_mom_id                  => l_mom_id
+                                                            );
+   else
+      for idx_tdt in l_it_tdt.first .. l_it_tdt.last
+      loop
+         l_processed  :=
+            lm_transportdir_report.process_mode_of_operation( i_area_id_cust            => i_area_id_cust
+                                                            , i_zone_id_cust            => i_zone_id_cust
+                                                            , i_section_id_cust         => l_it_tdt( idx_tdt ).section
+                                                            , i_transportdirection      => l_it_tdt( idx_tdt ).transportdirection
+                                                            , i_event_time              => i_event_time
+                                                            , i_ims_id                  => i_ims_id
+                                                            , o_sct_id                  => l_sct_id
+                                                            , o_mom_id                  => l_mom_id
+                                                            );
+
+         if l_processed
+         then
+            
+
+
+
+
+            open c_get_stn_in_stn_reach( i_sct_id      => l_sct_id
+                                       , i_mom_id      => l_mom_id
+                                       );
+            fetch c_get_stn_in_stn_reach
+            into  l_rt_ssh;
+
+            if c_get_stn_in_stn_reach%found
+            then
+               close c_get_stn_in_stn_reach;
+
+               l_nt_stn.extend;
+               l_nt_stn( l_nt_stn.count ) := l_rt_ssh.stn_id;
+               l_nt_pon.extend;
+               l_nt_pon( l_nt_pon.count ) := l_rt_ssh.pon_id;
+            else
+               close c_get_stn_in_stn_reach;
+
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_nophysicaldestfound
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_notification
+                                     , i_additional_data        =>    'System Component ID = "'
+                                                                   || l_sct_id
+                                                                   || '"'
+                                                                   || lm_constant.g_con_msg_transportdirection
+                                                                   || ' = "'
+                                                                   || l_it_tdt( idx_tdt ).transportdirection
+                                                                   || '"'
+                                     );
+            end if;
+         end if;
+      end loop;
+
+      
+
+
+
+
+
+
+      if l_nt_pon.count > 0
+      then
+         for l_rt_ldt in c_last_active_pin_by_dest( i_nt_pon => l_nt_pon )
+         loop
+            
+            
+            begin
+               lm_topology_administration.evaluate_pck_instr_for_pck( i_pid  => l_rt_ldt.pid );
+            exception
+               when others
+               then
+                  viu_info.handle_info;
+            end;
+         end loop;
+      end if;
+      
+      
+
+
+
+
+
+      if l_nt_stn.count > 0
+      then
+         for l_rt_pfs in c_pid_tin_with_finals( i_nt_stn => l_nt_stn )
+         loop
+            
+            
+            begin
+               lm_topology_administration.evaluate_task_instr_for_pck( i_pid                     => l_rt_pfs.pid
+                                                                     , i_tin_id                  => l_rt_pfs.tin_id
+                                                                     , i_nt_exclude_stations     => nt_stn_id()
+                                                                     , o_new_determined_stations => l_dummy
+                                                                     );
+            exception
+               when others
+               then
+                  viu_info.handle_info;
+            end;
+         end loop;
+      end if;
+      
+   end if;
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_get_stn_in_stn_reach%isopen
+      then
+         close c_get_stn_in_stn_reach;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end process_transportdirection;
+
+end lm_transportdir_report;
+/

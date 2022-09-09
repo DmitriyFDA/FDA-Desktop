@@ -1,0 +1,2689 @@
+create or replace package xml2table is
+procedure process_message(i_message in clob);
+procedure process_message(i_message in clob, i_tracetag in varchar2);
+procedure process_message(i_message in varchar2);
+procedure process_message(i_message in varchar2, i_tracetag in varchar2);
+procedure configure;
+
+function is_reserved_word(i_word varchar2) return varchar2;
+function valid_oracle_name(i_name varchar2) return varchar2;
+
+-- FOR DEBUGGING
+PROCEDURE PRINT_CONFIGURATION;
+end;
+/
+
+
+
+
+package body xml2table is
+
+
+type parts_type is record
+( path varchar2(8000)
+, denormno number
+, tag varchar2(100)
+, colname varchar2(30)
+, value varchar2(4000)
+, instruction varchar2(30));
+type parts_array is varray(100000) of parts_type;
+g_parts parts_array;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+type instruction_type is record(instruction varchar2(30), newname varchar2(30));
+type path_instruction_matrix is table of instruction_type index by varchar2(4000);
+g_path_instructions path_instruction_matrix;
+
+
+type configuration_type is record
+( tableprefix varchar2(10)
+, savemessage varchar2(1)
+, dateformat varchar2(200)
+, eventtime_conversion varchar2(1)
+, use_dbtimezone varchar2(1)
+, store_message_in_table varchar2(1)
+);
+g_config configuration_type;
+type configuration_matrix is table of configuration_type index by varchar2(50);
+g_configurations configuration_matrix;
+
+
+type reserved_words_type is table of varchar2(1) index by varchar2(30);
+g_reserved_words reserved_words_type;
+
+type colvalues is varray(124) of varchar2(4000);
+type colnames is varray(124) of varchar2(30);
+
+g_message_store_rec xml_message_store%rowtype;
+g_tracetag varchar2(250);
+g_event_timestamp timestamp with time zone := systimestamp;
+type t_timestamps is table of timestamp with time zone index by pls_integer;
+
+g_event_timestamps t_timestamps;
+
+
+g_denormalize_count number := 0;
+g_key_offset number := 0; 
+
+g_sibling_denormalization boolean := false;
+
+g_domdoc dbms_xmldom.domdocument;
+type t_nodes is table of dbms_xmldom.domnode;
+g_split_nodes t_nodes;
+g_target_table_name varchar2(30);
+g_sql_statement varchar2(32767);
+g_duplicate_list varchar2(32767);
+g_phase integer := 0;
+g_increment integer := 0;
+
+procedure load_reserved_words is
+begin
+  for c_rec in ( select keyword from v$reserved_words
+                 where (reserved = 'Y' or res_semi = 'Y')
+                   and length(trim(keyword)) > 1 order by 1 ) loop
+    g_reserved_words(c_rec.keyword) := 'Y';
+  end loop;
+end;
+
+
+function is_reserved_word(i_word varchar2) return varchar2 is
+is_reserved varchar2(1) := 'N';
+begin
+  begin
+    is_reserved := g_reserved_words(upper(i_word));
+  exception when others then
+    is_reserved := 'N';
+  end;
+  return is_reserved;
+end;
+
+
+
+function valid_oracle_name(i_name varchar2) return varchar2 is
+l_name varchar2(100) := upper(trim(i_name));
+c_char varchar2(1);
+n_pos integer;
+begin
+  if l_name is not null then
+    
+    l_name := regexp_replace(l_name,'[^A-Z,0-9,_]');
+    
+    c_char := substr(l_name, 1, 1);
+    n_pos := instr('0123456789', c_char);
+    if n_pos > 0 then
+      l_name := 'N'||l_name;
+    end if;
+    
+    c_char := substr(l_name, 1, 1);
+    while c_char = '_' loop
+      l_name := substr(l_name, 2);
+      c_char := substr(l_name, 1, 1);
+    end loop;
+    
+    if l_name is null then
+      l_name := 'UNDERSCORE';
+    end if;
+    
+    if xml2table.is_reserved_word(l_name) = 'Y' then
+      l_name := l_name||'_';
+    end if;
+    
+    l_name := substr(l_name, 1, 30);
+  end if;
+  return l_name;
+end;
+
+
+
+
+
+
+
+
+
+function execute_function( i_function_name varchar2
+                         , i_parameter1    varchar2
+                         )
+   return varchar2
+is
+   l_return_value varchar2(32767);
+begin
+   execute immediate 'BEGIN :1 := '||i_function_name||'(:2); END;' using out l_return_value, in i_parameter1;
+   return l_return_value;
+exception
+   when others then
+      return i_parameter1;
+end;
+
+
+function interval_in_seconds(i_ts1 timestamp, i_ts2 timestamp) return number is
+
+num_val number(19,6);
+diff interval day(9) to second;
+begin
+  diff := (i_ts2 - i_ts1);
+  num_val := extract(second from diff);
+  num_val := num_val + extract(minute from diff) * 60;
+  num_val := num_val + extract(hour from diff) * 60 * 60;
+  num_val := num_val + extract(day from diff) * 60 * 60 * 24;
+  return num_val;
+end;
+
+
+function find_dup_columns(p_colnames colnames) return varchar2 is
+type tcols is table of number index by varchar2(30);
+cols tcols;
+l_current varchar2(30);
+l_duplicates varchar2(4000) := '';
+l_sep varchar2(1) := '';
+begin
+  for i in 1..p_colnames.count loop
+    if cols.exists(p_colnames(i)) then
+      cols(p_colnames(i)) := cols(p_colnames(i)) + 1;
+    else
+      cols(p_colnames(i)) := 1;
+    end if;
+  end loop;
+  l_current := cols.first;
+  while l_current is not null loop
+    
+    if cols(l_current) > 1 then
+      l_duplicates := l_duplicates||l_sep||l_current;
+      l_sep := ',';
+    end if;
+    l_current := cols.next(l_current);
+  end loop;
+  
+  return chr(10)||'Duplicate columns:'||chr(10)||l_duplicates;
+end;
+
+
+procedure log_message is
+l_duration number(19,6);
+l_errmsg varchar2(4000);
+
+begin
+  l_errmsg := substr(g_message_store_rec.errormessage||g_duplicate_list,1,4000);
+  l_duration := xml2table.interval_in_seconds(g_message_store_rec.insertts, sys_extract_utc(systimestamp));
+  insert into xml_message_store
+  ( idevent
+  , insertts
+  , eventts
+  , message
+  , rootnode
+  , returncode
+  , errormessage
+  , duration )
+  values
+  ( g_message_store_rec.idevent
+  , g_message_store_rec.insertts
+  , sys_extract_utc(g_event_timestamp)
+  , g_message_store_rec.message
+  , g_message_store_rec.rootnode
+  , g_message_store_rec.returncode
+  , l_errmsg
+  , l_duration );
+  if g_tracetag is not null then
+    insert into xml2table_tracing
+    ( tracetag, idevent, phase, id
+    , path, value)
+    values
+    ( g_tracetag, g_message_store_rec.idevent, g_phase, 99999
+    , l_errmsg, 'returncode='||to_char(g_message_store_rec.returncode) );
+  end if;
+  commit write batch nowait;
+  
+end;
+
+
+
+procedure print_configuration is
+l_current varchar2(30);
+l_table varchar2(30);
+l_msg varchar2(4000) := '';
+begin
+  l_current := g_configurations.first;
+  loop exit when l_current is null;
+    dbms_output.put_line('Index is: '||l_current);
+    dbms_output.put_line(' TABLEPREFIX='||g_configurations(l_current).tableprefix
+    ||' SAVEMESSAGE='||g_configurations(l_current).savemessage
+    ||' DATEFORMAT='||g_configurations(l_current).dateformat
+    ||' EVENTTIME_CONVERSION='||g_configurations(l_current).eventtime_conversion
+    ||' USE_DBTIMEZONE='||g_configurations(l_current).use_dbtimezone);
+    l_table := upper(g_configurations(l_current).tableprefix||l_current);
+    dbms_output.put_line('Target table is: '||l_table||chr(10));
+    
+    l_current := g_configurations.next(l_current);
+  end loop;
+end;
+
+
+procedure dump_parts_to_trace_table (i_split number := 0) is
+begin
+  for i in 1..g_parts.count loop
+    insert into xml2table_tracing
+    ( tracetag, idevent, phase, id
+    , path, denormno, tag, colname, value, instruction)
+    values
+    ( g_tracetag, g_message_store_rec.idevent, g_phase + i_split, i
+    , g_parts(i).path, g_parts(i).denormno, g_parts(i).tag, g_parts(i).colname, g_parts(i).value, g_parts(i).instruction);
+  end loop;
+  commit;
+end;
+
+
+procedure add_to_parts(i_path varchar2, i_denormno integer, i_tag varchar2, i_colname varchar2, i_value varchar2, i_instruction varchar2) is
+i integer;
+begin
+  g_parts.extend(1);
+  i := g_parts.count;
+  g_parts(i).path := i_path;
+  g_parts(i).denormno := i_denormno;
+  g_parts(i).tag := i_tag;
+  g_parts(i).colname := i_colname;
+  g_parts(i).value := i_value;
+  g_parts(i).instruction := i_instruction;
+end;
+
+
+procedure append_csv_to_parts(i_value varchar2) is
+i integer;
+eqpos integer;
+tag varchar2(100) := '';
+
+l_value varchar2(4000) := trim(replace(i_value, ',', ';'));
+l_separator varchar2(5) := ',';
+begin
+  if l_value is not null then
+    i := g_parts.count;
+    eqpos := instr(i_value,'=');
+    if eqpos > 1 then
+      tag := substr(i_value,1,eqpos);
+      if tag = substr(g_parts(i).value,1,eqpos) then
+        
+        l_separator := ','||chr(10);
+      end if;
+      
+      while g_parts(i).instruction = 'DELETE' and i > 1 loop
+        i := i - 1;
+      end loop;
+    end if;
+    if g_parts(i).value is null then
+      
+      g_parts(i).value := l_value;
+    else
+      
+      g_parts(i).value := g_parts(i).value||l_separator||l_value;
+    end if;
+  end if;
+end;
+
+
+procedure elaborate_error_message is
+l_msg varchar2(4000);
+begin
+  
+  if g_tracetag is not null then
+    l_msg := g_message_store_rec.errormessage;
+    l_msg := nvl(l_msg, 'OK.');
+    l_msg := l_msg||chr(10)||to_char(g_parts.count - g_denormalize_count)||' parts. ';
+    if g_denormalize_count > 0 then
+      l_msg := l_msg||'Denormalized to '||to_char(g_denormalize_count)||' rows.';
+    end if;
+  else
+    l_msg := null;
+  end if;
+  g_message_store_rec.errormessage := l_msg;
+end;
+
+procedure core_table_insert(p_table_name varchar2, p_colnames colnames, v colvalues, p_idevent number, p_key number, p_eventts timestamp) is
+l_sql varchar2(32767);
+l_vars varchar2(32767);
+l_hardvals varchar2(32767);
+l_ts_string varchar2(50) := to_char(p_eventts, 'YYYYMMDD-HH24MISSFF3');
+l_linebreak integer := 0;
+l_linelength integer := 0;
+begin
+  l_sql := 'INSERT INTO '||p_table_name||'(IDEVENT,KEY,INSERTTS,EVENTTS'||chr(10);
+  l_vars := '(:c1,:c2,:c3,:c4';
+  l_hardvals := '('||to_char(p_idevent)||','||to_char(p_key)||',sys_extract_utc(systimestamp),'
+    ||'to_timestamp('''||l_ts_string||''',''YYYYMMDD-HH24MISSFF3'')'||chr(10);
+
+  l_linebreak := length(l_sql);
+  l_linelength := 0;
+  for i in 1..v.count loop
+    l_sql := l_sql||','||p_colnames(i);
+    l_vars := l_vars||',:c'||to_char(i + 4);
+    l_hardvals := l_hardvals||','''||v(i)||'''';
+    if l_linelength > 70 then
+      l_sql := l_sql||chr(10);
+      l_hardvals := l_hardvals||chr(10);
+      l_linebreak := length(l_sql);
+      l_linelength := 0;
+    else
+      l_linelength := length(l_sql) - l_linebreak;
+    end if;
+  end loop;
+
+  
+  
+  g_sql_statement := l_sql||') '||chr(10)||'VALUES '||l_hardvals||')';
+  if g_tracetag is not null then
+    
+    add_to_parts(substr(g_sql_statement,1,4000), 0, null, null, null, null);
+  end if;
+
+  l_sql := l_sql||') VALUES'||l_vars||')';
+
+  
+  case v.count
+when 1 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1);
+when 2 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2);
+when 3 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3);
+when 4 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4);
+when 5 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5);
+when 6 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6);
+when 7 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7);
+when 8 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8);
+when 9 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9);
+when 10 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10);
+when 11 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11);
+when 12 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12);
+when 13 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13);
+when 14 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14);
+when 15 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15);
+when 16 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16);
+when 17 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+;
+when 18 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18);
+when 19 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19);
+when 20 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20);
+when 21 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21);
+when 22 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22);
+when 23 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23);
+when 24 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24);
+when 25 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25);
+when 26 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26);
+when 27 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27);
+when 28 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28);
+when 29 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29);
+when 30 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30);
+when 31 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31);
+when 32 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32);
+when 33 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33);
+when 34 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+;
+when 35 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35);
+when 36 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36);
+when 37 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37);
+when 38 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38);
+when 39 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39);
+when 40 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40);
+when 41 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41);
+when 42 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42);
+when 43 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43);
+when 44 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44);
+when 45 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45);
+when 46 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46);
+when 47 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47);
+when 48 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48);
+when 49 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49);
+when 50 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50);
+when 51 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+;
+when 52 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52);
+when 53 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53);
+when 54 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54);
+when 55 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55);
+when 56 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56);
+when 57 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57);
+when 58 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58);
+when 59 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59);
+when 60 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60);
+when 61 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61);
+when 62 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62);
+when 63 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63);
+when 64 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64);
+when 65 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65);
+when 66 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66);
+when 67 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67);
+when 68 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+;
+when 69 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69);
+when 70 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70);
+when 71 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71);
+when 72 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72);
+when 73 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73);
+when 74 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74);
+when 75 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75);
+when 76 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76);
+when 77 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77);
+when 78 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78);
+when 79 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79);
+when 80 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80);
+when 81 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81);
+when 82 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82);
+when 83 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83);
+when 84 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84);
+when 85 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+;
+when 86 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86);
+when 87 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87);
+when 88 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88);
+when 89 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89);
+when 90 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90);
+when 91 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91);
+when 92 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92);
+when 93 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93);
+when 94 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94);
+when 95 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95);
+when 96 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96);
+when 97 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97);
+when 98 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98);
+when 99 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99);
+when 100 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100);
+when 101 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101);
+when 102 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+;
+when 103 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103);
+when 104 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104);
+when 105 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105);
+when 106 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106);
+when 107 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107);
+when 108 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108);
+when 109 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109);
+when 110 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110);
+when 111 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111);
+when 112 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112);
+when 113 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113);
+when 114 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114);
+when 115 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115);
+when 116 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116);
+when 117 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117);
+when 118 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118);
+when 119 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+;
+when 120 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120);
+when 121 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121);
+when 122 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121),v(122);
+when 123 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121),v(122),v(123);
+when 124 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121),v(122),v(123),v(124);
+else
+  g_message_store_rec.errormessage := 'Too many columns: '||to_char(v.count+4)||'. Target table is limited to 128 columns.'||chr(10);
+  g_duplicate_list := find_dup_columns(p_colnames);
+  g_message_store_rec.returncode := -5;
+  xml2table.log_message;
+end case;
+end core_table_insert;
+
+procedure core_table_insert_xml
+(p_table_name varchar2
+,p_colnames colnames
+,v colvalues
+,p_idevent number
+,p_key number
+,p_eventts timestamp
+)
+is
+  
+  
+  
+  
+
+  l_sql         varchar2(32767);
+  l_vars        varchar2(32767);
+  l_hardvals    varchar2(32767);
+  l_ts_string   varchar2(50)     := to_char(p_eventts, 'YYYYMMDD-HH24MISSFF3');
+  l_linebreak   integer          := 0;
+  l_linelength  integer          := 0;
+begin
+  
+  l_sql := 'INSERT INTO '||p_table_name||'(IDEVENT,KEY,INSERTTS,EVENTTS,XMLMESSAGE'||chr(10);
+  l_vars := '(:c1,:c2,:c3,:c4,:c5';
+  l_hardvals := '('||to_char(p_idevent)||','||to_char(p_key)||',sys_extract_utc(systimestamp),'
+    ||'to_timestamp('''||l_ts_string||''',''YYYYMMDD-HH24MISSFF3''),''<a></a>'''||chr(10);
+
+  l_linebreak := length(l_sql);
+  l_linelength := 0;
+  for i in 1..v.count loop
+    l_sql := l_sql||','||p_colnames(i);
+    l_vars := l_vars||',:c'||to_char(i + 5);
+    l_hardvals := l_hardvals||','''||v(i)||'''';
+    if l_linelength > 70 then
+      l_sql := l_sql||chr(10);
+      l_hardvals := l_hardvals||chr(10);
+      l_linebreak := length(l_sql);
+      l_linelength := 0;
+    else
+      l_linelength := length(l_sql) - l_linebreak;
+    end if;
+  end loop;
+
+  
+  
+  g_sql_statement := l_sql||') '||chr(10)||'VALUES '||l_hardvals||')';
+  if g_tracetag is not null then
+    
+    add_to_parts(substr(g_sql_statement,1,4000), 0, null, null, null, null);
+  end if;
+
+  l_sql := l_sql||') VALUES'||l_vars||')';
+
+  
+  case v.count
+when 1 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1);
+when 2 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2);
+when 3 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3);
+when 4 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4);
+when 5 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5);
+when 6 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6);
+when 7 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7);
+when 8 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8);
+when 9 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9);
+when 10 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10);
+when 11 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11);
+when 12 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12);
+when 13 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13);
+when 14 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14);
+when 15 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15);
+when 16 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16);
+when 17 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+;
+when 18 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18);
+when 19 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19);
+when 20 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20);
+when 21 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21);
+when 22 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22);
+when 23 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23);
+when 24 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24);
+when 25 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25);
+when 26 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26);
+when 27 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27);
+when 28 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28);
+when 29 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29);
+when 30 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30);
+when 31 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31);
+when 32 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32);
+when 33 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33);
+when 34 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+;
+when 35 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35);
+when 36 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36);
+when 37 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37);
+when 38 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38);
+when 39 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39);
+when 40 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40);
+when 41 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41);
+when 42 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42);
+when 43 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43);
+when 44 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44);
+when 45 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45);
+when 46 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46);
+when 47 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47);
+when 48 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48);
+when 49 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49);
+when 50 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50);
+when 51 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+;
+when 52 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52);
+when 53 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53);
+when 54 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54);
+when 55 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55);
+when 56 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56);
+when 57 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57);
+when 58 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58);
+when 59 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59);
+when 60 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60);
+when 61 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61);
+when 62 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62);
+when 63 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63);
+when 64 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64);
+when 65 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65);
+when 66 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66);
+when 67 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67);
+when 68 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+;
+when 69 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69);
+when 70 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70);
+when 71 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71);
+when 72 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72);
+when 73 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73);
+when 74 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74);
+when 75 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75);
+when 76 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76);
+when 77 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77);
+when 78 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78);
+when 79 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79);
+when 80 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80);
+when 81 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81);
+when 82 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82);
+when 83 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83);
+when 84 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84);
+when 85 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+;
+when 86 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86);
+when 87 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87);
+when 88 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88);
+when 89 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89);
+when 90 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90);
+when 91 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91);
+when 92 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92);
+when 93 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93);
+when 94 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94);
+when 95 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95);
+when 96 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96);
+when 97 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97);
+when 98 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98);
+when 99 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99);
+when 100 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100);
+when 101 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101);
+when 102 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+;
+when 103 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103);
+when 104 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104);
+when 105 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105);
+when 106 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106);
+when 107 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107);
+when 108 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108);
+when 109 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109);
+when 110 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110);
+when 111 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111);
+when 112 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112);
+when 113 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113);
+when 114 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114);
+when 115 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115);
+when 116 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116);
+when 117 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117);
+when 118 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118);
+when 119 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+;
+when 120 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120);
+when 121 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121);
+when 122 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121),v(122);
+when 123 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121),v(122),v(123);
+when 124 then execute immediate l_sql using p_idevent, p_key, sys_extract_utc(systimestamp), p_eventts, g_message_store_rec.message
+,v(1),v(2),v(3),v(4),v(5),v(6),v(7),v(8),v(9),v(10),v(11),v(12),v(13),v(14),v(15),v(16),v(17)
+,v(18),v(19),v(20),v(21),v(22),v(23),v(24),v(25),v(26),v(27),v(28),v(29),v(30),v(31),v(32),v(33),v(34)
+,v(35),v(36),v(37),v(38),v(39),v(40),v(41),v(42),v(43),v(44),v(45),v(46),v(47),v(48),v(49),v(50),v(51)
+,v(52),v(53),v(54),v(55),v(56),v(57),v(58),v(59),v(60),v(61),v(62),v(63),v(64),v(65),v(66),v(67),v(68)
+,v(69),v(70),v(71),v(72),v(73),v(74),v(75),v(76),v(77),v(78),v(79),v(80),v(81),v(82),v(83),v(84),v(85)
+,v(86),v(87),v(88),v(89),v(90),v(91),v(92),v(93),v(94),v(95),v(96),v(97),v(98),v(99),v(100),v(101),v(102)
+,v(103),v(104),v(105),v(106),v(107),v(108),v(109),v(110),v(111),v(112),v(113),v(114),v(115),v(116),v(117),v(118),v(119)
+,v(120),v(121),v(122),v(123),v(124);
+else
+  g_message_store_rec.errormessage := 'Too many columns: '||to_char(v.count+4)||'. Target table is limited to 128 columns.'||chr(10);
+  g_duplicate_list := find_dup_columns(p_colnames);
+  g_message_store_rec.returncode := -5;
+  xml2table.log_message;
+end case;
+end;
+
+
+function prefix(i_prefix varchar2, i_name varchar2) return varchar2 is
+l_new_name varchar2(60) := trim(i_name);
+l_prefix varchar2(30) := trim(i_prefix);
+begin
+  if l_new_name is not null then
+    if l_prefix is not null then
+      if substr(l_new_name,1,2) = 'L_' then
+        l_new_name := 'L_'||l_prefix||substr(l_new_name,3);
+      else
+        l_new_name := l_prefix||l_new_name;
+      end if;
+    end if;
+  end if;
+  
+  return l_new_name;
+end;
+
+
+function column_name(i_tagname varchar2, i_newcolumnname varchar2, i_prefix varchar2, i_isattribute boolean) return varchar2 is
+l_new_name varchar2(60) := '?';
+l_colon_pos integer := 0;
+begin
+  if i_newcolumnname is not null then
+    l_new_name := i_newcolumnname;
+  else
+    if i_isattribute then
+      
+      
+      if (upper(i_tagname) = 'XMLNS') or (instr(i_tagname, ':') > 1) then
+        l_new_name := null;
+      else
+        l_new_name := i_tagname;
+      end if;
+    else
+      
+      
+      l_colon_pos := instr(i_tagname,':');
+      if l_colon_pos > 0 then
+        l_new_name := substr(i_tagname, l_colon_pos + 1);
+      else
+        l_new_name := i_tagname;
+      end if;
+    end if;
+  end if;
+  l_new_name := xml2table.prefix(i_prefix, l_new_name);
+  l_new_name := xml2table.valid_oracle_name(l_new_name);
+  return l_new_name;
+end;
+
+
+procedure set_event_timestamp(i_eventtime varchar2, i_denormno number, i_dateformat varchar2, i_conversion varchar2, i_use_dbtimezone varchar2) is
+l_dateformat varchar2(50);
+l_eventtime varchar2(50) := i_eventtime;
+begin
+  
+  
+  
+  
+  if i_conversion = '3' then
+    g_event_timestamp := g_message_store_rec.insertts;
+  else
+    
+    begin
+      l_dateformat :=  nvl(i_dateformat,'YYYY-MM-DD"T"HH24:MI:SS.FF"Z"');
+      g_event_timestamp := to_timestamp_tz(i_eventtime, l_dateformat);
+    exception when others then
+      begin
+        
+        l_dateformat :=  nvl(i_dateformat, 'YYYY-MM-DD"T"HH24:MI:SS.FFTZH:TZM');
+        g_event_timestamp := sys_extract_utc(to_timestamp_tz(i_eventtime, l_dateformat));
+      exception when others then
+        begin
+          
+          l_dateformat := 'YYYY-MM-DD HH24:MI:SS.FF';
+          l_eventtime := replace(l_eventtime, 'T', ' ');
+          l_eventtime := replace(l_eventtime, 'Z', '');
+          g_event_timestamp := to_timestamp(l_eventtime, l_dateformat);
+        exception when others then
+          if i_conversion = '2' then
+            g_message_store_rec.errormessage := substr('EVENTTIME: '||l_eventtime||' is incorrect: '
+              ||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+            g_message_store_rec.returncode := -6;
+            xml2table.log_message;
+          end if;
+          g_event_timestamp := g_message_store_rec.insertts;
+        end;
+      end;
+    end;
+  end if;
+  if i_use_dbtimezone = 'Y' then
+    g_event_timestamp := from_tz(g_event_timestamp,'UTC') at time zone dbtimezone;
+  end if;
+  for i in reverse 1..i_denormno loop
+    if not g_event_timestamps.exists(i) then
+      g_event_timestamps(i) := g_event_timestamp;
+    else
+      exit;
+    end if;
+  end loop;
+end;
+
+
+
+
+procedure extract_node(i_domnode dbms_xmldom.domnode, i_path varchar2, i_prefix varchar2, i_tagdelimit boolean, i_denormno integer) is
+
+l_nodename varchar2(100);
+l_nodevalue varchar2(32767);
+l_childnode dbms_xmldom.domnode;
+l_childnodes dbms_xmldom.domnodelist;
+l_nodelength integer;
+l_nodemap dbms_xmldom.domnamednodemap;
+l_attrnode dbms_xmldom.domnode;
+l_attributecount integer;
+l_attrname varchar2(100);
+l_colname varchar2(30);
+l_funname varchar2(30);
+l_renamedcolumn varchar2(30);
+l_attrvalue varchar2(32767);
+l_path varchar2(32767);
+l_prefix varchar2(30) := i_prefix;
+l_tagdelimit boolean := i_tagdelimit;
+l_denormno integer := i_denormno;
+l_previous_path varchar2(32767);
+l_instruction instruction_type;
+l_attrinstruction instruction_type;
+l_clob clob;
+l_element_name varchar2(30);
+l_element_node dbms_xmldom.domnode;
+l_node dbms_xmldom.domnode;
+begin
+   
+   l_nodename := dbms_xmldom.getnodename(i_domnode);
+
+   
+   l_path := i_path||'/'||l_nodename;
+
+   
+   
+   if  g_parts.count > 0
+   and g_parts(g_parts.count).instruction = 'FIRSTCHILDNAME'
+   and (   g_parts(g_parts.count).value is null
+        or substr(g_parts(g_parts.count).value,1,1)='#'
+       )
+   then
+      
+      
+      if i_path = g_parts(g_parts.count).path
+      then
+         g_parts(g_parts.count).value := l_nodename;
+      end if;
+   end if;
+
+   begin
+     l_instruction := g_path_instructions(l_path);
+   exception when others then
+     l_instruction.instruction := '-';
+     l_instruction.newname := null;
+   end;
+
+   
+   l_colname := null;
+   l_funname := null;
+   if l_instruction.instruction = 'DENORMALIZE' then
+     
+     g_denormalize_count := g_denormalize_count + 1;
+     l_denormno := g_denormalize_count;
+     if l_instruction.newname is not null then
+      add_to_parts(l_path, l_denormno, upper(l_instruction.newname), l_nodename, null, l_instruction.instruction);
+     end if;
+     add_to_parts(l_path, l_denormno, null, null, null, l_instruction.instruction);
+   elsif l_instruction.instruction = 'RENAME' then
+     l_colname := l_instruction.newname;
+   elsif l_instruction.instruction = 'FIRSTCHILDNAME' then
+     add_to_parts(l_path, l_denormno, upper(l_instruction.newname), l_instruction.newname, null, l_instruction.instruction);
+   elsif l_instruction.instruction = 'SPLIT' then
+     add_to_parts(l_path, l_denormno, null, null, null, l_instruction.instruction);
+   elsif l_instruction.instruction = 'TAGDELIMIT' then
+     add_to_parts(l_path, l_denormno, upper(l_instruction.newname), prefix(l_prefix, l_instruction.newname), null, l_instruction.instruction);
+     l_tagdelimit := true;
+   elsif l_instruction.instruction = 'PREFIX' then
+     add_to_parts(l_path, l_denormno, upper(l_instruction.newname), null, null, l_instruction.instruction);
+     l_prefix := l_instruction.newname;
+   elsif l_instruction.instruction = 'DELETE' then
+     add_to_parts(l_path, l_denormno, null, null, null, l_instruction.instruction);
+   elsif nvl(l_instruction.instruction, '-') <> '-' then
+     l_colname := l_instruction.newname;
+     l_funname := l_instruction.instruction;
+   end if;
+
+    
+   l_childnodes := dbms_xmldom.getchildnodes(i_domnode);
+
+   if not dbms_xmldom.isnull(l_childnodes) then
+     l_nodelength := dbms_xmldom.getlength(l_childnodes);
+
+     
+     
+
+     
+     l_nodemap := dbms_xmldom.getattributes(i_domnode);
+     l_attributecount := dbms_xmldom.getlength(l_nodemap);
+
+     
+
+     
+     for k in 0..l_attributecount-1
+     loop
+        l_attrnode := dbms_xmldom.item(l_nodemap, k);
+        l_attrname := dbms_xmldom.getnodename(l_attrnode);
+        
+        if instr(l_attrname,':') = 0
+        then
+           begin
+             l_attrinstruction := g_path_instructions(l_path||'/'||l_attrname);
+           exception when others then
+             l_attrinstruction.instruction := '-';
+             l_attrinstruction.newname := null;
+           end;
+           
+           if not l_attrinstruction.instruction = 'DELETE' then
+             if l_attrinstruction.instruction = 'RENAME' then
+               l_colname := l_attrinstruction.newname;
+             end if;
+             l_attrvalue := dbms_xmldom.getnodevalue(l_attrnode);
+             add_to_parts(l_path||'/'||l_attrname, l_denormno, upper(l_attrname)
+                         , xml2table.column_name(l_attrname, l_colname, null, true)
+                         , l_attrvalue, l_attrinstruction.instruction
+                         );
+           end if;
+        end if;
+     end loop;
+
+     
+     if l_instruction.instruction = 'SPLIT' then
+       g_split_nodes.extend;
+       g_split_nodes(g_split_nodes.count) := dbms_xmldom.item(l_childnodes, l_nodelength-1);
+       if dbms_xmldom.getnodetype(g_split_nodes(g_split_nodes.count)) = dbms_xmldom.text_node
+       then
+          
+          
+          
+          l_element_name := l_instruction.newname;
+          for i in reverse 1..g_parts.count - 1
+          loop
+             if l_instruction.newname is null
+                or upper(g_parts(i).tag) = l_instruction.newname
+             then
+                l_element_name := g_parts(i).value;
+                exit;
+             end if;
+          end loop;
+          l_element_node := dbms_xmldom.makenode(dbms_xmldom.createelement(g_domdoc, l_element_name));
+          l_node := dbms_xmldom.appendchild(l_element_node, dbms_xmldom.item(l_childnodes, l_nodelength-1));
+          g_split_nodes(g_split_nodes.count) := l_element_node;
+       elsif l_instruction.newname like '"%"'
+       then
+          l_element_node := dbms_xmldom.makenode(dbms_xmldom.createelement(g_domdoc, trim('"' from l_instruction.newname)));
+          for i in 0..l_nodelength-1
+          loop
+             l_node := dbms_xmldom.appendchild(l_element_node, dbms_xmldom.item(l_childnodes, i));
+          end loop;
+          g_split_nodes(g_split_nodes.count) := l_element_node;
+       end if;
+     elsif not l_instruction.instruction = 'DELETE' then
+       for i in 0..l_nodelength-1 loop
+         l_childnode := dbms_xmldom.item(l_childnodes, i);
+         
+         if not dbms_xmldom.isnull(n => l_childnode) then
+           if dbms_xmldom.getnodetype(l_childnode ) = dbms_xmldom.text_node then
+             l_nodevalue := l_nodevalue||dbms_xmldom.getnodevalue(l_childnode);
+           else
+             extract_node(l_childnode, l_path, l_prefix, l_tagdelimit, l_denormno);
+           end if;
+         end if;
+       end loop;
+     end if;
+   end if;
+
+   
+   
+   
+   if l_nodename <> '#comment' and l_nodevalue is not null then
+     
+     
+     l_nodevalue := regexp_substr(l_nodevalue, '^\s*(.*?)\s*$', 1, 1, 'n', 1);
+
+     if length(l_nodevalue) > 4000 then
+       l_attrvalue := substr(l_nodevalue, 4001);
+       l_nodevalue := substr(l_nodevalue, 1, 4000);
+       g_message_store_rec.errormessage := substr('Truncated '||to_char(length(l_attrvalue))
+                                                              ||' characters from column '
+                                                              ||upper(l_nodename)||':'||chr(10)
+                                                              ||l_attrvalue||chr(10)
+                                                  , 1, 4000);
+     end if;
+
+     if l_funname is not null then
+       l_nodevalue := execute_function(l_funname, l_nodevalue);
+     end if;
+
+     if l_tagdelimit then
+       if l_nodevalue is not null then
+         
+         if l_instruction.instruction = 'RENAME' then
+           append_csv_to_parts(l_instruction.newname||'='||l_nodevalue);
+         elsif l_instruction.instruction != 'DELETE' then
+           append_csv_to_parts(l_nodename||'='||l_nodevalue);
+         end if;
+       end if;
+     else
+       
+       if g_parts.count > 0 then
+         l_previous_path := g_parts(g_parts.count).path;
+       else
+         l_previous_path := '-';
+       end if;
+       
+       if l_instruction.instruction = 'DENORMALIZE' and not g_sibling_denormalization then
+         g_sibling_denormalization := true;
+       end if;
+       if l_previous_path = l_path and l_instruction.instruction != 'DENORMALIZE' then
+         append_csv_to_parts(l_nodevalue);
+       else
+         l_renamedcolumn := xml2table.column_name(l_nodename, l_colname, l_prefix, false);
+         
+         
+         
+         
+         if l_renamedcolumn = 'EVENTTIME' then
+           
+           set_event_timestamp(l_nodevalue, l_denormno, g_config.dateformat, g_config.eventtime_conversion, g_config.use_dbtimezone);
+         end if;
+         add_to_parts(l_path, l_denormno, upper(l_nodename), l_renamedcolumn, l_nodevalue, l_instruction.instruction);
+       end if;
+     end if;
+   end if;
+end;
+
+
+procedure create_table(p_colnames colnames) is
+sqlstm varchar2(8000);
+begin
+  
+  sqlstm := 'CREATE TABLE '||g_target_table_name||chr(10)
+  ||'( IDEVENT NUMBER(23,0) NOT NULL'||chr(10)
+  ||', KEY NUMBER(23,0) NOT NULL'||chr(10)
+  ||', INSERTTS TIMESTAMP NOT NULL'||chr(10)
+  ||', EVENTTS TIMESTAMP NOT NULL'||chr(10);
+  
+  if g_config.store_message_in_table = cmn_constant.g_con_yesno_yes
+  then
+    sqlstm := sqlstm||', XMLMESSAGE XMLTYPE'||chr(10);
+  end if;
+  
+  for k in 1..p_colnames.count loop
+    sqlstm := sqlstm||', '||p_colnames(k)||' VARCHAR2(4000)'||chr(10);
+  end loop;
+  
+  sqlstm  := sqlstm||', CONSTRAINT '||substr(g_target_table_name,1,27)||'_PK PRIMARY KEY(KEY) USING INDEX TABLESPACE INDEX_DATA)';
+  
+  if g_config.store_message_in_table = cmn_constant.g_con_yesno_yes
+  then
+     sqlstm  := sqlstm||' XMLTYPE XMLMESSAGE STORE AS BINARY XML ( TABLESPACE LOGGING_SMALL ENABLE STORAGE IN ROW CACHE STORAGE ( INITIAL 8M NEXT 8M ) ) ';
+  end if;
+  
+  sqlstm  := sqlstm||' TABLESPACE USER_DATA';
+
+  if g_tracetag is not null then
+    add_to_parts(sqlstm, 0, null, null, null, null);
+  end if;
+
+  execute immediate sqlstm;
+
+  sqlstm := 'grant select on '||g_target_table_name||' to public';
+  if g_tracetag is not null then
+    add_to_parts(sqlstm, 0, null, null, null, null);
+  end if;
+
+  execute immediate sqlstm;
+
+  if g_tracetag is not null then
+    
+    add_to_parts(substr(g_sql_statement,1,4000), 0, null, null, null, null);
+  end if;
+  
+  execute immediate g_sql_statement;
+  commit;
+  g_message_store_rec.errormessage := 'Created table '||g_target_table_name;
+  elaborate_error_message;
+end;
+
+
+procedure add_column_to_table(p_errmsg varchar2) is
+msg varchar2(4000) := p_errmsg;
+sqlstm varchar2(4000);
+colname varchar2(30);
+missing_col boolean := true;
+added_cols integer := 0;
+p1 integer := 0;
+p2 integer := 0;
+begin
+  while (missing_col) and (added_cols < 50) loop 
+    begin
+      p1 := instr(msg, '"');
+      p2 := instr(msg, '"', p1+1);
+      colname := substr(msg, p1+1, p2-p1-1);
+
+      sqlstm := 'ALTER TABLE '||g_target_table_name||' ADD ('||colname||' VARCHAR2(4000))';
+      if g_tracetag is not null then
+        add_to_parts(sqlstm, 0, null, null, null, null);
+      end if;
+      added_cols := added_cols + 1; 
+      execute immediate sqlstm;
+      if g_tracetag is not null then
+        
+        add_to_parts(substr(g_sql_statement,1,4000), 0, null, null, null, null);
+      end if;
+      
+      execute immediate g_sql_statement;
+      commit;
+      missing_col := false;
+    exception when others then
+      if (sqlcode = -904) then
+        msg := sqlerrm;
+        missing_col := true;
+      else
+        raise;
+      end if;
+    end;
+  end loop;
+  g_message_store_rec.errormessage := 'Added '||to_char(added_cols)||' columns to '||g_target_table_name;
+  elaborate_error_message;
+end;
+
+
+procedure add_increment(io_colnames in out colnames, io_colvalues in out colvalues, i_colname in varchar2, i_col_value in varchar2) is
+l_incremented_colname varchar2(50) := i_colname;
+begin
+  g_increment := g_increment + 1;
+  l_incremented_colname := i_colname||to_char(g_increment);
+  io_colnames.extend(1);
+  io_colnames(io_colnames.count) := l_incremented_colname;
+  io_colvalues.extend(1);
+  io_colvalues(io_colvalues.count) := substr(i_col_value,1,4000);
+  
+end;
+
+
+procedure extend_cols(io_colnames in out colnames, io_colvalues in out colvalues, i_colname in varchar2, i_colvalue in varchar2) is
+l_concatenate boolean := false;
+l_new_value varchar2(32767) := trim(i_colvalue);
+l_incremented_colname varchar2(50) := i_colname;
+begin
+  if g_increment > 0 then
+    l_incremented_colname := i_colname||to_char(g_increment);
+  end if;
+  if g_message_store_rec.returncode = 0 then
+    if l_new_value is null and g_tracetag is not null then
+      
+      
+      
+      l_new_value := ' ';
+    end if;
+    
+    if i_colname is not null and l_new_value is not null then
+      begin
+        if io_colnames.count > 0 and io_colnames(io_colnames.count) = l_incremented_colname then
+          
+          l_concatenate := true;
+          if trim(l_new_value) is not null then
+            l_new_value := io_colvalues(io_colvalues.count)||','||chr(10)||l_new_value;
+          end if;
+        else
+          
+          g_increment := 0;
+        end if;
+        if l_concatenate then
+          
+          if length(l_new_value) > 4000 then
+            io_colvalues(io_colvalues.count) := substr(l_new_value,1,4000);
+            add_increment(io_colnames, io_colvalues, i_colname, substr(l_new_value,4001));
+          else
+            io_colvalues(io_colvalues.count) := l_new_value;
+          end if;
+        else
+          io_colnames.extend(1);
+          io_colnames(io_colnames.count) := i_colname;
+          io_colvalues.extend(1);
+          if length(l_new_value) > 4000 then
+            io_colvalues(io_colvalues.count) := substr(l_new_value,1,4000);
+            add_increment(io_colnames, io_colvalues, i_colname, substr(l_new_value,4001));
+          else
+            io_colvalues(io_colvalues.count) := l_new_value;
+          end if;
+          
+        end if;
+      exception when others then
+        if sqlcode = -6532 then
+          
+          g_message_store_rec.errormessage := 'Too many columns. Target table is limited to 128 columns.'
+          ||chr(10)||'Use DENORMALIZE, TAGDELIMIT or DELETE to reduce the amount of columns.'||chr(10);
+          g_duplicate_list := find_dup_columns(io_colnames);
+        else
+          g_message_store_rec.errormessage := substr(io_colnames(io_colnames.count)||'.'||to_char(length(l_new_value))
+          ||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+        end if;
+        g_message_store_rec.returncode := -8;
+        xml2table.log_message;
+      end;
+    end if;
+  end if;
+end;
+
+
+procedure isolate_root_columns(io_colnames in out colnames, io_colvalues in out colvalues) is
+begin
+  io_colnames.delete;
+  io_colvalues.delete;
+  for i in 1..g_parts.count loop
+    
+    if g_parts(i).denormno = 0 then
+      extend_cols(io_colnames, io_colvalues, g_parts(i).colname, g_parts(i).value);
+    end if;
+  end loop;
+end;
+
+
+procedure save_to_table
+(i_colnames         in  colnames
+,i_colvalues        in  colvalues
+,i_key              in  number
+,i_event_timestamp  in  timestamp with time zone
+)
+is
+begin
+   if g_message_store_rec.returncode = 0
+   then
+      begin
+         
+         
+         if g_config.store_message_in_table = cmn_constant.g_con_yesno_yes
+         then
+            core_table_insert_xml(g_target_table_name
+                                 ,i_colnames
+                                 ,i_colvalues
+                                 ,g_message_store_rec.idevent
+                                 ,i_key
+                                 ,sys_extract_utc(i_event_timestamp)
+                                 );
+         else
+            core_table_insert(g_target_table_name
+                             ,i_colnames
+                             ,i_colvalues
+                             ,g_message_store_rec.idevent
+                             ,i_key
+                             ,sys_extract_utc(i_event_timestamp)
+                             );
+         end if;
+      exception
+         when others then
+            if (sqlcode = -942) 
+            then
+               create_table(i_colnames);
+            elsif (sqlcode = -904) 
+            then
+               add_column_to_table(sqlerrm);
+            else
+               if sqlcode = -957
+               then
+                  
+                  g_duplicate_list := find_dup_columns(i_colnames);
+               end if;
+               raise;
+            end if;
+      end;
+   end if;
+end save_to_table;
+
+
+procedure write_to_core_table is
+l_colnames colnames := colnames();
+l_colvalues colvalues := colvalues();
+l_key number := g_message_store_rec.idevent*999; 
+l_event_timestamp timestamp with time zone;
+begin
+  g_duplicate_list := '';
+  if g_denormalize_count > 1 then
+    
+    for n in 1..g_denormalize_count loop
+      
+      isolate_root_columns(l_colnames, l_colvalues);
+      for i in 1..g_parts.count loop
+        if g_parts(i).denormno = n then
+          extend_cols(l_colnames, l_colvalues, g_parts(i).colname, g_parts(i).value);
+        end if;
+      end loop;
+      if g_event_timestamps.exists(n) then
+        l_event_timestamp := g_event_timestamps(n);
+      else
+        l_event_timestamp := g_event_timestamp;
+      end if;
+      save_to_table (l_colnames, l_colvalues, l_key + n + g_key_offset - 1, l_event_timestamp);
+    end loop;
+  else
+    
+    for i in 1..g_parts.count loop
+      extend_cols(l_colnames, l_colvalues, g_parts(i).colname, g_parts(i).value);
+    end loop;
+    save_to_table (l_colnames, l_colvalues, l_key + g_key_offset, g_event_timestamp);
+  end if;
+  g_key_offset := g_key_offset + greatest(1, g_denormalize_count);
+end;
+
+
+procedure process_node(l_node dbms_xmldom.domnode) is
+l_ok boolean;
+l_nodename varchar2(50);
+begin
+  g_denormalize_count := 0;
+  g_event_timestamps.delete;
+  g_sibling_denormalization := false;
+  begin
+    l_nodename := dbms_xmldom.getnodename(l_node);
+    if g_message_store_rec.rootnode is null then
+      g_message_store_rec.rootnode := l_nodename;
+    else
+      g_message_store_rec.rootnode := g_message_store_rec.rootnode||','||l_nodename;
+    end if;
+    g_config := null;
+    begin
+      g_config := g_configurations(l_nodename);
+      g_target_table_name := upper(substr(g_config.tableprefix||l_nodename,1,30));
+    exception when others then
+      
+      g_config := null;
+      g_target_table_name := null;
+    end;
+
+    if g_target_table_name is null then
+      g_message_store_rec.errormessage := l_nodename||' is not configured for processing.';
+      g_message_store_rec.returncode := -2; 
+      xml2table.log_message;
+    else
+      extract_node(l_node, null, null, false, 0);
+      elaborate_error_message;
+    end if;
+
+  exception when others then
+    g_message_store_rec.errormessage := substr(sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    g_message_store_rec.returncode := -7; 
+    xml2table.log_message;
+    if g_tracetag is not null then xml2table.dump_parts_to_trace_table; end if;
+  end;
+end;
+
+procedure mark_siblings_for_denorm is
+l_denorm_path varchar2(4000) := '-';
+l_len integer := 0;
+l_denormno number := 0;
+begin
+  for i in 1..g_parts.count loop
+    if g_parts(i).instruction = 'DENORMALIZE' and g_parts(i).tag is not null then
+      l_denormno := g_parts(i).denormno;
+      l_len := length(g_parts(i).path) - length(g_parts(i).tag);
+      l_denorm_path := substr(g_parts(i).path, 1, l_len)||'%';
+    end if;
+    if g_parts(i).path like l_denorm_path and g_parts(i).tag is not null then
+      g_parts(i).denormno := l_denormno;
+    else
+      l_denorm_path := '-';
+    end if;
+  end loop;
+end;
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure process_xmlmessage(i_xmlmessage in xmltype) is
+  l_rootnode            dbms_xmldom.domnode;
+  l_root_element        dbms_xmldom.domelement;
+  l_rootname            varchar2(100) := '';
+  l_rootvalue           xmltype;
+  l_ok                  boolean;
+  l_xmlmessage          xmltype;
+  l_namespace_stripped  varchar2(250) := null;
+
+begin
+  g_parts              := parts_array();
+  g_split_nodes        := t_nodes();
+  g_domdoc             := null;
+  g_key_offset         := 0;
+  l_namespace_stripped := null;
+  
+  begin
+    if g_tracetag is not null
+    then
+      delete from  xml2table_tracing where tracetag = g_tracetag;
+      commit;
+    end if;
+
+    g_domdoc       := dbms_xmldom.newdomdocument(i_xmlmessage);
+    l_root_element := dbms_xmldom.getdocumentelement(g_domdoc);
+    l_rootnode     := dbms_xmldom.makenode(l_root_element);
+    l_rootname     := dbms_xmldom.getnodename(l_rootnode);
+
+    
+    
+    if instr(l_rootname,':') > 0
+    then
+       
+       dbms_xmldom.freedocument(doc => g_domdoc);
+       
+       l_namespace_stripped := substr(l_rootname,1,instr(l_rootname,':'));
+       l_xmlmessage         := xmltype(replace(i_xmlmessage.getclobval(),l_namespace_stripped,null));
+       
+       g_domdoc       := dbms_xmldom.newdomdocument(l_xmlmessage);
+       l_root_element := dbms_xmldom.getdocumentelement(g_domdoc);
+       l_rootnode     := dbms_xmldom.makenode(l_root_element);
+       l_rootname     := dbms_xmldom.getnodename(l_rootnode);
+    end if;
+
+    g_phase := 1;
+    xml2table.process_node(l_rootnode);
+
+    if g_message_store_rec.returncode = 0 then
+      g_phase := 2;
+      if g_sibling_denormalization then
+        mark_siblings_for_denorm;
+      end if;
+      xml2table.write_to_core_table;
+    end if;
+    if g_tracetag is not null then xml2table.dump_parts_to_trace_table; end if;
+
+
+
+
+
+
+    
+    for i in 1..g_split_nodes.count loop
+      exit when g_message_store_rec.returncode <> 0;
+      g_parts.delete;
+      g_phase := 3;
+      l_rootname := g_message_store_rec.rootnode;
+      xml2table.process_node(g_split_nodes(i));
+      g_message_store_rec.rootnode := l_rootname;
+
+      if g_message_store_rec.returncode = 0 then
+        g_phase := 4;
+        if g_sibling_denormalization then
+          mark_siblings_for_denorm;
+        end if;
+        xml2table.write_to_core_table;
+      end if;
+      if g_tracetag is not null then xml2table.dump_parts_to_trace_table(i); end if;
+
+    end loop;
+
+      if g_config.savemessage = 'Y' and g_message_store_rec.returncode = 0 then
+        xml2table.log_message;
+      end if;
+    
+    
+    dbms_xmldom.freedocument(doc => g_domdoc);
+    g_domdoc := null;
+    
+  exception when others then
+    g_message_store_rec.errormessage := substr(sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    g_message_store_rec.returncode := -9; 
+    xml2table.log_message;
+    if g_tracetag is not null then xml2table.dump_parts_to_trace_table; end if;
+
+    
+    dbms_xmldom.freedocument(doc => g_domdoc);
+    g_domdoc := null;
+  end;
+end;
+
+
+procedure init_log_message is
+begin
+  g_message_store_rec.idevent := xml2table_idevent_sequence.nextval;
+  g_message_store_rec.insertts := sys_extract_utc(systimestamp);
+  g_message_store_rec.eventts := g_message_store_rec.insertts;
+  g_message_store_rec.rootnode := null;
+  g_message_store_rec.returncode := 0;
+  g_message_store_rec.errormessage := null;
+  g_message_store_rec.duration := 0;
+  g_phase := 0;
+end;
+
+procedure process_message(i_message in clob) is
+begin
+  xml2table.process_message(i_message, null);
+end;
+
+procedure process_message(i_message in varchar2) is
+begin
+  xml2table.process_message(i_message, null);
+end;
+
+procedure process_message(i_message in clob, i_tracetag in varchar2) is
+
+
+l_xmlmessage xmltype;
+l_reset_active varchar2(1) := 'N';
+begin
+
+  l_reset_active    := nvl(cmn_common.get_parameter_value('ResetActive'),'N');
+  if l_reset_active = 'Y'
+  then
+    
+    return;
+  end if;
+  
+  init_log_message;
+  g_tracetag := i_tracetag;
+  begin
+    l_xmlmessage := xmltype(i_message);
+    g_message_store_rec.message := l_xmlmessage;
+  exception when others then
+    g_message_store_rec.errormessage := substr(sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    g_message_store_rec.returncode := -1; 
+    begin
+      l_xmlmessage := xmltype('<Bad><!-- '||replace(replace(i_message,'>','}'),'<','{')||' --></Bad>');
+    exception when others then
+      l_xmlmessage := null; 
+    end;
+    g_message_store_rec.message := l_xmlmessage;
+    xml2table.log_message;
+    return;
+  end;
+  xml2table.process_xmlmessage(l_xmlmessage);
+end;
+
+
+procedure process_message(i_message in varchar2, i_tracetag in varchar2) is
+
+
+l_xmlmessage xmltype;
+l_reset_active varchar2(1) := 'N';
+begin
+
+  l_reset_active    := nvl(cmn_common.get_parameter_value('ResetActive'),'N');
+  if l_reset_active = 'Y'
+  then
+    
+    return;
+  end if;
+  
+  init_log_message;
+  g_tracetag := i_tracetag;
+  begin
+    l_xmlmessage := xmltype(i_message);
+    g_message_store_rec.message := l_xmlmessage;
+  exception when others then
+    g_message_store_rec.errormessage := substr(sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    g_message_store_rec.returncode := -1; 
+    begin
+      l_xmlmessage := xmltype('<Bad><!-- '||replace(replace(i_message,'>','}'),'<','{')||' --></Bad>');
+    exception when others then
+      l_xmlmessage := null; 
+    end;
+    g_message_store_rec.message := l_xmlmessage;
+    xml2table.log_message;
+    return;
+  end;
+  xml2table.process_xmlmessage(l_xmlmessage);
+end;
+
+
+procedure configure
+is
+   l_config       configuration_type;
+   l_instruction  instruction_type;
+begin
+   g_configurations.delete;
+   
+   for c_rec in (select rootnode
+                 ,      tableprefix
+                 ,      savemessage
+                 ,      dateformat
+                 ,      eventtime_conversion
+                 ,      use_dbtimezone
+                 ,      store_message_in_table
+                 from   xml2table_configuration
+                )
+   loop
+     l_config.tableprefix            := c_rec.tableprefix;
+     l_config.savemessage            := c_rec.savemessage;
+     l_config.dateformat             := c_rec.dateformat;
+     l_config.eventtime_conversion   := c_rec.eventtime_conversion;
+     l_config.use_dbtimezone         := c_rec.use_dbtimezone;
+     l_config.store_message_in_table := c_rec.store_message_in_table;
+     g_configurations(c_rec.rootnode) := l_config;
+   end loop;
+   
+   g_path_instructions.delete;
+    
+   for c_rec in (select path
+                 ,      instruction
+                 ,      newname
+                 from   xml2table_instruction
+                )
+   loop
+      l_instruction.instruction := c_rec.instruction;
+      if c_rec.instruction in ('TAGDELIMIT','FIRSTCHILDNAME')
+      then
+         l_instruction.newname := xml2table.valid_oracle_name(c_rec.newname);
+      else
+         l_instruction.newname := c_rec.newname;
+      end if;
+      g_path_instructions(c_rec.path) := l_instruction;
+   end loop;
+end;
+
+
+begin
+  xml2table.load_reserved_words;
+  xml2table.configure;
+end xml2table;
+/

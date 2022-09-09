@@ -1,0 +1,70 @@
+function post_operational_check return clob is
+l_err number := 0; l_num number := 0;
+l_ts timestamp;
+l_tab varchar2(30);
+l_stmnt varchar2(2000);
+l_threshold number := 10;
+l_diff number;
+l_interval interval day(9) to second;
+begin
+  log2clob.clearlog;
+  log2clob.logline(to_char(systimestamp)||', User:'||user);
+  log2clob.heading('Post Operational Check');
+
+  log2clob.heading('Checking for invalid objects');
+  log2clob.check_count_in_table('USER_OBJECTS', 'status = ''INVALID''', 0, l_err);
+
+  log2clob.heading('Check for META completeness. (Has Meta Data been loaded?)');
+  log2clob.check_count_in_table_gt('DIMENSION_VERSION', 'source_type = ''META'' AND enddate is null', 0, l_err);
+
+  log2clob.heading('Check for TOPO completeness. (Has TOPO been loaded?)');
+  log2clob.check_count_in_table_gt('DIMENSION_VERSION', 'source_type = ''TOPO'' AND enddate is null', 0, l_err);
+
+  log2clob.heading('Check for TOPO_APPL completeness. (Has TOPO_APPL been loaded?)');
+  log2clob.check_count_in_table_gt('DIMENSION_VERSION', 'source_type = ''TOPO_APPL'' AND enddate is null', 0, l_err);
+
+  log2clob.heading('Check (pre)registered application elements. (Is BPI application started?)');
+  log2clob.check_count_in_table_gt('ACL_APPLICATION_PROCESSES', 'upper(status) in (''REGISTERED'',''PREREGISTERED'')', 0, l_err);
+
+  log2clob.heading('Check number of CM connections. (Has CM_BPI been started?)');
+  log2clob.check_count_in_table_gt('V$SESSION', 'schemaname = ''BPI_CM_COMMUNICATION''', 0, l_err);
+
+  log2clob.heading('Check if Qlikview finished reloading. (Check Qlikview management console for details..)');
+  log2clob.check_count_in_table('CMN_PARAMETER_VALUES', 'pve_comment in (''QlikviewInitialReloadProject'',''QlikviewInitialReloadRA'') AND value = ''N''', 2, l_err);
+
+  
+  begin
+    l_stmnt := cmn_common.get_parameter_value('WC_INSERTTS_Threshold');
+    l_threshold := to_number(l_stmnt);
+  exception when others then
+    log2clob.logline('Warning: '||sqlerrm);
+    l_threshold := 10;
+  end;
+  log2clob.heading('Check if WC tables have recent entries. (More recent than '||to_char(l_threshold)||' hours ago.)');
+
+  for c_rec in (select table_name from user_tables where table_name like 'WC%') loop
+    l_stmnt := 'select INSERTTS from '||c_rec.table_name||' where KEY=(select max(KEY) from '||c_rec.table_name||')';
+    begin
+      execute immediate l_stmnt into l_ts;
+      l_interval := systimestamp - l_ts;
+      l_diff := (extract(day from (l_interval)) * 24) + extract(hour from (l_interval));
+      if l_diff > l_threshold then
+        log2clob.logline('Warning: '||c_rec.table_name||', last entry was at '||to_char(l_ts,'YYYY-MM-DD HH24:MI:SS')||', '||to_char(l_diff)||' hours ago.');
+        l_num := l_num + 1;
+      end if;
+    exception
+    when no_data_found then
+      log2clob.logline('Warning: '||c_rec.table_name||', No Data Found.');
+      l_num := l_num + 1;
+      null;
+    when others then
+      log2clob.logline(sqlerrm);
+    end;
+  end loop;
+  log2clob.logline(to_char(l_num)||' warnings.');
+  
+  log2clob.log_success_or_failure(l_err);
+
+  return log2clob.listlog;
+end;
+/

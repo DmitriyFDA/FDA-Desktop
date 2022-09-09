@@ -1,0 +1,2712 @@
+create or replace PACKAGE BagSummary
+AS
+  PROCEDURE Initialise;
+  PROCEDURE Summarize;
+  PROCEDURE warn(
+    p_con_proc_name varchar2,
+    p_msg varchar2);
+
+  FUNCTION get_naze(
+      p_areaid DIM_NODE_AREA_ZONE_EQUIPMENT.AREAID%type,
+      p_zoneid DIM_NODE_AREA_ZONE_EQUIPMENT.ZONEID%type,
+      p_equipmentid DIM_NODE_AREA_ZONE_EQUIPMENT.EQUIPMENTID%type)
+    RETURN DIM_NODE_AREA_ZONE_EQUIPMENT%rowtype;
+  FUNCTION get_nazst(
+      p_areaid DIM_NODE_AREA_ZONE_EQUIPMENT.AREAID%type,
+      p_zoneid DIM_NODE_AREA_ZONE_EQUIPMENT.ZONEID%type,
+      p_stationid DIM_NODE_AREA_ZONE_EQUIPMENT.STATION_ID%type)
+    RETURN DIM_NODE_AREA_ZONE_EQUIPMENT%rowtype;
+  FUNCTION get_station(
+      p_stationid DIM_STATIONS.ID%type)
+    RETURN DIM_STATIONS%rowtype;
+  FUNCTION get_station_type(
+      p_stationid DIM_STATIONS_STYPE.ID%type)
+    RETURN DIM_STATIONS_STYPE%rowtype;
+  FUNCTION get_tag_delimited_value(
+      p_tag_delimited_string VARCHAR2,
+      p_tag                  VARCHAR2,
+      p_leading_tag VARCHAR2:= NULL)
+    RETURN VARCHAR2 DETERMINISTIC;
+  FUNCTION ts_interval_in_seconds(
+      g_first_TS TIMESTAMP,
+      g_next_TS  TIMESTAMP)
+    RETURN NUMBER DETERMINISTIC;
+  FUNCTION getFlightType(
+      p_flightnr VARCHAR2)
+    RETURN VARCHAR2 DETERMINISTIC;
+  FUNCTION getScheduledFlightTime( i_enter_dt TIMESTAMP
+                                 , i_ST       VARCHAR2
+                                 , i_SD       VARCHAR2
+                                 , i_flightnr VARCHAR2
+                                 )
+     RETURN TIMESTAMP DETERMINISTIC;
+  FUNCTION getInTimeliness(
+      p_enter_dt            TIMESTAMP,
+      p_ScheduledFlightTime TIMESTAMP,
+      p_FlightType          VARCHAR2)
+    RETURN VARCHAR2 DETERMINISTIC;
+  FUNCTION retrieve_segregation(
+      p_family VARCHAR2)
+    RETURN VARCHAR2 DETERMINISTIC;
+  FUNCTION get_process_displayname(
+      p_name  IN  dim_processdefinitions.name%type)
+    RETURN VARCHAR2;
+END BagSummary;
+/
+
+
+
+
+package body bagsummary
+is
+  g_con_package                constant varchar2(30) := 'BagSummary';
+  g_bags_processed             number                := 0;
+  g_maxinsystemtime_seconds    number                := 600;
+  g_exceededwindowsize_seconds number                := 300;
+  g_latest_tr_area             varchar2(250)         := '';
+  g_latest_tr_zone             varchar2(250)         := '';
+  g_latest_tr_error            varchar2(250)         := '';
+  g_latest_pi_destinations     varchar2(250)         := '';
+  g_latest_pi_desthandlingarea varchar2(250)         := '';
+  g_latest_ti_tasktype         varchar2(250)         := '';
+  
+  g_latest_pi         timestamp := null;
+  g_first_rp          timestamp := null;
+  g_first_pi_after_rp timestamp := null;
+  
+  g_latest_ti                  timestamp := null;
+  g_first_tr_autoscan          timestamp := null;
+  g_first_ti_after_tr_autoscan timestamp := null;
+  
+  g_latest_pi_is_pdm          timestamp := null;
+  g_first_pir_not_pdm         timestamp := null;
+  g_first_pi_is_pdm_after_pir timestamp := null;
+  
+  g_pr_manualencoding      timestamp := null;
+  g_ti_behind_manualcoding timestamp := null;
+  
+  g_pr_store       timestamp := null;
+  g_pi_behindstore timestamp := null;
+  g_tr_storeexit   timestamp := null;
+  
+  g_pr_hbs timestamp                              := null;
+  g_pr_l1  timestamp                              := null;
+  g_pr_l2  timestamp                              := null;
+  g_allowedtimedrift interval day(9) to second(9) := numtodsinterval(1, 'SECOND');
+  g_screeningconcept  varchar2(50);
+  g_screeningconcept_imaging  varchar2(50);
+  g_tr_mcs_stationid            fact_bagtrace.stationid%type;
+  g_mcs_stationid_special_dest  fact_bagtrace.stationid%type;
+  g_mcs_special_dest_result     varchar2(1) := 'N';
+  
+  g_tr_tracking_recirc           dim_recirc_locations.recirculation_point%type;
+type timelinessrec
+is
+  record
+  (
+    early        number,
+    intime       number,
+    timecritical number);
+  g_lh_timeliness timelinessrec;
+  g_sh_timeliness timelinessrec;
+
+function get_process_displayname
+(p_name  in  dim_processdefinitions.name%type)
+return
+   varchar2
+is
+   cursor c_pdn
+   (b_name  dim_processdefinitions.name%type)
+   is
+      select displayname
+      from   dim_processdefinitions
+      where  name = b_name
+      ;
+   
+   r_pdn  c_pdn%rowtype;
+begin
+   open  c_pdn (b_name => p_name);
+   fetch c_pdn into r_pdn;
+   close c_pdn;
+
+   return nvl(r_pdn.displayname,p_name);
+end;
+
+function interval_in_seconds(
+    i_ts1 timestamp,
+    i_ts2 timestamp)
+  return number deterministic
+is
+  
+  num_val number(19,6);
+  diff interval day(9) to second;
+begin
+  diff    := (i_ts2 - i_ts1);
+  num_val := extract(second from diff);
+  num_val := num_val + extract(minute from diff) * 60;
+  num_val := num_val + extract(hour from diff) * 60 * 60;
+  num_val := num_val + extract(day from diff) * 60 * 60 * 24;
+  return num_val;
+end;
+function get_tag_delimited_value(
+    p_tag_delimited_string varchar2,
+    p_tag                  varchar2,
+    p_leading_tag          varchar2 := null
+    )
+  return varchar2 deterministic
+is
+   l_tag_delimited_string varchar2(250) := null;
+   l_value varchar2(250) := null;
+   l_p0    integer       := -1; 
+   l_p1    integer;
+   l_p2    integer;
+   l_p3    integer;
+begin
+   if p_leading_tag is not null
+   then
+      l_p0 := instr(','||p_tag_delimited_string, ','||p_leading_tag||',');
+      if l_p0 = 0
+      then
+         l_p0 := instr(chr(10)||p_tag_delimited_string, chr(10)||p_leading_tag||',');
+      end if;
+      if l_p0 > 0
+      then
+         
+         l_p1 := instr(p_tag_delimited_string, chr(10), l_p0);
+         if l_p1 > 0
+         then
+            l_tag_delimited_string := ','||substr(p_tag_delimited_string, l_p0, l_p1-l_p0)||',';
+         else
+            l_tag_delimited_string := ','||substr(p_tag_delimited_string, l_p0)||',';
+         end if;
+      end if;
+   else
+      l_tag_delimited_string := ','||replace(p_tag_delimited_string, chr(10), '')||',';
+   end if;
+
+   
+   l_p1 := instr(l_tag_delimited_string, ','||p_tag, -1);
+   if l_p1 > 0
+   then
+      l_p2 := l_p1 + length(p_tag) + 2; 
+      l_p3 := instr(l_tag_delimited_string, ',', l_p2);
+      l_value := substr(l_tag_delimited_string, l_p2, l_p3-l_p2);
+   end if;
+
+   return l_value;
+end;
+
+
+
+procedure warn(
+    p_con_proc_name varchar2,
+    p_msg varchar2)
+is
+begin
+  viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure      => p_con_proc_name
+                        , i_severity               => viu_info.c_severity_warning
+                        , i_info_arguments         => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                        , i_additional_data        => p_msg);
+end;
+
+procedure raise_fatal_error(
+    p_con_proc_name varchar2,
+    p_msg           varchar2)
+is
+begin
+
+  viu_info.raise_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo , i_calling_procedure => p_con_proc_name , i_severity => viu_info.c_severity_error , i_info_arguments => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6') , i_additional_data => p_msg);
+end;
+
+procedure handle_error(
+    p_con_proc_name varchar2,
+    p_msg varchar2,
+    p_error number)
+is
+begin
+  if p_error in (-01652, -00060) then
+    warn(p_con_proc_name, p_msg);
+  else
+
+  viu_info.handle_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                     , i_calling_procedure  => p_con_proc_name
+                     , i_severity           => viu_info.c_severity_error
+                     , i_info_arguments     => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                     , i_additional_data    => p_msg);
+
+  end if;
+end;
+
+procedure debug_info(
+    p_con_proc_name varchar2,
+    p_msg           varchar2)
+is
+begin
+  viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo , i_calling_procedure => p_con_proc_name , i_severity => viu_info.c_severity_debug , i_info_arguments => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6') , i_additional_data => p_msg);
+end;
+procedure notify(
+    p_con_proc_name varchar2,
+    p_msg           varchar2,
+    p_parm          varchar2)
+is
+  l_parm viu_info_logs.info_arguments%type := p_parm;
+begin
+  if trim(l_parm) is null then
+    l_parm        := to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6');
+  end if;
+  viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo , i_calling_procedure => p_con_proc_name , i_severity => viu_info.c_severity_notification , i_info_arguments => l_parm , i_additional_data => p_msg);
+end;
+function retrieve_projecttype
+  return varchar2
+is
+  l_project_type varchar2(30) := 'Major';
+begin
+  l_project_type := cmn_common.get_parameter_value('PROJECT_TYPE');
+  return l_project_type;
+exception
+when others then
+  l_project_type := 'Major';
+  return l_project_type;
+end;
+function retrieve_segregation(
+    p_family varchar2)
+  return varchar2 deterministic
+is
+  l_segregation varchar2(250) := '';
+  l_search      varchar2(50)  := 'Name=SEGREGATION,ProductName=';
+  l_pos         integer;
+begin
+  
+  l_pos           := instr(p_family, l_search, -1);
+  if l_pos         > 0 then
+    l_segregation := substr(p_family, l_pos + length(l_search));
+    l_pos         := instr(l_segregation||',', ',');
+    l_segregation := substr(l_segregation, 1, l_pos-1);
+  end if;
+  
+  return l_segregation;
+end;
+
+
+
+
+
+
+
+
+
+function empty_fbs_record
+  return fact_bag_summaries%rowtype
+is
+  l_fbs fact_bag_summaries%rowtype;
+begin
+  
+  l_fbs.id                             := null;
+  l_fbs.xbid                           := null;
+  l_fbs.xlpc                           := null;
+  l_fbs.xpid                           := null;
+  l_fbs.enter_dt                       := null;
+  l_fbs.bsm_received_dt                := null;
+  l_fbs.length                         := null;
+  l_fbs.width                          := null;
+  l_fbs.height                         := null;
+  l_fbs.weight                         := null;
+  l_fbs.measured_volume                := null;
+  l_fbs.boxed_volume                   := null;
+  l_fbs.average_volume                 := null;
+  l_fbs.batchid                        := null;
+  l_fbs.batchstationid                 := null;
+  l_fbs.batchexception                 := null;
+  l_fbs.source                         := null;
+  l_fbs.m5_periodid                    := null;
+  l_fbs.screen_latest_dt               := null;
+  l_fbs.scan_dt                        := null;
+  l_fbs.manual_scan_dt                 := null;
+  l_fbs.store_dt                       := null;
+  l_fbs.volscan_dt                     := null;
+  l_fbs.load_dt                        := null;
+  l_fbs.unload_dt                      := null;
+  l_fbs.last_event_dt                  := null;
+  l_fbs.last_update_dt                 := null;
+  l_fbs.completion_status              := 'D'; 
+  l_fbs.reg_count                      := 0;   
+  l_fbs.first_attempt_tech_dt          := null;
+  l_fbs.first_attempt_tech_node        := null;
+  l_fbs.first_attempt_dt               := null;
+  l_fbs.first_attempt_exception        := null;
+  l_fbs.first_attempt_detail_err       := null;
+  l_fbs.first_attempt_node             := null;
+  l_fbs.final_status_dt                := null;
+  l_fbs.final_status                   := null;
+  l_fbs.final_active_process           := null;
+  l_fbs.executedtask                   := null;
+  l_fbs.pids                           := null;
+  l_fbs.bids                           := null;
+  l_fbs.flightnr                       := null;
+  l_fbs.std                            := null;
+  l_fbs.sdd                            := null;
+  l_fbs.intimeliness                   := null;
+  l_fbs.outtimeliness                  := null;
+  l_fbs.ind_reflighted                 := 'N'; 
+  l_fbs.handling_area_arrival          := null;
+  l_fbs.handling_area_departure        := null;
+  l_fbs.ind_crew_bag                   := null;
+  l_fbs.ind_rush_bag                   := null;
+  l_fbs.cabin_class                    := null;
+  l_fbs.ind_non_conveyable             := null;
+  l_fbs.dt_max_delay_due_to_operator   := null;
+  l_fbs.ind_delay_due_to_operator      := null;
+  l_fbs.ind_max_recirculation          := null;
+  l_fbs.total_delay_due_to_operator    := 0;
+  l_fbs.ind_manual_identification_req  := null;
+  l_fbs.in_system_time_threshold       := g_maxinsystemtime_seconds;    
+  l_fbs.in_system_time_exceeded_window := g_exceededwindowsize_seconds; 
+  l_fbs.duration_exceeded              := null;
+  l_fbs.ind_in_system_time_ok          := null;
+  l_fbs.ind_in_system_time_w1          := null;
+  l_fbs.ind_in_system_time_w2          := null;
+  l_fbs.ind_in_system_time_w3          := null;
+  l_fbs.ind_system_attributable        := null;
+  l_fbs.ind_lost_occurred              := null;
+  l_fbs.ind_recovered                  := null;
+  l_fbs.ind_sorted_correctly           := null;
+  l_fbs.transport_exception            := null;
+  l_fbs.transport_exception_count      := 0; 
+  l_fbs.nodeid_entry                   := null;
+  l_fbs.iscid_entry                    := null;
+  l_fbs.nodeid_screen_latest           := null;
+  l_fbs.nodeid_scan                    := null;
+  l_fbs.nodeid_mcs                     := null;
+  l_fbs.nodeid_mcs_ci                  := null;
+  l_fbs.nodeid_store                   := null;
+  l_fbs.nodeid_volscan                 := null;
+  l_fbs.nodeid_load                    := null;
+  l_fbs.nodeid_unload                  := null;
+  l_fbs.nodeid_exit                    := null;
+  l_fbs.iscid_exit                     := null;
+  l_fbs.perf_duration_rp_pi            := null;
+  l_fbs.perf_duration_pr_tr            := null;
+  l_fbs.perf_duration_ti_pi            := null;
+  l_fbs.perf_duration_tr_ti            := null;
+  l_fbs.perf_duration_pir_pi           := null;
+  l_fbs.total_duration_manual_coding   := null;
+  l_fbs.total_duration_stored          := null;
+  l_fbs.total_duration_store_release   := null;
+  l_fbs.total_delay_screening_l1       := null;
+  l_fbs.total_delay_screening_l2       := null;
+  l_fbs.reason_mcs                     := null;
+  l_fbs.screen_latest_process          := null;
+  l_fbs.screen_latest_result           := null;
+  l_fbs.screen_latest_reason           := null;
+  l_fbs.screen_latest_lvl              := null;
+  l_fbs.screen_latest_lvl_req          := null;
+  l_fbs.scan_latest_result             := null;
+  l_fbs.mcs_scan_method                := null;
+  l_fbs.scheduled_flight_time          := null;
+  l_fbs.flight_type                    := null;
+  l_fbs.segregation                    := null;
+  l_fbs.handler                        := null;
+  l_fbs.mcs_ci_recognition             := null;
+  l_fbs.mcs_ci_identification          := null;
+  l_fbs.mcs_recognition                := null;
+  l_fbs.mcs_identification             := null;
+  l_fbs.atr_recognition                := null;
+  l_fbs.atr_identification             := null;
+  l_fbs.uldtypecode                    := null;
+  l_fbs.uldserialnumber                := null;
+  l_fbs.uldownercode                   := null;
+  l_fbs.nodeid_screen_lvl1             := null;
+  l_fbs.nodeid_screen_lvl2             := null;
+  l_fbs.nodeid_screen_lvl3             := null;
+  l_fbs.nodeid_screen_lvl4             := null;
+  l_fbs.nodeid_screen_lvl5             := null;
+  l_fbs.screen_lvl1_dt                 := null;
+  l_fbs.screen_lvl1_result             := null;
+  l_fbs.screen_lvl2_dt                 := null;
+  l_fbs.screen_lvl2_result             := null;
+  l_fbs.screen_lvl3_dt                 := null;
+  l_fbs.screen_lvl3_result             := null;
+  l_fbs.screen_lvl4_dt                 := null;
+  l_fbs.screen_lvl4_result             := null;
+  l_fbs.screen_lvl5_dt                 := null;
+  l_fbs.screen_lvl5_result             := null;
+  l_fbs.physical_class                 := null;
+  l_fbs.classoftravel_arrival          := null;
+  l_fbs.classoftravel_departure        := null;
+  l_fbs.airport_code_arrival           := null;
+  l_fbs.airport_code_departure         := null;
+  l_fbs.bagstore_location              := null;
+  l_fbs.recirculations_technical       := null;
+  l_fbs.recirculations_operational     := null;
+  l_fbs.surname                        := null;
+  l_fbs.givenname                      := null;
+  l_fbs.arv_flightnr                   := null;
+  l_fbs.arv_scheduled_flight_time      := null;
+  l_fbs.arv_airline                    := null;
+  l_fbs.arv_internationalordomestic    := null;
+  l_fbs.dep_flightnr                   := null;
+  l_fbs.dep_scheduled_flight_time      := null;
+  l_fbs.dep_airline                    := null;
+  l_fbs.dep_internationalordomestic    := null;
+  l_fbs.total_duration_in_system       := null;
+  l_fbs.bag_exception_type             := null;
+  l_fbs.ind_mcs_special_dest_result    := 'N';   
+  l_fbs.ind_load_correction            := null;
+  l_fbs.nr_recirculations              := null;
+  l_fbs.sorter_loop                    := null;
+  return l_fbs;
+end;
+function ts_interval_in_seconds(
+    g_first_ts timestamp,
+    g_next_ts  timestamp)
+  return number deterministic
+is
+begin
+  if g_first_ts is null or g_next_ts is null then
+    return null;
+  else
+    return interval_in_seconds(g_first_ts, g_next_ts);
+  end if;
+end;
+function get_naze(
+    p_areaid dim_node_area_zone_equipment.areaid%type,
+    p_zoneid dim_node_area_zone_equipment.zoneid%type,
+    p_equipmentid dim_node_area_zone_equipment.equipmentid%type)
+  return dim_node_area_zone_equipment%rowtype
+is
+  l_naze dim_node_area_zone_equipment%rowtype;
+begin
+  begin
+    select *
+    into l_naze
+    from dim_node_area_zone_equipment
+    where areaid    = p_areaid
+    and zoneid      = p_zoneid
+    and equipmentid = p_equipmentid;
+  exception
+  when others then
+    l_naze := null;
+  end;
+  return l_naze;
+end;
+function get_nazst(
+    p_areaid dim_node_area_zone_equipment.areaid%type,
+    p_zoneid dim_node_area_zone_equipment.zoneid%type,
+    p_stationid dim_node_area_zone_equipment.station_id%type)
+  return dim_node_area_zone_equipment%rowtype
+is
+  l_nazst dim_node_area_zone_equipment%rowtype;
+begin
+  begin
+    select *
+    into l_nazst
+    from dim_node_area_zone_equipment
+    where areaid   = p_areaid
+    and zoneid     = p_zoneid
+    and station_id = p_stationid;
+  exception
+  when others then
+    l_nazst := null;
+  end;
+  return l_nazst;
+end;
+function get_station_naze(
+    p_stationid dim_node_area_zone_equipment.station_id%type)
+  return dim_node_area_zone_equipment%rowtype
+is
+  l_naze dim_node_area_zone_equipment%rowtype;
+begin
+  begin
+    select *
+    into l_naze
+    from dim_node_area_zone_equipment
+    where station_id = p_stationid;
+  exception when others then
+    l_naze := null;
+  end;
+  return l_naze;
+end;
+function get_station(
+    p_stationid dim_stations.id%type)
+  return dim_stations%rowtype
+is
+  l_station_rec dim_stations%rowtype;
+begin
+  begin
+    select *
+    into l_station_rec
+    from dim_stations
+    where id = p_stationid;
+  exception
+  when others then
+    l_station_rec.id    := null;
+    l_station_rec.stype := null;
+  end;
+  return l_station_rec;
+end;
+function get_station_type(
+    p_stationid dim_stations_stype.id%type)
+  return dim_stations_stype%rowtype
+is
+  l_station_rec dim_stations_stype%rowtype;
+begin
+  begin
+    select *
+    into l_station_rec
+    from dim_stations_stype
+    where id = p_stationid;
+  exception
+  when others then
+    l_station_rec.id    := null;
+    l_station_rec.stype := null;
+  end;
+  return l_station_rec;
+end;
+
+
+
+
+
+
+
+
+
+function get_stype(
+    p_nodeid varchar2)
+  return varchar2
+is
+  l_stype_rec varchar2(100);
+begin
+  begin
+    for r in
+    (select stype
+    from dim_node_area_zone_equipment e
+    where e.nodeid in
+      (select regexp_substr(p_nodeid, '[^,NaN]+',1,level)
+      from dual
+        connect by level <= length(p_nodeid)+1 - length(replace(p_nodeid,','))
+      )
+    )
+    loop
+      if r.stype     in ('ManualEncoding', 'ManualScan') then
+        l_stype_rec := 'ManualEncoding' ;
+      end if;
+    end loop;
+  exception
+  when others then
+    l_stype_rec := null;
+  end;
+  return l_stype_rec;
+end;
+
+function get_exiting(
+    p_nodeid varchar2)
+  return varchar2
+is
+  l_exiting_rec varchar2(100);
+begin
+  begin
+    select exiting
+    into l_exiting_rec
+    from dim_node_area_zone_equipment e
+    where e.exiting = 'TRUE'
+    and e.nodeid   in
+      (select regexp_substr(p_nodeid, '[^,NaN]+',1,rownum)
+      from dual
+        connect by rownum <= length(regexp_replace(p_nodeid, '[^,]+')) + 1
+      );
+  exception
+  when others then
+    l_exiting_rec := null;
+  end;
+  return l_exiting_rec;
+end;
+
+function getflighttype(
+    p_flightnr varchar2)
+  return varchar2 deterministic
+is
+  
+  l_haul fact_flight_summaries.haul%type;
+begin
+  if p_flightnr is null then
+    return null;
+  end if;
+  begin
+    select upper(haul)
+    into l_haul
+    from
+      (select haul,
+        updatets
+      from fact_flight_summaries
+      where flightnr = p_flightnr
+      order by updatets desc
+      )
+    where rownum = 1;
+  exception
+  when others then
+    l_haul := null;
+  end;
+  return l_haul;
+end;
+
+
+
+
+function getscheduledflighttime( i_enter_dt timestamp
+                                        , i_st       varchar2
+                                        , i_sd       varchar2
+                                        , i_flightnr varchar2
+                                        )
+   return timestamp deterministic
+is
+   l_yyyymm    varchar2(12);
+   l_dd        varchar2(4);
+   l_hhmmss    varchar2(40);
+   l_enter_dd  varchar2(4);
+   l_str       varchar2(100);
+   l_num       number;
+   l_ts        timestamp;
+   l_tsf       timestamp;
+   l_flightnr1 fact_flight_summaries.flightnr%type;
+   l_flightnr2 fact_flight_summaries.flightnr%type;
+
+begin
+   if    i_enter_dt is null
+      or i_sd is null
+      or i_st is null and i_flightnr is null
+   then
+      return null;
+   end if;
+
+   begin
+      l_str := substr(replace(i_sd,'-',''),1,2);
+      l_num := to_number(l_str);
+      l_dd  := lpad(trim(to_char(l_num)),2,'0');
+      l_yyyymm := to_char(i_enter_dt, 'YYYYMM');
+      l_enter_dd := to_char(i_enter_dt, 'DD');
+      if l_dd = '01' and to_number(l_enter_dd) >= 28
+      then
+         
+         l_ts     := i_enter_dt + interval '5 0:0:0.0' day to second;
+         l_yyyymm := to_char(l_ts, 'YYYYMM');
+      end if;
+      l_hhmmss := trim(i_st);
+      if l_hhmmss is not null
+      then
+         if length(l_hhmmss) < 10
+         then
+         l_hhmmss := replace(l_hhmmss,'Z','');
+         l_hhmmss := replace(l_hhmmss,'z','');
+         l_ts     := to_timestamp(l_yyyymm||l_dd||' '||l_hhmmss, 'YYYYMMDD HH24:MI:SS');
+         else
+            l_ts     := sys_extract_utc(to_timestamp_tz(l_yyyymm||l_dd||' '||l_hhmmss, 'YYYYMMDD HH24:MI:SSTZH:TZM'));
+         end if;
+      else
+         
+         l_tsf := to_timestamp(l_yyyymm||l_dd, 'YYYYMMDD');
+         
+         begin
+            
+            l_flightnr1 := regexp_substr(i_flightnr, '^..[A-Z]?')||regexp_substr(i_flightnr, '[1-9]?[0-9]{2,3}[A-Z]?$');
+            
+            l_flightnr2 := regexp_substr(i_flightnr, '^..[A-Z]?')||lpad(regexp_substr(substr(i_flightnr, 3), '[0-9]{4}[A-Z]?$'), 4, '0');
+
+            select std
+            into   l_ts
+            from   ( select std
+                     ,      updatets
+                     from   fact_flight_summaries
+                     where  flightnr in (l_flightnr1, l_flightnr2)
+                     and    to_timestamp(substr(flightdate,1,10), 'YYYY-MM-DD') = l_tsf
+                     order by updatets desc
+                   )
+            where rownum = 1;
+         exception
+            when others then
+               l_ts := null;
+         end;
+      end if;
+   exception
+      when others then
+         l_ts := null;
+   end;
+
+   return l_ts;
+end;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function getintimeliness(
+    p_enter_dt            timestamp,
+    p_scheduledflighttime timestamp,
+    p_flighttype          varchar2)
+  return varchar2 deterministic
+is
+  l_minutes number;
+  l_timelinessrec timelinessrec;
+  l_intimeliness varchar2(20) := '';
+begin
+  if p_enter_dt is null or p_scheduledflighttime is null then
+    return null;
+  end if;
+  l_minutes         := round(ts_interval_in_seconds(p_enter_dt, p_scheduledflighttime)/60);
+  if p_flighttype    = 'LONGHAUL' then
+    l_timelinessrec := g_lh_timeliness;
+  elsif p_flighttype = 'SHORTHAUL' then
+    l_timelinessrec := g_sh_timeliness;
+  else
+    l_timelinessrec := g_lh_timeliness;
+  end if;
+  
+  
+  
+  if l_minutes      < l_timelinessrec.timecritical then
+    l_intimeliness := 'Too Late';
+  elsif l_minutes   < l_timelinessrec.intime then
+    l_intimeliness := 'Time Critical';
+  elsif l_minutes   < l_timelinessrec.early then
+    l_intimeliness := 'In Time';
+  else
+    l_intimeliness := 'Early';
+  end if;
+  return l_intimeliness;
+end;
+
+function get_ind_sorted_correctly(
+    i_final_status varchar2)
+  return varchar2 deterministic
+is
+  l_indicator varchar2(1)                             := null;
+  l_msg viu_info_logs.additional_data%type            := '';
+  l_area_zone dim_area_zone_link.area_zone%type       := '';
+  l_downstreamha dim_area_zone_link.downstreamha%type := '';
+begin
+  begin
+    if i_final_status       = 'DEREGISTERPACKAGE,END-OF-TRACING' then
+      g_latest_tr_error    := trim(g_latest_tr_error);
+      if g_latest_tr_error is not null and g_latest_tr_error = 'UNEXPECTED_STATION' then
+        l_indicator        := 'N';
+        debug_info('get_ind_sorted_correctly', 'EOT, encountered UNEXPECTED_STATION -> N');
+      else
+        l_indicator := 'Y';
+        debug_info('get_ind_sorted_correctly', 'EOT, no UNEXPECTED_STATION -> Y');
+      end if;
+    elsif i_final_status            = 'DEREGISTERPACKAGE,HAND-OVER' then
+      l_indicator                  := 'N';
+      g_latest_tr_area             := trim(g_latest_tr_area);
+      g_latest_tr_zone             := trim(g_latest_tr_zone);
+      g_latest_pi_destinations     := trim(g_latest_pi_destinations );
+      g_latest_pi_desthandlingarea := trim(g_latest_pi_desthandlingarea);
+      debug_info('get_ind_sorted_correctly', 'HO, lastest area.zone, dest->ha:'||g_latest_tr_area||'.'||g_latest_tr_zone ||', '||g_latest_pi_destinations||'->'||g_latest_pi_desthandlingarea);
+      if g_latest_tr_area is not null and g_latest_tr_zone is not null then
+        begin
+          
+          l_area_zone := substr('0000'||g_latest_tr_area, -4)||'.'||substr('00'||g_latest_tr_zone, -2);
+          select downstreamha
+          into l_downstreamha
+          from dim_area_zone_link
+          where area_zone = l_area_zone;
+        exception
+        when others then
+          l_downstreamha := '';
+        end;
+      end if;
+      l_downstreamha := trim(l_downstreamha);
+      debug_info('get_ind_sorted_correctly', 'HO, l_downstreamha:'||l_downstreamha);
+      if l_downstreamha                 is not null then
+        if g_latest_pi_desthandlingarea is not null then
+          
+          
+          if instr(','||l_downstreamha||',', ','||g_latest_pi_desthandlingarea||',') > 0 then
+            l_indicator                                                             := 'Y';
+            debug_info('get_ind_sorted_correctly', 'HO, reached handling area via desthandlingarea '||g_latest_pi_desthandlingarea);
+          end if;
+        else
+          if g_latest_pi_destinations is not null then
+            
+            
+            
+            for c_rec in
+            (select id, destinations from dim_handling_areas
+            )
+            loop
+              
+              for c_csvrec in
+              (select val from table(csv.vals(g_latest_pi_destinations))
+              )
+              loop
+                if instr(','||c_rec.destinations||',', ','||c_csvrec.val||',') > 0 then
+                  
+                  
+                  if instr(','||l_downstreamha||',', ','||to_char(c_rec.id)||',') > 0 then
+                    l_indicator                                         := 'Y';
+                    debug_info('get_ind_sorted_correctly', 'HO, reached handling area '||to_char(c_rec.id)||' via dest '||c_csvrec.val);
+                  end if;
+                end if;
+              end loop;
+            end loop;
+          end if;
+        end if;
+      end if;
+    end if;
+  exception
+  when others then
+    l_msg       := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    l_indicator := '?';
+    debug_info('get_ind_sorted_correctly', l_msg);
+  end;
+  l_msg := 'Final Status: '||i_final_status||' -> ind_sorted correctly: '||l_indicator;
+  debug_info('get_ind_sorted_correctly', l_msg);
+  return l_indicator;
+end;
+
+
+procedure process_screening( io_fbs             in out fact_bag_summaries%rowtype
+                           , i_eventts          in     fact_bagtrace.eventts%type
+                           , i_isresult         in     boolean
+                           , i_nodeid           in     dim_nodes.id%type
+                           , i_screening        in     fact_bagtrace.l_screening%type
+                           , i_screeningresult  in     fact_bagtrace.l_screeningresult%type
+                           )
+is
+   l_screening_level  fact_bag_summaries.screen_latest_lvl%type;
+   l_screening_result fact_bag_summaries.screen_latest_result%type;
+begin
+   
+   
+   
+   
+   
+
+
+   if    instr(','||i_screening, ','||g_screeningconcept) > 0
+      or instr(chr(10)||i_screening, chr(10)||g_screeningconcept) > 0
+      or instr(','||i_screeningresult, ','||g_screeningconcept) > 0
+      or instr(chr(10)||i_screeningresult, chr(10)||g_screeningconcept) > 0
+   then
+      
+      l_screening_level := get_tag_delimited_value(i_screening, 'RequiredScreeningLevel', g_screeningconcept);
+      if l_screening_level is not null
+      then
+         io_fbs.screen_latest_lvl_req := l_screening_level;
+      end if;
+      if i_isresult
+      then
+         l_screening_result := nvl(get_tag_delimited_value( i_screeningresult, 'Result', g_screeningconcept),io_fbs.screen_latest_result);
+
+         io_fbs.screen_latest_dt      := i_eventts;
+         io_fbs.nodeid_screen_latest  := i_nodeid;
+         io_fbs.screen_latest_process := nvl(get_tag_delimited_value(i_screeningresult, 'Name', g_screeningconcept),io_fbs.screen_latest_process);
+         l_screening_level            := nvl(get_tag_delimited_value(i_screeningresult, 'ScreeningLevel', g_screeningconcept),io_fbs.screen_latest_lvl);
+         
+         if io_fbs.screen_latest_result  is not null and io_fbs.screen_latest_lvl < l_screening_level
+         then
+            if io_fbs.screen_latest_result in ( 'UNCLEARED', 'NODECISION')
+            then
+               io_fbs.screen_latest_reason := io_fbs.screen_latest_result;
+            else
+               io_fbs.screen_latest_reason := null;
+            end if;
+         end if;
+         io_fbs.screen_latest_result := l_screening_result;
+         io_fbs.screen_latest_lvl    := l_screening_level;
+         
+         if l_screening_level = '1'
+         then
+            io_fbs.screen_lvl1_dt     := i_eventts;
+            io_fbs.screen_lvl1_result := l_screening_result;
+            io_fbs.nodeid_screen_lvl1 := i_nodeid;
+            g_pr_l1                   := i_eventts;
+            if g_pr_hbs is not null
+            then
+               io_fbs.total_delay_screening_l1 := nvl(io_fbs.total_delay_screening_l1, 0) + ts_interval_in_seconds(g_pr_hbs, g_pr_l1);
+               g_pr_hbs                        := null;
+            end if;
+         
+         elsif l_screening_level = '2'
+         then
+            io_fbs.screen_lvl2_dt     := i_eventts;
+            io_fbs.screen_lvl2_result := l_screening_result;
+            io_fbs.nodeid_screen_lvl2 := i_nodeid;
+            g_pr_l2                   := i_eventts;
+            if g_pr_l1 is not null
+            then
+               io_fbs.total_delay_screening_l2 := nvl(io_fbs.total_delay_screening_l2, 0) + ts_interval_in_seconds(g_pr_l1, g_pr_l2);
+               g_pr_l1                         := null;
+            end if;
+         
+         elsif l_screening_level = '3'
+         then
+            io_fbs.screen_lvl3_dt     := i_eventts;
+            io_fbs.screen_lvl3_result := l_screening_result;
+            io_fbs.nodeid_screen_lvl3 := i_nodeid;
+         
+         elsif l_screening_level = '4'
+         then
+            io_fbs.screen_lvl4_dt     := i_eventts;
+            io_fbs.screen_lvl4_result := l_screening_result;
+            io_fbs.nodeid_screen_lvl4 := i_nodeid;
+         
+         elsif l_screening_level = '5'
+         then
+            io_fbs.screen_lvl5_dt     := i_eventts;
+            io_fbs.screen_lvl5_result := l_screening_result;
+            io_fbs.nodeid_screen_lvl5 := i_nodeid;
+         end if;
+      end if;
+   end if;
+end;
+
+function calc_recirculation(
+     i_fbt in fact_bagtrace_hist%rowtype,
+     o_drl out dim_recirc_locations%rowtype)
+return boolean
+is
+l_con_function_name constant varchar2(61)    := g_con_package||'.calc_recirculation';
+l_recirculation    boolean:=false;
+
+
+cursor c_tr_before_rp (c_br_id fact_bagtrace_hist%rowtype)
+is
+    select *
+    from dim_recirc_locations
+    where recirculation_point = substr('0000'||c_br_id.areaid, -4)||'.'||substr('00'||c_br_id.zoneid, -2)||'.'||substr('00'||c_br_id.equipmentid, -2);
+
+begin
+    viu_module.enter_module( i_module => l_con_function_name, i_debug_info => to_char(systimestamp));
+    
+    
+    open c_tr_before_rp (i_fbt)  ;
+    fetch c_tr_before_rp into o_drl;
+
+    if c_tr_before_rp%found then
+       if g_tr_tracking_recirc=o_drl.recirculation_point then
+         l_recirculation:=true;
+       end if;
+       g_tr_tracking_recirc:=o_drl.recirculation_point;
+    end if;
+    close c_tr_before_rp;
+
+    viu_module.leave_module( i_module => l_con_function_name, i_debug_info => to_char(systimestamp));
+    return l_recirculation;
+exception
+  when others
+  then
+     if c_tr_before_rp%isopen
+     then
+        close c_tr_before_rp;
+     end if;
+
+     viu_module.leave_module( i_module     => l_con_function_name
+                            , i_debug_info => sqlerrm
+                            );
+     viu_info.raise_info( i_calling_procedure => l_con_function_name );
+end calc_recirculation;
+
+procedure add_to_summary(
+    io_fbs in out fact_bag_summaries%rowtype,
+    i_fbt  in fact_bagtrace%rowtype)
+is
+  l_con_proc_name constant varchar2(61) := g_con_package||'.add_to_summary';
+  l_iscid             fact_bag_summaries.iscid_entry%type;
+  l_naze              dim_node_area_zone_equipment%rowtype;
+  l_nazst             dim_node_area_zone_equipment%rowtype;
+  l_station           dim_stations%rowtype;
+  l_station_type      dim_stations_stype%rowtype;
+  l_csv               varchar2(4000) := '';
+  l_failed_reason     varchar2(100);
+  l_detail_error      varchar2(100);
+  l_screening_level   varchar2(100);
+  l_segregation       varchar2(100);
+  l_project_type      varchar2(10);
+  l_msg viu_info_logs.additional_data%type := '';
+  l_duration          number;
+  l_scan_count        integer;
+  l_taskreport_count  integer;
+  l_flightdate        fact_flight_summaries.flightdate%type;
+  l_flighttype        fact_flight_summaries.haul%type;
+  l_recirculation     boolean;
+  o_drl               dim_recirc_locations%rowtype;
+begin
+  viu_module.enter_module( i_module => l_con_proc_name, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  begin
+    
+    l_project_type := retrieve_projecttype;
+    
+    if io_fbs.enter_dt   is null and upper(i_fbt.reporttype) not in ('BPM', 'BSM', 'BTM', 'BUM', 'PACKAGEDATA', 'PACKAGEINFO', 'PROCESSSTATUSMESSAGE') then
+      io_fbs.enter_dt    := i_fbt.eventts;
+      io_fbs.m5_periodid := period.periodid(i_fbt.eventts, 'M5');
+    end if;
+    
+    
+    if i_fbt.xbid is not null and io_fbs.xbid is null then
+      io_fbs.xbid := i_fbt.xbid;
+    end if;
+    
+    if (i_fbt.xlpc is not null and io_fbs.xlpc is null) or (i_fbt.reporttype = 'TASKINSTRUCTION' and i_fbt.xlpc is not null) then
+      io_fbs.xlpc  := i_fbt.xlpc;
+    end if;
+    if i_fbt.xpid is not null and io_fbs.xpid is null then
+      io_fbs.xpid := i_fbt.xpid;
+    end if;
+    
+    if i_fbt.pid      is not null then
+      l_csv           := csv.combine_distinct(io_fbs.pids, i_fbt.pid);
+      if length(l_csv) > 100 then
+        l_csv         := substr(l_csv, 1, 95)||'++';
+      end if;
+      
+      io_fbs.pids := l_csv;
+    end if;
+    
+    if i_fbt.xbid     is not null and i_fbt.xbid <> '-2' then
+      l_csv           := csv.combine_distinct(io_fbs.bids, i_fbt.xbid);
+      if length(l_csv) > 100 then
+        l_csv         := substr(l_csv, 1, 95)||'++';
+      end if;
+      
+      io_fbs.bids := l_csv;
+    end if;
+    
+    if l_project_type <> 'Normal' or upper(i_fbt.reporttype) not in ('PACKAGEREPORT','IDCHANGEREPORT')
+    then
+      if i_fbt.flightnr is not null and io_fbs.flightnr is null
+      then
+        io_fbs.flightnr := i_fbt.flightnr;
+      end if;
+      if i_fbt.std is not null and io_fbs.std is null
+      then
+        io_fbs.std := i_fbt.std;
+      end if;
+      if i_fbt.sdd is not null and io_fbs.sdd is null
+      then
+        io_fbs.sdd := i_fbt.sdd;
+      end if;
+    end if;
+    if i_fbt.cabinclass is not null and io_fbs.cabin_class is null then
+      io_fbs.cabin_class := i_fbt.cabinclass;
+    end if;
+    
+    if io_fbs.flightnr != i_fbt.flightnr and io_fbs.ind_reflighted = 'N' then
+      io_fbs.ind_reflighted := 'Y';
+    end if;
+    
+    if i_fbt.uldtypecode is not null then
+      io_fbs.uldtypecode := i_fbt.uldtypecode;
+    end if;
+    if i_fbt.uldserialnumber is not null then
+      io_fbs.uldserialnumber := i_fbt.uldserialnumber;
+    end if;
+    if i_fbt.uldownercode is not null then
+      io_fbs.uldownercode := i_fbt.uldownercode;
+    end if;
+
+    
+    if i_fbt.surname is not null then
+      io_fbs.surname := i_fbt.surname;
+      io_fbs.givenname := i_fbt.givenname;
+    end if;
+
+    
+    if i_fbt.reporttype        = 'REGISTERPACKAGE' then
+      io_fbs.reg_count        := io_fbs.reg_count + 1;
+      
+      if io_fbs.iscid_entry is null then
+        io_fbs.iscid_entry := bpi_util.isc_id(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid,0);
+        if io_fbs.nodeid_entry  is null then
+          l_naze                := get_naze(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid);
+          if l_naze.nodeid      is not null then
+            io_fbs.nodeid_entry := l_naze.nodeid;
+          end if;
+        end if;
+      end if;
+      l_naze                           := get_naze(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid);
+      if l_naze.reporting_node_type     = 'Store_Exit' then
+        g_tr_storeexit                 := i_fbt.eventts;
+        if g_pr_store                  is not null and g_tr_storeexit is not null then
+          io_fbs.total_duration_stored := nvl(io_fbs.total_duration_stored,0) + ts_interval_in_seconds(g_pr_store, g_tr_storeexit);
+        end if;
+        g_pr_store     := null;
+        g_tr_storeexit := null;
+      end if;
+      if g_first_rp is null then
+        g_first_rp  := i_fbt.eventts;
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype = 'PROCESSSTATUSMESSAGE' then
+      debug_info('PROCESSSTATUSMESSAGE, L_FAMILY', i_fbt.l_family);
+      l_segregation := retrieve_segregation(i_fbt.l_family);
+      debug_info('PROCESSSTATUSMESSAGE, l_segregation', l_segregation);
+      if l_segregation     is not null then
+        io_fbs.segregation := l_segregation;
+      end if;
+    end if;
+
+    
+    if (i_fbt.reporttype      = 'DEREGISTERPACKAGE' and i_fbt.deregisterreason <> 'MISSING') or                                      
+      (i_fbt.reporttype       = 'DEREGISTERPACKAGE' and i_fbt.deregisterreason = 'MISSING' and io_fbs.final_status_dt is null ) then 
+
+      
+      io_fbs.final_status_dt := i_fbt.eventts;
+      io_fbs.final_status    := i_fbt.reporttype||','||i_fbt.deregisterreason;
+      l_iscid := bpi_util.isc_id(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid,0);
+      if l_iscid is not null then
+        io_fbs.iscid_exit := l_iscid;
+        l_naze                 := get_naze(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid);
+        if l_naze.nodeid       is not null then
+          io_fbs.nodeid_exit   := l_naze.nodeid;
+          
+          if io_fbs.ind_non_conveyable  is null or io_fbs.ind_non_conveyable = 'N' then
+            if l_naze.category           = 'Output' and l_naze.stype = 'SC_Out' then
+              io_fbs.ind_non_conveyable := 'Y';
+            end if;
+          end if;
+        end if;
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype = 'BAGGAGEEVENT' then
+      l_csv            := csv.combine_distinct(io_fbs.transport_exception, i_fbt.l_lastlogisticexception);
+      if length(l_csv)  > 220 then
+        l_csv          := substr(l_csv, 1, 220)||'++';
+      end if;
+      
+      io_fbs.transport_exception := l_csv;
+      if io_fbs.handling_area_departure is null and i_fbt.assignedhandlingareaid is not null then
+        io_fbs.handling_area_departure  := i_fbt.assignedhandlingareaid;
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype                = 'TASKINSTRUCTION' then
+      g_latest_ti                     := i_fbt.eventts;
+      g_latest_ti_tasktype            := i_fbt.tasktype;
+      if io_fbs.handling_area_arrival is null and i_fbt.destinationhandlingarea is not null then
+        io_fbs.handling_area_arrival  := i_fbt.destinationhandlingarea;
+      end if;
+
+      if g_first_tr_autoscan         is not null and g_first_ti_after_tr_autoscan is null then
+        g_first_ti_after_tr_autoscan := i_fbt.eventts;
+      end if;
+
+      
+      begin
+        
+        select to_number(val)
+        into l_station.id
+        from table(csv.vals(i_fbt.stationid))
+        where rownum=1;
+      exception
+      when others then
+        l_station.id := null;
+      end;
+      debug_info('TI eventts, l_station.ID', to_char(i_fbt.eventts)||','||to_char(l_station.id));
+      if g_pr_manualencoding                    is not null and l_station.id is not null then
+        l_station                               := bagsummary.get_station(l_station.id);
+        if not (nvl(l_station.stype,'?')         in ('ManualEncoding', 'ManualScan')) then
+          g_ti_behind_manualcoding              := i_fbt.eventts;
+          if g_ti_behind_manualcoding           is not null and g_pr_manualencoding is not null then
+            io_fbs.total_duration_manual_coding := nvl(io_fbs.total_duration_manual_coding,0) + ts_interval_in_seconds(g_pr_manualencoding, g_ti_behind_manualcoding);
+            debug_info('TI g_PR_ManualEncoding', to_char(g_pr_manualencoding));
+            debug_info('TI g_TI_Behind_ManualCoding', to_char(g_ti_behind_manualcoding));
+            debug_info('TI io_fbs.TOTAL_DURATION_MANUAL_CODING', to_char(io_fbs.total_duration_manual_coding));
+            g_pr_manualencoding      := null;
+            g_ti_behind_manualcoding := null;
+          end if;
+        end if;
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype           = 'TASKREPORT' then
+      g_latest_tr_area           := i_fbt.areaid;
+      g_latest_tr_zone           := i_fbt.zoneid;
+      g_latest_tr_error          := i_fbt.error;
+      if i_fbt.tasktype is not null then
+        if i_fbt.tasktype = 'AutoScan' then
+          
+          if io_fbs.ind_manual_identification_req is null then
+            io_fbs.ind_manual_identification_req := 'N';
+          end if;
+          io_fbs.scan_dt := i_fbt.eventts;
+          
+          l_naze := get_station_naze(i_fbt.stationid);
+          io_fbs.nodeid_scan := l_naze.nodeid;
+          if g_first_tr_autoscan is null then
+            g_first_tr_autoscan := i_fbt.eventts;
+          end if;
+        elsif i_fbt.tasktype in ('ManualScan','LinkToFlight','LinkToHandler','SpecialDestination') and
+              i_fbt.resulttype in ('LinkToFlightResult','LinkToHandlerResult','ScanResult','SpecialDestinationResult') then
+          io_fbs.ind_manual_identification_req := 'Y';
+          io_fbs.manual_scan_dt := i_fbt.eventts;
+          
+          l_naze := get_station_naze(i_fbt.stationid);
+          if l_naze.stype = 'ManualEncoding' and l_naze.end_user_id not like 'MCS@CI%' then
+            io_fbs.nodeid_mcs := l_naze.nodeid;
+          end if;
+          if l_naze.stype = 'ManualEncoding' and l_naze.end_user_id like 'MCS@CI%' then
+            io_fbs.nodeid_mcs_ci := l_naze.nodeid;
+          end if;
+        end if;
+        
+        
+        if  i_fbt.tasktype = 'RouteToMC'
+        and i_fbt.routeresult = 'ARRIVED'
+        then
+           l_naze := get_station_naze(i_fbt.stationid);
+           if  l_naze.stype       = 'ManualEncoding'
+           and l_naze.end_user_id not like 'MCS@CI%'
+           then
+              
+              g_tr_mcs_stationid := i_fbt.stationid;
+           end if;
+           
+           if i_fbt.tasktype     = 'SpecialDestination'
+           then
+              
+              g_mcs_stationid_special_dest := i_fbt.stationid;
+              if i_fbt.resulttype   = 'SpecialDestinationResult'
+              then
+                 g_mcs_special_dest_result := 'C';
+              else
+                 g_mcs_special_dest_result := 'S';
+              end if;
+           end if;
+        end if;
+      end if;
+
+      if i_fbt.resulttype='ScanResult' then
+        if i_fbt.method = 'ENTERED' then
+          io_fbs.scan_latest_result := 'ManualEnteredLPN';
+          io_fbs.mcs_scan_method := 'ManualEnteredLPN';
+        elsif i_fbt.method = 'MANUAL' then
+          io_fbs.scan_latest_result := 'ManualScannedLPN';
+          io_fbs.mcs_scan_method := 'ManualScannedLPN';
+        else
+          l_scan_count := csv.tag_count_in_csv('LPC', i_fbt.l_scanresult);
+          
+          if i_fbt.tasktype = 'ManualScan' then
+            if l_scan_count >= 1 then
+              
+              io_fbs.scan_latest_result := 'ManualScannedLPN';
+              io_fbs.mcs_scan_method := 'ManualScannedLPN';
+            else
+              
+              io_fbs.scan_latest_result := 'NotScanned';
+            end if;
+          else
+            
+            if l_scan_count = 1 then
+              
+              io_fbs.scan_latest_result := 'AutoNormalRead';
+            elsif l_scan_count > 1 then
+              
+              io_fbs.scan_latest_result := 'AutoMultiRead';
+            else
+              
+              io_fbs.scan_latest_result := 'AutoNoRead';
+            end if;
+          end if;
+        end if;
+      elsif i_fbt.resulttype   = 'VolumeScanResult' and i_fbt.physicalclass is not null then
+        io_fbs.physical_class := i_fbt.physicalclass;
+      elsif i_fbt.resulttype       ='LinkToFlightResult' then
+        io_fbs.scan_latest_result := 'LinkToFlight';
+        io_fbs.mcs_scan_method := 'LinkToFlight';
+        if i_fbt.flightnr is not null then
+          io_fbs.flightnr := i_fbt.flightnr;
+        elsif i_fbt.processplanidname is not null then
+          io_fbs.flightnr := nvl(flights.get_flight_plan(i_fbt.processplanidname).flightnr, io_fbs.flightnr);
+        end if;
+      elsif i_fbt.resulttype       ='LinkToHandlerResult' then
+        io_fbs.scan_latest_result := 'LinkToHandler';
+      elsif i_fbt.resulttype       ='SpecialDestinationResult' then
+        io_fbs.scan_latest_result := 'SpecialDestination';
+        io_fbs.mcs_scan_method := 'SpecialDestination';
+      elsif i_fbt.resulttype       ='BatchResult' then
+        l_csv                     := trim(get_tag_delimited_value(i_fbt.l_batchresult, 'BatchID'));
+        if l_csv                  is not null then
+          io_fbs.batchid          := l_csv;
+        end if;
+        l_csv                   := trim(get_tag_delimited_value(i_fbt.l_batchresult, 'StationID'));
+        if l_csv                is not null then
+          io_fbs.batchstationid := l_csv;
+        end if;
+        l_csv                   := trim(get_tag_delimited_value(i_fbt.l_batchresult, 'BatchException'));
+        if l_csv                is not null then
+          io_fbs.batchexception := l_csv;
+        end if;
+      end if;
+      
+      l_nazst := get_nazst(i_fbt.areaid, i_fbt.zoneid, i_fbt.stationid);
+      
+      process_screening(io_fbs, i_fbt.eventts, i_fbt.resulttype = 'ScreeningResult', l_nazst.nodeid, i_fbt.l_birscreening, i_fbt.l_screeningresult);
+    end if;
+
+    
+    if i_fbt.reporttype             = 'PACKAGEINSTRUCTION' then
+      g_latest_pi                  := i_fbt.eventts;
+      g_latest_pi_desthandlingarea := i_fbt.destinationhandlingarea;
+      g_latest_pi_destinations     := i_fbt.destination;
+      if g_first_rp                is not null and g_first_pi_after_rp is null then
+        g_first_pi_after_rp        := i_fbt.eventts;
+      end if;
+      if g_pr_store      is not null then
+        g_pi_behindstore := i_fbt.eventts;
+        g_tr_storeexit   := null;
+      end if;
+
+      if io_fbs.screen_latest_lvl_req is not null
+      then
+         io_fbs.screen_latest_lvl_req := get_tag_delimited_value(i_fbt.l_screening, 'RequiredScreeningLevel', g_screeningconcept);
+      end if;
+
+      if l_project_type ='Normal'
+      then
+        
+        
+
+        io_fbs.ind_max_recirculation := 'N';
+        if i_fbt.assignmentreason is not null
+        then
+          if i_fbt.assignmentreason <> 'REGISTER' and get_stype(i_fbt.destination) in ('ManualEncoding', 'ManualScan')
+          then
+            io_fbs.reason_mcs := i_fbt.assignmentreason;
+          end if;
+
+          if get_exiting(i_fbt.destination) = 'TRUE'
+          then
+            if i_fbt.flightbuildtimeliness is null
+            then
+              io_fbs.outtimeliness := case
+                                        when i_fbt.assignmentreason in ( 'MAKEUP AIRLINE'
+                                                                       , 'MAKEUP FLIGHT'
+                                                                       , 'TIME CRITICAL'
+                                                                       , 'LATE'
+                                                                       )
+                                          then 'IN TIME'
+                                        when i_fbt.assignmentreason in ('EARLY', 'TOO EARLY')
+                                          then 'EARLY'
+                                        when i_fbt.assignmentreason in ('TOO LATE')
+                                          then 'TOO LATE'
+                                        when i_fbt.assignmentreason in ('MISSED')
+                                          then 'MISSED'
+                                        else
+                                          null
+                                      end;
+            end if;
+            if i_fbt.assignmentreason = 'MAX RECIRCULATION'
+            then
+              io_fbs.ind_max_recirculation := 'Y';
+            end if;
+          end if;
+
+          for c in ( select 1
+                     from   dim_node_area_zone_equipment
+                     where  areaid = i_fbt.areaid
+                     and    stype  = 'CheckIn'
+                     and    rownum = 1
+                   )
+          loop
+            io_fbs.intimeliness  := case
+                                      when i_fbt.assignmentreason in ( 'MAKEUP AIRLINE'
+                                                                     , 'MAKEUP FLIGHT'
+                                                                     )
+                                        then 'IN TIME'
+                                      when i_fbt.assignmentreason in ('EARLY', 'TOO EARLY')
+                                        then 'EARLY'
+                                      when i_fbt.assignmentreason in ('TIME CRITICAL', 'LATE')
+                                        then 'TIME CRITICAL'
+                                      when i_fbt.assignmentreason in ('TOO LATE')
+                                        then 'TOO LATE'
+                                      when i_fbt.assignmentreason in ('MISSED')
+                                        then 'MISSED'
+                                      else
+                                        null
+                                    end;
+          end loop;
+
+        end if;
+
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype = 'TRACKINGREPORT' then
+      l_naze           := get_naze(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid);
+      
+
+
+
+
+
+      if l_naze.first_attempt_node = 'TRUE' then
+        
+        begin
+          select val
+          into l_failed_reason
+          from table(csv.vals(i_fbt.l_faileddirection))
+          where val like 'FailedReason=%'
+          and rownum       = 1;
+          l_failed_reason := replace(l_failed_reason, 'FailedReason=', '');
+        exception
+        when others then
+          l_failed_reason := null;
+        end;
+        if l_failed_reason                   is not null then
+          if l_failed_reason                  = 'TECHNICAL FAILURE' then
+            if io_fbs.first_attempt_tech_dt  is null then
+              io_fbs.first_attempt_tech_dt   := i_fbt.eventts;
+              io_fbs.first_attempt_tech_node := l_naze.nodeid;
+              io_fbs.recirculations_technical:=nvl(io_fbs.recirculations_technical,0)+1;
+            end if;
+          else
+            if io_fbs.first_attempt_dt         is null then
+              io_fbs.first_attempt_dt          := i_fbt.eventts;
+              io_fbs.first_attempt_node        := l_naze.nodeid;
+              io_fbs.first_attempt_exception   := l_failed_reason;
+              io_fbs.recirculations_operational:=nvl(io_fbs.recirculations_operational,0)+1;
+              
+              begin
+                select val
+                into l_detail_error
+                from table(csv.vals( i_fbt.l_faileddirection ))
+                where val like 'DetailErrorCode=%'
+                and rownum      = 1;
+                l_detail_error := replace(l_detail_error, 'DetailErrorCode=', '');
+              exception
+              when others then
+                l_detail_error := null;
+              end;
+              io_fbs.first_attempt_detail_err := l_detail_error;
+            end if;
+          end if;
+        end if;
+      end if;
+      
+        l_recirculation := calc_recirculation(i_fbt,o_drl);
+        if l_recirculation then
+            io_fbs.nr_recirculations:=nvl(io_fbs.nr_recirculations,0) + 1;
+            io_fbs.sorter_loop         := o_drl.sorter_loop;
+      end if;
+      if l_naze.reporting_node_type     = 'Store_Exit' then
+        g_tr_storeexit                 := i_fbt.eventts;
+        if g_pr_store                  is not null and g_tr_storeexit is not null then
+          io_fbs.total_duration_stored := nvl(io_fbs.total_duration_stored,0) + ts_interval_in_seconds(g_pr_store, g_tr_storeexit);
+        end if;
+        if g_pi_behindstore                   is not null and g_tr_storeexit is not null then
+          io_fbs.total_duration_store_release := nvl(io_fbs.total_duration_store_release,0) + ts_interval_in_seconds(g_pi_behindstore, g_tr_storeexit);
+        end if;
+        g_pr_store       := null;
+        g_pi_behindstore := null;
+        g_tr_storeexit   := null;
+      end if;
+      begin
+         select 'Y'
+         into  io_fbs.ind_load_correction
+         from  dim_loader_check_mapping
+         where check_zone = bpi_util.isc_id(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid);
+      exception
+      when others then
+        null;
+      end;
+    end if;
+
+    
+    if i_fbt.reporttype                     = 'PACKAGEINFOREQUEST' then
+      if substr(i_fbt.sourceprocessid,1,3) <> 'PDM' then
+        if g_first_pir_not_pdm             is null then
+          g_first_pir_not_pdm              := i_fbt.eventts;
+        end if;
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype              = 'PACKAGEINFO' then
+      if i_fbt.activeprocess        is not null then
+         io_fbs.final_active_process := i_fbt.activeprocess;
+      end if;
+      
+      if i_fbt.flightbuildtimeliness is not null then
+        io_fbs.outtimeliness         := i_fbt.flightbuildtimeliness;
+      end if;
+
+      if i_fbt.currentstationid is not null then
+        l_station_type := get_station_type(i_fbt.currentstationid);
+        l_naze := get_station_naze(i_fbt.currentstationid);
+      end if;
+
+      if i_fbt.assignedtask in ( 'ManualScan','RouteToMC') then
+          io_fbs.ind_manual_identification_req := 'Y';
+      end if;
+      if i_fbt.executedtask = 'ManualScan' then
+        if l_station_type.mcs_type = 'MCSCI' then
+          
+          if i_fbt.recognitionstate is not null then
+            io_fbs.mcs_ci_recognition := i_fbt.recognitionstate;
+          end if;
+          
+          if i_fbt.identificationstate is not null then
+            io_fbs.mcs_ci_identification := i_fbt.identificationstate;
+          end if;
+
+          if i_fbt.currentstationid is not null then
+            io_fbs.nodeid_mcs_ci := l_naze.nodeid;
+          end if;
+        elsif l_station_type.mcs_type = 'MCS' then
+          
+          if i_fbt.recognitionstate is not null then
+            io_fbs.mcs_recognition := i_fbt.recognitionstate;
+          end if;
+
+          
+          if i_fbt.identificationstate is not null then
+            io_fbs.mcs_identification := i_fbt.identificationstate;
+          end if;
+
+          if i_fbt.currentstationid is not null then
+            io_fbs.nodeid_mcs := l_naze.nodeid;
+          end if;
+
+          
+          
+          
+            if  i_fbt.currentstationid    = g_mcs_stationid_special_dest
+            and i_fbt.identificationstate = 'DESTINATION_CODED'
+            then
+            io_fbs.ind_mcs_special_dest_result := g_mcs_special_dest_result;
+          end if;
+        end if;
+      end if;
+
+      
+      
+      if i_fbt.executedtask in ('LinkToFlight','LinkToHandler','SpecialDestination')  then
+        if l_station_type.mcs_type = 'MCSCI' then
+          if i_fbt.identificationstate is not null then
+            io_fbs.mcs_ci_identification := i_fbt.identificationstate;
+          end if;
+
+          
+          if i_fbt.currentstationid is not null then
+            io_fbs.nodeid_mcs_ci := i_fbt.currentstationid;
+          end if;
+        elsif l_station_type.mcs_type = 'MCS' then
+          if i_fbt.identificationstate is not null then
+            io_fbs.mcs_identification := i_fbt.identificationstate;
+          end if;
+
+          if i_fbt.currentstationid is not null then
+            io_fbs.nodeid_mcs := l_naze.nodeid;
+          end if;
+
+          
+          
+          
+      if  i_fbt.currentstationid    = g_mcs_stationid_special_dest
+      and i_fbt.identificationstate = 'DESTINATION_CODED'
+      then
+      io_fbs.ind_mcs_special_dest_result := g_mcs_special_dest_result;
+            end if;
+          end if;
+      end if;
+
+
+       
+       
+       if  i_fbt.executedtask in ('ManualScan','LinkToFlight','LinkToHandler','SpecialDestination')
+       and i_fbt.currentstationid = g_tr_mcs_stationid
+       and io_fbs.reason_mcs is null                    
+       then
+         
+         g_tr_mcs_stationid := null;
+
+         
+         io_fbs.reason_mcs := case
+                                 when     io_fbs.atr_recognition = 'NO_READ'                         then io_fbs.atr_recognition
+                                 when     io_fbs.atr_recognition = 'MULTI_READ'                      then io_fbs.atr_recognition
+                                 when     io_fbs.atr_recognition = 'AUTO_READ'
+                                      and io_fbs.atr_identification = 'NO_BAGDATA'                   then io_fbs.atr_identification
+                                 when     io_fbs.atr_recognition = 'AUTO_READ'
+                                      and io_fbs.atr_identification = 'MULTIPLE_BAGDATA'             then io_fbs.atr_identification
+                                 when     io_fbs.atr_recognition = 'AUTO_READ'
+                                      and io_fbs.atr_identification = 'DELETED_BAGDATA'              then io_fbs.atr_identification
+                                 when     i_fbt.assignedtask = 'LinkToFlight'
+                                      and i_fbt.activeprocess = 'Too late'                           then 'TOO_LATE'
+                                 when     i_fbt.assignedtask = 'LinkToFlight'
+                                      and i_fbt.activeprocess = 'Unplanned'                          then 'UNPLANNED'
+                                 when     io_fbs.atr_identification is null
+                                      or  i_fbt.recognitionstate = 'UNKNOWN'                         then 'LOST'  
+                                 else 'OTHER'  
+                              end;
+       end if;
+
+      
+      if i_fbt.executedtask = 'AutoScan' then
+        if i_fbt.recognitionstate in ('ENTERED','MANUAL_READ') then
+          
+          
+          null;
+        elsif i_fbt.recognitionstate is not null then
+          io_fbs.atr_recognition := i_fbt.recognitionstate;
+        end if;
+
+        if i_fbt.identificationstate in ('FLIGHT_CODED','HANDLER_CODED','DESTINATION_CODED') then
+          io_fbs.atr_identification := 'INHERITED_FROM_MCS';
+        elsif i_fbt.identificationstate is not null then
+          io_fbs.atr_identification := i_fbt.identificationstate;
+        end if;
+      end if;
+      
+      if i_fbt.executedtask in ('Dump','RouteToOutputPoint') then
+      io_fbs.executedtask := i_fbt.executedtask;
+      end if;
+ 
+      if i_fbt.handler is not null then
+        io_fbs.handler := i_fbt.handler;
+      end if;
+      if substr(i_fbt.sourceprocessid,1,3) = 'PDM' then
+        g_latest_pi_is_pdm                := i_fbt.eventts;
+        if g_first_pir_not_pdm            is not null and g_first_pi_is_pdm_after_pir is null then
+          g_first_pi_is_pdm_after_pir     := i_fbt.eventts;
+        end if;
+      end if;
+
+      
+      if (io_fbs.arv_flightnr is null or io_fbs.arv_scheduled_flight_time is null or io_fbs.arv_internationalordomestic is null) and i_fbt.arvflight is not null then
+        io_fbs.arv_airline := i_fbt.arvairline;
+        flights.get_flight_data( i_airline                 => i_fbt.arvairline
+                               , i_flightnumber            => i_fbt.arvflight
+                               , i_flightdate              => i_fbt.arvflightdate
+                               , i_dt_reference            => io_fbs.enter_dt
+                               , i_arrivalordeparture      => 'A'
+                               , o_flightnr                => io_fbs.arv_flightnr
+                               , o_flightdate              => l_flightdate
+                               , o_st                      => io_fbs.arv_scheduled_flight_time
+                               , o_flighttype              => l_flighttype
+                               , o_internationalordomestic => io_fbs.arv_internationalordomestic
+                               );
+      end if;
+      if (io_fbs.dep_flightnr is null or io_fbs.dep_scheduled_flight_time is null or io_fbs.dep_internationalordomestic is null) and i_fbt.depflight is not null then
+        io_fbs.dep_airline := i_fbt.depairline;
+        flights.get_flight_data( i_airline                 => i_fbt.depairline
+                               , i_flightnumber            => i_fbt.depflight
+                               , i_flightdate              => i_fbt.depflightdate
+                               , i_dt_reference            => io_fbs.enter_dt
+                               , i_arrivalordeparture      => 'D'
+                               , o_flightnr                => io_fbs.dep_flightnr
+                               , o_flightdate              => l_flightdate
+                               , o_st                      => io_fbs.dep_scheduled_flight_time
+                               , o_flighttype              => l_flighttype
+                               , o_internationalordomestic => io_fbs.dep_internationalordomestic
+                               );
+      end if;
+
+      if io_fbs.flightnr is null then
+        io_fbs.flightnr  := nvl( io_fbs.dep_flightnr, io_fbs.arv_flightnr );
+      end if;
+     if i_fbt.baggagesourceindicator is not null and io_fbs.source is null then
+        io_fbs.source                 := i_fbt.baggagesourceindicator;
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype          = 'PACKAGEDATA' then
+      io_fbs.bag_exception_type := i_fbt.l_bagexceptiondata;
+      if io_fbs.bsm_received_dt is null and i_fbt.xlpc is not null then
+        io_fbs.bsm_received_dt  := i_fbt.eventts;
+      end if;
+      if i_fbt.baggagesourceindicator is not null and io_fbs.source is null then
+        io_fbs.source                 := i_fbt.baggagesourceindicator;
+      end if;
+      if io_fbs.ind_crew_bag is null and instr(i_fbt.l_bagexceptiondata, 'CREW') > 0 then
+        io_fbs.ind_crew_bag := 'Y';
+      end if;
+      if io_fbs.ind_rush_bag is null and instr(i_fbt.l_bagexceptiondata, 'RUSH') > 0 then
+        io_fbs.ind_rush_bag := 'Y';
+      end if;
+      if i_fbt.arvairportcode       is not null and io_fbs.airport_code_arrival is null then
+        io_fbs.airport_code_arrival := i_fbt.arvairportcode;
+      end if;
+      if i_fbt.depairportcode         is not null and io_fbs.airport_code_departure is null then
+        io_fbs.airport_code_departure := i_fbt.depairportcode;
+      end if;
+      if i_fbt.arvclassoftravel      is not null and io_fbs.classoftravel_arrival is null then
+        io_fbs.classoftravel_arrival := i_fbt.arvclassoftravel;
+      end if;
+      if i_fbt.depclassoftravel        is not null and io_fbs.classoftravel_departure is null then
+        io_fbs.classoftravel_departure := i_fbt.depclassoftravel;
+      end if;
+      if io_fbs.segregation is null and i_fbt.l_family is null and l_project_type ='Normal' then
+        io_fbs.segregation  := i_fbt.depclassoftravel;
+      end if;
+      if (io_fbs.arv_flightnr is null or io_fbs.arv_scheduled_flight_time is null or io_fbs.arv_internationalordomestic is null) and i_fbt.arvflight is not null then
+        io_fbs.arv_airline := i_fbt.arvairline;
+        flights.get_flight_data( i_airline                 => i_fbt.arvairline
+                               , i_flightnumber            => i_fbt.arvflight
+                               , i_flightdate              => i_fbt.arvflightdate
+                               , i_dt_reference            => io_fbs.enter_dt
+                               , i_arrivalordeparture      => 'A'
+                               , o_flightnr                => io_fbs.arv_flightnr
+                               , o_flightdate              => l_flightdate
+                               , o_st                      => io_fbs.arv_scheduled_flight_time
+                               , o_flighttype              => l_flighttype
+                               , o_internationalordomestic => io_fbs.arv_internationalordomestic
+                               );
+      end if;
+      if (io_fbs.dep_flightnr is null or io_fbs.dep_scheduled_flight_time is null or io_fbs.dep_internationalordomestic is null) and i_fbt.depflight is not null then
+        io_fbs.dep_airline := i_fbt.depairline;
+        flights.get_flight_data( i_airline                 => i_fbt.depairline
+                               , i_flightnumber            => i_fbt.depflight
+                               , i_flightdate              => i_fbt.depflightdate
+                               , i_dt_reference            => io_fbs.enter_dt
+                               , i_arrivalordeparture      => 'D'
+                               , o_flightnr                => io_fbs.dep_flightnr
+                               , o_flightdate              => l_flightdate
+                               , o_st                      => io_fbs.dep_scheduled_flight_time
+                               , o_flighttype              => l_flighttype
+                               , o_internationalordomestic => io_fbs.dep_internationalordomestic
+                               );
+      end if;
+    end if;
+
+    
+    if i_fbt.reporttype    = 'PACKAGEREPORT' then
+      l_naze              := get_naze(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid);
+      if l_naze.stype      in ('ManualEncoding', 'ManualScan') then
+        io_fbs.nodeid_mcs := l_naze.nodeid;
+      end if;
+      if i_fbt.resulttype  = 'ScanResult' then
+        if io_fbs.scan_dt is null then
+          io_fbs.scan_dt  := i_fbt.eventts;
+        end if;
+        if io_fbs.nodeid_scan is null then
+          io_fbs.nodeid_scan  := l_naze.nodeid;
+        end if;
+        
+        
+        
+      elsif i_fbt.resulttype = 'StoreResult' or l_naze.stype='Store' then
+        if io_fbs.store_dt  is null then
+          io_fbs.store_dt   := i_fbt.eventts;
+        end if;
+        if io_fbs.nodeid_store is null then
+          io_fbs.nodeid_store  := l_naze.nodeid;
+        end if;
+        if io_fbs.bagstore_location is null and l_project_type <> 'Normal' then
+          io_fbs.bagstore_location  := nvl(i_fbt.areaid,'????')||'-'||nvl(i_fbt.xpos, '???')||'-'||nvl(i_fbt.ypos,'???');
+        end if;
+      elsif i_fbt.resulttype  = 'VolumeScanResult' then
+        if io_fbs.volscan_dt is null then
+          io_fbs.volscan_dt  := i_fbt.eventts;
+        end if;
+        if io_fbs.nodeid_volscan is null then
+          io_fbs.nodeid_volscan  := l_naze.nodeid;
+        end if;
+        
+        if i_fbt.physicalclass is not null then
+           io_fbs.physical_class  := i_fbt.physicalclass;
+        end if;
+        
+        if io_fbs.ind_non_conveyable  is null or io_fbs.ind_non_conveyable = 'N' then
+          if i_fbt.physicalclass      <> 'ST' then
+            io_fbs.ind_non_conveyable := 'Y';
+          end if;
+        end if;
+        
+        if (    io_fbs.weight is null
+            and i_fbt.weight  is not null
+           )
+        or (    io_fbs.weight  = 0
+            and i_fbt.weight  <> 0
+           )
+        then
+          begin
+            io_fbs.weight := to_number(i_fbt.weight);
+          exception
+          when others then
+            io_fbs.weight := null;
+          end;
+        end if;
+        
+        if io_fbs.length is null then
+          
+          if i_fbt.length is not null then
+            begin
+              io_fbs.length       := to_number(i_fbt.length);
+              io_fbs.width        := to_number(i_fbt.width);
+              io_fbs.height       := to_number(i_fbt.height);
+              io_fbs.boxed_volume := io_fbs.length * io_fbs.width * io_fbs.height;
+            exception
+            when others then
+              io_fbs.length       := null;
+              io_fbs.width        := null;
+              io_fbs.height       := null;
+              io_fbs.boxed_volume := null;
+            end;
+          end if;
+        end if;
+        if io_fbs.measured_volume is null then
+          if i_fbt.measuredvolume is not null then
+            begin
+              io_fbs.measured_volume := to_number(i_fbt.measuredvolume);
+            exception
+            when others then
+              io_fbs.measured_volume := null;
+            end;
+          end if;
+        end if;
+        if io_fbs.average_volume    is null then
+          if io_fbs.measured_volume is not null and io_fbs.boxed_volume is not null then
+            io_fbs.average_volume   := (io_fbs.measured_volume + io_fbs.boxed_volume) / 2;
+          end if;
+        end if;
+      elsif i_fbt.resulttype = 'LoadResult' then
+        if io_fbs.load_dt   is null then
+          io_fbs.load_dt    := i_fbt.eventts;
+        end if;
+        if io_fbs.nodeid_load is null then
+          io_fbs.nodeid_load  := l_naze.nodeid;
+        end if;
+      elsif i_fbt.resulttype = 'UnloadResult' then
+        if io_fbs.unload_dt is null then
+          io_fbs.unload_dt  := i_fbt.eventts;
+        end if;
+        if io_fbs.nodeid_unload is null then
+          io_fbs.nodeid_unload  := l_naze.nodeid;
+        end if;
+      elsif i_fbt.resulttype     = 'RouteResult' then
+        if i_fbt.routeresult     = 'ARRIVED' then
+          if l_naze.stype        in ('ManualEncoding', 'ManualScan') then
+            g_pr_manualencoding := i_fbt.eventts;
+            debug_info('PR ARRIVED eventts', to_char(i_fbt.eventts));
+          end if;
+        end if;
+        if l_naze.stype = 'HBS_1_2' then
+          g_pr_hbs     := i_fbt.eventts;
+        end if;
+      end if;
+
+      if l_naze.stype in ('Store', 'LaneBasedEBS') and g_pr_store is null then
+        g_pr_store                                                := i_fbt.eventts;
+        g_tr_storeexit                                            := null;
+        g_pi_behindstore                                          := null;
+      end if;
+      
+      if l_project_type                = 'Normal' then
+        if i_fbt.resulttype            ='ScanResult' then
+          if i_fbt.method              = 'ENTERED' then
+            io_fbs.scan_latest_result := 'ManualEntered';
+          elsif i_fbt.method           = 'MANUAL' then
+            io_fbs.scan_latest_result := 'ManualHandheld';
+          else
+            l_scan_count   := csv.tag_count_in_csv('LPC', i_fbt.l_baggagetag);
+            if l_scan_count = 1 then
+              
+              if io_fbs.scan_latest_result is null then
+                io_fbs.scan_latest_result  := 'AutoNormalRead';
+              end if;
+            elsif l_scan_count > 1 then
+              
+              if io_fbs.scan_latest_result is null or io_fbs.scan_latest_result = 'AutoNormalRead' then
+                io_fbs.scan_latest_result  := 'AutoMultiRead';
+              end if;
+            else
+              
+              if io_fbs.scan_latest_result is null or io_fbs.scan_latest_result like 'Auto%' then
+                io_fbs.scan_latest_result  := 'AutoNoRead';
+              end if;
+            end if;
+          end if;
+        elsif i_fbt.resulttype       ='LinkToFlightResult' then
+          io_fbs.scan_latest_result := 'LinkToFlight';
+          io_fbs.mcs_scan_method := 'LinkToFlight';
+        elsif i_fbt.resulttype       ='LinkToHandlerResult' then
+          io_fbs.scan_latest_result := 'LinkToHandler';
+        elsif i_fbt.resulttype       ='SpecialDestinationResult' then
+          io_fbs.scan_latest_result := 'SpecialDestination';
+          io_fbs.mcs_scan_method := 'SpecialDestination';
+        elsif i_fbt.resulttype       ='BatchResult' then
+          l_csv                     := trim(get_tag_delimited_value(i_fbt.l_batchresult, 'BatchID'));
+          if l_csv                  is not null then
+            io_fbs.batchid          := l_csv;
+          end if;
+          l_csv                   := trim(get_tag_delimited_value(i_fbt.l_batchresult, 'StationID'));
+          if l_csv                is not null then
+            io_fbs.batchstationid := l_csv;
+          end if;
+          l_csv                   := trim(get_tag_delimited_value(i_fbt.l_batchresult, 'BatchException'));
+          if l_csv                is not null then
+            io_fbs.batchexception := l_csv;
+          end if;
+        end if;
+        
+        l_nazst := get_naze(i_fbt.areaid, i_fbt.zoneid, i_fbt.equipmentid);
+
+        if l_nazst.stype                    in ('ManualEncoding', 'ManualScan') then
+          io_fbs.ind_manual_identification_req := 'Y';
+        end if;
+       
+        process_screening(io_fbs, i_fbt.eventts, i_fbt.resulttype = 'ScreeningResult', l_nazst.nodeid, i_fbt.l_screening, i_fbt.l_screeningresult);
+      end if;
+    end if;
+
+    
+    io_fbs.last_event_dt            := i_fbt.eventts;
+    l_duration                      := interval_in_seconds(io_fbs.enter_dt, nvl(io_fbs.first_attempt_dt,io_fbs.final_status_dt))
+                                       - nvl(io_fbs.total_duration_stored,0)
+                                       - nvl(io_fbs.total_duration_manual_coding,0);
+    io_fbs.total_duration_in_system := l_duration;
+    io_fbs.duration_exceeded        := l_duration - nvl(io_fbs.in_system_time_threshold,0);
+    
+    
+    
+    
+    
+    if io_fbs.duration_exceeded <= 0 then
+      
+      io_fbs.ind_in_system_time_ok := 'Y';
+    else
+      io_fbs.ind_in_system_time_ok := 'N';
+    end if;
+    
+    if io_fbs.duration_exceeded > 0 and io_fbs.duration_exceeded <= io_fbs.in_system_time_exceeded_window then
+      
+      io_fbs.ind_in_system_time_w1 := 'Y';
+    else
+      io_fbs.ind_in_system_time_w1 := 'N';
+    end if;
+    
+    if io_fbs.duration_exceeded > io_fbs.in_system_time_exceeded_window and io_fbs.duration_exceeded <= 2*io_fbs.in_system_time_exceeded_window then
+      
+      io_fbs.ind_in_system_time_w2 := 'Y';
+    else
+      io_fbs.ind_in_system_time_w2 := 'N';
+    end if;
+    
+    if io_fbs.duration_exceeded > 2*io_fbs.in_system_time_exceeded_window then
+      
+      io_fbs.ind_in_system_time_w3 := 'Y';
+    else
+      io_fbs.ind_in_system_time_w3 := 'N';
+    end if;
+    if io_fbs.reg_count         > 1 or io_fbs.final_status = 'DEREGISTERPACKAGE,MISSING' then
+      io_fbs.ind_lost_occurred := 'Y';
+    else
+      io_fbs.ind_lost_occurred := 'N';
+    end if;
+  exception
+  when others then
+    l_msg := substr(l_con_proc_name||', IDEVENT='||to_char(i_fbt.idevent)||',KEY='||to_char(i_fbt.key)||',EVENTTS='||to_char(i_fbt.eventts) ||',BagRunID='||to_char(i_fbt.bagrunid)||',XBID='||i_fbt.xbid||',XLPC='||to_char(i_fbt.xlpc)||',XPID='||to_char(i_fbt.xpid) ||chr(10)||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+  viu_module.leave_module( i_module => l_con_proc_name );
+end;
+
+procedure insert_into_fact_bag_summaries(
+    i_fbs in fact_bag_summaries%rowtype)
+is
+  l_con_proc_name constant varchar2(61)    := g_con_package||'.insert_into_fact_bag_summaries';
+  l_msg viu_info_logs.additional_data%type := '';
+  l_parm varchar2(200);
+begin
+  viu_module.enter_module( i_module => l_con_proc_name, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  begin
+    
+    
+    insert
+    into fact_bag_summaries
+      (
+        id ,
+        xbid ,
+        xlpc ,
+        xpid ,
+        enter_dt ,
+        bsm_received_dt ,
+        length ,
+        width ,
+        height ,
+        weight ,
+        measured_volume ,
+        boxed_volume ,
+        average_volume ,
+        batchid ,
+        batchstationid ,
+        batchexception ,
+        source ,
+        m5_periodid ,
+        screen_latest_dt ,
+        scan_dt ,
+        manual_scan_dt ,
+        store_dt ,
+        volscan_dt ,
+        load_dt ,
+        unload_dt ,
+        last_event_dt ,
+        last_update_dt ,
+        completion_status ,
+        reg_count ,
+        first_attempt_tech_dt ,
+        first_attempt_tech_node ,
+        first_attempt_dt ,
+        first_attempt_exception ,
+        first_attempt_detail_err ,
+        first_attempt_node ,
+        final_status_dt ,
+        final_status ,
+        final_active_process ,
+        executedtask ,
+        pids ,
+        bids ,
+        flightnr ,
+        std ,
+        sdd ,
+        intimeliness ,
+        outtimeliness ,
+        ind_reflighted ,
+        handling_area_arrival ,
+        handling_area_departure ,
+        ind_crew_bag ,
+        ind_rush_bag ,
+        cabin_class ,
+        ind_non_conveyable ,
+        dt_max_delay_due_to_operator ,
+        ind_delay_due_to_operator ,
+        ind_max_recirculation,
+        total_delay_due_to_operator ,
+        ind_manual_identification_req ,
+        in_system_time_threshold ,
+        in_system_time_exceeded_window ,
+        duration_exceeded ,
+        ind_in_system_time_ok ,
+        ind_in_system_time_w1 ,
+        ind_in_system_time_w2 ,
+        ind_in_system_time_w3 ,
+        ind_system_attributable ,
+        ind_lost_occurred ,
+        ind_recovered ,
+        ind_sorted_correctly ,
+        transport_exception ,
+        transport_exception_count ,
+        nodeid_entry ,
+        iscid_entry ,
+        nodeid_screen_latest ,
+        nodeid_scan ,
+        nodeid_mcs ,
+        nodeid_mcs_ci ,
+        nodeid_store ,
+        nodeid_volscan ,
+        nodeid_load ,
+        nodeid_unload ,
+        nodeid_exit ,
+        iscid_exit ,
+        perf_duration_rp_pi ,
+        perf_duration_pr_tr ,
+        perf_duration_ti_pi ,
+        perf_duration_tr_ti ,
+        perf_duration_pir_pi ,
+        total_duration_manual_coding ,
+        total_duration_stored ,
+        total_duration_store_release ,
+        total_delay_screening_l1 ,
+        total_delay_screening_l2 ,
+        reason_mcs ,
+        screen_latest_process ,
+        screen_latest_result ,
+        screen_latest_reason ,
+        screen_latest_lvl ,
+        screen_latest_lvl_req ,
+        scan_latest_result ,
+        mcs_scan_method ,
+        scheduled_flight_time ,
+        flight_type ,
+        segregation ,
+        handler ,
+        mcs_ci_recognition ,
+        mcs_ci_identification ,
+        mcs_recognition ,
+        mcs_identification ,
+        atr_recognition ,
+        atr_identification ,
+        uldtypecode ,
+        uldserialnumber ,
+        uldownercode,
+        nodeid_screen_lvl1,
+        nodeid_screen_lvl2,
+        nodeid_screen_lvl3,
+        nodeid_screen_lvl4,
+        nodeid_screen_lvl5,
+        screen_lvl1_dt,
+        screen_lvl1_result,
+        screen_lvl2_dt,
+        screen_lvl2_result,
+        screen_lvl3_dt,
+        screen_lvl3_result,
+        screen_lvl4_dt,
+        screen_lvl4_result,
+        screen_lvl5_dt,
+        screen_lvl5_result,
+        physical_class,
+        classoftravel_arrival,
+        classoftravel_departure,
+        airport_code_arrival,
+        airport_code_departure,
+        bagstore_location,
+        recirculations_technical,
+        recirculations_operational,
+        surname,
+        givenname,
+        arv_flightnr,
+        arv_scheduled_flight_time,
+        arv_airline,
+        arv_internationalordomestic,
+        dep_flightnr,
+        dep_scheduled_flight_time,
+        dep_airline,
+        dep_internationalordomestic,
+        total_duration_in_system,
+        ind_mcs_special_dest_result,
+        bag_exception_type,
+        ind_load_correction,
+        nr_recirculations,
+        sorter_loop
+      )
+      values
+      (
+        i_fbs.id ,
+        i_fbs.xbid ,
+        i_fbs.xlpc ,
+        i_fbs.xpid ,
+        i_fbs.enter_dt ,
+        i_fbs.bsm_received_dt ,
+        i_fbs.length ,
+        i_fbs.width ,
+        i_fbs.height ,
+        i_fbs.weight ,
+        i_fbs.measured_volume ,
+        i_fbs.boxed_volume ,
+        i_fbs.average_volume ,
+        i_fbs.batchid ,
+        i_fbs.batchstationid ,
+        i_fbs.batchexception ,
+        i_fbs.source ,
+        i_fbs.m5_periodid ,
+        i_fbs.screen_latest_dt ,
+        i_fbs.scan_dt ,
+        i_fbs.manual_scan_dt ,
+        i_fbs.store_dt ,
+        i_fbs.volscan_dt ,
+        i_fbs.load_dt ,
+        i_fbs.unload_dt ,
+        i_fbs.last_event_dt ,
+        i_fbs.last_update_dt ,
+        i_fbs.completion_status ,
+        i_fbs.reg_count ,
+        i_fbs.first_attempt_tech_dt ,
+        i_fbs.first_attempt_tech_node ,
+        i_fbs.first_attempt_dt ,
+        i_fbs.first_attempt_exception ,
+        i_fbs.first_attempt_detail_err ,
+        i_fbs.first_attempt_node ,
+        i_fbs.final_status_dt ,
+        i_fbs.final_status ,
+        i_fbs.final_active_process ,
+        i_fbs.executedtask ,
+        i_fbs.pids ,
+        i_fbs.bids ,
+        i_fbs.flightnr ,
+        i_fbs.std ,
+        i_fbs.sdd ,
+        i_fbs.intimeliness ,
+        i_fbs.outtimeliness ,
+        i_fbs.ind_reflighted ,
+        i_fbs.handling_area_arrival ,
+        i_fbs.handling_area_departure ,
+        i_fbs.ind_crew_bag ,
+        i_fbs.ind_rush_bag ,
+        i_fbs.cabin_class ,
+        i_fbs.ind_non_conveyable ,
+        i_fbs.dt_max_delay_due_to_operator ,
+        i_fbs.ind_delay_due_to_operator ,
+        i_fbs.ind_max_recirculation ,
+        i_fbs.total_delay_due_to_operator ,
+        i_fbs.ind_manual_identification_req ,
+        i_fbs.in_system_time_threshold ,
+        i_fbs.in_system_time_exceeded_window ,
+        i_fbs.duration_exceeded ,
+        i_fbs.ind_in_system_time_ok ,
+        i_fbs.ind_in_system_time_w1 ,
+        i_fbs.ind_in_system_time_w2 ,
+        i_fbs.ind_in_system_time_w3 ,
+        i_fbs.ind_system_attributable ,
+        i_fbs.ind_lost_occurred ,
+        i_fbs.ind_recovered ,
+        i_fbs.ind_sorted_correctly ,
+        i_fbs.transport_exception ,
+        i_fbs.transport_exception_count ,
+        i_fbs.nodeid_entry ,
+        i_fbs.iscid_entry ,
+        i_fbs.nodeid_screen_latest ,
+        i_fbs.nodeid_scan ,
+        i_fbs.nodeid_mcs ,
+        i_fbs.nodeid_mcs_ci ,
+        i_fbs.nodeid_store ,
+        i_fbs.nodeid_volscan ,
+        i_fbs.nodeid_load ,
+        i_fbs.nodeid_unload ,
+        i_fbs.nodeid_exit ,
+        i_fbs.iscid_exit ,
+        i_fbs.perf_duration_rp_pi ,
+        i_fbs.perf_duration_pr_tr ,
+        i_fbs.perf_duration_ti_pi ,
+        i_fbs.perf_duration_tr_ti ,
+        i_fbs.perf_duration_pir_pi ,
+        i_fbs.total_duration_manual_coding ,
+        i_fbs.total_duration_stored ,
+        i_fbs.total_duration_store_release ,
+        i_fbs.total_delay_screening_l1 ,
+        i_fbs.total_delay_screening_l2 ,
+        i_fbs.reason_mcs ,
+        i_fbs.screen_latest_process ,
+        i_fbs.screen_latest_result ,
+        i_fbs.screen_latest_reason ,
+        i_fbs.screen_latest_lvl ,
+        i_fbs.screen_latest_lvl_req ,
+        i_fbs.scan_latest_result ,
+        i_fbs.mcs_scan_method ,
+        i_fbs.scheduled_flight_time ,
+        i_fbs.flight_type ,
+        i_fbs.segregation ,
+        i_fbs.handler ,
+        i_fbs.mcs_ci_recognition ,
+        i_fbs.mcs_ci_identification ,
+        i_fbs.mcs_recognition ,
+        i_fbs.mcs_identification ,
+        i_fbs.atr_recognition ,
+        i_fbs.atr_identification ,
+        i_fbs.uldtypecode ,
+        i_fbs.uldserialnumber ,
+        i_fbs.uldownercode,
+        i_fbs.nodeid_screen_lvl1,
+        i_fbs.nodeid_screen_lvl2,
+        i_fbs.nodeid_screen_lvl3,
+        i_fbs.nodeid_screen_lvl4,
+        i_fbs.nodeid_screen_lvl5,
+        i_fbs.screen_lvl1_dt,
+        i_fbs.screen_lvl1_result,
+        i_fbs.screen_lvl2_dt,
+        i_fbs.screen_lvl2_result,
+        i_fbs.screen_lvl3_dt,
+        i_fbs.screen_lvl3_result,
+        i_fbs.screen_lvl4_dt,
+        i_fbs.screen_lvl4_result,
+        i_fbs.screen_lvl5_dt,
+        i_fbs.screen_lvl5_result,
+        i_fbs.physical_class,
+        i_fbs.classoftravel_arrival,
+        i_fbs.classoftravel_departure,
+        i_fbs.airport_code_arrival,
+        i_fbs.airport_code_departure,
+        i_fbs.bagstore_location,
+        i_fbs.recirculations_technical,
+        i_fbs.recirculations_operational,
+        i_fbs.surname,
+        i_fbs.givenname,
+        i_fbs.arv_flightnr,
+        i_fbs.arv_scheduled_flight_time,
+        i_fbs.arv_airline,
+        i_fbs.arv_internationalordomestic,
+        i_fbs.dep_flightnr,
+        i_fbs.dep_scheduled_flight_time,
+        i_fbs.dep_airline,
+        i_fbs.dep_internationalordomestic,
+        i_fbs.total_duration_in_system,
+        i_fbs.ind_mcs_special_dest_result,
+        i_fbs.bag_exception_type,
+        i_fbs.ind_load_correction,
+        i_fbs.nr_recirculations,
+        i_fbs.sorter_loop
+      );
+  exception
+  when dup_val_on_index then
+    l_parm := 'ID='||to_char(i_fbs.id)||',XBID='||i_fbs.xbid||',XLPC='||to_char(i_fbs.xlpc)||',XPID='||to_char(i_fbs.xpid);
+    l_msg  := substr(l_con_proc_name||','||l_parm||chr(10)||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo , i_calling_procedure => l_con_proc_name , i_severity => viu_info.c_severity_error , i_info_arguments => l_parm , i_additional_data => l_msg);
+  when others then
+    l_parm := 'ID='||to_char(i_fbs.id)||',XBID='||i_fbs.xbid||',XLPC='||to_char(i_fbs.xlpc)||',XPID='||to_char(i_fbs.xpid);
+    l_msg  := substr(l_con_proc_name||','||l_parm||chr(10)||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpiexceptioninsert , i_calling_procedure => l_con_proc_name , i_severity => viu_info.c_severity_error , i_info_arguments => 'FACT_BAG_SUMMARIES' , i_additional_data => l_msg);
+    viu_module.leave_module(i_module => l_con_proc_name);
+  end;
+  viu_module.leave_module( i_module => l_con_proc_name );
+end;
+
+procedure summarize_bagruns
+is
+  l_con_proc_name constant varchar2(61)    := g_con_package||'.summarize_BagRuns';
+  l_msg viu_info_logs.additional_data%type := '';
+  l_fbs fact_bag_summaries%rowtype;
+  l_fbt fact_bagtrace%rowtype;
+  l_project_type    varchar2(10);
+  l_arrivalordeparture fact_flight_summaries.arrivalordeparture%type;
+  l_flightnr           fact_flight_summaries.flightnr%type;
+  l_flightdate         fact_flight_summaries.flightdate%type;
+  l_st                 fact_flight_summaries.std%type;
+  l_airline            fact_flight_summaries.airline%type;
+  l_flighttype         fact_flight_summaries.haul%type;
+  l_internationalordomestic fact_flight_summaries.internationalordomestic%type;
+  type t_bagrunid      is table of fact_bagtrace.bagrunid%type;
+  l_bagrunid           t_bagrunid;
+
+  cursor c_bt_recs(c_br_id fact_bagtrace.bagrunid%type)
+  is
+  select *
+  from   fact_bagtrace
+  where bagrunid = c_br_id
+  and summarized='N'
+  order by eventts, key;
+begin
+  viu_module.enter_module( i_module => l_con_proc_name, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  begin
+    loop
+      select bagrunid
+      bulk collect into l_bagrunid
+      from   fact_bagtrace
+      where  bagrunid > 0
+      and    summarized = 'N'
+      group by bagrunid
+      order by bagrunid
+      ;
+      exit when l_bagrunid.count = 0;
+
+        for i in l_bagrunid.first .. l_bagrunid.last
+        loop
+          g_latest_tr_area             := '';
+          g_latest_tr_zone             := '';
+          g_latest_tr_error            := '';
+          g_latest_pi_destinations     := '';
+          g_latest_pi_desthandlingarea := '';
+          
+          g_latest_pi         := null;
+          g_first_rp          := null;
+          g_first_pi_after_rp := null;
+          
+          g_latest_ti                  := null;
+          g_first_tr_autoscan          := null;
+          g_first_ti_after_tr_autoscan := null;
+          
+          g_latest_pi_is_pdm          := null;
+          g_first_pir_not_pdm         := null;
+          g_first_pi_is_pdm_after_pir := null;
+          
+          g_pr_manualencoding      := null;
+          g_ti_behind_manualcoding := null;
+          
+          g_pr_store       := null;
+          g_pi_behindstore := null;
+          g_tr_storeexit   := null;
+          
+          g_pr_hbs := null;
+          g_pr_l1  := null;
+          g_pr_l2  := null;
+          l_fbs    := empty_fbs_record;
+          l_fbs.id := l_bagrunid(i);
+          
+          
+          update fact_bagtrace
+          set    summarized = 'Y'
+          where  bagrunid = l_bagrunid(i)
+          and    reporttype = 'PACKAGEDATA'
+          and    bag_message_id like 'BSM%'
+          and    eventts <= (select   max(eventts) eventts
+                             from     fact_bagtrace
+                             where    bagrunid = l_bagrunid(i)
+                             and      reporttype = 'PACKAGEDATA'
+                             and      bag_message_id = 'BSM_DEL'
+                             group by xlpc);
+          for c_rec in c_bt_recs(l_bagrunid(i))
+          loop
+            l_fbt := c_rec;
+            add_to_summary(l_fbs, l_fbt);
+            update fact_bagtrace set summarized = 'Y' where key = c_rec.key;
+          end loop;
+          l_fbs.ind_sorted_correctly := get_ind_sorted_correctly(l_fbs.final_status);
+          
+          if l_fbs.ind_manual_identification_req  is null then
+            if g_latest_ti_tasktype                = 'RouteToMC' then
+              l_fbs.ind_manual_identification_req := 'Y';
+            else
+              l_fbs.ind_manual_identification_req := 'N';
+            end if;
+          end if;
+          
+          if g_first_rp                           is not null and g_first_pi_after_rp is null then
+            if g_latest_pi                        is not null then
+              if g_latest_pi + g_allowedtimedrift >= g_first_rp then
+                g_first_pi_after_rp               := g_first_rp;
+                
+              end if;
+            end if;
+          end if;
+          if g_first_tr_autoscan                  is not null and g_first_ti_after_tr_autoscan is null then
+            if g_latest_ti                        is not null then
+              if g_latest_ti + g_allowedtimedrift >= g_first_tr_autoscan then
+                g_first_ti_after_tr_autoscan      := g_first_tr_autoscan;
+                
+              end if;
+            end if;
+          end if;
+          if g_first_pir_not_pdm                         is not null and g_first_pi_is_pdm_after_pir is null then
+            if g_latest_pi_is_pdm                        is not null then
+              if g_latest_pi_is_pdm + g_allowedtimedrift >= g_first_pir_not_pdm then
+                g_first_pi_is_pdm_after_pir              := g_first_pir_not_pdm;
+                
+              end if;
+            end if;
+          end if;
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' g_latest_TI_tasktype:'||g_latest_ti_tasktype);
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' g_first_RP:'||to_char(g_first_rp, 'YYYY-MM-DD HH24:MI:SS.FF'));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' g_first_PI_after_RP:'||to_char(g_first_pi_after_rp, 'YYYY-MM-DD HH24:MI:SS.FF'));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' interval: '||to_char(ts_interval_in_seconds(g_first_rp, g_first_pi_after_rp)));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' g_first_TR_AutoScan:'||to_char(g_first_tr_autoscan, 'YYYY-MM-DD HH24:MI:SS.FF'));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' g_first_TI_after_TR_AutoScan:'||to_char(g_first_ti_after_tr_autoscan, 'YYYY-MM-DD HH24:MI:SS.FF'));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' interval: '||to_char(ts_interval_in_seconds(g_first_tr_autoscan, g_first_ti_after_tr_autoscan)));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' g_first_PIR_not_PDM:'||to_char(g_first_pir_not_pdm, 'YYYY-MM-DD HH24:MI:SS.FF'));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' g_first_PI_is_PDM_after_PIR:'||to_char(g_first_pi_is_pdm_after_pir, 'YYYY-MM-DD HH24:MI:SS.FF'));
+          debug_info(l_con_proc_name, to_char(l_fbs.id)||' interval: '||to_char(ts_interval_in_seconds(g_first_pir_not_pdm, g_first_pi_is_pdm_after_pir)));
+          l_fbs.perf_duration_rp_pi   := ts_interval_in_seconds(g_first_rp, g_first_pi_after_rp);
+          l_fbs.perf_duration_tr_ti   := ts_interval_in_seconds(g_first_tr_autoscan, g_first_ti_after_tr_autoscan);
+          l_fbs.perf_duration_pir_pi  := ts_interval_in_seconds(g_first_pir_not_pdm, g_first_pi_is_pdm_after_pir);
+          l_fbs.scheduled_flight_time := getscheduledflighttime(l_fbs.enter_dt, l_fbs.std, l_fbs.sdd, l_fbs.flightnr);
+          l_fbs.flight_type           := getflighttype(l_fbs.flightnr);
+
+          
+          l_project_type :=retrieve_projecttype;
+          if l_project_type  != 'Normal' then
+            l_fbs.intimeliness          := getintimeliness(l_fbs.enter_dt, l_fbs.scheduled_flight_time, l_fbs.flight_type);
+          end if;
+
+          if l_fbs.std                is null then
+            l_fbs.std                 := to_char(getscheduledflighttime(l_fbs.enter_dt, l_fbs.std, l_fbs.sdd, l_fbs.flightnr),'HH24:MI:SS');
+          end if;
+
+          if l_fbs.flightnr is not null and l_fbs.arv_flightnr is null and l_fbs.dep_flightnr is null
+          then
+             flights.get_flight_data( i_flightnr                => l_fbs.flightnr
+                                    , i_dt_reference            => l_fbs.enter_dt
+                                    , i_scheduled_flight_time   => l_fbs.scheduled_flight_time
+                                    , o_arrivalordeparture      => l_arrivalordeparture
+                                    , o_flightdate              => l_flightdate
+                                    , o_st                      => l_st
+                                    , o_airline                 => l_airline
+                                    , o_flighttype              => l_flighttype
+                                    , o_internationalordomestic => l_internationalordomestic
+                                    );
+
+             if l_arrivalordeparture = 'D'
+             then
+                l_fbs.dep_flightnr := l_fbs.flightnr;
+                l_fbs.dep_scheduled_flight_time := l_st;
+                l_fbs.dep_airline := l_airline;
+                l_fbs.dep_internationalordomestic := l_internationalordomestic;
+             end if;
+             if l_arrivalordeparture = 'A'
+             then
+                l_fbs.arv_flightnr := l_fbs.flightnr;
+                l_fbs.arv_scheduled_flight_time := l_st;
+                l_fbs.arv_airline := l_airline;
+                l_fbs.arv_internationalordomestic := l_internationalordomestic;
+             end if;
+          end if;
+
+          l_fbs.last_update_dt := sys_extract_utc(systimestamp);
+          insert_into_fact_bag_summaries(l_fbs);
+          g_bags_processed := g_bags_processed + 1;
+          bagtrace.move_bagrun(l_fbs.id);
+          commit;
+        end loop;
+    end loop;
+  exception
+  when others then
+    l_msg := substr(l_con_proc_name||'ID='||to_char(l_fbs.id)||',XBID='||l_fbs.xbid||',XLPC='||to_char(l_fbs.xlpc)||',XPID='||to_char(l_fbs.xpid) ||chr(10)||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    
+    rollback;
+    raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+  viu_module.leave_module( i_module => l_con_proc_name );
+end;
+
+procedure initialise
+is
+  l_con_proc_name constant varchar2(61)    := g_con_package||'.Initialise';
+  l_msg viu_info_logs.additional_data%type := '';
+  l_parm varchar2(1000);
+begin
+  viu_module.enter_module( i_module => l_con_proc_name, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  
+  begin
+    l_parm                    := cmn_common.get_parameter_value('MaxInSystemTime');
+    g_maxinsystemtime_seconds := to_number(l_parm) * 60;
+  exception
+  when others then
+    l_msg := 'Parameter MaxInSystemTime is incorrect. Reverting to default value of 10 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_maxinsystemtime_seconds := 600;
+  end;
+  
+  begin
+    l_parm                       := cmn_common.get_parameter_value('ExceededWindowSize');
+    g_exceededwindowsize_seconds := to_number(l_parm) * 60;
+  exception
+  when others then
+    l_msg := 'Parameter ExceededWindowSize is incorrect. Reverting to default value of 5 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_exceededwindowsize_seconds := 300;
+  end;
+  
+  begin
+    l_parm             := cmn_common.get_parameter_value('AllowedTimeDrift');
+    g_allowedtimedrift := numtodsinterval(to_number(l_parm), 'SECOND');
+  exception
+  when others then
+    l_msg := 'Parameter AllowedTimeDrift is incorrect. Reverting to default value of 1 second. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_allowedtimedrift := numtodsinterval(1, 'SECOND');
+  end;
+  
+  begin
+    l_parm                := cmn_common.get_parameter_value('LH_EARLY');
+    g_lh_timeliness.early := to_number(l_parm);
+  exception
+  when others then
+    l_msg := 'Parameter LH_EARLY is incorrect. Reverting to default value of 195 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_lh_timeliness.early := 195;
+  end;
+  begin
+    l_parm                 := cmn_common.get_parameter_value('LH_INTIME');
+    g_lh_timeliness.intime := to_number(l_parm);
+  exception
+  when others then
+    l_msg := 'Parameter LH_INTIME is incorrect. Reverting to default value of 68 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_lh_timeliness.intime := 68;
+  end;
+  begin
+    l_parm                       := cmn_common.get_parameter_value('LH_TIMECRITICAL');
+    g_lh_timeliness.timecritical := to_number(l_parm);
+  exception
+  when others then
+    l_msg := 'Parameter LH_TIMECRITICAL is incorrect. Reverting to default value of 35 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_lh_timeliness.timecritical := 35;
+  end;
+  begin
+    l_parm                := cmn_common.get_parameter_value('SH_EARLY');
+    g_sh_timeliness.early := to_number(l_parm);
+  exception
+  when others then
+    l_msg := 'Parameter SH_EARLY is incorrect. Reverting to default value of 135 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_sh_timeliness.early := 135;
+  end;
+  begin
+    l_parm                 := cmn_common.get_parameter_value('SH_INTIME');
+    g_sh_timeliness.intime := to_number(l_parm);
+  exception
+  when others then
+    l_msg := 'Parameter SH_INTIME is incorrect. Reverting to default value of 63 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_sh_timeliness.intime := 63;
+  end;
+  begin
+    l_parm                       := cmn_common.get_parameter_value('SH_TIMECRITICAL');
+    g_sh_timeliness.timecritical := to_number(l_parm);
+  exception
+  when others then
+    l_msg := 'Parameter SH_TIMECRITICAL is incorrect. Reverting to default value of 30 minutes. '||sqlerrm;
+    notify(l_con_proc_name, l_msg, l_parm);
+    g_sh_timeliness.timecritical := 30;
+  end;
+  g_bags_processed := 0;
+  
+  begin
+     begin
+        select 'ID='||to_char(id)
+        into   g_screeningconcept
+        from   dim_screening_processes
+        where  is_default = 'Y';
+     exception
+        when others then
+           
+           g_screeningconcept := cmn_common.get_parameter_value('SCREENING_CONCEPT');
+     end;
+  exception
+     when others then
+       g_screeningconcept := null;
+  end;
+  begin
+     select 'ID='||to_char(id)
+     into   g_screeningconcept_imaging
+     from   dim_screening_processes
+     where  name = 'CUSTOMS-IMAGE';
+  exception
+     when others then
+        g_screeningconcept_imaging := 'Name=CUSTOMS-IMAGE';
+  end;
+  g_tr_tracking_recirc:=null;
+  viu_module.leave_module( i_module => l_con_proc_name );
+end;
+
+procedure summarize
+is
+  l_con_proc_name constant varchar2(61)    := g_con_package||'.Summarize';
+  l_msg viu_info_logs.additional_data%type := '';
+  l_startts  timestamp                      := sys_extract_utc(systimestamp);
+  l_duration number(19,6);
+  l_error number := 0;
+
+begin
+  viu_module.enter_module( i_module => l_con_proc_name, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  l_msg := l_con_proc_name||' STARTED '||to_char(l_startts);
+  notify(l_con_proc_name, l_msg, null);
+  initialise;
+  summarize_bagruns;
+  l_duration := interval_in_seconds(l_startts, sys_extract_utc(systimestamp));
+  l_msg      := l_con_proc_name||' ENDED '||to_char(sys_extract_utc(systimestamp))||'. '||to_char(g_bags_processed)||' bags  summarized. Duration in seconds: '||to_char(l_duration);
+  notify(l_con_proc_name, l_msg, null);
+
+  
+  
+  
+  commit;
+
+  viu_module.leave_module( i_module => l_con_proc_name );
+
+  exception
+  when others then
+    l_error := sqlcode;
+    l_msg := substr(l_con_proc_name||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    handle_error(l_con_proc_name, l_msg, l_error);
+end;
+
+end bagsummary;
+/

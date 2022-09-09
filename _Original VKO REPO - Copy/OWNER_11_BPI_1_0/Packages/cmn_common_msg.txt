@@ -1,0 +1,363 @@
+create or replace PACKAGE cmn_common_msg
+IS
+
+   /* Retrieves the party record based on unique key */
+   FUNCTION pty_select_row_uk( i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                             , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE
+                             , o_rt_pty               OUT cmn_parties%ROWTYPE
+                             )
+   RETURN BOOLEAN;
+
+   /* Handle the parameters interface */
+   PROCEDURE handle_setparameters( i_message IN XMLTYPE );
+   
+   /* Handle the parameters interface */
+   PROCEDURE handle_getparameters( i_message IN XMLTYPE );
+
+   /* DEPRECATED, used for backward compatibility - Starts the cleanups */
+   PROCEDURE cleanup;
+
+END cmn_common_msg;
+/
+
+
+
+
+package body cmn_common_msg
+is
+   g_con_package   constant varchar2( 20 ) := 'cmn_common_msg';
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function pty_select_row_uk( i_pty_id_cust          in cmn_parties.id_cust%type
+                             , i_pty_instance_id_cust in cmn_parties.instance_id_cust%type
+                             , o_rt_pty               out cmn_parties%rowtype
+                             )
+   return boolean is
+
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package ||
+                                                            '.pty_select_row_uk';
+      l_found boolean := false;
+
+      cursor c_pty( b_pty_id_cust          in cmn_parties.id_cust%type
+                  , b_pty_instance_id_cust in cmn_parties.instance_id_cust%type
+                  )
+      is
+      select pty.*
+      from   cmn_parties pty
+      where  pty.id_cust               = b_pty_id_cust
+      and    ( pty.instance_id_cust    = b_pty_instance_id_cust
+               or( b_pty_instance_id_cust  is null
+                   and
+                   pty.instance_id_cust    is null
+                 )
+             );
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      open  c_pty( b_pty_id_cust          => i_pty_id_cust
+                 , b_pty_instance_id_cust => i_pty_instance_id_cust
+                 );
+
+      fetch c_pty into  o_rt_pty;
+
+      l_found := c_pty%found;
+
+      close c_pty;
+
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => case l_found
+                                               when true
+                                               then 'found'
+                                               else 'notfound'
+                                               end
+                             );
+
+      return l_found;
+
+   exception
+      when others
+      then
+         if c_pty%isopen
+         then
+            close c_pty;
+         end if;
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+
+   end pty_select_row_uk;
+
+   procedure handle_setparameters( i_message in xmltype )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.handle_parameters';
+      l_doc                      dbms_xmldom.domdocument;
+      l_element                  dbms_xmldom.domelement;
+      l_node                     dbms_xmldom.domnode;
+      l_setnodelist              dbms_xmldom.domnodelist;
+      l_send_return              boolean                           := false;
+      l_return_msg               xmltype                  := xmltype( '<Parameters></Parameters>' );
+      l_parameter_name           cmn_parameters.name%type;
+      l_parameter_value          cmn_parameter_values.value%type;
+
+      cursor c_param( b_parameter_name in cmn_parameters.name%type )
+      is
+         select count( * ) as cnt
+         from   cmn_parameters ptr
+              , cmn_parameter_values pve
+         where  ptr.id = pve.ptr_id
+         and    ptr.name = b_parameter_name
+         and    pve.interface_updateable = 'Y';
+
+      r_param                    c_param%rowtype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      l_doc          := dbms_xmldom.newdomdocument( i_message );
+      l_element      := dbms_xmldom.getdocumentelement( l_doc );
+      l_node         := dbms_xmldom.makenode( l_element );
+      l_setnodelist  := dbms_xslprocessor.selectnodes( l_node
+                                                     , '/SetParameters/Parameter'
+                                                     );
+
+      for i in 0 .. dbms_xmldom.getlength( l_setnodelist ) - 1
+      loop
+         l_node             := dbms_xmldom.item( l_setnodelist
+                                               , i
+                                               );
+         l_parameter_name   := dbms_xslprocessor.valueof( l_node
+                                                        , 'Name'
+                                                        );
+         l_parameter_value  := dbms_xslprocessor.valueof( l_node
+                                                        , 'Value'
+                                                        );
+
+         open c_param( l_parameter_name );
+
+         fetch c_param
+         into  r_param;
+
+         if r_param.cnt = 1
+         then
+            cmn_common.set_parameter_value( i_prr_name       => l_parameter_name
+                               , i_pve_value      => l_parameter_value
+                               );
+         else
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_updatefailed
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_notification
+                                  , i_additional_data        =>    l_parameter_name
+                                                                || ' failed to be updated to '
+                                                                || l_parameter_value
+                                  );
+         end if;
+
+         close c_param;
+      end loop;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_param%isopen
+         then
+            close c_param;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end handle_setparameters;
+
+   procedure handle_getparameters( i_message in xmltype )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.handle_parameters';
+      l_doc                      dbms_xmldom.domdocument;
+      l_element                  dbms_xmldom.domelement;
+      l_node                     dbms_xmldom.domnode;
+      l_return_msg               xmltype          := xmltype( '<ParametersList></ParametersList>' );
+      l_parameter_name           cmn_parameters.name%type;
+      l_parameter_value          cmn_parameter_values.value%type;
+      l_return_doc               dbms_xmldom.domdocument;
+      l_return_element           dbms_xmldom.domelement;
+      l_return_node              dbms_xmldom.domnode;
+      l_reply_node               dbms_xmldom.domnode;
+      l_source                   varchar2( 100 );
+
+      cursor c_param
+      is
+         select ptr.name as name
+              , ptr.description as parameter_description
+              , pve.value as value
+              , pve.unit as unit
+              , pve.pve_comment as value_comment
+              , pve.user_updateable as user_updateable
+              , pve.interface_updateable as interface_updateable
+         from   cmn_parameters ptr
+              , cmn_parameter_values pve
+         where  ptr.id = pve.ptr_id;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      l_doc             := dbms_xmldom.newdomdocument( i_message );
+      l_element         := dbms_xmldom.getdocumentelement( l_doc );
+      l_node            := dbms_xmldom.makenode( l_element );
+      l_source          :=
+                      dbms_xslprocessor.valueof( l_node
+                                               , '/GetParameters/Header/Source/ProcessID'
+                                               );
+      l_return_doc      := dbms_xmldom.newdomdocument( l_return_msg );
+      l_return_element  := dbms_xmldom.getdocumentelement( l_return_doc );
+      l_return_node     := dbms_xmldom.makenode( l_return_element );
+
+      for r_param in c_param
+      loop
+         l_reply_node  :=
+            cmn_xml_util.add_element( io_doc       => l_return_doc
+                                    , io_node      => l_return_node
+                                    , i_name       => 'Parameter'
+                                    );
+         cmn_xml_util.add_element( io_doc       => l_return_doc
+                                 , io_node      => l_reply_node
+                                 , i_name       => 'Name'
+                                 , i_value      => r_param.name
+                                 );
+         cmn_xml_util.add_element( io_doc       => l_return_doc
+                                 , io_node      => l_reply_node
+                                 , i_name       => 'Value'
+                                 , i_value      => r_param.value
+                                 );
+         cmn_xml_util.add_element( io_doc       => l_return_doc
+                                 , io_node      => l_reply_node
+                                 , i_name       => 'Unit'
+                                 , i_value      => r_param.unit
+                                 );
+         cmn_xml_util.add_element( io_doc       => l_return_doc
+                                 , io_node      => l_reply_node
+                                 , i_name       => 'Description'
+                                 , i_value      => r_param.parameter_description
+                                 );
+         cmn_xml_util.add_element( io_doc       => l_return_doc
+                                 , io_node      => l_reply_node
+                                 , i_name       => 'Comment'
+                                 , i_value      => r_param.value_comment
+                                 );
+         cmn_xml_util.add_element( io_doc       => l_return_doc
+                                 , io_node      => l_reply_node
+                                 , i_name       => 'InterfaceUpdatable'
+                                 , i_value      => r_param.interface_updateable
+                                 );
+         cmn_xml_util.add_element( io_doc       => l_return_doc
+                                 , io_node      => l_reply_node
+                                 , i_name       => 'UserUpdateable'
+                                 , i_value      => r_param.user_updateable
+                                 );
+      end loop;
+
+      l_return_msg      := dbms_xmldom.getxmltype( l_return_doc );
+      l_return_msg      :=
+         cmn_interface.add_header
+             ( i_message               => l_return_msg
+             , i_source_processid      => cmn_common.get_parameter_value
+                                                          ( cmn_constant.g_con_system_identification )
+             , i_target_processid      => l_source
+             );
+      cmn_interface.send_message( l_return_msg
+                                , l_source
+                                );
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.handle_info( i_calling_procedure      => l_con_proc_name );
+   end handle_getparameters;
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure cleanup
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.cleanup';
+      l_retention_time           pls_integer;
+      l_rows_cleaned             pls_integer;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      begin
+         l_retention_time  := cmn_common.get_parameter_value( cmn_constant.g_con_ifc_messages_retention );
+      exception
+         when others
+         then
+            l_retention_time  := cmn_constant.g_con_default_retention_1;
+      end;
+
+      l_rows_cleaned  := cmn_interface.clean_logging( l_retention_time );
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_cleanupmsg
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_notification
+                            , i_additional_data        =>    l_rows_cleaned
+                                                          || ' rows deleted from cmn_ifc_messages'
+                            );
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end cleanup;
+
+end cmn_common_msg;
+/

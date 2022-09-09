@@ -1,0 +1,52 @@
+procedure report_versionlogdata2(p_sortby in varchar2 default ' ') is
+v_msg      varchar2(32767);
+v_select   varchar2(8000);
+v_rc       number(5) := 0;
+v_errmsg   varchar2(32767);
+v_title    varchar2( 200) := 'Report Current Application Versions, dd '||ts2str(sysdate);
+v_filename varchar2( 200);
+v_clob clob;
+v_count number := 0;
+v_pos number := 0;
+v_eof boolean := false;
+cursor c_apl is select * from fact_app_log_data_v;
+begin
+  v_filename := replace(v_title, ' ','_')||'.csv';
+  v_filename := replace(v_filename, ',','');
+  v_filename := replace(v_filename, ':','.');
+  htp.print(ui_menu.head_from_link('REP_VERSIONLOGDATA'));
+  htp.print('<BUTTON onClick="document.location=''DOWNLOADREPORT?p_file='||v_filename||''';">Download</BUTTON>');
+  htp.print('<br>');
+  htp.print('<div class="reports">');
+
+  v_errmsg := '';
+  begin
+    v_msg := v_title||chr(10)||chr(10)||'Registered Application Log Messages';
+    v_select := 'select * from WC_VERSIONLOGDATA_V';
+    if trim(p_sortby) is not null then
+      v_select := v_select||' ORDER BY '||p_sortby;
+    end if;
+    v_clob := tab2csv.to_csv(v_select, v_msg);
+    delete from reports where name = v_filename;
+    insert into reports (name, clob_content) values (v_filename, v_clob);
+    commit;
+    showclob(v_clob);
+  exception
+    when others then v_errmsg := sqlerrm;
+  end;
+
+  if length(v_errmsg) > 0 then
+    htp.print(v_title||'<br>');
+    htp.print(v_msg||'<br>');
+    htp.print(v_errmsg||'<br></div>');
+  else
+    htp.print('<br></div>');
+    htp.print('<BUTTON onClick="document.location=''DOWNLOADREPORT?p_file='||v_filename||''';">Download</BUTTON>');
+  end if;
+
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

@@ -1,0 +1,655 @@
+create or replace PACKAGE ACL_CLEANUP IS
+
+G_CON_PACKAGE CONSTANT ACL_CONSTANT.ST_PROC_NAME := 'ACL_Cleanup';
+
+/* CUP_001: Cleanup the dynamic data for Application Control (main proc.) */
+PROCEDURE CLEANUP;
+/* CUP_002: To delete an Application Process record */
+FUNCTION DELETE_APPLICATION_PROCESS
+ (I_APS_ID IN ACL_APPLICATION_PROCESSES.ID%TYPE
+ )
+ RETURN NUMBER;
+/* CUP_003: To delete an AET Control Request record */
+FUNCTION DELETE_AET_CONTROL_REQUEST
+ (I_ACT_ID IN ACL_AET_CONTROL_REQUESTS.ID%TYPE
+ )
+ RETURN NUMBER;
+END ACL_CLEANUP;
+/
+
+
+
+package body acl_cleanup is
+
+
+procedure cleanup
+is
+
+   l_con_proc_name       constant  acl_constant.st_proc_name  := g_con_package||'.Cleanup';
+   l_con_aps_table_name  constant  acl_constant.st_table_name := 'ACL_APPLICATION_PROCESSES';  
+   l_con_act_table_name  constant  acl_constant.st_table_name := 'ACL_AET_CONTROL_REQUESTS';   
+   
+   l_rt_aps                      acl_application_processes%rowtype;             
+   l_rt_asm                      acl_aet_statuses_dom%rowtype;                  
+   l_rt_aet                      acl_application_elements%rowtype;
+   
+   l_tab_name                    acl_constant.st_table_name;                    
+   l_ref_timestamp               timestamp;                                     
+   l_ref_timestamp_to_delete     acl_application_processes.date_modified%type;  
+   l_param_value                 acl_parameter_values.value%type;               
+   l_seconds_del_registered      number;                                        
+   l_seconds_del_unregistered    number;                                        
+   l_interval_del_registered     interval day to second;                        
+   l_interval_del_unregistered   interval day to second;                        
+   l_upd_count                   pls_integer;                                   
+   l_del_count                   pls_integer := 0;                              
+   l_rec_del_count               pls_integer := 0;                              
+   l_found                       boolean     := false;
+
+   
+   cursor c_aet_non_deregistered_job_aps
+   is
+      select id
+      ,      id_cust
+      from   acl_application_elements aet
+      where  exists (select ''
+                     from   acl_application_processes  aps
+                     where  aps.aet_id    = aet.id
+                     and    aps.job_name is not null
+                     and   (   aps.status <> acl_constant.g_con_aps_status_deregistered
+                            or aps.status is null
+                           )
+                    )
+      ;
+   
+   cursor c_non_job_aps
+   is
+      select *
+      from   acl_application_processes  aps
+      where  aps.job_name is null
+      order by aps.id
+      ;
+   
+   cursor c_aps_to_delete
+   (i_ref_timestamp_to_delete in timestamp
+   )
+   is
+      
+      
+      
+      
+      
+      
+      
+      
+      select *
+      from   acl_application_processes  aps
+      where  aps.date_modified < i_ref_timestamp_to_delete
+      and   (   aps.ind_dead           = acl_constant.g_con_yesno_yes
+             or aps.ind_job_terminated = acl_constant.g_con_yesno_yes
+             or aps.status             = acl_constant.g_con_aps_status_deregistered
+            )
+      order by aps.date_modified asc
+      ,        aps.date_created  asc
+      ;
+   
+   cursor c_aps_to_delete_unreg
+   (i_ref_timestamp_to_delete in timestamp
+   )
+   is
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      select *
+      from   acl_application_processes  aps
+      where  aps.date_modified  < i_ref_timestamp_to_delete
+      and    aps.ind_registered = acl_constant.g_con_yesno_no
+      order by aps.date_modified asc
+      ,        aps.date_created  asc
+      ;
+   
+   cursor c_act_to_delete
+   (i_ref_timestamp_to_delete in timestamp
+   )
+   is
+      
+      
+      
+      
+      
+      
+      
+      select *
+      from   acl_aet_control_requests  act
+      where  act.date_created < i_ref_timestamp_to_delete
+      and    not exists (select ''
+                         from   acl_application_processes  aps
+                         where  aps.act_id_aborted_by   = act.id
+                         or     aps.act_id_initiated_by = act.id
+                         or     aps.act_id_stopped_by   = act.id
+                        )
+      and    not exists (select ''
+                         from   acl_aet_statuses  ass
+                         where  ass.act_id = act.id
+                        )
+      order by act.date_created  asc
+      ;
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   l_param_value                := acl_common.get_parameter_value( i_prr_name      => acl_constant.g_con_pve_dlt_aps_reg );
+   l_seconds_del_registered     := to_number( l_param_value );
+   l_interval_del_registered    := numtodsinterval( l_seconds_del_registered
+                                                  , acl_constant.g_con_cmn_numtodsintervalsecon
+                                                  );
+   
+   
+   l_param_value                := acl_common.get_parameter_value( i_prr_name      => acl_constant.g_con_pve_dlt_aps_unreg );
+   l_seconds_del_unregistered   := to_number( l_param_value );
+   l_interval_del_unregistered  := numtodsinterval( l_seconds_del_unregistered
+                                                  , acl_constant.g_con_cmn_numtodsintervalsecon
+                                                  );
+   
+   
+   
+   
+   
+   l_ref_timestamp              := acl_common.default_timestamp;
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   dbms_application_info.set_action( action_name  => 'Reconciling dead ACL processes' );
+   for rec_aet in c_aet_non_deregistered_job_aps
+   loop
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      savepoint lock_aet;
+      
+      acl_aet_tapi_pck.aet_lock_row( i_aet_id => rec_aet.id );
+      
+      l_rt_asm  := acl_application_control.get_status_value( i_aet_id_cust => rec_aet.id_cust );
+      
+      rollback to savepoint lock_aet;
+   end loop;
+
+   
+   
+   
+   
+   l_ref_timestamp_to_delete    := l_ref_timestamp - l_interval_del_registered;
+
+   
+   dbms_application_info.set_action( action_name  => 'Reconciling dead ACL processes' );
+   for rec_aps in c_non_job_aps
+   loop
+      if not nvl( acl_application_control.session_alive( i_unique_session_id      => rec_aps.unique_session_id )
+                , false
+                )
+      then
+         l_rt_aps           := rec_aps;
+         l_rt_aps.ind_dead  := acl_constant.g_con_yesno_yes;
+         
+         l_upd_count        := acl_aps_tapi_pck.aps_update_row( i_aps_id       => l_rt_aps.id
+                                                              , io_rt_aps      => l_rt_aps
+                                                              );
+      end if;
+   
+   end loop;
+
+   
+   l_tab_name                   := l_con_aps_table_name;
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   l_ref_timestamp_to_delete    := l_ref_timestamp - l_interval_del_registered;
+   
+   l_del_count                  := 0;
+
+   dbms_application_info.set_action( action_name  => 'Cleaning up ACL processes' );
+   for rec_aps in c_aps_to_delete( i_ref_timestamp_to_delete      => l_ref_timestamp_to_delete )
+   loop
+      
+      
+      l_rec_del_count  := acl_cleanup.delete_application_process( i_aps_id      => rec_aps.id );
+      l_del_count      := l_del_count + nvl( l_rec_del_count
+                                           , 0
+                                           );
+   end loop;
+
+   
+   acl_application_control.check_halt_signal;
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   l_ref_timestamp_to_delete    := l_ref_timestamp - l_interval_del_unregistered;
+
+   
+   for rec_aps in c_aps_to_delete_unreg( i_ref_timestamp_to_delete      => l_ref_timestamp_to_delete )
+   loop
+      
+      
+      l_rec_del_count  := acl_cleanup.delete_application_process( i_aps_id      => rec_aps.id );
+      l_del_count      := l_del_count + nvl( l_rec_del_count
+                                           , 0
+                                           );
+   end loop;
+
+   
+      
+   viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_aclcleanupreport
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.severity_notification
+                         , i_info_arguments         => to_char( l_del_count ) || '##' || l_tab_name
+                         );
+
+   
+   acl_application_control.check_halt_signal;
+
+   
+   
+   
+   
+   
+   
+   
+   
+   l_tab_name                   := l_con_act_table_name;
+   l_ref_timestamp_to_delete    := l_ref_timestamp - l_interval_del_registered;
+   
+   l_del_count                  := 0;
+
+   dbms_application_info.set_action( action_name  => 'Cleaning up ACL requests' );
+   for rec_act in c_act_to_delete( i_ref_timestamp_to_delete      => l_ref_timestamp_to_delete )
+   loop
+      
+      
+      l_rec_del_count  := acl_cleanup.delete_aet_control_request( i_act_id      => rec_act.id );
+      l_del_count      := l_del_count + nvl( l_rec_del_count
+                                           , 0
+                                           );
+   end loop;
+
+   
+      
+   viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_aclcleanupreport
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.severity_notification
+                         , i_info_arguments         => to_char( l_del_count ) || '##' || l_tab_name
+                         );
+   
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   
+   
+   
+   
+   
+   
+
+   
+   when viu_constant.exc_aclprocessstopped
+   then
+      
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_aclcleanupstopped
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.severity_notification
+                            );
+
+      
+      if l_tab_name is not null
+      then
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_aclcleanupreport
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.severity_notification
+                               , i_info_arguments         => to_char( l_del_count ) || '##' || l_tab_name
+                               );
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   
+   when others
+   then
+      
+      viu_info.handle_info( i_calling_procedure      => l_con_proc_name );
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'l_tab_name = "' || l_tab_name || '" Error message = ' || sqlerrm
+                             );
+
+end cleanup;
+
+function delete_application_process
+ (i_aps_id in acl_application_processes.id%type
+ )
+ return number
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Delete_Application_Process';
+l_con_table_name constant acl_constant.st_table_name := 'ACL_APPLICATION_PROCESSES';
+
+
+l_rec_count pls_integer := 0;
+
+l_found boolean;
+
+l_rt_aps acl_application_processes%rowtype;
+pragma autonomous_transaction;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module          => l_con_proc_name
+                          , i_debug_info      => 'i_aps_id = "' || to_char( i_aps_id ) || '"'
+                          );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+         
+   begin
+      acl_aps_tapi_pck.aps_lock_row_nowait( i_aps_id      => i_aps_id );
+      
+      
+      l_found  := acl_aps_tapi_pck.aps_delete_row( i_aps_id      => i_aps_id );
+
+      
+      if l_found
+      then
+         l_rec_count  := l_rec_count + 1;
+      end if;
+   
+   exception
+      when viu_constant.exc_lockfailed
+      then
+         
+         
+         
+         rollback;
+         viu_info.handle_info( i_ifo_nr                 => viu_constant.c_ifo_acllockfailoncleanup
+                             , i_calling_procedure      => l_con_proc_name
+                             , i_severity               => viu_info.severity_warning
+                             , i_info_arguments         => l_con_table_name || '##' || to_char( i_aps_id )
+                             , i_additional_data        => 'i_aps_id = "' || to_char( i_aps_id ) || '"'
+                             );
+   end;
+
+   
+   
+      
+   commit;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+   return l_rec_count;
+
+exception
+   
+   when others
+   then
+      rollback;   
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end delete_application_process;
+
+function delete_aet_control_request
+ (i_act_id in acl_aet_control_requests.id%type
+ )
+ return number
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Delete_AET_Control_Request';
+l_con_table_name constant acl_constant.st_table_name := 'ACL_AET_CONTROL_REQUESTS';
+
+
+l_rec_count pls_integer := 0;
+
+l_found boolean;
+
+l_rt_act acl_aet_control_requests%rowtype;
+pragma autonomous_transaction;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module          => l_con_proc_name
+                          , i_debug_info      => 'i_act_id = "' || to_char( i_act_id ) || '"'
+                          );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   begin
+      acl_act_tapi_pck.act_lock_row_nowait( i_act_id      => i_act_id );
+      
+      
+      l_found  := acl_act_tapi_pck.act_delete_row( i_act_id      => i_act_id );
+
+      
+      if l_found
+      then
+         l_rec_count  := l_rec_count + 1;
+      end if;
+   
+   exception
+      when viu_constant.exc_lockfailed
+      then
+         rollback;
+         
+         
+         
+         viu_info.handle_info( i_ifo_nr                 => viu_constant.c_ifo_acllockfailoncleanup
+                             , i_calling_procedure      => l_con_proc_name
+                             , i_severity               => viu_info.severity_warning
+                             , i_info_arguments         => l_con_table_name || '##' || to_char( i_act_id )
+                             , i_additional_data        => 'i_act_id = "' || to_char( i_act_id ) || '"'
+                             );
+   end;
+
+   
+   
+      
+   commit;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+   return l_rec_count;
+
+exception
+   
+   when others
+   then
+      rollback;   
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+end delete_aet_control_request;
+
+end acl_cleanup;
+/

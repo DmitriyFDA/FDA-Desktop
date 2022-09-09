@@ -1,0 +1,19 @@
+procedure drilldownxmlmessage(p_id in varchar2 default ' ') is
+v_msg varchar2(32767);
+v_eventid number;
+v_xmltype xmltype;
+v_clob clob;
+v_file varchar2(200);
+begin
+  v_eventid := to_number(p_id);
+  select message into v_xmltype from xml_message_store where idevent = v_eventid;
+  v_clob := v_xmltype.extract('/*').getclobval;
+  v_file := 'Message_'||to_char(v_eventid)||'.xml';
+  owa_util.mime_header( 'application/xml', false );
+  htp.print('Content-Disposition: attachment;filename="'||v_file||'"');
+  owa_util.http_header_close;
+  htpprintclob(v_clob);
+exception when others then
+  v_msg := v_msg||'<br>'||sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;

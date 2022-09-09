@@ -1,0 +1,1878 @@
+create or replace PACKAGE odb_metrics_calculation
+IS
+   PROCEDURE calc_process_plan_metrics( i_parallelism IN INTEGER := 1
+                                      , i_bucket      IN INTEGER := 0
+                                      );
+   PROCEDURE calc_process_definition_metric;
+   PROCEDURE calc_handling_area_metrics;
+   PROCEDURE calc_logistic_step_metrics;
+   PROCEDURE calc_link_metrics;
+   PROCEDURE calc_station_metrics;
+   PROCEDURE calc_status_segment_metrics;
+
+   PROCEDURE calc_load_bags_to_be_rel_lsp( i_lsp_id IN odb_metric_subject_instances.lsp_id%TYPE
+                                         , i_metric_type IN odb_metrics.metric_type%TYPE
+                                         , i_calculated_value IN odb_metric_instances.value%TYPE
+                                         );
+
+END odb_metrics_calculation;
+/
+
+
+package body odb_metrics_calculation
+is
+   
+
+
+
+
+
+   type t_min  is record ( id             odb_metric_instances.id%type
+                         , previous_value odb_metric_instances.previous_value%type
+                         , value          odb_metric_instances.value%type
+                         );
+   type t_mins is table of t_min;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_stn_availability
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( severity_level, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_station_metrics_v smc on smc.stn_id = msi.stn_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATION'
+               and    metric_type = 'AVAILABILITY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_stn_availability;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_sst_availability
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( severity_level, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_status_segment_metrics_v ssc on ssc.sst_id = msi.sst_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATUS_SEGMENT'
+               and    metric_type = 'SEGMENT_STATUS'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_sst_availability;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_sst_entry
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( fet_entry_per_minute, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_status_segment_metrics_v ssc on ssc.sst_id = msi.sst_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATUS_SEGMENT'
+               and    metric_type = 'ENTRY_FLOW'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_sst_entry;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_sst_exit
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( fet_exit_per_minute, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_status_segment_metrics_v ssc on ssc.sst_id = msi.sst_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATUS_SEGMENT'
+               and    metric_type = 'EXIT_FLOW'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_sst_exit;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_entry
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( fet_entry_per_minute, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_logistic_step_metrics_v lsc on lsc.lsp_id = msi.lsp_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'ENTRY_FLOW'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_entry;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_exit
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( fet_exit_per_minute, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_logistic_step_metrics_v lsc on lsc.lsp_id = msi.lsp_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'EXIT_FLOW'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_exit;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_haa_entry
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( fet_entry_per_minute, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_handling_area_metrics_v hac on hac.haa_id = msi.haa_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'HANDLING_AREA'
+               and    metric_type = 'ENTRY_FLOW'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_haa_entry;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure calc_haa_exit
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( fet_exit_per_minute, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_handling_area_metrics_v hac on hac.haa_id = msi.haa_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'HANDLING_AREA'
+               and    metric_type = 'EXIT_FLOW'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_haa_exit;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_haa_bags_present
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( bags_present, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_handling_area_metrics_v hac on hac.haa_id = msi.haa_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'HANDLING_AREA'
+               and    metric_type = 'BAGS_PRESENT'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_haa_bags_present;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_bags_present
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( bags_present, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_logistic_step_metrics_v lsc on lsc.lsp_id = msi.lsp_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'BAGS_PRESENT'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_bags_present;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_sst_bags_present
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( bags_present, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_status_segment_metrics_v ssc on ssc.sst_id = msi.sst_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATUS_SEGMENT'
+               and    metric_type = 'BAGS_PRESENT'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_sst_bags_present;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_sst_holding_capacity
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( holding_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_status_segment_metrics_v ssc on ssc.sst_id = msi.sst_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATUS_SEGMENT'
+               and    metric_type = 'HOLDING_CAPACITY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_sst_holding_capacity;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_holding_capacity
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( holding_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_logistic_step_metrics_v lsc on lsc.lsp_id = msi.lsp_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'HOLDING_CAPACITY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_holding_capacity;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_haa_holding_capacity
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( holding_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_handling_area_metrics_v hac on hac.haa_id = msi.haa_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'HANDLING_AREA'
+               and    metric_type = 'HOLDING_CAPACITY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_haa_holding_capacity;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_process_capacity
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( processing_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_logistic_step_metrics_v lsc on lsc.lsp_id = msi.lsp_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'PROCESSING_CAPACITY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_process_capacity;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_stn_process_capacity
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( processing_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_station_metrics_v smc on smc.stn_id = msi.stn_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATION'
+               and    metric_type = 'PROCESSING_CAPACITY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_stn_process_capacity;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lnk_process_capacity
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( processing_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_link_metrics_v lmc on lmc.lnk_id = msi.lnk_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LINK'
+               and    metric_type = 'PROCESSING_CAPACITY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lnk_process_capacity;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lnk_load_bags_on_way_tf
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_load_bags_on_way_lnks odb_load_bags_on_way_lnk_coll;
+      l_mins t_mins;
+   begin
+      select odb_load_bags_on_way_ot( lnk_id
+                                    , load_bags_on_way_timeframe_1
+                                    , load_bags_on_way_timeframe_2
+                                    , load_bags_on_way_timeframe_3
+                                    , load_bags_on_way
+                                    )
+      bulk collect into l_load_bags_on_way_lnks
+      from   odb_load_bags_on_way_lnk_v bos
+      ;
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      nvl( ( select case mtc.metric_type
+                                       when 'LOAD_BAGS_ON_WAY_TIMEFRAME_1'
+                                       then bol.load_bags_on_way_timeframe_1
+                                       when 'LOAD_BAGS_ON_WAY_TIMEFRAME_2'
+                                       then bol.load_bags_on_way_timeframe_2
+                                       when 'LOAD_BAGS_ON_WAY_TIMEFRAME_3'
+                                       then bol.load_bags_on_way_timeframe_3
+                                       else null
+                                    end
+                             from   odb_metric_subject_instances msi
+                                    inner join table(l_load_bags_on_way_lnks) bol on bol.id = msi.lnk_id
+                             where  msi.min_id = min.id
+                           )
+                         , 0
+                         ) as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LINK'
+               and    metric_type like 'LOAD_BAGS_ON_WAY_TIMEFRAME_%'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lnk_load_bags_on_way_tf;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_stn_load_bags_on_way_tf
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_load_bags_on_way_stns odb_load_bags_on_way_stn_coll;
+      l_mins t_mins;
+   begin
+      select odb_load_bags_on_way_ot( stn_id
+                                    , load_bags_on_way_timeframe_1
+                                    , load_bags_on_way_timeframe_2
+                                    , load_bags_on_way_timeframe_3
+                                    , load_bags_on_way
+                                    )
+      bulk collect into l_load_bags_on_way_stns
+      from   odb_load_bags_on_way_stn_v bos
+      ;
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      nvl( ( select case mtc.metric_type
+                                       when 'LOAD_BAGS_ON_WAY_TIMEFRAME_1'
+                                       then bos.load_bags_on_way_timeframe_1
+                                       when 'LOAD_BAGS_ON_WAY_TIMEFRAME_2'
+                                       then bos.load_bags_on_way_timeframe_2
+                                       when 'LOAD_BAGS_ON_WAY_TIMEFRAME_3'
+                                       then bos.load_bags_on_way_timeframe_3
+                                       else null
+                                    end
+                             from   odb_metric_subject_instances msi
+                                    inner join table(l_load_bags_on_way_stns) bos on bos.id = msi.stn_id
+                             where  msi.min_id = min.id
+                           )
+                         , 0
+                         ) as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'STATION'
+               and    metric_type like 'LOAD_BAGS_ON_WAY_TIMEFRAME_%'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_stn_load_bags_on_way_tf;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lnk_lsp_haa_status
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select case
+                                  when count( case when status in ('OPERATIONAL', 'OVERRIDE') then 1 end ) = count(0) then 0
+                                  when count( case when status in ('OPERATIONAL', 'OVERRIDE') then 1 end ) > 0        then 1
+                                  else 2
+                               end
+                        from   odb_haa_link_status_v hls
+                               inner join odb_metric_subject_instances msi_1 on msi_1.lsp_id = hls.lsp_id
+                               inner join odb_metric_subject_instances msi_2 on msi_2.haa_id = hls.downstream_haa_id
+                               inner join odb_metric_subjects msu_1 on msi_1.msu_id = msu_1.id
+                               inner join odb_metric_subjects msu_2 on msi_2.msu_id = msu_2.id
+                        where  msi_1.min_id = min.id and msu_1.use = 'START'
+                        and    msi_2.min_id = min.id and msu_2.use = 'DOWNSTREAM'
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEPxHANDLING_AREA'
+               and    metric_type = 'INTER_HA_STATUS'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lnk_lsp_haa_status;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lnk_haa_haa_status
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select case
+                                  when count( case when status in ('OPERATIONAL', 'OVERRIDE') then 1 end ) = count(0) then 0
+                                  when count( case when status in ('OPERATIONAL', 'OVERRIDE') then 1 end ) > 0        then 1
+                                  else 2
+                               end
+                        from   odb_haa_link_status_v hls
+                               inner join odb_metric_subject_instances msi_1 on msi_1.haa_id = hls.lnk_haa_id_start
+                               inner join odb_metric_subject_instances msi_2 on msi_2.haa_id = hls.downstream_haa_id
+                               inner join odb_metric_subjects msu_1 on msi_1.msu_id = msu_1.id
+                               inner join odb_metric_subjects msu_2 on msi_2.msu_id = msu_2.id
+                        where  msi_1.min_id = min.id and msu_1.use = 'START'
+                        and    msi_2.min_id = min.id and msu_2.use = 'DOWNSTREAM'
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'HANDLING_AREAxHANDLING_AREA'
+               and    metric_type = 'INTER_HA_STATUS'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lnk_haa_haa_status;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_pdn_process_bags_on_way
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select count(*)
+                        from   odb_physical_bags pbg
+                               inner join odb_phases phe on pbg.phe_id = phe.id
+                               inner join odb_process_plans ppl on ppl.id = phe.ppl_id
+                               inner join odb_process_plan_definitions ppn on ppn.id = ppl.ppn_id
+                               inner join odb_process_definitions pdn on pdn.ppn_id = ppn.id
+                               inner join odb_phase_definitions phn on phn.pdn_id = pdn.id and phn.id = phe.phn_id
+                               inner join odb_metric_subject_instances msi on msi.pdn_id = pdn.id
+                               left outer join odb_packages pae on pbg.pae_id = pae.id
+                               left outer join jeecmn_parameters pmr_bow_sustain on pmr_bow_sustain.name = 'PROCESS_BAGS_ON_WAY_SUSTAIN_PERIOD_' || pdn.name
+                               inner join odb_systimestamp_v on 1 = 1
+                        where  ((pbg.routing_progress in ( 'EN_ROUTE', 'SORTED' , 'MISSORTED'))
+                                or
+                                (pbg.routing_progress in ( 'DELIVERED', 'MISDELIVERED') and
+		                 (
+                                    pae.date_logistics_modified > systimestamp_utc - numtodsinterval(pmr_bow_sustain.value, 'SECOND')
+                                    or pae.date_task_execution > systimestamp_utc - numtodsinterval(pmr_bow_sustain.value, 'SECOND')
+                                 ) and
+                                 pmr_bow_sustain.value is not null
+                                ))
+                        and    ppn.ind_system_process = 1
+                        and    msi.min_id = min.id
+                     )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'PROCESS_DEFINITION'
+               and    metric_type = 'PROCESS_BAGS_ON_WAY'
+   
+
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_pdn_process_bags_on_way;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ppl_bags_missegregated( i_parallelism in integer
+                                        , i_bucket      in integer
+                                        )
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( flight_bags_missegregated, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_process_plan_metrics_pv ppm on ppm.ppl_id = msi.ppl_id
+                        where  msi.min_id = min.id
+                        and    mod(msi.ppl_id, i_parallelism) = i_bucket
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'PROCESS_PLAN'
+               and    metric_type = 'FLIGHT_BAGS_MISSEGREGATED'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id
+         and    l_mins(i).value is not null;
+
+   end calc_ppl_bags_missegregated;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ppl_bags_to_be_unloaded( i_parallelism in integer
+                                         , i_bucket      in integer
+                                         )
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( flight_bags_to_be_unloaded, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_process_plan_metrics_pv ppm on ppm.ppl_id = msi.ppl_id
+                        where  msi.min_id = min.id
+                        and    mod(msi.ppl_id, i_parallelism) = i_bucket
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'PROCESS_PLAN'
+               and    metric_type = 'FLIGHT_BAGS_TO_BE_UNLOADED'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id
+         and    l_mins(i).value is not null;
+
+   end calc_ppl_bags_to_be_unloaded;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ppl_bags_crew_missing( i_parallelism in integer
+                                       , i_bucket      in integer
+                                       )
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( flight_bags_crew_missing, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_process_plan_metrics_pv ppm on ppm.ppl_id = msi.ppl_id
+                        where  msi.min_id = min.id
+                        and    mod(msi.ppl_id, i_parallelism) = i_bucket
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'PROCESS_PLAN'
+               and    metric_type = 'FLIGHT_BAGS_CREW_MISSING'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id
+         and    l_mins(i).value is not null;
+
+   end calc_ppl_bags_crew_missing;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ppl_bags_crew_expedite( i_parallelism in integer
+                                        , i_bucket      in integer
+                                        )
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( flight_bags_crew_expedite, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_process_plan_metrics_pv ppm on ppm.ppl_id = msi.ppl_id
+                        where  msi.min_id = min.id
+                        and    mod(msi.ppl_id, i_parallelism) = i_bucket
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'PROCESS_PLAN'
+               and    metric_type = 'FLIGHT_BAGS_CREW_EXPEDITE'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id
+         and    l_mins(i).value is not null;
+
+   end calc_ppl_bags_crew_expedite;
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ppl_bags_flight_coded( i_parallelism in integer
+                                       , i_bucket      in integer
+                                       )
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( flight_bags_flight_coded, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_process_plan_metrics_pv ppm on ppm.ppl_id = msi.ppl_id
+                        where  msi.min_id = min.id
+                        and    mod(msi.ppl_id, i_parallelism) = i_bucket
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'PROCESS_PLAN'
+               and    metric_type = 'FLIGHT_BAGS_FLIGHT_CODED'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id
+         and    l_mins(i).value is not null;
+
+   end calc_ppl_bags_flight_coded;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ppl_flight_temp_ratio( i_parallelism in integer
+                                       , i_bucket      in integer
+                                       )
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_calc_time  odb_process_plans.date_scheduled%type;
+      l_hot_time  odb_process_plans.date_scheduled%type;
+      l_cold_time  odb_process_plans.date_scheduled%type;
+      l_mins t_mins;
+   begin
+
+      select l_now + numtodsinterval(value, 'MINUTE')
+      into   l_calc_time
+      from   jeecmn_parameters where name = 'HOT_FLIGHT_CALCULATION_TIME_FRAME';
+      
+      select l_now + numtodsinterval(value, 'MINUTE')
+      into   l_hot_time
+      from   jeecmn_parameters where name = 'HOT_FLIGHT_HOT_TIME_FRAME';
+      
+      select l_now + numtodsinterval(value, 'MINUTE')
+      into   l_cold_time
+      from   jeecmn_parameters where name = 'HOT_FLIGHT_COLD_TIME_FRAME';
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( case
+                                       when    ppl.date_offblock < l_now
+                                            or nvl( ppl.date_estimated, ppl.date_scheduled ) > l_calc_time
+                                            or (    not exists( select 1                   
+                                                                from   odb_phases phe
+                                                                       inner join odb_phase_definitions phn on phn.id = phe.phn_id
+                                                                       inner join odb_process_definitions pdn on pdn.id = phn.pdn_id
+                                                                where  phe.ppl_id = ppl.id
+                                                                and    phe.expiration >= l_cold_time
+                                                                and    phn.name in ('EXECUTE', 'WRAP_UP')
+                                                                and    pdn.assigned_system in ('BAGGAGE_SYSTEM', 'BAGGAGE_AND_ULD_SYSTEM')
+                                                              )
+                                                and exists( select 1
+                                                            from   odb_phases phe
+                                                                   inner join odb_phase_definitions phn on phn.id = phe.phn_id
+                                                                   inner join odb_process_definitions pdn on pdn.id = phn.pdn_id
+                                                            where  phe.ppl_id = ppl.id
+                                                            and    phn.name in ('EXECUTE', 'WRAP_UP')
+                                                            and    pdn.assigned_system in ('BAGGAGE_SYSTEM', 'BAGGAGE_AND_ULD_SYSTEM')
+                                                          )
+                                               )
+                                       then
+                                          0
+                                       else
+                                          ( select case
+                                                      when    ppm.flight_bags_to_be_unloaded > 0
+                                                           or ppm.flight_bags_in_progress > 0
+                                                           or ppm.flight_bags_stored > 0
+                                                           or ppm.flight_bags_seen_ha > 0
+                                                           or ppm.flight_bags_seen_other_ha > 0
+                                                           or ppm.flight_bags_missegregated > 0
+                                                      then
+                                                         ( select case
+                                                                     when ppc.remaining_capacity = 0
+                                                                          or (nvl(ppl.date_estimated, ppl.date_scheduled) < l_hot_time
+                                                                              and nvl(ppl.date_estimated, ppl.date_scheduled) > l_now)
+                                                                     then
+                                                                        99999
+                                                                     else
+                                                                        (  ppm.flight_bags_to_be_unloaded
+                                                                         + ppm.flight_bags_in_progress
+                                                                         + ppm.flight_bags_stored
+                                                                         + ppm.flight_bags_seen_ha
+                                                                         + ppm.flight_bags_seen_other_ha
+                                                                         + ppm.flight_bags_missegregated
+                                                                        ) / ppc.remaining_capacity
+                                                                  end
+                                                           from   odb_process_plan_capacity_v ppc
+                                                           where  ppc.ppl_id = ppl.id
+                                                         )
+                                                      else
+                                                         0
+                                                   end
+                                            from   odb_process_plan_metrics_pv ppm
+                                            where  ppm.ppl_id = msi.ppl_id
+                                          )
+                                    end
+                                    ,0)
+                             from   odb_metric_subject_instances msi
+                                    inner join odb_process_plans ppl on ppl.id = msi.ppl_id
+                             where  msi.min_id = min.id
+                             and    mod(msi.ppl_id, i_parallelism) = i_bucket
+                        )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'PROCESS_PLAN'
+               and    metric_type = 'FLIGHT_TEMPERATURE_RATIO'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id
+         and    l_mins(i).value is not null;
+
+   end calc_ppl_flight_temp_ratio;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_load_bags_to_be_rel_lsp( i_lsp_id in odb_metric_subject_instances.lsp_id%type
+                                         , i_metric_type in odb_metrics.metric_type%type
+                                         , i_calculated_value in odb_metric_instances.value%type
+                                         )
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+   begin
+      update odb_metric_instances min
+      set    previous_value = value
+      ,      date_modified = l_now
+      ,      value = nvl( i_calculated_value, 0)
+      where  min.mtc_id in ( select id
+                             from   odb_metrics
+                             where  domain_type = 'LOGISTIC_STEP'
+                             and    metric_type = i_metric_type
+                           )
+      and    min.id in ( select min_id
+                         from   odb_metric_subject_instances msi
+                         where  msi.lsp_id = i_lsp_id
+                       )
+      and    lnnvl( value = i_calculated_value);
+
+   end calc_load_bags_to_be_rel_lsp;
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_max_exit_delay
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      nvl( ( select max_exit_delay_seconds
+                             from   odb_metric_subject_instances msi
+                                    inner join odb_lsp_max_exit_delay_metr_v med
+                                       on med.lsp_id = msi.lsp_id
+                             where  msi.min_id = min.id
+                           )
+                         , 0
+                         ) as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'MAX_EXIT_DELAY'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_max_exit_delay;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_min_rem_build_time
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      nvl( ( select min_rem_build_time_seconds
+                             from   odb_metric_subject_instances msi
+                                    inner join odb_lsp_min_rem_bld_tim_metr_v mrbt
+                                       on mrbt.lsp_id = msi.lsp_id
+                             where  msi.min_id = min.id
+                           )
+                         , 2147483647 
+                         ) as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'MIN_REMAINING_BUILD_TIME'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_min_rem_build_time;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_lsp_bags_missing
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select count(*)
+                        from   odb_metric_subject_instances msi
+                               inner join odb_bags_missing_v bmi on bmi.lsp_id = msi.lsp_id
+                        where  msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metrics mtc
+                      inner join odb_metric_instances min on min.mtc_id = mtc.id
+               where  domain_type = 'LOGISTIC_STEP'
+               and    metric_type = 'BAGS_MISSING'
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+         where  id = l_mins(i).id;
+
+   end calc_lsp_bags_missing;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_process_plan_metrics( i_parallelism in integer
+                                      , i_bucket      in integer
+                                      )
+   as
+      l_outdated odb_process_plans.expiration%type;
+      l_bucket   integer := mod(i_bucket, i_parallelism); 
+      l_seq      integer;
+      l_mod      integer;
+   begin
+
+      select to_number( pmr.value )
+      into   l_mod
+      from   jeecmn_parameters pmr
+      where  name = 'EXPIRED_PLAN_METRIC_RECALCULATION_STEPS';
+
+      select mod( ceil( odb_calc_seq1.nextval / i_parallelism )
+                , l_mod
+                )
+      ,      sys_extract_utc( odb_common.get_my_systimestamp )
+             - numtodsinterval( pmr.value, 'MINUTE' )
+      into   l_seq
+      ,      l_outdated
+      from   jeecmn_parameters pmr
+      where  name = 'EXPIRED_PLAN_METRIC_RECALCULATION_TIME';
+      
+      delete from odb_process_plan_metrics_pv ppv
+      where  mod(ppl_id, i_parallelism) = i_bucket
+      and    not exists ( select *
+                          from   odb_process_plans ppl
+                          where  ppl.id = ppv.ppl_id
+                        );
+      merge into odb_process_plan_metrics_pv ppv
+      using ( select /*+ OPT_PARAM('_hash_join_enabled','FALSE') */ *
+              from   odb_process_plan_metrics_v
+              where  mod( ppl_id, i_parallelism) = i_bucket
+              and    (   ppl_expiration > l_outdated
+                      or mod( ppl_id, l_mod ) = l_seq
+                     )
+            ) ppm on (ppm.ppl_id = ppv.ppl_id)
+      when matched
+      then
+         update set flight_bags_missegregated = ppm.flight_bags_missegregated
+                ,   flight_bags_to_be_unloaded = ppm.flight_bags_to_be_unloaded
+                ,   flight_bags_loaded = ppm.flight_bags_loaded
+                ,   flight_bags_stored = ppm.flight_bags_stored
+                ,   flight_bags_delivered = ppm.flight_bags_delivered
+                ,   flight_bags_in_progress = ppm.flight_bags_in_progress
+                ,   flight_bags_seen_ha = ppm.flight_bags_seen_ha
+                ,   flight_bags_seen_other_ha = ppm.flight_bags_seen_other_ha
+                ,   flight_bags_unseen = ppm.flight_bags_unseen
+                ,   flight_bags_finalised = ppm.flight_bags_finalised
+                ,   flight_bags_total = ppm.flight_bags_total
+                ,   flight_bags_flight_coded = ppm.flight_bags_flight_coded
+                ,   flight_bags_crew_missing = ppm.flight_bags_crew_missing
+                ,   flight_bags_crew_expedite = ppm.flight_bags_crew_expedite
+                ,   flight_bags_crew = ppm.flight_bags_crew
+         where  ppv.flight_bags_missegregated <> ppm.flight_bags_missegregated
+         or     ppv.flight_bags_to_be_unloaded <> ppm.flight_bags_to_be_unloaded
+         or     ppv.flight_bags_loaded <> ppm.flight_bags_loaded
+         or     ppv.flight_bags_stored <> ppm.flight_bags_stored
+         or     ppv.flight_bags_delivered <> ppm.flight_bags_delivered
+         or     ppv.flight_bags_in_progress <> ppm.flight_bags_in_progress
+         or     ppv.flight_bags_seen_ha <> ppm.flight_bags_seen_ha
+         or     ppv.flight_bags_seen_other_ha <> ppm.flight_bags_seen_other_ha
+         or     ppv.flight_bags_unseen <> ppm.flight_bags_unseen
+         or     ppv.flight_bags_finalised <> ppm.flight_bags_finalised
+         or     ppv.flight_bags_total <> ppm.flight_bags_total
+         or     ppv.flight_bags_flight_coded <> ppm.flight_bags_flight_coded
+         or     ppv.flight_bags_crew_missing <> ppm.flight_bags_crew_missing
+         or     ppv.flight_bags_crew_expedite <> ppm.flight_bags_crew_expedite
+         or     ppv.flight_bags_crew <> ppm.flight_bags_crew
+      when not matched
+      then
+         insert ( ppl_id
+                , flight_bags_missegregated
+                , flight_bags_to_be_unloaded
+                , flight_bags_loaded
+                , flight_bags_stored
+                , flight_bags_delivered
+                , flight_bags_in_progress
+                , flight_bags_seen_ha
+                , flight_bags_seen_other_ha
+                , flight_bags_unseen
+                , flight_bags_finalised
+                , flight_bags_flight_coded
+                , flight_bags_crew_expedite
+                , flight_bags_crew_missing
+                , flight_bags_crew
+                , flight_bags_total
+                )
+         values ( ppm.ppl_id
+                , ppm.flight_bags_missegregated
+                , ppm.flight_bags_to_be_unloaded
+                , ppm.flight_bags_loaded
+                , ppm.flight_bags_stored
+                , ppm.flight_bags_delivered
+                , ppm.flight_bags_in_progress
+                , ppm.flight_bags_seen_ha
+                , ppm.flight_bags_seen_other_ha
+                , ppm.flight_bags_unseen
+                , ppm.flight_bags_finalised
+                , ppm.flight_bags_flight_coded
+                , ppm.flight_bags_crew_expedite
+                , ppm.flight_bags_crew_missing
+                , ppm.flight_bags_crew
+                , ppm.flight_bags_total
+                );
+
+      calc_ppl_bags_missegregated( i_parallelism, i_bucket);
+      calc_ppl_bags_to_be_unloaded( i_parallelism, i_bucket);
+      calc_ppl_flight_temp_ratio( i_parallelism, i_bucket);
+      calc_ppl_bags_flight_coded( i_parallelism, i_bucket);
+      calc_ppl_bags_crew_missing( i_parallelism, i_bucket);
+      calc_ppl_bags_crew_expedite( i_parallelism, i_bucket);
+   end;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_process_definition_metric
+   as
+   begin
+      calc_pdn_process_bags_on_way;
+   end;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_handling_area_metrics
+   as
+   begin
+      calc_haa_entry;
+      calc_haa_exit;
+      calc_haa_bags_present;
+      calc_haa_holding_capacity;
+   end;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_logistic_step_metrics
+   as
+      type t_lpfs is table of odb_bags_forecast_lsp_v%rowtype;
+      l_lpfs t_lpfs;
+   begin
+      calc_lsp_entry;
+      calc_lsp_exit;
+      calc_lsp_bags_present;
+      calc_lsp_holding_capacity;
+      calc_lsp_process_capacity;
+      calc_lsp_max_exit_delay;
+      calc_lsp_min_rem_build_time;
+      calc_lsp_bags_missing;
+
+      
+      delete from odb_bags_present_lsp_pv;
+
+      select *
+      bulk collect into l_lpfs
+      from  odb_bags_forecast_lsp_v;
+
+      forall i in 1..l_lpfs.count
+         insert into odb_bags_present_lsp_pv
+         ( lsp_id
+         , ppn_id
+         , pdn_id
+         , ind_to_come
+         , ind_to_stay
+         , ind_to_go
+         )
+         values
+         ( l_lpfs(i).lsp_id
+         , l_lpfs(i).ppn_id
+         , l_lpfs(i).pdn_id
+         , l_lpfs(i).to_come
+         , l_lpfs(i).to_stay
+         , l_lpfs(i).to_go
+         );
+   end;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_link_metrics
+   as
+   begin
+      calc_lnk_load_bags_on_way_tf;
+      calc_lnk_process_capacity;
+      calc_lnk_lsp_haa_status;
+      calc_lnk_haa_haa_status;
+   end;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_station_metrics
+   as
+   begin
+      calc_stn_availability;
+      calc_stn_load_bags_on_way_tf;
+      calc_stn_process_capacity;
+   end;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_status_segment_metrics
+   as
+   begin
+      calc_sst_entry;
+      calc_sst_exit;
+      calc_sst_bags_present;
+      calc_sst_holding_capacity;
+      calc_sst_availability;
+   end;
+
+end odb_metrics_calculation;
+/

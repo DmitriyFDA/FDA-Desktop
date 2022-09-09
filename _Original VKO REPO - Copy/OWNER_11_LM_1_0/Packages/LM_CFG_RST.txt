@@ -1,0 +1,357 @@
+create or replace PACKAGE lm_cfg_rst
+IS
+g_con_package        CONSTANT VARCHAR2( 30 ) := 'LM_CFG_RST';
+
+PROCEDURE load_route_segment_data;
+
+END lm_cfg_rst;
+/
+
+
+
+
+package body lm_cfg_rst is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure process_capacity_info ( i_rst_id           in lm_route_segments.id%type
+                                , i_capacity         in lm_system_components.default_capacity%type
+                                , i_nt_isc_reference in nt_vc2_coll
+                                )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.process_capacity_info';
+
+
+   l_rt_sct lm_system_components%rowtype;
+   l_rows   number;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   if i_capacity is not null
+   then
+
+      
+      if i_nt_isc_reference.count > 0
+      then
+
+         
+         for i in i_nt_isc_reference.first..i_nt_isc_reference.last
+         loop
+
+            
+            
+            if lm_sct_tapi_pck.sct_select_row_uk2( i_sct_id_cust_full => i_nt_isc_reference(i)
+                                                 , o_rt_sct           => l_rt_sct
+                                                 )
+            then
+               if    l_rt_sct.default_capacity is null
+                   or i_capacity < l_rt_sct.default_capacity
+               then
+                  
+                  
+                  l_rt_sct.default_capacity := i_capacity;
+                  l_rows := lm_sct_tapi_pck.sct_update_row( i_sct_id  => l_rt_sct.id
+                                                          , io_rt_sct => l_rt_sct
+                                                          );
+               end if;
+            end if;
+         end loop;
+      end if;
+   end if;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end process_capacity_info;
+
+
+
+
+
+
+
+
+procedure process_bidirectional ( i_bidirectional_direction in  varchar2
+                                , i_bidirectional_isc_id    in  lm_system_components.id_cust_full%type
+                                , i_rst_id                  in  lm_route_segments.id%type
+                                , o_rt_sct                  out lm_system_components%rowtype
+                                , o_rt_mom                  out lm_mode_of_operation_dom%rowtype
+                                )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.process_bidirectional';
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   if    i_bidirectional_direction is not null
+   	 and i_bidirectional_isc_id    is not null
+   then
+
+      
+      if      lm_sct_tapi_pck.sct_select_row_uk2( i_sct_id_cust_full => i_bidirectional_isc_id
+                                                , o_rt_sct           => o_rt_sct
+                                                )
+          and o_rt_sct.sct_type in ( lm_constant.g_con_sct_type_sen
+                                   , lm_constant.g_con_sct_type_zne
+                                   )
+      then
+      	
+         
+         if not lm_mom_tapi_pck.mom_select_row_uk1( i_mom_mom_mode => i_bidirectional_direction
+                                                  , o_rt_mom       => o_rt_mom
+                                                  )
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   =>    'For route segment '                              || i_rst_id
+                                        || ', MODE OF OPERATION for bidirectional_direction '|| i_bidirectional_direction ||' does not exist'
+               );
+         end if;
+
+      else 
+
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   =>    'For route segment '                           || i_rst_id
+                                     || ', no section or zone SYSTEM COMPONENT found: '|| i_bidirectional_isc_id
+            );
+      end if; 
+   end if; 
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end process_bidirectional;
+
+
+
+
+
+
+
+procedure load_route_segment_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_route_segment_data';
+
+   l_rt_nde_start lm_nodes%rowtype;
+   l_rt_nde_end   lm_nodes%rowtype;
+   l_rt_lst       lm_logical_segments%rowtype;
+   l_rt_rst       lm_route_segments%rowtype;
+   l_rt_sct       lm_system_components%rowtype;
+   l_rt_mom       lm_mode_of_operation_dom%rowtype;
+   l_start_time   timestamp := lm_common.default_timestamp;
+   l_#rst         integer;
+   
+   
+   
+   
+   
+   
+   
+   cursor c_route_segments
+   is
+       select rst.id
+       ,      rst.node_id_start
+       ,      rst.node_id_end
+       ,      rst.status_segment_id
+       ,      rst.direction_from
+       ,      rst.direction_to
+       ,      rst.ind_report_tracking_at_start
+       ,      rst.ind_report_tracking_at_end
+       ,      rst.ind_transport_default
+       ,      rst.ind_detect_missed_tr_events
+       ,      rst.region_id
+       ,      rst.bidirectional_direction
+       ,      rst.bidirectional_isc_id
+       ,      rst.recirculation_count
+       ,      rst.recirculation_time
+       ,      (
+              select round(max(travel_time))
+              from   xmltable( '/travel_time_info'
+                               passing rst.travel_time_info_xml
+                               columns travel_time number path '@travel_time'
+                             )
+              ) travel_time
+       ,      (
+              select capacity
+              from   xmltable( '/capacity_info'
+                               passing rst.capacity_info_xml
+                               columns capacity_id   varchar2(100) path '@id'       
+                               ,       capacity      number        path '@capacity'
+                             )
+              where capacity_id = 'system'
+              ) capacity
+       ,      cast( multiset( select isc_reference_id
+                              from   xmltable( '/isc_reference'
+                                               passing rst.isc_reference_xml
+                                               columns isc_reference_id varchar2(30) path '@id' 
+                                             )
+                            ) as nt_vc2_coll
+                  ) nt_isc_reference
+       from   cmn_v_sysconfig_data pd
+       ,      xmltable( '/project_definition/route_segments/route_segment[@ind_physical="TRUE"]'
+                        passing pd.data
+                        columns id                           number        path '@id'
+                        ,       node_id_start                number        path '@node_id_start'
+                        ,       node_id_end                  number        path '@node_id_end'
+                        ,       status_segment_id            number        path '@status_segment_id'
+                        ,       direction_from               varchar2(10)  path '@direction_from'                    
+                        ,       direction_to                 varchar2(10)  path '@direction_to'                      
+                        ,       ind_report_tracking_at_start varchar2(5)   path '@ind_report_tracking_at_start'      
+                        ,       ind_report_tracking_at_end   varchar2(5)   path '@ind_report_tracking_at_end'        
+                        ,       ind_transport_default        varchar2(5)   path '@ind_transport_default'             
+                        ,       ind_detect_missed_tr_events  varchar2(5)   path '@ind_detect_missed_tracking_events' 
+                        ,       region_id                    varchar2(50)  path '@region_id'                         
+                        ,       bidirectional_direction      varchar2(20)  path '@bidirectional_direction'           
+                        ,       bidirectional_isc_id         varchar2(30)  path '@bidirectional_isc_id'              
+                        ,       recirculation_count          number        path '@recirculation_count'
+                        ,       recirculation_time           number        path '@recirculation_time'
+                        ,       travel_time_info_xml         xmltype       path '/route_segment/travel_time_info'
+                        ,       capacity_info_xml            xmltype       path '/route_segment/capacity_info'
+                        ,       isc_reference_xml            xmltype       path '/route_segment/isc_reference'
+                      ) rst
+   ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_route_segments in c_route_segments
+   loop
+   	
+      
+      if not lm_nde_tapi_pck.nde_select_row( i_nde_id => l_rec_route_segments.node_id_start
+                                           , o_rt_nde => l_rt_nde_start
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   =>    'For route segment '                      || l_rec_route_segments.id
+                                     || ', NODE for node_id_start does not exist: '|| l_rec_route_segments.node_id_start
+            );
+      end if;
+     
+      
+      if not lm_nde_tapi_pck.nde_select_row( i_nde_id => l_rec_route_segments.node_id_end
+                                           , o_rt_nde => l_rt_nde_end
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   =>    'For route segment '                     || l_rec_route_segments.id
+                                     || ', NODE for node_id_end does not exist: '|| l_rec_route_segments.node_id_end
+            );
+      end if;
+   
+      
+      if not lm_lst_tapi_pck.lst_select_row( i_lst_id => l_rec_route_segments.status_segment_id
+                                           , o_rt_lst => l_rt_lst
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   =>    'For route segment '                                      || l_rec_route_segments.id
+                                     || ', LOGICAL SEGMENT for status_segment_id does not exist: '|| l_rec_route_segments.status_segment_id
+            );
+      end if;
+   
+      
+      process_bidirectional ( i_bidirectional_direction => l_rec_route_segments.bidirectional_direction
+                            , i_bidirectional_isc_id    => l_rec_route_segments.bidirectional_isc_id
+                            , i_rst_id                  => l_rec_route_segments.id
+                            , o_rt_sct                  => l_rt_sct
+                            , o_rt_mom                  => l_rt_mom
+                            );
+
+      
+      l_rt_rst.id                       := l_rec_route_segments.id;
+      l_rt_rst.nde_id_start_node        := l_rt_nde_start.id;
+      l_rt_rst.direction_start_node     := l_rec_route_segments.direction_from;
+      l_rt_rst.lst_id                   := l_rt_lst.id;
+      l_rt_rst.nde_id_end_node          := l_rt_nde_end.id;
+      l_rt_rst.direction_end_node       := l_rec_route_segments.direction_to;
+      l_rt_rst.report_start_node        := lm_config.translate_truefalse( i_truefalse => l_rec_route_segments.ind_report_tracking_at_start );
+      l_rt_rst.report_end_node          := lm_config.translate_truefalse( i_truefalse => l_rec_route_segments.ind_report_tracking_at_end );
+      l_rt_rst.ind_tracking             := lm_constant.g_con_yesno_yes;
+      l_rt_rst.ind_transport_default    := lm_config.translate_truefalse( i_truefalse => l_rec_route_segments.ind_transport_default );
+      l_rt_rst.ind_detect_missed_events := lm_config.translate_truefalse( i_truefalse => l_rec_route_segments.ind_detect_missed_tr_events );
+      l_rt_rst.sct_id                   := l_rt_sct.id;
+      l_rt_rst.mom_id                   := l_rt_mom.id;
+      l_rt_rst.average_travel_time      := l_rec_route_segments.travel_time;
+      l_rt_rst.region                   := l_rec_route_segments.region_id;
+      l_rt_rst.description              := l_rec_route_segments.id || ': ' || l_rt_lst.description;
+      l_rt_rst.recirculation_count      := nvl( l_rec_route_segments.recirculation_count
+                                              , 0
+                                              );
+      l_rt_rst.recirculation_interval   := nvl( numtodsinterval(l_rec_route_segments.recirculation_time, 'SECOND')
+                                              , to_dsinterval('0 0:0:0')
+                                              );
+      
+      lm_rst_tapi_pck.rst_insert_row( io_rt_rst => l_rt_rst );
+
+      
+      process_capacity_info ( i_rst_id           => l_rec_route_segments.id
+                            , i_capacity         => l_rec_route_segments.capacity
+                            , i_nt_isc_reference => l_rec_route_segments.nt_isc_reference
+                            );
+
+   end loop;
+
+   
+   select count(*)
+   into   l_#rst
+   from   lm_route_segments
+   ;
+   lm_config.log_processing_time( i_message_name    => 'route_segments'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#rst||' lm_route_segments'
+                                );
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_route_segment_data;
+
+end lm_cfg_rst;
+/

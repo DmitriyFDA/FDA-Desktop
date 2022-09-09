@@ -1,0 +1,76 @@
+procedure bpir_help is
+v_msg  varchar2(32767);
+v_app  varchar2(200);
+v_cr_rec acl_registry%rowtype;
+cursor c_topo is
+  select s.filename, v.startdate, v.versiontag from dimension_version v, dimension_source s
+  where v.source_type = 'TOPO' and s.id = v.source_id and v.enddate is null;
+cursor c_meta is
+  select s.filename, v.startdate, v.versiontag from dimension_version v, dimension_source s
+  where v.source_type = 'META' and s.id = v.source_id and v.enddate is null;
+begin
+  v_app := gui.app_name;
+  htp.print(gui.head(v_app||' > Help', 'About '||v_app));
+  htp.print('<div class="neutral">');
+
+  begin
+    select * into v_cr_rec from acl_registry where rownum = 1;
+
+    htp.print('<u>Application</u><br>');
+	htp.print(v_cr_rec.comp_id||' - Version '||v_cr_rec.version||' - Installed '||ts2str(v_cr_rec.date_installed));
+    htp.print('<br>'||v_cr_rec.description||'<br>');
+
+    htp.print('<br>');
+    htp.print('<u>Topology</u><br>');
+    for rec1 in c_topo loop
+  	  htp.print(rec1.filename||' - Version '||rec1.versiontag||' - Installed '||ts2str(rec1.startdate)||'<br>');
+  	end loop;
+  	 htp.print('<br>');
+    htp.print('<u>Metadata</u><br>');
+    for rec1 in c_meta loop
+  	  htp.print(rec1.filename||' - Version '||rec1.versiontag||' - Installed '||ts2str(rec1.startdate)||'<br>');
+  	end loop;
+
+    
+    
+    
+
+    htp.print('<br>');
+
+    htp.print(gui.butlnk('Manuals','BPIR_MANUALS'));
+    htp.print(gui.butlnk('User and Database Status','BPIR_SHOW_USER_DB_STATE'));
+
+  exception
+    when others then
+      v_msg := sqlerrm;
+      htp.print('<br><br>'||v_msg||'<br><br>');
+  end;
+
+  begin
+    begin
+      select distinct terminal into v_app
+      from v$session
+      where username = user and terminal is not null and rownum = 1;
+    exception when others then
+      v_app := '<unknown>';
+    end;
+
+    select 'User '||user||' logged in on server '
+        ||sys_context('USERENV','SERVER_HOST')||'('
+        ||sys_context('USERENV','IP_ADDRESS')||') from terminal '
+        ||v_app||' at '
+        ||to_char(sysdate,'DD-MON-YYYY HH24:MI:SS')
+    into v_msg from dual;
+
+  exception
+    when others then v_msg := sqlerrm;
+  end;
+
+  htp.print('<br></div><br>');
+  htp.print(v_msg||'<br>');
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

@@ -1,0 +1,151 @@
+create or replace PACKAGE Tab2CSV IS
+function to_csv(p_select varchar2, p_title in varchar2 default '', p_header in boolean default true, p_separator in varchar2 default ','
+ , p_dtformat in varchar2 default 'DD-MM-YYYY HH24:MI:SS') return clob;
+END Tab2CSV;
+/
+
+
+
+
+package body tab2csv is
+
+g_dtformat varchar2(50) := 'DD-MM-YYYY HH24:MI:SS';
+
+g_separator varchar2(10) := ',';
+g_clob clob := '';
+
+function transform(p_col_type in integer, p_stringvalue in varchar2) return varchar2 is
+l_str varchar2(2000);
+l_ts timestamp;
+l_date date;
+begin
+  begin
+    if p_col_type in (2,100,101,182,183,69,208) then
+      l_str := trim(p_stringvalue);
+    elsif p_col_type = 12 then
+      l_date := to_date(p_stringvalue, g_dtformat);
+      l_str := to_char(l_date, g_dtformat);
+    elsif p_col_type = 180 then
+      l_ts := to_timestamp(p_stringvalue);
+      l_str := to_char(l_ts, g_dtformat);
+    elsif p_col_type in (181,231) then
+      l_ts := to_timestamp_tz(p_stringvalue);
+      l_str := to_char(l_ts, g_dtformat);
+    else
+      l_str := trim(p_stringvalue);
+      if l_str is not null then
+        l_str := replace(l_str, ',', ';');
+        l_str := replace(l_str, '"', '''');
+        l_str := '"'||l_str||'"';
+      end if;
+    end if;
+  exception when others then
+    l_str := trim(p_stringvalue);
+  end;
+  return l_str;
+end;
+
+procedure process_qry(p_stm in varchar2, p_header boolean) is
+l_thecursor     integer default dbms_sql.open_cursor;
+l_columnvalue   varchar2(2000);
+l_columnoutput  varchar2(4000);
+l_separator     varchar2(10);
+l_coldesc       dbms_sql.desc_tab;
+l_colcnt        integer;
+l_status        integer;
+begin
+  dbms_sql.parse(l_thecursor, p_stm, dbms_sql.native);
+  for i in 1..255 loop
+    begin
+      dbms_sql.define_column(l_thecursor, i, l_columnvalue, 2000);
+      l_colcnt := i;
+    exception
+      when others then
+        if ( sqlcode = -1007 ) then
+          exit;
+        else
+          raise;
+        end if;
+    end;
+  end loop;
+  dbms_sql.define_column(l_thecursor, 1, l_columnvalue, 2000);
+  l_status := dbms_sql.execute(l_thecursor);
+  dbms_sql.describe_columns(l_thecursor, l_colcnt, l_coldesc);
+
+  if p_header then
+    l_columnoutput := '';
+    l_separator := '';
+    for i in 1..l_colcnt loop
+      l_columnoutput := l_columnoutput||l_separator||l_coldesc(i).col_name;
+      l_separator := g_separator;
+    end loop;
+    
+    dbms_lob.append(g_clob, to_clob(l_columnoutput||chr(10)));
+  end if;
+
+  
+  
+  
+  
+  
+  
+  
+
+  loop
+    exit when (dbms_sql.fetch_rows(l_thecursor) <= 0);
+    l_columnoutput := '';
+    l_separator := '';
+    for i in 1..l_colcnt loop
+      dbms_sql.column_value( l_thecursor, i, l_columnvalue);
+      l_columnoutput := l_columnoutput || l_separator || transform(l_coldesc(i).col_type, l_columnvalue);
+      l_separator := g_separator;
+    end loop;
+    
+    dbms_lob.append(g_clob, l_columnoutput||chr(10));
+  end loop;
+  dbms_sql.close_cursor(l_thecursor);
+end;
+
+
+function to_csv(p_select varchar2, p_title in varchar2 default '', p_header in boolean default true, p_separator in varchar2 default ','
+ , p_dtformat in varchar2 default 'DD-MM-YYYY HH24:MI:SS') return clob is
+l_msg varchar2(2000) := '';
+l_stm varchar2(2000) := '';
+begin
+  dbms_lob.createtemporary(g_clob, true);
+
+  g_separator := p_separator;
+  begin
+    g_dtformat := p_dtformat;
+    l_msg := to_char(systimestamp, g_dtformat);
+    l_msg := to_char(sysdate, g_dtformat);
+  exception when others then
+    dbms_lob.append(g_clob, sqlerrm||chr(10)||chr(10));
+    
+    
+    g_dtformat := 'DD-MM-YYYY HH24:MI:SS';
+  end;
+
+  begin
+    l_stm := 'alter session set NLS_DATE_FORMAT = '''||g_dtformat||'''';
+    execute immediate l_stm;
+  exception when others then
+    dbms_lob.append(g_clob, sqlerrm||chr(10)||chr(10));
+  end;
+
+  l_msg := trim(p_title);
+  if l_msg is not null then
+    dbms_lob.append(g_clob, l_msg||chr(10)||chr(10));
+  end if;
+
+  begin
+    process_qry(p_select, p_header);
+  exception when others then
+    dbms_lob.append(g_clob, sqlerrm||chr(10)||chr(10));
+  end;
+
+  return g_clob;
+end;
+
+end tab2csv;
+/

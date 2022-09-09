@@ -1,0 +1,2718 @@
+create or replace PACKAGE cmn_interface
+IS
+   /* Forward declaration of log_message. */
+   PROCEDURE log_message(
+      i_message     IN       CLOB
+    , i_direction   IN       cmn_party_msg_definitions.direction%TYPE
+    , i_imd_id      IN       cmn_ifc_msg_definitions.ID%TYPE
+    , i_pty_id      IN       cmn_parties.ID%TYPE
+    , o_ims_id      OUT      cmn_ifc_messages.ID%TYPE
+   );
+
+   /* Process an incoming message. */
+   PROCEDURE process_message( i_message IN VARCHAR2 );
+   
+   /* Process an incoming message. */
+   PROCEDURE process_message( i_message IN CLOB );
+   FUNCTION  process_message( i_message IN CLOB )
+   RETURN CLOB;
+
+   /* Process an incoming message. */
+   PROCEDURE process_message( i_message IN XMLTYPE );
+
+   /* Execute the procedure that will create and send a message */
+   PROCEDURE exec_createsendmsg( i_pmd_id IN cmn_party_msg_definitions.ID%TYPE, i_arg1 IN VARCHAR2 );
+
+   /* Send out a message. */
+   PROCEDURE send_message( i_message              IN XMLTYPE
+                         , i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                         , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                         , i_imd_id               IN cmn_ifc_msg_definitions.ID%TYPE DEFAULT NULL
+                         );
+
+   /* Send out a message. */
+   PROCEDURE send_message( i_message              IN CLOB
+                         , i_pty_id_cust          IN cmn_parties.id_cust%TYPE
+                         , i_pty_instance_id_cust IN cmn_parties.instance_id_cust%TYPE DEFAULT NULL
+                         , i_imd_id               IN cmn_ifc_msg_definitions.ID%TYPE DEFAULT NULL
+                         );
+
+   FUNCTION message_header( i_target_process_id_cust  IN VARCHAR2
+                          , i_target_instance_id_cust IN VARCHAR2 DEFAULT NULL
+                          )
+      RETURN XMLTYPE;
+
+   FUNCTION create_header( i_target_process_id_cust  IN VARCHAR2
+   			             , i_target_instance_id_cust IN VARCHAR2 DEFAULT NULL)
+      RETURN CLOB;
+
+   FUNCTION get_message_name( i_message IN XMLTYPE )
+      RETURN VARCHAR2;
+
+   FUNCTION add_header(
+      i_message             IN   XMLTYPE
+    , i_source_processid    IN   VARCHAR2
+    , i_source_instanceid   IN   VARCHAR2 DEFAULT NULL
+    , i_target_processid    IN   VARCHAR2
+    , i_target_instanceid   IN   VARCHAR2 DEFAULT NULL
+    , i_operatorid          IN   VARCHAR2 DEFAULT NULL
+   )
+      RETURN XMLTYPE;
+
+   /* DEPRECATED, use standard logging */
+   FUNCTION clean_logging( i_retention_time IN PLS_INTEGER )
+      RETURN PLS_INTEGER;
+
+   FUNCTION get_message_id( i_direction IN cmn_party_msg_definitions.direction%TYPE)
+      RETURN cmn_ifc_messages.ID%TYPE;
+
+END cmn_interface;
+/
+
+
+
+
+package body cmn_interface
+is
+
+   
+   g_con_package        constant varchar2( 20 ) := 'cmn_interface';
+
+   g_incoming_ims_id             cmn_ifc_messages.id%type;
+   g_outgoing_ims_id             cmn_ifc_messages.id%type;
+   g_returning_ims_id            cmn_ifc_messages.id%type;
+
+   g_persistent_conn_enabled     boolean := false;
+   
+   
+   procedure send_to_ext_proc( i_epe_id  in cmn_external_procedures.id%type
+                             , i_message in xmltype
+                             );
+
+   procedure send_to_address( i_ads_id  in cmn_addresses.id%type
+                            , i_message in clob
+                            );
+
+   procedure send_to_subscriber( i_ssr_id  in cmn_subscribers.id%type
+                               , i_message in xmltype
+                               );
+
+   procedure log_message( i_xml_message in     xmltype
+                        , i_direction   in     cmn_party_msg_definitions.direction%type
+                        , i_imd_id      in     cmn_ifc_msg_definitions.id%type
+                        , i_pty_id      in     cmn_parties.id%type
+                        , o_ims_id      out    cmn_ifc_messages.id%type
+                        );
+   procedure log_message_int( i_message     in     cmn_ifc_messages.message%type
+                            , i_direction   in     cmn_party_msg_definitions.direction%type
+                            , i_imd_id      in     cmn_ifc_msg_definitions.id%type
+                            , i_pty_id      in     cmn_parties.id%type
+                            , o_ims_id      out    cmn_ifc_messages.id%type
+                            );
+
+
+   procedure set_message_id( i_ims_id    in cmn_ifc_messages.id%type
+                           , i_direction in cmn_party_msg_definitions.direction%type
+                           );
+
+   function create_reference_message( i_ims_id      in cmn_ifc_messages.id%type
+                                    , i_messagename in cmn_ifc_msg_definitions.name%type
+                                    )
+      return clob;
+
+   
+
+   
+   
+   
+   
+   
+   
+
+   
+   function to_datatype( i_dummy xmltype
+                       , i_value cmn_ifc_messages.message%type
+                       )
+      return cmn_ifc_messages.message%type
+   is
+   begin
+      return i_value;
+   end;
+
+   
+   function to_datatype( i_value cmn_ifc_messages.message%type
+                       , i_dummy clob
+                       )
+      return cmn_ifc_messages.message%type
+   is
+   begin
+      return i_value;
+   end;
+
+   
+   function cast_type( i_value xmltype )
+      return cmn_ifc_messages.message%type
+   is
+       l_dummy clob;
+   begin
+      return to_datatype( i_value, l_dummy );
+   end;
+
+   
+   function cast_type( i_value clob )
+      return cmn_ifc_messages.message%type
+   is
+       l_dummy xmltype;
+   begin
+      return to_datatype( l_dummy, i_value );
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   function convert_to_type( i_value clob )
+      return cmn_ifc_messages.message%type
+   is
+      l_dummy  cmn_ifc_messages.message%type;
+
+      
+      function convert_to_type( i_value clob, i_dummy clob )
+         return cmn_ifc_messages.message%type
+      is
+      begin
+         return cast_type( i_value );
+      end;
+
+      function convert_to_type( i_value clob, i_dummy xmltype )
+         return cmn_ifc_messages.message%type
+      is
+         l_xml xmltype;
+      begin
+         begin
+            l_xml := xmltype( i_value );
+         exception
+            when others
+            then
+               select xmlcdata( i_value )
+               into   l_xml
+               from   dual;
+         end;
+         return cast_type( l_xml );
+      end;
+
+   begin
+      return convert_to_type( i_value, l_dummy );
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   function convert_to_type( i_value xmltype )
+      return cmn_ifc_messages.message%type
+   is
+      l_dummy  cmn_ifc_messages.message%type;
+
+      
+      function convert_to_type( i_value xmltype, i_dummy xmltype )
+         return cmn_ifc_messages.message%type
+      is
+      begin
+         return cast_type( i_value );
+      end;
+
+      function convert_to_type( i_value xmltype, i_dummy clob )
+         return cmn_ifc_messages.message%type
+      is
+      begin
+         return cast_type( i_value.getclobval( ) );
+      end;
+
+   begin
+      return convert_to_type( i_value, l_dummy );
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_source_process_id
+      return cmn_constant.st_processid
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_source_process_id';
+
+      l_pty_type                 cmn_parties.type%type;
+      l_return                   cmn_constant.st_processid;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_pty_type := cmn_common.get_parameter_value( i_prr_name => cmn_constant.g_con_pve_cmn_party_ident );
+
+      select pty.id_cust
+      into   l_return
+      from   cmn_parties   pty
+      where  pty.type = l_pty_type;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_return;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module        => l_con_proc_name
+                                , i_debug_info    => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_source_process_id;
+
+   function get_source_instance_id
+      return cmn_constant.st_instanceid
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_source_instance_id';
+
+      l_pty_type                 cmn_parties.type%type;
+      l_return                   cmn_constant.st_instanceid;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_pty_type := cmn_common.get_parameter_value( i_prr_name => cmn_constant.g_con_pve_cmn_party_ident );
+
+      select pty.instance_id_cust
+      into   l_return
+      from   cmn_parties   pty
+      where  pty.type = l_pty_type;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_return;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module        => l_con_proc_name
+                                , i_debug_info    => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_source_instance_id;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_clob( i_clob   in   clob
+                      , i_url    in   cmn_parameter_values.value%type
+                      )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send_clob';
+
+      l_req                      cmn_http.req;
+      l_resp                     cmn_http.resp;
+      l_buffer                   varchar2( 32767 );
+      l_pos                      integer                   := 1;
+      l_rem_size                 binary_integer            := 32000;
+      l_clob_length              binary_integer            := dbms_lob.getlength( lob_loc => i_clob );
+      l_amount                   binary_integer            := 32767;
+      l_timeout_old              pls_integer;
+      l_timeout_new              pls_integer;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+      
+      if not g_persistent_conn_enabled
+      then
+        
+        cmn_http.set_response_error_check( enable  => true );
+        cmn_http.set_detailed_excp_support( enable => true );
+        
+        
+        cmn_http.get_transfer_timeout( l_timeout_old );
+        l_timeout_new  := cmn_common.get_parameter_value( cmn_constant.g_con_ifc_http_timeout_send );
+        cmn_http.set_transfer_timeout( l_timeout_new );
+
+        cmn_http.close_persistent_conns;
+        cmn_http.set_persistent_conn_support(true, 1);   
+        g_persistent_conn_enabled := true;
+      end if;
+        
+
+      
+      begin
+         l_req          :=
+           cmn_http.begin_request( url          => i_url
+                                 , method       => cmn_constant.g_con_ifc_http_post_method
+                                 , http_version => utl_http.http_version_1_1
+                                 );
+         
+         cmn_http.set_header( r     => l_req
+                            , name  => cmn_constant.g_con_ifc_http_name_type
+                            , value => cmn_constant.g_con_ifc_http_header_value
+                            );
+         cmn_http.set_header( r     => l_req
+                            , name  => cmn_constant.g_con_ifc_http_name_length
+                            , value => l_clob_length
+                            );
+
+         if l_clob_length <= l_amount
+         then
+            
+            dbms_lob.read( lob_loc  => i_clob
+                         , amount   => l_clob_length
+                         , offset   => l_pos
+                         , buffer   => l_buffer
+                         );
+            cmn_http.write_text( r    => l_req
+                               , data => l_buffer
+                               );
+         else
+            
+            while l_pos <= l_clob_length
+            loop
+               dbms_lob.read( lob_loc => i_clob
+                            , amount  => l_rem_size
+                            , offset  => l_pos
+                            , buffer  => l_buffer
+                            );
+               cmn_http.write_text( r    => l_req
+                                  , data => l_buffer
+                                  );
+               l_pos  := l_pos + l_rem_size;
+            end loop;
+         end if;
+      exception
+         when others
+         then
+            begin
+               cmn_http.end_request( r => l_req );
+            exception
+               when others
+               then
+                  null;
+               end;
+            raise;
+      end;
+
+      begin
+         
+         l_resp         := cmn_http.get_response( r => l_req );
+         
+         cmn_http.end_response( r => l_resp );
+      exception
+         when others
+         then
+            begin
+               cmn_http.end_response( r => l_resp );
+            exception
+               when others
+               then
+                  null;
+            end;
+            raise;
+      end;
+      cmn_http.set_transfer_timeout( l_timeout_old );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if l_timeout_old is not null
+         then
+            cmn_http.set_transfer_timeout( l_timeout_old );
+         end if;
+
+         viu_module.leave_module( i_module        => l_con_proc_name
+                                , i_debug_info    =>    'Status code: '
+                                                     || l_resp.status_code
+                                                     || ', SQLERR: '
+                                                     || sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end send_clob;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   function get_message_name( i_message in xmltype )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_message_name';
+
+      l_messagename              cmn_ifc_msg_definitions.name%type;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_messagename := i_message.getrootelement();
+
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => l_messagename
+                             );
+      return l_messagename;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module        => l_con_proc_name
+                                , i_debug_info    => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_message_name;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_message( i_message              in   xmltype
+                         , i_pty_id_cust          in   cmn_parties.id_cust%type
+                         , i_pty_instance_id_cust in   cmn_parties.instance_id_cust%type default null
+                         , i_imd_id               in   cmn_ifc_msg_definitions.id%type   default null
+                         )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send_message(xml)';
+
+      cursor c_pty( b_pty_id_cust in cmn_parties.id_cust%type )
+      is
+      select pty.*
+      from   cmn_parties pty
+      where  pty.id_cust = b_pty_id_cust;
+
+      l_begin_time               cmn_constant.st_timestamp;
+      l_end_time                 cmn_constant.st_timestamp;
+      l_elapsed_time             interval day to second;
+      l_processing_time          cmn_party_msg_definitions.max_processing_time%type;
+      l_send_url                 cmn_parameter_values.value%type;
+      l_ims_id                   cmn_ifc_messages.id%type;
+      l_messagename              cmn_ifc_msg_definitions.name%type;
+      l_found                    boolean;
+      l_found_pty                boolean;
+      l_rt_imd                   cmn_ifc_msg_definitions%rowtype;
+      l_rt_pty                   cmn_parties%rowtype;
+      l_nof_parties              number;
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name
+                             , i_debug_info =>    'pty_id_cust='
+                                                || i_pty_id_cust
+                                                || ' imd_id='
+                                                || to_char( i_imd_id )
+                             );
+      
+
+
+
+      
+
+
+      l_begin_time  := cmn_common.default_timestamp;
+      
+      l_found_pty := cmn_common_msg.pty_select_row_uk( i_pty_id_cust          => i_pty_id_cust
+                                                     , i_pty_instance_id_cust => i_pty_instance_id_cust
+                                                     , o_rt_pty               => l_rt_pty
+                                                     );
+
+      if not l_found_pty
+      then
+         
+         l_nof_parties := 0;
+         
+         for r_pty in c_pty( b_pty_id_cust => i_pty_id_cust )
+         loop
+            l_nof_parties := l_nof_parties + 1;
+
+            l_rt_pty := r_pty;
+         end loop;
+         
+         if l_nof_parties != 1
+         then
+            
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnpartynotfound
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    =>    nvl( i_pty_id_cust, 'NULL' )
+                                                        || '-' || nvl( i_pty_instance_id_cust, 'NULL' )
+                               , i_additional_data   => 'No party found with given values and an invalid number of parties with given ID_CUST: '
+                                                        || to_char(l_nof_parties)
+                               );
+         end if;
+      end if;
+
+      begin
+
+         if l_rt_pty.epe_id is not null
+         then
+            send_to_ext_proc( i_epe_id    => l_rt_pty.epe_id
+                            , i_message   => i_message
+                            );
+         elsif l_rt_pty.ads_id is not null
+         then
+            send_to_address( i_ads_id     => l_rt_pty.ads_id
+                           , i_message    => convert( i_message.getclobval( )
+                                                    , 'AL32UTF8'
+                                                    )
+                           );
+         elsif l_rt_pty.ssr_id is not null
+         then
+            send_to_subscriber( i_ssr_id  => l_rt_pty.ssr_id
+                              , i_message => i_message
+                              );
+         end if;
+
+      exception
+         when others
+         then
+            
+            
+            
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmncmnotavailable
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    => l_send_url
+                               , i_additional_data   => sqlerrm
+                               );
+      end;
+
+      l_messagename := get_message_name( i_message );
+
+      
+      if i_imd_id is not null
+      then
+         l_found  := cmn_imd_tapi_pck.imd_select_row( i_imd_id => i_imd_id
+                                                    , o_rt_imd => l_rt_imd
+                                                    );
+      else
+         l_found  :=
+            cmn_imd_tapi_pck.imd_select_row_uk( i_imd_name => l_messagename
+                                              , o_rt_imd   => l_rt_imd
+                                              );
+      end if;
+
+      if l_rt_imd.id is null
+      then
+         
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnnomessagedefinition
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => 'MessageDefinition not found'
+                            , i_additional_data   => null
+                            );
+      end if;
+
+      log_message( i_xml_message => i_message
+                 , i_direction   => cmn_constant.g_con_msg_direction_outgoing
+                 , i_imd_id      => l_rt_imd.id
+                 , i_pty_id      => l_rt_pty.id
+                 , o_ims_id      => l_ims_id
+                 );
+
+      
+
+
+
+
+      if cmn_common.get_parameter_value( i_prr_name => cmn_constant.g_con_pve_log_msgproctime ) =
+                                                                   cmn_constant.g_con_yesno_yes
+      then
+         l_end_time        := cmn_common.default_timestamp;
+         l_elapsed_time    := l_end_time - l_begin_time;
+         l_processing_time := extract( second from l_elapsed_time )
+                                       + 60 * extract( minute from l_elapsed_time );
+
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmncmconfirmationtime
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_notification
+                               , i_info_arguments    => l_messagename || '##' || l_rt_pty.id || '##' ||
+                                                        to_char( l_processing_time, 'FM9990.000' )
+                               , i_additional_data   => 'Message ID: ' || l_ims_id
+                               );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         
+
+
+
+
+         log_message( i_xml_message => i_message
+                    , i_direction   => cmn_constant.g_con_msg_direction_outgoing
+                    , i_imd_id      => null
+                    , i_pty_id      => l_rt_pty.id
+                    , o_ims_id      => l_ims_id
+                    );
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end send_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_message( i_message              in clob
+                         , i_pty_id_cust          in cmn_parties.id_cust%type
+                         , i_pty_instance_id_cust in cmn_parties.instance_id_cust%type default null
+                         , i_imd_id               in cmn_ifc_msg_definitions.id%type default null
+   )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send_message(clob)';
+
+      l_begin_time               cmn_constant.st_timestamp;
+      l_end_time                 cmn_constant.st_timestamp;
+      l_elapsed_time             interval day to second;
+      l_processing_time          cmn_party_msg_definitions.max_processing_time%type;
+      l_send_url                 cmn_parameter_values.value%type;
+      l_ims_id                   cmn_ifc_messages.id%type;
+      l_found                    boolean;
+      l_rt_imd                   cmn_ifc_msg_definitions%rowtype;
+      l_rt_pty                   cmn_parties%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+
+
+      l_begin_time  := cmn_common.default_timestamp;
+
+      begin
+         l_found  :=
+            cmn_common_msg.pty_select_row_uk( i_pty_id_cust          => i_pty_id_cust
+                                            , i_pty_instance_id_cust => i_pty_instance_id_cust
+                                            , o_rt_pty               => l_rt_pty
+                                            );
+
+         if l_found
+         then
+            if l_rt_pty.epe_id is not null
+            then
+               null;   
+            elsif l_rt_pty.ads_id is not null
+            then
+               send_to_address( i_ads_id  => l_rt_pty.ads_id
+                              , i_message => i_message
+                              );
+            elsif l_rt_pty.ssr_id is not null
+            then
+               null;   
+            end if;
+         end if;
+      exception
+         when others
+         then
+            
+            
+            
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmncmnotavailable
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    => l_send_url
+                               , i_additional_data   => sqlerrm
+                               );
+      end;
+
+      
+      if i_imd_id is not null
+      then
+         l_found  := cmn_imd_tapi_pck.imd_select_row( i_imd_id => i_imd_id
+                                                    , o_rt_imd => l_rt_imd
+                                                    );
+      else
+         l_found  :=
+            cmn_imd_tapi_pck.imd_select_row_uk( i_imd_name => cmn_constant.g_con_clobmessage
+                                              , o_rt_imd   => l_rt_imd
+                                              );
+      end if;
+
+      log_message( i_message   => i_message
+                 , i_direction => cmn_constant.g_con_msg_direction_outgoing
+                 , i_imd_id    => l_rt_imd.id
+                 , i_pty_id    => l_rt_pty.id
+                 , o_ims_id    => l_ims_id
+                 );
+
+      
+      
+      
+
+
+      if cmn_common.get_parameter_value( i_prr_name => cmn_constant.g_con_pve_log_msgproctime ) =
+                                                                   cmn_constant.g_con_yesno_yes
+      then
+         l_end_time        := cmn_common.default_timestamp;
+         l_elapsed_time    := l_end_time - l_begin_time;
+         l_processing_time := extract( second from l_elapsed_time )
+                                       + 60 * extract( minute from l_elapsed_time );
+
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmncmconfirmationtime
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_notification
+                               , i_info_arguments    => to_char( i_imd_id ) || '##' || l_rt_pty.id || '##' ||
+                                                        to_char( l_processing_time, 'FM9990.000' )
+                               , i_additional_data   => 'Message ID: ' || l_ims_id
+                               );
+      end if;
+
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => 'o_ims_id=' || to_char( l_ims_id )
+                             );
+   exception
+      when others
+      then
+         
+         
+         
+         log_message( i_message       => i_message
+                    , i_direction     => cmn_constant.g_con_msg_direction_outgoing
+                    , i_imd_id        => null
+                    , i_pty_id        => l_rt_pty.id
+                    , o_ims_id        => l_ims_id
+                    );
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end send_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure execute_message_hdl( i_processingname    in  cmn_party_msg_definitions.processingname%type
+                                , i_message           in  xmltype
+                                , i_ind_resultmessage in  boolean
+                                , o_resultmessage     out xmltype
+                                )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.execute_message_hdl';
+
+      l_sql varchar2( 240 );
+      
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      if i_ind_resultmessage
+      then
+         l_sql  := 'BEGIN :1 := ' || i_processingname || '(:2); END;';
+         execute immediate l_sql using out o_resultmessage
+                                 ,     in  i_message
+         ;
+      else
+         l_sql  := 'BEGIN ' || i_processingname || '(:1); END;';
+         execute immediate l_sql using in i_message;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info;
+   end execute_message_hdl;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure select_pmd_message( i_message             in  xmltype
+                               , i_message_name        in  cmn_ifc_msg_definitions.name%type
+                               , i_direction           in  cmn_party_msg_definitions.direction%type
+                               , o_pmd_id              out cmn_party_msg_definitions.id%type
+                               , o_processingname      out cmn_party_msg_definitions.processingname%type
+                               , o_max_processing_time out cmn_party_msg_definitions.max_processing_time%type
+                               , o_imd_id              out cmn_ifc_msg_definitions.id%type
+                               , o_pty_id              out cmn_parties.id%type
+                               , o_party_id_cust       out cmn_parties.id_cust%type
+                               )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.select_pmd_message';
+
+      
+      cursor c_pmd( b_message_name in cmn_ifc_msg_definitions.name%type
+                  , b_direction    in cmn_party_msg_definitions.direction%type
+                  )
+      is
+      select   *
+      from     cmn_v_msg_definitions vpmd
+      where    vpmd.message_name = b_message_name
+      and      vpmd.direction    = b_direction
+      and      rownum            = 1
+      order by vpmd.pmd_id
+      ;
+
+      l_rt_pmd c_pmd%rowtype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+   
+      
+      open  c_pmd( b_message_name => i_message_name
+                 , b_direction    => i_direction
+                 );
+      fetch c_pmd
+      into  l_rt_pmd;
+      close c_pmd;
+
+      
+      if l_rt_pmd.pmd_id is null
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnnopartymsgdefinition
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    =>    'message='
+                                                     || i_message_name
+                                                     || ', direction='
+                                                     || i_direction
+                            , i_additional_data   => substr( i_message.getclobval( ), 1, 4000 )
+                            );
+      end if;
+
+      o_pmd_id              := l_rt_pmd.pmd_id;
+      o_processingname      := l_rt_pmd.processingname;
+      o_max_processing_time := l_rt_pmd.max_processing_time;
+      o_imd_id              := l_rt_pmd.imd_id;
+      o_pty_id              := l_rt_pmd.pty_id;
+      o_party_id_cust       := l_rt_pmd.pty_id_cust;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+
+         if c_pmd%isopen
+         then
+            close c_pmd;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end select_pmd_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure log_resultmessage( i_resultmessage in xmltype )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.log_resultmessage';
+
+
+      l_rt_ims        cmn_ifc_messages%rowtype;
+      l_message_name  cmn_ifc_msg_definitions.name%type;
+      l_imd_id        cmn_ifc_msg_definitions.id%type;
+      l_pty_id        cmn_parties.id%type;
+      l_party_id_cust cmn_parties.id_cust%type;
+      l_rt_pmd        cmn_party_msg_definitions%rowtype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+   
+      
+      if cmn_common.get_parameter_value( cmn_constant.g_con_interface_logging ) = cmn_constant.g_con_yesno_yes
+      then
+
+         
+         l_rt_ims.date_created  := cmn_common.default_timestamp;
+         
+         
+         l_message_name := get_message_name( i_message => i_resultmessage );
+         
+         
+         select_pmd_message( i_message             => i_resultmessage
+                           , i_message_name        => l_message_name
+                           , i_direction           => cmn_constant.g_con_msg_direction_outgoing
+                           , o_pmd_id              => l_rt_ims.pmd_id
+                           , o_processingname      => l_rt_pmd.processingname
+                           , o_max_processing_time => l_rt_pmd.max_processing_time
+                           , o_imd_id              => l_imd_id
+                           , o_pty_id              => l_pty_id
+                           , o_party_id_cust       => l_party_id_cust
+                           );
+
+         
+         l_rt_ims.message := convert_to_type(i_resultmessage);
+         cmn_ims_tapi_pck.ims_insert_row( io_rt_ims => l_rt_ims );
+         
+         
+
+         
+         
+         
+         
+         
+         commit;
+
+      end if;
+   
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end log_resultmessage;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure select_pmd_party( i_clob_message     in  clob
+                             , i_message_name     in  cmn_ifc_msg_definitions.name%type
+                             , i_party_id_cust    in  cmn_parties.id_cust%type
+                             , i_instance_id_cust in  cmn_parties.instance_id_cust%type
+                             , o_rt_pty           out cmn_parties%rowtype
+                             , o_rt_imd           out cmn_ifc_msg_definitions%rowtype
+                             , o_rt_pmd           out cmn_party_msg_definitions%rowtype
+                             )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.select_pmd_party';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if not cmn_common_msg.pty_select_row_uk( i_pty_id_cust          => i_party_id_cust
+                                             , i_pty_instance_id_cust => i_instance_id_cust
+                                             , o_rt_pty               => o_rt_pty
+                                             )
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnpartynotfound
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    =>    ' with ID_CUST '
+                                                     || nvl( i_party_id_cust, 'NULL' )
+                                                     || ' and INSTANCE_ID_CUST '
+                                                     || nvl( i_instance_id_cust, 'NULL' )
+                            , i_additional_data   => substr( i_clob_message, 1, 4000 )
+                            );
+      end if;
+
+      
+      if not cmn_imd_tapi_pck.imd_select_row_uk( i_imd_name      => i_message_name
+                                               , o_rt_imd        => o_rt_imd
+                                               )
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnnomessagedefinition
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => i_message_name
+                            , i_additional_data   => substr( i_clob_message, 1, 4000 )
+                            );
+      end if;
+
+      
+      if not cmn_pmd_tapi_pck.pmd_select_row_uk
+                                     ( i_pmd_imd_id    => o_rt_imd.id
+                                     , i_pmd_pty_id    => o_rt_pty.id
+                                     , i_pmd_direction => cmn_constant.g_con_msg_direction_incoming
+                                     , o_rt_pmd        => o_rt_pmd
+                                     )
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnnopartymsgdefinition
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    =>    'message='
+                                                     || i_message_name
+                                                     || ', imd.id='
+                                                     || o_rt_imd.id
+                                                     || ', pty.id='
+                                                     || o_rt_pty.id
+                                                     || ', direction='
+                                                     || cmn_constant.g_con_msg_direction_incoming
+                            , i_additional_data   => substr( i_clob_message, 1, 4000 )
+                            );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      
+   exception
+      when others
+      then
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end select_pmd_party;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure validate_message( i_xml_message  in  xmltype
+                             , i_clob_message in  clob
+                             )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.validate_message';
+
+      l_xml_message xmltype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if cmn_common.get_parameter_value( i_prr_name => cmn_constant.g_con_validate_incoming_msg )
+            = cmn_constant.g_con_yesno_yes
+      then
+         begin
+            
+            l_xml_message  := i_xml_message;
+   
+            if l_xml_message.getschemaurl is null
+            then
+               
+               l_xml_message := l_xml_message.createschemabasedxml
+                                ( schema => cmn_common.get_parameter_value
+                                            ( i_prr_name => cmn_constant.g_con_xsd_url )
+                                );
+            end if;
+   
+            
+            l_xml_message.schemavalidate( );
+         exception
+            when others
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmninvalidxmlreceived
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_additional_data   => substr( i_clob_message, 1, 4000 )
+                                  );
+         end;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end validate_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure log_processing_time( i_begin_time          in cmn_constant.st_timestamp
+                                , i_max_processing_time in cmn_party_msg_definitions.max_processing_time%type
+                                , i_message_name        in cmn_ifc_msg_definitions.name%type
+                                , i_party_id_cust       in cmn_parties.id_cust%type
+                                , i_ims_id              in cmn_ifc_messages.id%type
+                                )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.log_processing_time';
+
+      l_end_time        cmn_constant.st_timestamp;
+      l_elapsed_time    interval day to second;
+      l_processing_time cmn_party_msg_definitions.max_processing_time%type;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_end_time        := cmn_common.default_timestamp;
+      l_elapsed_time    := l_end_time - i_begin_time;
+      l_processing_time := extract( second from l_elapsed_time )
+                                  + 60 * extract( minute from l_elapsed_time );
+
+      
+      if l_processing_time > i_max_processing_time
+      then
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnmaxprocesstimeexceed
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_warning
+                               , i_info_arguments    => i_message_name
+                                                        || '##' || to_char( l_processing_time, 'FM9990.000' )
+                                                        || '##' || to_char( i_max_processing_time, 'FM9990.000' )
+                               , i_additional_data   => 'Message ID: ' || i_ims_id
+                               );
+      end if;
+
+      
+      if cmn_common.get_parameter_value( i_prr_name  => cmn_constant.g_con_pve_log_msgproctime ) =
+                                                                     cmn_constant.g_con_yesno_yes
+      then
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_cmnmessageprocessingtime
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_notification
+                               , i_info_arguments    => i_message_name
+                                                        || '##' || i_party_id_cust
+                                                        || '##' || to_char( l_processing_time, 'FM9990.000' )
+                               , i_additional_data   => 'Message ID: ' || i_ims_id
+                               , i_autonomous        => false
+                               );
+
+         
+         
+         
+         
+         commit write batch nowait;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end log_processing_time;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_party_from_message( i_xml_message      in  xmltype
+                                   , o_party_id_cust    out cmn_parties.id_cust%type
+                                   , o_instance_id_cust out cmn_parties.instance_id_cust%type
+                                   )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_party_from_message';
+
+      l_xpath_source_processid     varchar2( 4000 )
+                                      := '//' || cmn_constant.g_con_source || '/' || cmn_constant.g_con_processid;
+      l_xpath_source_processid_alt varchar2( 4000 )
+                                      := '//' || cmn_constant.g_con_source || '/ProcessId';
+      l_xpath_source_instanceid    varchar2( 4000 )
+                                      := '//' || cmn_constant.g_con_source || '/' || cmn_constant.g_con_instanceid;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      o_party_id_cust    := cmn_xml_util.extract_value( i_xml   => i_xml_message
+                                                      , i_xpath => l_xpath_source_processid
+                                                      );
+      if o_party_id_cust is null
+      then
+         o_party_id_cust := cmn_xml_util.extract_value( i_xml   => i_xml_message
+                                                      , i_xpath => l_xpath_source_processid_alt
+                                                      );
+      end if;
+      o_instance_id_cust := cmn_xml_util.extract_value( i_xml   => i_xml_message
+                                                      , i_xpath => l_xpath_source_instanceid
+                                                      );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_party_from_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_message_hdl( i_xml_message       in  xmltype
+                                , i_clob_message      in  clob
+                                , i_ind_resultmessage in  boolean
+                                , o_resultmessage     out xmltype
+                                )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_message_hdl';
+
+      l_ims_id                 cmn_ifc_messages.id%type;
+      l_message_name           cmn_ifc_msg_definitions.name%type;
+      l_party_id_cust          cmn_parties.id_cust%type;
+      l_instance_id_cust       cmn_parties.instance_id_cust%type;
+      l_rt_pmd                 cmn_party_msg_definitions%rowtype;
+      l_rt_imd                 cmn_ifc_msg_definitions%rowtype;
+      l_rt_pty                 cmn_parties%rowtype;
+      l_begin_time             cmn_constant.st_timestamp := cmn_common.default_timestamp;
+      l_boolean_message_logged boolean := false;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      validate_message( i_xml_message  => i_xml_message
+                      , i_clob_message => i_clob_message
+                      );
+
+      
+      l_message_name := get_message_name( i_message => i_xml_message );
+
+      
+      get_party_from_message( i_xml_message      => i_xml_message
+                            , o_party_id_cust    => l_party_id_cust
+                            , o_instance_id_cust => l_instance_id_cust
+                            );
+                                                      
+      
+      if l_party_id_cust is not null
+      then
+         
+         
+         select_pmd_party( i_clob_message     => i_clob_message
+                         , i_message_name     => l_message_name
+                         , i_party_id_cust    => l_party_id_cust
+                         , i_instance_id_cust => l_instance_id_cust
+                         , o_rt_pty           => l_rt_pty
+                         , o_rt_imd           => l_rt_imd
+                         , o_rt_pmd           => l_rt_pmd
+                         );
+                         
+      else
+
+         
+         select_pmd_message( i_message             => i_xml_message
+                           , i_message_name        => l_message_name
+                           , i_direction           => cmn_constant.g_con_msg_direction_incoming
+                           , o_pmd_id              => l_rt_pmd.id
+                           , o_processingname      => l_rt_pmd.processingname
+                           , o_max_processing_time => l_rt_pmd.max_processing_time
+                           , o_imd_id              => l_rt_imd.id
+                           , o_pty_id              => l_rt_pty.id
+                           , o_party_id_cust       => l_party_id_cust
+                           );
+      end if;
+
+      
+      if l_rt_pmd.processingname is null
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnnomessagehandler
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => l_message_name
+                            , i_additional_data   => substr( i_clob_message, 1, 4000 )
+                            );
+      end if;
+
+      
+      log_message( i_xml_message => i_xml_message
+                 , i_direction   => cmn_constant.g_con_msg_direction_incoming
+                 , i_imd_id      => l_rt_imd.id
+                 , i_pty_id      => l_rt_pty.id
+                 , o_ims_id      => l_ims_id
+                 );
+      l_boolean_message_logged  := true;
+      
+      
+      execute_message_hdl( i_processingname    => l_rt_pmd.processingname
+                         , i_message           => i_xml_message
+                         , i_ind_resultmessage => i_ind_resultmessage
+                         , o_resultmessage     => o_resultmessage
+                         );
+
+      
+      commit;
+
+      
+      log_processing_time( i_begin_time          => l_begin_time
+                         , i_max_processing_time => l_rt_pmd.max_processing_time
+                         , i_message_name        => l_message_name
+                         , i_party_id_cust       => l_party_id_cust
+                         , i_ims_id              => l_ims_id
+                         );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      
+   exception
+      when others
+      then
+         if not l_boolean_message_logged
+         then
+            log_message( i_xml_message => i_xml_message
+                       , i_direction   => cmn_constant.g_con_msg_direction_incoming
+                       , i_imd_id      => l_rt_imd.id
+                       , i_pty_id      => l_rt_pty.id
+                       , o_ims_id      => l_ims_id
+                       );
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end process_message_hdl;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure log_message( i_message     in       clob
+                        , i_direction   in       cmn_party_msg_definitions.direction%type
+                        , i_imd_id      in       cmn_ifc_msg_definitions.id%type
+                        , i_pty_id      in       cmn_parties.id%type
+                        , o_ims_id      out      cmn_ifc_messages.id%type
+                        )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.log_message(clob)';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      log_message_int( i_message   => convert_to_type( i_message )
+                     , i_direction => i_direction
+                     , i_imd_id    => i_imd_id
+                     , i_pty_id    => i_pty_id
+                     , o_ims_id    => o_ims_id
+                     );
+
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => 'o_ims_id=' || to_char( o_ims_id )
+                             );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         
+         viu_info.handle_info;
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure log_message( i_xml_message  in       xmltype
+                        , i_direction    in       cmn_party_msg_definitions.direction%type
+                        , i_imd_id       in       cmn_ifc_msg_definitions.id%type
+                        , i_pty_id       in       cmn_parties.id%type
+                        , o_ims_id       out      cmn_ifc_messages.id%type
+                        )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.log_message(xml)';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      log_message_int( i_message   => convert_to_type( i_xml_message )
+                     , i_direction => i_direction
+                     , i_imd_id    => i_imd_id
+                     , i_pty_id    => i_pty_id
+                     , o_ims_id    => o_ims_id
+                     );
+
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => 'o_ims_id=' || to_char( o_ims_id )
+                             );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         
+         viu_info.handle_info;
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_message( i_message in clob )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_message(procedure CLOB)';
+
+      l_xml_message     xmltype;
+      l_ims_id          cmn_ifc_messages.id%type;
+      l_app_oper_status boolean;
+      l_process_id      cmn_parties.id_cust%type;
+      l_resultmessage   xmltype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_process_id := get_source_process_id;
+      l_app_oper_status  := acl_application_control.determ_app_operational_status( l_process_id );
+      if not l_app_oper_status
+      then
+         
+         viu_module.leave_module( i_module => l_con_proc_name );
+         return;
+      end if;
+
+      begin
+         l_xml_message  := xmltype( i_message );
+      exception
+         
+         when others
+         then
+            log_message( i_message   => i_message
+                       , i_direction => cmn_constant.g_con_msg_direction_incoming
+                       , i_imd_id    => null
+                       , i_pty_id    => null
+                       , o_ims_id    => l_ims_id
+                       );
+            viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_cmninvalidxmlreceived
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_warning
+                     , i_additional_data   => substr( i_message, 1, 4000 )
+                     );
+      end;
+
+      process_message_hdl( i_xml_message       => l_xml_message
+                         , i_clob_message      => i_message
+                         , i_ind_resultmessage => false
+                         , o_resultmessage     => l_resultmessage
+                         );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         
+         
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         
+         viu_info.handle_info;
+   end process_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_message( i_message in varchar2 )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_message(procedure VARCHAR)';
+
+      l_xml_message     xmltype;
+      l_ims_id          cmn_ifc_messages.id%type;
+      l_app_oper_status boolean;
+      l_process_id      cmn_parties.id_cust%type;
+      l_resultmessage   xmltype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+
+      l_process_id := get_source_process_id;
+      l_app_oper_status  := acl_application_control.determ_app_operational_status( l_process_id );
+      if not l_app_oper_status
+      then
+         
+         viu_module.leave_module( i_module => l_con_proc_name );
+         return;
+      end if;
+
+      begin
+         l_xml_message  := xmltype( i_message );
+      exception
+         
+         when others
+         then
+            log_message( i_message   => i_message
+                       , i_direction => cmn_constant.g_con_msg_direction_incoming
+                       , i_imd_id    => null
+                       , i_pty_id    => null
+                       , o_ims_id    => l_ims_id
+                       );
+            viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_cmninvalidxmlreceived
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_warning
+                     , i_additional_data   => substr( i_message, 1, 4000 )
+                     );
+      end;
+
+      process_message_hdl( i_xml_message       => l_xml_message
+                         , i_clob_message      => i_message
+                         , i_ind_resultmessage => false
+                         , o_resultmessage     => l_resultmessage
+                         );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         
+         
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         
+         viu_info.handle_info;
+   end process_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_message( i_message in xmltype )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_message(procedure XMLTYPE)';
+
+      l_app_oper_status boolean;
+      l_process_id      cmn_parties.id_cust%type;
+      l_resultmessage   xmltype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_process_id := get_source_process_id;
+      l_app_oper_status  := acl_application_control.determ_app_operational_status( l_process_id );
+      if not l_app_oper_status
+      then
+         
+         viu_module.leave_module( i_module => l_con_proc_name );
+         return;
+      end if;
+
+      process_message_hdl( i_xml_message       => i_message
+                         , i_clob_message      => i_message.getclobval( )
+                         , i_ind_resultmessage => false
+                         , o_resultmessage     => l_resultmessage
+                         );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         
+         
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         
+         viu_info.handle_info;
+   end process_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   function process_message( i_message in clob )
+   return   clob
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_message(function)';
+
+      l_xml_message   xmltype;
+      l_ims_id        cmn_ifc_messages.id%type;
+      l_resultmessage xmltype;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      begin
+         l_xml_message  := xmltype( i_message );
+      exception
+         
+         when others
+         then
+            log_message( i_message   => i_message
+                       , i_direction => cmn_constant.g_con_msg_direction_incoming
+                       , i_imd_id    => null
+                       , i_pty_id    => null
+                       , o_ims_id    => l_ims_id
+                       );
+            viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_cmninvalidxmlreceived
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_warning
+                     , i_additional_data   => substr( i_message, 1, 4000 )
+                     );
+      end;
+
+      process_message_hdl( i_xml_message       => l_xml_message
+                         , i_clob_message      => i_message
+                         , i_ind_resultmessage => true
+                         , o_resultmessage     => l_resultmessage
+                         );
+                         
+      log_resultmessage (i_resultmessage => l_resultmessage);
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_resultmessage.getclobval( );
+   exception
+      when others
+      then
+         
+         
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         
+         viu_info.handle_info;
+         
+         
+         return null;
+   end process_message;
+
+   procedure log_message_int( i_message     in       cmn_ifc_messages.message%type
+                            , i_direction   in       cmn_party_msg_definitions.direction%type
+                            , i_imd_id      in       cmn_ifc_msg_definitions.id%type
+                            , i_pty_id      in       cmn_parties.id%type
+                            , o_ims_id      out      cmn_ifc_messages.id%type
+                            )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.log_message_int';
+
+      l_rt_ims                   cmn_ifc_messages%rowtype;
+      l_rt_pmd                   cmn_party_msg_definitions%rowtype;
+      pragma autonomous_transaction;
+
+      
+      
+      
+      
+      function truncate_message( i_message  in  clob )
+         return clob
+      is
+      begin
+         return dbms_lob.substr( i_message, 3900, 1 );
+      end;
+
+      function truncate_message( i_message  in  xmltype )
+         return xmltype is
+      begin
+         
+         return i_message;
+      end;
+
+   begin
+      
+
+
+
+      begin
+         viu_module.enter_module( i_module     => l_con_proc_name
+                                , i_debug_info =>    'imd_id='
+                                                  || to_char( i_imd_id )
+                                                  || ' pty_id='
+                                                  || to_char( i_pty_id )
+                                                  || ' direction='
+                                                  || i_direction
+                                );
+
+         
+         set_message_id( null, i_direction );
+         if cmn_common.get_parameter_value( cmn_constant.g_con_interface_logging ) =
+                                                                           cmn_constant.g_con_yesno_yes
+         then
+            l_rt_ims.date_created  := cmn_common.default_timestamp;
+
+            if cmn_common.get_parameter_value( cmn_constant.g_con_truncate_logging ) =
+                                                                          cmn_constant.g_con_yesno_yes
+            then
+               l_rt_ims.message  := truncate_message( i_message );
+            else
+               l_rt_ims.message  := i_message;
+            end if;
+
+            if cmn_pmd_tapi_pck.pmd_select_row_uk( i_pmd_imd_id    => i_imd_id
+                                                 , i_pmd_pty_id    => i_pty_id
+                                                 , i_pmd_direction => i_direction
+                                                 , o_rt_pmd        => l_rt_pmd
+                                                 )
+            then
+               l_rt_ims.pmd_id  := l_rt_pmd.id;
+            end if;
+
+            cmn_ims_tapi_pck.ims_insert_row( io_rt_ims => l_rt_ims );
+            o_ims_id := l_rt_ims.id;
+            
+            set_message_id( l_rt_ims.id, i_direction );
+         end if;
+         
+         commit write batch nowait;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'o_ims_id=' || to_char( o_ims_id )
+                                );
+      exception
+         when others
+         then
+            rollback;   
+            viu_module.leave_module( i_module     => l_con_proc_name
+                                   , i_debug_info => sqlerrm
+                                   );
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnunabletologmessage
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_additional_data   => sqlerrm
+                               );
+      end;
+
+   exception
+      when others
+      then
+         
+         
+         viu_info.handle_info;
+   end log_message_int;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function message_header( i_target_process_id_cust  in varchar2
+                          , i_target_instance_id_cust in varchar2 default null
+                          )
+      return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.message_header()';
+
+      l_current_time             varchar2 (30);
+      l_source_processid         cmn_constant.st_processid;
+      l_source_instanceid        cmn_constant.st_instanceid;
+      l_header                   xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_current_time      := cmn_common.timestamp_to_varchar( cmn_common.default_timestamp );
+      l_source_processid  := get_source_process_id;
+      l_source_instanceid := get_source_instance_id;
+
+      if l_source_processid is not null
+      then
+         select xmlelement ( "Header"
+                           , xmlelement( "MessageTime", l_current_time )
+                           , xmlelement( "Source"
+                                       , xmlelement ("ProcessID", l_source_processid )
+                                       , case when l_source_instanceid is not null
+                                         then
+                                            xmlelement( "InstanceID", l_source_instanceid )
+                                         end
+                                       )
+                           , xmlelement( "Target"
+                                       , xmlelement ("ProcessID", i_target_process_id_cust )
+                                       , case when i_target_instance_id_cust is not null
+                                         then
+                                            xmlelement( "InstanceID", i_target_instance_id_cust )
+                                         end
+                                       )
+                           )
+           into l_header
+           from dual;
+      else
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnpartynotfound
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => null
+                            , i_additional_data   => null
+                            );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_header;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end message_header;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function create_header( i_target_process_id_cust  in varchar2
+                         , i_target_instance_id_cust in varchar2 default null
+                         )
+      return clob
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_header()';
+
+      l_current_time             varchar2( 30 );
+      l_source_processid         cmn_constant.st_processid;
+      l_source_instanceid        cmn_constant.st_instanceid;
+      l_source                   varchar2( 100 );
+      l_target                   varchar2( 100 );
+      l_header                   clob;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_current_time      := cmn_common.timestamp_to_varchar( cmn_common.default_timestamp );
+      l_source_processid  := get_source_process_id;
+      l_source_instanceid := get_source_instance_id;
+
+      if l_source_processid is not null
+      then
+         l_source  := '<Source><ProcessID>' || l_source_processid || '</ProcessID>'
+                   || case when l_source_instanceid is not null then
+                         '<InstanceID>' || l_source_instanceid || '</InstanceID>'
+                      end
+                   || '</Source>';
+         l_target  := '<Target><ProcessID>' || i_target_process_id_cust || '</ProcessID>'
+                   || case when i_target_instance_id_cust is not null then
+                         '<InstanceID>' || i_target_instance_id_cust || '</InstanceID>'
+                      end
+                   || '</Target>';
+
+         l_header  := '<Header><MessageTime>'
+                   || l_current_time
+                   || '</MessageTime>'
+                   || l_source
+                   || l_target
+                   || '</Header>';
+      else
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnpartynotfound
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => null
+                            , i_additional_data   => null
+                            );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      return l_header;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure  => l_con_proc_name );
+   end create_header;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function create_reference_message( i_ims_id in cmn_ifc_messages.id%type
+                                    , i_messagename in cmn_ifc_msg_definitions.name%type
+                                    )
+      return clob
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_reference_message()';
+
+      l_message                  clob;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      if i_ims_id is not null
+      then
+         l_message  := cmn_constant.g_con_xml_encoding
+                       || '<' || i_messagename || '>'
+                       || '<Msg_Id>' || i_ims_id || '</Msg_Id>'
+                       || '</' || i_messagename || '>';
+      else
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnmessage
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => 'No ims_id found'
+                            );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      return l_message;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_reference_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function add_header( i_message             in   xmltype
+                      , i_source_processid    in   varchar2
+                      , i_source_instanceid   in   varchar2 default null
+                      , i_target_processid    in   varchar2
+                      , i_target_instanceid   in   varchar2 default null
+                      , i_operatorid          in   varchar2 default null
+                      )
+      return xmltype
+   is
+      l_con_procedure   constant cmn_constant.st_proc_name := g_con_package || '.add_header';
+
+      l_clob                     clob;
+      l_headerclob               clob;
+      l_message                  clob;
+      l_start_locator            pls_integer;
+      l_return                   xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_procedure );
+
+      l_message     := i_message.getclobval;
+      l_headerclob  := create_header( i_target_process_id_cust  => i_target_processid
+                                    , i_target_instance_id_cust => i_target_instanceid );
+      dbms_lob.createtemporary( lob_loc => l_clob
+                              , cache   => true
+                              , dur     => dbms_lob.session
+                              );
+      if dbms_lob.substr( l_message
+                        , 5
+                        , 1
+                        ) = '<?xml'
+      then
+         l_start_locator  := dbms_lob.instr( l_message
+                                           , '>'
+                                           , 1
+                                           , 2
+                                           );
+      else
+         l_start_locator  := dbms_lob.instr( l_message
+                                           , '>'
+                                           , 1
+                                           , 1
+                                           );
+      end if;
+
+      dbms_lob.copy( dest_lob    => l_clob
+                   , src_lob     => l_message
+                   , amount      => l_start_locator
+                   , dest_offset => 1
+                   , src_offset  => 1
+                   );
+      dbms_lob.append( l_clob
+                     , l_headerclob
+                     );
+      dbms_lob.copy( dest_lob    => l_clob
+                   , src_lob     => l_message
+                   , amount      => dbms_lob.getlength( l_message ) - l_start_locator
+                   , dest_offset => l_start_locator + dbms_lob.getlength( l_headerclob ) + 1
+                   , src_offset  => l_start_locator + 1
+                   );
+      l_return := xmltype( l_clob );
+
+      dbms_lob.freetemporary( l_clob );
+      
+      viu_module.leave_module( i_module => l_con_procedure );
+      
+      return l_return;
+   exception
+      when others
+      then
+         if dbms_lob.istemporary( l_clob ) > 0
+         then
+            dbms_lob.freetemporary( l_clob );
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_procedure
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_procedure );
+         return null;
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_to_ext_proc( i_epe_id in cmn_external_procedures.id%type
+                             , i_message in xmltype
+                             )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send_to_ext_proc';
+
+      l_epe_rec                  cmn_external_procedures%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      if cmn_epe_tapi_pck.epe_select_row( i_epe_id => i_epe_id
+                                        , o_rt_epe => l_epe_rec
+                                        )
+      then
+         if upper( l_epe_rec.epe_type ) = cmn_constant.g_con_procedure
+         then
+            execute immediate 'BEGIN ' || l_epe_rec.name || '(:param); END;'
+            using             in i_message;
+         else
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmnpartynotfound
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    => null
+                               , i_additional_data   => null
+                               );
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end send_to_ext_proc;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_to_subscriber( i_ssr_id in cmn_subscribers.id%type
+                               , i_message in xmltype
+                               )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send_to_address';
+
+      pragma autonomous_transaction;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      cmn_queue.enqueue_message( i_subscriber_id => i_ssr_id
+                               , i_payload       => i_message
+                               );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      commit;
+   exception
+      when others
+      then
+         rollback;
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end send_to_subscriber;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_to_address( i_ads_id in cmn_addresses.id%type
+                            , i_message in clob
+                            )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send_to_address';
+
+      l_rt_ads                   cmn_addresses%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if cmn_ads_tapi_pck.ads_select_row( i_ads_id => i_ads_id
+                                        , o_rt_ads => l_rt_ads
+                                        )
+      then
+         
+         send_clob( i_clob => i_message
+                  , i_url  => l_rt_ads.url
+                  );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end send_to_address;
+
+   function clean_logging( i_retention_time in pls_integer )
+      return pls_integer
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.clean_logging';
+
+      l_return                   pls_integer;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      delete from cmn_ifc_messages
+      where       date_created <( sysdate -( i_retention_time / 24 ));
+
+      l_return  := sql%rowcount;
+      
+      commit;
+      
+      viu_module.leave_module( i_module => l_con_proc_name );
+      return l_return;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end clean_logging;
+
+   procedure exec_createsendmsg( i_pmd_id in cmn_party_msg_definitions.id%type
+                               , i_arg1 in varchar2
+                               )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.exec_createsendmsg';
+
+      l_rt_pmd                   cmn_party_msg_definitions%rowtype;
+      l_plsql                    varchar2( 400 );
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if cmn_pmd_tapi_pck.pmd_select_row( i_pmd_id => i_pmd_id
+                                        , o_rt_pmd => l_rt_pmd
+                                        )
+      then
+         l_plsql  := 'BEGIN ' || l_rt_pmd.processingname || '(:pmd_id, :arg1); END;';
+
+         execute immediate l_plsql
+         using             i_pmd_id
+                         , i_arg1;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name
+                            , i_additional_data   =>    'Processing name: '
+                                                     || l_rt_pmd.processingname
+                                                     || ', '
+                                                     || sqlerrm
+                            );
+   end exec_createsendmsg;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure set_message_id( i_ims_id in cmn_ifc_messages.id%type
+                           , i_direction in cmn_party_msg_definitions.direction%type
+                           )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.set_message_id';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      case i_direction
+         when cmn_constant.g_con_msg_direction_outgoing
+         then
+            g_outgoing_ims_id := i_ims_id;
+         when cmn_constant.g_con_msg_direction_incoming
+         then
+            g_incoming_ims_id := i_ims_id;
+         when cmn_constant.g_con_msg_direction_returning
+         then
+            g_returning_ims_id := i_ims_id;
+         else
+            null;
+      end case;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_message_id( i_direction in cmn_party_msg_definitions.direction%type )
+      return cmn_ifc_messages.id%type
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_message_id';
+
+      l_return                   cmn_ifc_messages.id%type;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_return :=
+         case i_direction
+            when cmn_constant.g_con_msg_direction_outgoing  then g_outgoing_ims_id
+            when cmn_constant.g_con_msg_direction_incoming  then g_incoming_ims_id
+            when cmn_constant.g_con_msg_direction_returning then g_returning_ims_id
+            else null
+         end;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_return;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end;
+
+end cmn_interface;
+/

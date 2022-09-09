@@ -1,0 +1,104 @@
+create or replace PACKAGE bpi_audit
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'bpi_audit';
+
+   PROCEDURE process_event( i_processid  IN wc_auditlogdata.sourceprocessid%TYPE := NULL
+                          , i_operatorid IN wc_auditlogdata.operatorid%TYPE      := NULL
+                          , i_eventts    IN wc_auditlogdata.eventts%TYPE         := SYS_EXTRACT_UTC(SYSTIMESTAMP)
+                          , i_ipaddress  IN wc_auditlogdata.ipaddress%TYPE       := NULL
+                          , i_event      IN wc_auditlogdata.auditevent%TYPE
+                          , i_value      IN wc_auditlogdata.auditvalue%TYPE      := NULL
+                          );
+END bpi_audit;
+/
+
+
+
+
+package body bpi_audit
+is
+
+procedure process_event( i_processid  in wc_auditlogdata.sourceprocessid%type
+                       , i_operatorid in wc_auditlogdata.operatorid%type
+                       , i_eventts    in wc_auditlogdata.eventts%type
+                       , i_ipaddress  in wc_auditlogdata.ipaddress%type
+                       , i_event      in wc_auditlogdata.auditevent%type
+                       , i_value      in wc_auditlogdata.auditvalue%type
+                       )
+is
+   l_con_proc  constant varchar2(61) := g_con_package||'.process_event';
+
+   l_idevent   wc_auditlogdata.idevent%type;
+   l_processid wc_auditlogdata.sourceprocessid%type;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      select xml2table_idevent_sequence.nextval
+      into   l_idevent
+      from   dual;
+
+      begin
+         select case when id_cust = '019971500000' then 'BPI_01997150'
+                else id_cust
+                end
+         into   l_processid
+         from   acl_application_elements
+         where aet_type='ATN';
+
+      exception
+         when others then l_processid := null;
+      end;
+
+      if l_processid is null
+      then
+         begin
+            select process_id
+            into   l_processid
+            from   dim_applications
+            where  componenttypeid = 'BPI_ATN01'
+			or     componenttypeid = 'BPI_ATN1A';
+         exception
+            when others then null;
+         end;
+      end if;
+
+      insert into wc_auditlogdata
+      ( idevent
+      , key
+      , eventts
+      , insertts
+      , auditevent
+      , auditvalue
+      , eventtime
+      , ipaddress
+      , operatorid
+      , sourceprocessid
+      )
+      values
+      ( l_idevent
+      , l_idevent * 999
+      , i_eventts
+      , sys_extract_utc(systimestamp)
+      , i_event
+      , i_value
+      , to_char(sys_extract_utc(systimestamp), 'yyyy-mm-dd"T"hh24:mi:ss.ff3"Z"')
+      , i_ipaddress
+      , i_operatorid
+      , nvl( l_processid, 'BPI')
+      );
+
+      commit;
+  
+   exception
+      when others then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => 'Auditlog failed (Event='||i_event||')'
+                     );
+   end;
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end process_event;
+
+end bpi_audit;
+/

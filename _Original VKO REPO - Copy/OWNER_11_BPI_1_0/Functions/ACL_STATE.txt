@@ -1,0 +1,30 @@
+function acl_state(i_id_cust in varchar2) return varchar2 is
+
+l_state varchar2(50) := '';
+l_error number := 0;
+l_main_app varchar2(100) := '';
+begin
+  begin
+    l_state := lower(acl_application_control.select_status(i_id_cust));
+  exception when others then
+    l_error := sqlcode;
+    if l_error = -20147 then
+      l_state := 'non-app';
+    else
+      l_state := 'ORA'||to_char(l_error);
+    end if;
+  end;
+  if l_state = 'started' then
+    begin
+      select id_cust into l_main_app from acl_application_elements where aet_type = 'SWH';
+      if lower(acl_application_control.select_status(l_main_app)) != 'started' then
+        
+        l_state := 'started!';
+      end if;
+    exception when others then
+      l_state := 'ORA'||to_char(l_error);
+    end;
+  end if;
+  return l_state;
+end;
+/

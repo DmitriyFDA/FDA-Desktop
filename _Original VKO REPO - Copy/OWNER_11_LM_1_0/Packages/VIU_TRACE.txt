@@ -1,0 +1,218 @@
+create or replace PACKAGE VIU_TRACE IS
+
+V_EXTENDEDLOGGINGACTIVE NUMBER(1, 0) := 0;
+
+PROCEDURE ENTER
+ (I_MODULE IN VARCHAR2
+ );
+FUNCTION GET_CALLS
+ (I_POS IN INTEGER := 1
+ ,I_LENGTH IN INTEGER := NULL
+ )
+ RETURN VARCHAR2;
+PROCEDURE LEAVE;
+END VIU_TRACE;
+/
+
+
+
+
+package body viu_trace is
+
+type call_info_rt is record
+ (proc_name varchar2(60)
+ ,nr_values integer not null := 0
+ ,value_list varchar2(2000)
+);
+
+type call_info_tt is table of viu_trace.call_info_rt index by binary_integer;
+
+t_call_info viu_trace.call_info_tt;
+
+r_curr_call_info viu_trace.call_info_rt;
+v_last_descr varchar2(60);
+
+procedure handle_error
+ (i_sqlcode in integer
+ ,i_sqlerrm in varchar2
+ );
+procedure clear
+ (o_call_info out call_info_rt
+ );
+procedure get_range
+ (i_pos in integer
+ ,i_length in integer
+ ,o_lwb out integer
+ ,o_upb out integer
+ );
+
+
+procedure enter
+ (i_module in varchar2
+ )
+ is
+
+begin
+clear( r_curr_call_info );
+	
+	r_curr_call_info.proc_name := i_module;
+	if	v_extendedloggingactive = viu_configuration.c_boolean_true
+	then
+		t_call_info( t_call_info.count+1 ) := r_curr_call_info;
+		v_last_descr := null;
+	end if;
+exception
+	when 	others
+	then
+		handle_error( sqlcode, sqlerrm);
+end enter;
+function get_calls
+ (i_pos in integer := 1
+ ,i_length in integer := null
+ )
+ return varchar2
+ is
+
+v_lwb integer;
+v_upb integer;
+v_call varchar2(2000);
+r_call_info call_info_rt;
+v_call_list varchar2(2000);
+begin
+v_call := null;
+	v_call_list := null;
+	get_range( i_pos, i_length, v_lwb, v_upb );
+	
+	for	v_idx in v_lwb .. v_upb
+	loop
+		r_call_info := t_call_info(v_idx);
+		v_call := r_call_info.proc_name;
+		
+		if      r_call_info.nr_values <> 0
+		then
+			v_call :=
+				v_call ||
+				'(' ||
+				r_call_info.value_list
+				|| ')';
+		end if;
+		
+		v_call := v_call || ';';
+		if      v_idx = v_lwb
+		then
+			v_call_list := v_call;
+		else
+			v_call_list := v_call_list || v_call;
+		end if;
+		
+	end loop;
+	
+	return  v_call_list;
+exception
+	when    others
+	then
+		return  v_call_list;
+end get_calls;
+procedure handle_error
+ (i_sqlcode in integer
+ ,i_sqlerrm in varchar2
+ )
+ is
+begin
+dbms_output.put_line( substr( i_sqlerrm, 1, 255 ) );
+exception
+	when others
+	then
+			null;
+end handle_error;
+procedure leave
+ is
+begin
+if	v_extendedloggingactive = viu_configuration.c_boolean_true
+	then
+		if	t_call_info.count > 0
+		then
+			t_call_info.delete( t_call_info.count );
+		end if;
+		v_last_descr := null;
+	end if;
+
+	if	t_call_info.exists( t_call_info.count )
+	then
+		r_curr_call_info := t_call_info( t_call_info.count );
+	else
+		clear( r_curr_call_info );
+	end if;
+exception
+	when 	others
+	then
+		handle_error( sqlcode, sqlerrm);
+end leave;
+procedure clear
+ (o_call_info out call_info_rt
+ )
+ is
+begin
+o_call_info.proc_name := null;
+	o_call_info.nr_values := 0;
+	o_call_info.value_list := null;
+end clear;
+procedure get_range
+ (i_pos in integer
+ ,i_length in integer
+ ,o_lwb out integer
+ ,o_upb out integer
+ )
+ is
+
+v_upb integer;
+v_lwb integer;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+	
+begin
+if      i_pos >= 0
+	then
+		v_lwb := greatest(1, i_pos);
+	else
+		
+		
+		v_lwb := t_call_info.count + i_pos + 1;
+	end if;
+	
+	if      i_length is null
+	then
+		v_upb := t_call_info.count;
+	elsif   i_length < 1
+	then
+		v_upb := v_lwb - 1; 
+	else
+		v_upb := least(v_lwb + i_length - 1, t_call_info.count);
+	end if;
+	
+	o_lwb := v_lwb;
+	o_upb := v_upb;
+exception
+	when    others
+	then
+		
+		o_lwb := 1;
+		o_upb := 0;
+end get_range;
+begin
+	v_extendedloggingactive :=
+		nvl(viu_configuration.get_parameter_value(i_param_id => viu_info.c_ptr_extendedloggingactive), viu_configuration.c_boolean_true);
+end viu_trace;
+/

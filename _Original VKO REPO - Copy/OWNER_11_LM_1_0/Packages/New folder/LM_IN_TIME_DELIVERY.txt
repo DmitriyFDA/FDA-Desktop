@@ -1,0 +1,1972 @@
+create or replace PACKAGE lm_in_time_delivery IS
+
+   g_con_package CONSTANT lm_constant.st_proc_name := 'LM_IN_TIME_DELIVERY';
+
+   /* ITY_001: Determine travel times of shortest paths to a destination */
+   FUNCTION shortest_paths
+   ( i_nde_id_end               IN     lm_nodes.id%TYPE
+   , i_pon_id_end               IN     lm_physical_destinations.id%TYPE
+   , i_nde_id_start             IN     lm_nodes.id%TYPE DEFAULT NULL
+   )
+   RETURN nt_node_travel_times;
+
+   /* ITY_002: Monitor the in time delivery of packages */
+   PROCEDURE monitor_in_time_delivery;
+
+   /* ITY_003: Determine the travel time for a package */
+   PROCEDURE determine_travel_time
+   ( i_pid                      IN     lm_packages.pid%TYPE
+   , i_current_rst_id           IN     lm_route_segments.id%TYPE
+   , i_average_travel_time      IN     lm_route_segments.average_travel_time%TYPE
+   , i_report_end_route_segment IN     lm_route_segments.report_end_node%TYPE
+   , i_start_node_curr_rst      IN     lm_route_segments.nde_id_start_node%TYPE
+   , i_end_node_curr_rst        IN     lm_route_segments.nde_id_end_node%TYPE
+   , o_pin_id                      OUT lm_package_instructions.id%TYPE
+   , o_travel_time                 OUT INTEGER
+   );
+
+   /* ITY_005: Process the priority indicator of a package */
+   PROCEDURE process_priority_indicator
+   ( i_travel_time              IN     INTEGER
+   , i_time_limit               IN     lm_task_instructions.time_limit%TYPE
+   , i_pin_id                   IN     lm_package_instructions.id%TYPE
+   , io_rt_pae                  IN OUT lm_packages%ROWTYPE
+   );
+
+   /* ITY_006: Process the indication IN TIME of a package */
+   PROCEDURE process_ind_in_time
+   ( i_travel_time              IN     lm_constant.st_travel_time
+   , i_task_instruction_type    IN     lm_task_definitions.task_instruction_type%TYPE
+   , i_time_limit               IN     lm_task_instructions.time_limit%TYPE
+   , i_current_rst_id           IN     lm_route_segments.id%TYPE
+   , i_pin_id                   IN     lm_package_instructions.id%TYPE
+   , io_rt_pae                  IN OUT lm_packages%ROWTYPE
+   );
+
+   /* ITY_007: Process the expected arrival time */
+   PROCEDURE process_exp_time_to_arrive
+   ( i_travel_time              IN     lm_constant.st_travel_time
+   , io_rt_pae                  IN OUT lm_packages%ROWTYPE
+   );
+
+   /* ITY_010: Calculate shortest routes and travel times to a destination */
+   FUNCTION update_travel_times
+   ( i_pon_id                   IN     lm_physical_destinations.id%TYPE
+   ) RETURN INTEGER;
+
+   /* ITY_015: mark ROUTE travel time as no longer correct */
+   PROCEDURE mark_routes;
+
+   /* ITY_020: Monitor for marked ROUTES */
+   PROCEDURE monitor_marked_routes;
+   
+   /* ITY_025: process marked ROUTES */
+   PROCEDURE process_marked_routes;
+
+END LM_IN_TIME_DELIVERY;
+/
+
+
+
+
+package body lm_in_time_delivery is
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   
+   
+   
+   
+   type rt_minheap_element is
+      record
+      ( nde_id   pls_integer
+      , value    pls_integer
+      );
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   type t_minheap is
+      table of rt_minheap_element
+      index by pls_integer;
+   
+   
+   
+   
+   
+   type t_aux is
+      table of pls_integer   
+      index by pls_integer;  
+      
+   g_minheap                     t_minheap;
+   g_aux                         t_aux;
+
+   procedure heap_init
+   is
+   begin
+      g_minheap.delete;
+      g_aux.delete;
+   end heap_init;
+   
+   function heap_size
+   return   pls_integer
+   is
+   begin
+      return g_minheap.count;
+   end heap_size;
+   
+   procedure heap_swap( i_pos1  in pls_integer
+                      , i_pos2  in pls_integer
+                      )
+   is
+      l_temp_heap rt_minheap_element := g_minheap(i_pos1);
+   begin
+      g_minheap(i_pos1) := g_minheap(i_pos2);
+      g_minheap(i_pos2) := l_temp_heap;
+      
+      g_aux(g_minheap(i_pos1).nde_id) := i_pos1;
+      g_aux(g_minheap(i_pos2).nde_id) := i_pos2;
+   end heap_swap;
+  
+   procedure heap_bubbleup( i_pos   in pls_integer)
+   is
+      l_pos_parent pls_integer := floor(i_pos/2);
+      l_pos        pls_integer := i_pos;
+   begin
+      while l_pos_parent > 0
+            and
+            g_minheap(l_pos_parent).value > g_minheap(l_pos).value
+      loop
+         heap_swap( i_pos1     => l_pos
+                  , i_pos2     => l_pos_parent
+                  );
+         l_pos        := l_pos_parent;
+         l_pos_parent := floor(l_pos_parent/2);
+      end loop;
+   end heap_bubbleup;
+
+   procedure heap_sinkdown( i_pos   in pls_integer)
+   is
+      l_pos_smallest   pls_integer := i_pos;
+      l_pos_leftchild  pls_integer := i_pos*2;
+      l_pos_rightchild pls_integer := i_pos*2+1;
+      l_size           pls_integer := heap_size();
+   begin
+      if g_minheap.exists(l_pos_leftchild)
+      then
+         if l_pos_leftchild <= l_size
+            and
+            g_minheap(l_pos_smallest).value > g_minheap(l_pos_leftchild).value
+         then
+            l_pos_smallest := l_pos_leftchild;
+         end if;
+      end if;
+
+      if g_minheap.exists(l_pos_rightchild)
+      then
+         if l_pos_rightchild <= l_size
+            and
+            g_minheap(l_pos_smallest).value > g_minheap(l_pos_rightchild).value
+         then
+            l_pos_smallest := l_pos_rightchild;
+         end if;
+      end if;
+      if l_pos_smallest != i_pos
+      then
+         heap_swap( i_pos1     => i_pos
+                  , i_pos2     => l_pos_smallest
+                  );
+         heap_sinkdown(i_pos      => l_pos_smallest);
+      end if;
+   end heap_sinkdown;
+
+   procedure heap_ins( i_node  in pls_integer
+                     , i_value in pls_integer
+                     )
+   is
+      l_idx pls_integer := heap_size()+1;
+   begin
+      g_minheap(l_idx).nde_id := i_node;
+      g_minheap(l_idx).value  := i_value;
+      
+      g_aux(i_node) := l_idx;
+      heap_bubbleup(i_pos => l_idx);
+   end heap_ins;
+
+   function heap_extractmin
+   return pls_integer
+   is
+      l_min      rt_minheap_element := g_minheap(1);
+      l_idx_last pls_integer := heap_size();
+   begin
+      g_minheap(1) := g_minheap(l_idx_last);
+      g_aux(g_minheap(1).nde_id) := 1;
+      
+      heap_sinkdown(i_pos => 1);
+      
+      g_minheap.delete(l_idx_last);
+      g_aux.delete(l_min.nde_id);
+      
+      return l_min.nde_id;
+   end heap_extractmin;
+
+   function heap_isempty
+   return boolean
+   is
+   begin
+      return (heap_size()=0);
+   end heap_isempty;
+
+   function heap_exists_elm( i_node  in pls_integer)
+   return boolean
+   is
+   begin
+      return g_aux.exists(i_node);
+   end heap_exists_elm;
+
+   procedure heap_upd( i_node  in pls_integer
+                     , i_value in pls_integer
+                     )
+   is
+      l_pos           pls_integer := g_aux(i_node);
+      l_current_value pls_integer := g_minheap(g_aux(i_node)).value;
+   begin
+      if i_value < l_current_value
+      then
+         g_minheap(l_pos).value := i_value;
+         heap_bubbleup(i_pos => l_pos);
+      elsif i_value > l_current_value
+      then
+         g_minheap(l_pos).value := i_value;
+         heap_sinkdown(i_pos => l_pos);
+      end if;
+   end heap_upd;
+
+   
+   
+   
+   function shortest_paths
+   ( i_nde_id_end               in lm_nodes.id%type
+   , i_pon_id_end               in lm_physical_destinations.id%type
+   , i_nde_id_start             in lm_nodes.id%type default null
+   )
+   return nt_node_travel_times
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.shortest_paths';
+      c_inf           constant pls_integer := power(2,31)-1;
+
+      type rt_nde is
+      record
+      ( nde_id_downstream         lm_nodes.id%type
+      , report_at_start           lm_route_segments.report_start_node%type
+      , travel_time               integer
+      , travel_time_next_rep_node integer
+      );
+
+      type tt_nde_tree is
+      table of rt_nde
+      index by binary_integer;   
+                                 
+                                 
+
+      
+      cursor c_nodes(b_nde_id in lm_nodes.id%type)
+      is
+      select nde.id               as nde_id
+      ,      case nde.id
+                when b_nde_id
+                then 'Y'
+             end                  as ind_end_node 
+      from   lm_nodes          nde
+      ;
+
+      
+      
+      
+      cursor c_nde_upstream
+      ( b_nde_id     in lm_nodes.id%type
+      , b_pon_id_end in lm_physical_destinations.id%type
+      )
+      is
+      select nde.id                           as nde_id
+      ,      nde.nde_type                     as nde_type
+      ,      rst.id                           as rst_id
+      ,      nvl( rst.average_travel_time, 0) as travel_time
+      ,      rst.report_start_node            as report_at_start
+      ,      rst.report_end_node              as report_at_end
+      from   lm_route_segments rst
+      ,      lm_nodes          nde
+      where  rst.nde_id_start_node = nde.id
+      and    rst.nde_id_end_node   = b_nde_id
+      and    
+             
+             
+             
+             
+             
+             
+             
+             (nde.pon_id is null or nde.pon_id <> b_pon_id_end)
+      and    ( 
+               
+               
+               
+               rst.mom_id is null
+               or exists( select ''
+                          from   lm_modes_of_operation mon
+                          where  mon.mom_id = rst.mom_id
+                          and    mon.sct_id = rst.sct_id
+                        )
+               or     rst.mom_id = lm_constant.g_con_mom_mom_mode_normal
+                  and not exists( select ''
+                                  from   lm_modes_of_operation mon2
+                                  where  mon2.sct_id = rst.sct_id
+                                )
+             )
+      and    ( 
+               nde.nde_type in ( lm_constant.g_con_nde_type_merge
+                               , lm_constant.g_con_nde_type_collector_line
+                               )
+              
+              or ( nde.nde_type = lm_constant.g_con_nde_type_divert
+                   and
+                   (
+                    
+                    
+                    
+                    
+                    
+                    exists(select ''
+                           from   lm_route_segment_usages_v rsev
+                           ,      lm_rse_determined_preferences rde
+                           ,      lm_dest_routing_members drr
+                           where  drr.pon_id  = b_pon_id_end
+                           and    rsev.drp_id = drr.drp_id
+                           and    rsev.rst_id = rst.id
+                           and    rde.rse_id  = rsev.id
+                           and    case rde.value
+                                     when lm_constant.g_con_rey_preference_preferred
+                                        then 1
+                                     when lm_constant.g_con_rey_preference_alternat
+                                        then 2
+                                   end
+                                     
+                                     
+                                     
+                                     =
+                                     ( select min( case rde2.value
+                                                      when lm_constant.g_con_rey_preference_preferred
+                                                         then 1
+                                                      when lm_constant.g_con_rey_preference_alternat
+                                                         then 2
+                                                   end )
+                                       from   lm_route_segment_usages_v rsev2
+                                       ,      lm_route_segments rst2
+                                       ,      lm_rse_determined_preferences rde2
+                                       where  rsev2.rst_id = rst2.id
+                                       and    rde2.rse_id  = rsev2.id
+                                       
+                                       and    rst2.nde_id_start_node = rst.nde_id_start_node
+                                       
+                                       and    rsev2.drp_id = rsev.drp_id
+                                       
+                                       and    rsev2.rme_id = rsev.rme_id
+                                       and    ( 
+                                                
+                                                rst2.mom_id is null
+                                                or exists( select ''
+                                                           from   lm_modes_of_operation mon2
+                                                           where  mon2.mom_id = rst2.mom_id
+                                                           and    mon2.sct_id = rst2.sct_id
+                                                         )
+                                                or     rst2.mom_id = lm_constant.g_con_mom_mom_mode_normal
+                                                   and not exists( select ''
+                                                                   from   lm_modes_of_operation mon3
+                                                                   where  mon3.sct_id = rst2.sct_id
+                                                                 )
+                                               )
+                                     )
+                           and    rsev.rme_id = lm_constant.g_con_rme_name_system
+                          )
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    
+                    or (    rst.ind_transport_default = lm_constant.g_con_yesno_yes
+                        and not exists
+                                ( select null
+                                  from   lm_route_segment_usages_v rsev2
+                                  ,      lm_route_segments rst2
+                                  ,      lm_rse_determined_preferences rde2
+                                  ,      lm_dest_routing_members drr2
+                                  where  rsev2.rst_id           = rst2.id
+                                  and    drr2.pon_id            = b_pon_id_end
+                                  and    rsev2.drp_id           = drr2.drp_id
+                                  and    rde2.rse_id            = rsev2.id
+                                  and    rst2.nde_id_start_node = rst.nde_id_start_node
+                                  and    rsev2.rme_id           = lm_constant.g_con_rme_name_system
+                                  and    rde2.value in ( lm_constant.g_con_rey_preference_preferred
+                                                       , lm_constant.g_con_rey_preference_alternat)
+                                  and    ( 
+                                           
+                                              rst2.mom_id is null
+                                           or exists( select ''
+                                                      from   lm_modes_of_operation mon2
+                                                      where  mon2.mom_id = rst2.mom_id
+                                                      and    mon2.sct_id = rst2.sct_id
+                                                    )
+                                           or     rst2.mom_id = lm_constant.g_con_mom_mom_mode_normal
+                                              and not exists( select ''
+                                                              from   lm_modes_of_operation mon3
+                                                              where  mon3.sct_id = rst2.sct_id
+                                                            )
+                                         )
+                                )
+                       )
+                    
+                    
+                    
+                    or     nde.ind_autonomous_routing = lm_constant.g_con_yesno_yes
+                  )
+                 )
+            );
+                     
+      l_nde_id_minimum     binary_integer;
+      l_nt_travel_times    nt_node_travel_times := nt_node_travel_times();
+      l_tt_nde_tree        tt_nde_tree;
+      l_alternative        integer;
+    
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      heap_init;
+      
+      
+      
+      
+      
+      
+      
+      for l_rt_node in c_nodes( b_nde_id => i_nde_id_end)
+      loop
+         l_tt_nde_tree(l_rt_node.nde_id) := null;
+
+         if l_rt_node.ind_end_node = 'Y'
+         then
+            l_tt_nde_tree(l_rt_node.nde_id).travel_time := 0;
+            heap_ins( i_node  => l_rt_node.nde_id
+                    , i_value => 0
+                    );
+         else
+            l_tt_nde_tree(l_rt_node.nde_id).travel_time := c_inf;
+            heap_ins( i_node  => l_rt_node.nde_id
+                    , i_value => c_inf
+                    );
+         end if;
+      end loop;
+
+      while not heap_isempty
+      loop
+
+         
+         l_nde_id_minimum := heap_extractmin();
+
+         if l_tt_nde_tree(l_nde_id_minimum).travel_time = c_inf
+         then
+            
+            exit;
+         end if;
+      
+         
+         l_nt_travel_times.extend(1);
+         l_nt_travel_times(l_nt_travel_times.count)
+            := rt_node_travel_time
+               ( l_nde_id_minimum                                                  
+               , case l_tt_nde_tree(l_nde_id_minimum).travel_time           
+                    when c_inf then null 
+                    else l_tt_nde_tree(l_nde_id_minimum).travel_time
+                 end
+               , l_tt_nde_tree(l_nde_id_minimum).travel_time_next_rep_node  
+               );
+
+         
+         
+         
+         
+         
+         
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+         
+         
+         
+         if i_nde_id_start = l_nde_id_minimum
+         then
+            
+            
+            
+            exit;
+         end if;
+
+         for l_rt_nde_upstream in c_nde_upstream( b_nde_id     => l_nde_id_minimum
+                                                , b_pon_id_end => i_pon_id_end
+                                                )
+         loop
+            if heap_exists_elm(l_rt_nde_upstream.nde_id)
+            then
+               l_alternative := l_tt_nde_tree(l_nde_id_minimum).travel_time + l_rt_nde_upstream.travel_time;
+               if l_alternative < l_tt_nde_tree(l_rt_nde_upstream.nde_id).travel_time
+               then
+                  
+                  
+                  
+                  
+                  l_tt_nde_tree(l_rt_nde_upstream.nde_id).nde_id_downstream := l_nde_id_minimum;
+                  l_tt_nde_tree(l_rt_nde_upstream.nde_id).travel_time       := l_alternative;
+                  l_tt_nde_tree(l_rt_nde_upstream.nde_id).report_at_start   := l_rt_nde_upstream.report_at_start;
+                  
+                  if l_rt_nde_upstream.report_at_end = 'Y'
+                     or
+                     l_tt_nde_tree(l_nde_id_minimum).report_at_start = 'Y'
+                  then
+                     
+                     
+                     
+                     l_tt_nde_tree(l_rt_nde_upstream.nde_id).travel_time_next_rep_node := l_rt_nde_upstream.travel_time;
+                  else
+                     
+                     l_tt_nde_tree(l_rt_nde_upstream.nde_id).travel_time_next_rep_node :=
+                       l_tt_nde_tree(l_nde_id_minimum).travel_time_next_rep_node
+                        + l_rt_nde_upstream.travel_time;
+                  end if;
+                  
+                  heap_upd( i_node  => l_rt_nde_upstream.nde_id
+                          , i_value => l_alternative
+                          );
+               end if;  
+            end if;     
+         end loop;      
+
+      end loop;         
+
+      if i_nde_id_start is not null
+      then
+         
+         for idx in 1 .. l_nt_travel_times.count
+         loop
+            if l_nt_travel_times(idx).nde_id <> i_nde_id_start
+            then
+               l_nt_travel_times.delete(idx);
+            end if;
+         end loop;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_nt_travel_times;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end shortest_paths;
+
+   
+   procedure monitor_in_time_delivery
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package
+                                                       || '.monitor_in_time_delivery';
+
+      
+      cursor c_monitor_in_time_packages(i_time_limit in timestamp)
+      is
+      
+
+
+
+
+
+
+
+
+
+
+      select pae.pid
+      ,      pae.rst_id
+      ,      pae.priority_indicator
+      ,      tpev.id tin_id
+      ,      tpev.event_time
+      ,      tpev.time_limit
+      ,      tdn.task_instruction_type
+      ,      rst.average_travel_time
+      ,      rst.nde_id_start_node
+      ,      rst.nde_id_end_node
+      ,      rst.report_end_node
+      from   lm_packages                pae
+      ,      lm_task_definitions        tdn
+      ,      lm_route_segments          rst
+      ,      lm_tin_active_of_package_v tpev
+      where  pae.pid                   = tpev.pid
+      and    tpev.tdn_id               = tdn.id
+      and    pae.rst_id                = rst.id
+      and    tpev.pss_id               = lm_constant.g_con_pss_name_open
+                                                           
+      and    tpev.time_limit           <= i_time_limit     
+                                                           
+      and    tdn.task_instruction_type = lm_constant.g_con_tin_type_routetooutputpo
+                                                           
+                                                           
+      ;
+
+      
+      cursor c_monitor_in_time_package( i_pid        in lm_packages.pid%type
+                                      , i_time_limit in timestamp
+                                      )
+      is
+      
+
+
+
+
+
+
+
+
+
+
+
+      select pae.pid
+      ,      pae.rst_id
+      ,      pae.priority_indicator
+      ,      tpev.id tin_id
+      ,      tpev.event_time
+      ,      tpev.time_limit
+      ,      tdn.task_instruction_type
+      ,      rst.average_travel_time
+      ,      rst.nde_id_start_node
+      ,      rst.nde_id_end_node
+      ,      rst.report_end_node
+      from   lm_packages pae
+      ,      lm_task_definitions tdn
+      ,      lm_route_segments rst
+      ,      lm_tin_active_of_package_v tpev
+      where  pae.pid                   = i_pid
+      and    pae.pid                   = tpev.pid
+      and    tpev.tdn_id               = tdn.id
+      and    pae.rst_id                = rst.id
+      and    tpev.pss_id               = lm_constant.g_con_pss_name_open
+                                                           
+      and    tpev.time_limit           <= i_time_limit     
+                                                           
+      and    tdn.task_instruction_type = lm_constant.g_con_tin_type_routetooutputpo
+                                                           
+                                                           
+      ;
+
+      l_travel_time                         lm_constant.st_travel_time;
+      l_rt_pae                              lm_packages%rowtype;
+      l_pae_found                           boolean;
+      l_time_limit                          timestamp;
+      l_monitor_in_time_delivery            interval day to second;
+      l_pin_id                              lm_package_instructions.id%type;
+      l_rt_monitor_package                  c_monitor_in_time_package%rowtype;
+      l_pae_updated                         number;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      
+      
+      l_monitor_in_time_delivery  :=
+               numtodsinterval( lm_common.get_parameter_value( lm_constant.g_con_pve_monitor_in_time_del )
+                              , lm_constant.g_con_cmn_numtodsintervalsecon
+                              );
+
+      
+      
+      
+      l_time_limit := lm_common.default_timestamp + l_monitor_in_time_delivery;
+      
+      
+      for rec_monitor_in_time_packages in c_monitor_in_time_packages( i_time_limit  => l_time_limit )
+      loop
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         l_pae_found  := lm_pae_tapi_pck.pae_select_row_upd( i_pae_pid      => rec_monitor_in_time_packages.pid
+                                                           , o_rt_pae       => l_rt_pae
+                                                           );
+
+         
+         open c_monitor_in_time_package( i_pid        => rec_monitor_in_time_packages.pid
+                                        ,i_time_limit => l_time_limit
+                                       );
+         fetch c_monitor_in_time_package into l_rt_monitor_package;
+         l_pae_found := c_monitor_in_time_package%found;
+         close c_monitor_in_time_package;
+      
+         
+         if l_pae_found
+         then
+            
+            lm_in_time_delivery.determine_travel_time( i_pid                      => l_rt_monitor_package.pid
+                                                     , i_current_rst_id           => l_rt_monitor_package.rst_id
+                                                     , i_average_travel_time      => l_rt_monitor_package.average_travel_time
+                                                     , i_report_end_route_segment => l_rt_monitor_package.report_end_node
+                                                     , i_start_node_curr_rst      => l_rt_monitor_package.nde_id_start_node
+                                                     , i_end_node_curr_rst        => l_rt_monitor_package.nde_id_end_node
+                                                     , o_pin_id                   => l_pin_id
+                                                     , o_travel_time              => l_travel_time
+                                                     );
+
+            
+            lm_in_time_delivery.process_exp_time_to_arrive( i_travel_time => l_travel_time
+                                                          , io_rt_pae     => l_rt_pae
+                                                          );
+
+
+
+
+
+
+
+
+
+
+            
+            lm_in_time_delivery.process_ind_in_time( i_travel_time           => l_travel_time
+                                                   , i_task_instruction_type => l_rt_monitor_package.task_instruction_type
+                                                   , i_time_limit            => l_rt_monitor_package.time_limit
+                                                   , i_current_rst_id        => l_rt_monitor_package.rst_id
+                                                   , i_pin_id                => l_pin_id
+                                                   , io_rt_pae               => l_rt_pae
+                                                   );
+            
+            l_pae_updated := lm_pae_tapi_pck.pae_update_row( i_pae_pid      => l_rt_pae.pid
+                                                           , io_rt_pae      => l_rt_pae
+                                                           );
+         end if; 
+
+         
+         commit;
+
+      end loop;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when lm_constant.exc_internal_error
+      then
+         if c_monitor_in_time_package%isopen
+         then
+            close c_monitor_in_time_package;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         
+
+
+
+
+
+
+
+
+         
+         lm_common.abort_application_fatal;
+      when others
+      then
+         if c_monitor_in_time_package%isopen
+         then
+            close c_monitor_in_time_package;
+         end if;
+
+         rollback;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.handle_info;
+   end monitor_in_time_delivery;
+
+   
+   procedure determine_travel_time
+   ( i_pid                      in     lm_packages.pid%type
+   , i_current_rst_id           in     lm_route_segments.id%type
+   , i_average_travel_time      in     lm_route_segments.average_travel_time%type
+   , i_report_end_route_segment in     lm_route_segments.report_end_node%type
+   , i_start_node_curr_rst      in     lm_route_segments.nde_id_start_node%type
+   , i_end_node_curr_rst        in     lm_route_segments.nde_id_end_node%type
+   , o_pin_id                      out lm_package_instructions.id%type
+   , o_travel_time                 out integer
+   )
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_proc_name            constant lm_constant.st_proc_name := g_con_package
+                                                                   || '.DETERMINE_TRAVEL_TIME';
+
+      
+      cursor c_last_package_event( i_pid    in lm_packages.pid%type
+                                 , i_nde_id in lm_nodes.id%type
+                                 )
+      is
+      select max( pet.event_time ) event_time
+      from   lm_package_events pet
+      where  pet.nde_id = i_nde_id
+      and    pet.pid    = i_pid;
+
+      
+      cursor c_package_destinations( i_pid in lm_packages.pid%type)
+      is
+      select pdn.pin_id
+      ,      pdn.pon_id pon_id
+      from   lm_package_destinations pdn
+      
+      ,      lm_pin_active_of_package_v piev
+      where  pdn.pin_id = piev.id
+      and    piev.pid = i_pid
+      ;
+
+      
+      l_travel_time_dest               lm_constant.st_travel_time;
+      l_travel_time_to_repnode_dest    lm_constant.st_travel_time;
+
+      
+      l_travel_time                    lm_constant.st_travel_time;
+      l_travel_time_report_node        lm_constant.st_travel_time;
+
+      
+      rec_last_package_event           c_last_package_event%rowtype;
+      l_time_already_travelled         lm_constant.st_travel_time;
+      l_referencetime                  timestamp;
+      l_rt_roe                         lm_routes%rowtype;
+      l_pin_id                         lm_package_instructions.id%type;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      l_travel_time             := null;
+      l_travel_time_report_node := null;
+
+      
+      
+      l_referencetime :=  lm_common.default_timestamp;
+
+      
+      
+      for rec_package_destinations in c_package_destinations( i_pid => i_pid )
+      loop
+         
+         
+         
+         
+         l_travel_time_dest            := null;
+         l_travel_time_to_repnode_dest := null;
+
+         if lm_roe_tapi_pck.roe_select_row_uk1( i_roe_nde_id => i_end_node_curr_rst
+                                              , i_roe_pon_id => rec_package_destinations.pon_id
+                                              , i_roe_rme_id => lm_constant.g_con_rme_name_system
+                                              , o_rt_roe     => l_rt_roe)
+         then
+            
+            
+            
+            l_travel_time_dest            := lm_common.to_seconds(i_interval => l_rt_roe.total_travel_time);
+            l_travel_time_to_repnode_dest := lm_common.to_seconds(i_interval => l_rt_roe.travel_time_to_next_rep_node);
+         else
+            
+            
+            null;
+         end if; 
+         
+         
+         if l_travel_time is null
+            or l_travel_time_dest < l_travel_time
+         then
+            
+            l_travel_time             := l_travel_time_dest;
+            l_travel_time_report_node := l_travel_time_to_repnode_dest;
+         end if;
+
+         
+         l_pin_id                  := rec_package_destinations.pin_id;
+
+      end loop; 
+
+      
+      
+      
+      
+      if i_report_end_route_segment = lm_constant.g_con_yesno_yes
+      then
+         
+         
+         l_travel_time_report_node := i_average_travel_time;
+      else
+         
+         
+         
+         l_travel_time_report_node := i_average_travel_time + l_travel_time_report_node;
+      end if;
+
+      
+      
+      
+      open c_last_package_event( i_pid    => i_pid
+                               , i_nde_id => i_start_node_curr_rst
+                               );
+
+      fetch c_last_package_event
+      into  rec_last_package_event;
+
+      close c_last_package_event;
+
+      
+      l_time_already_travelled  :=
+                ( cast(l_referencetime as date ) - cast( rec_last_package_event.event_time as date ))
+                * lm_constant.g_con_cmn_seconds_in_day;
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+
+      
+      
+      
+      if l_time_already_travelled is null or l_time_already_travelled < 0
+      then
+         l_time_already_travelled  := 0;
+
+      
+      
+      
+      
+      
+      elsif l_time_already_travelled > l_travel_time_report_node
+      then
+            l_time_already_travelled  := l_travel_time_report_node;
+      end if;
+
+      
+      l_travel_time := l_travel_time + i_average_travel_time - l_time_already_travelled;
+      
+      
+      o_travel_time    := l_travel_time;
+      o_pin_id         := l_pin_id;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_last_package_event%isopen
+         then
+            close c_last_package_event;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end determine_travel_time;
+
+
+   
+   procedure process_priority_indicator
+   ( i_travel_time              in     integer
+   , i_time_limit               in     lm_task_instructions.time_limit%type
+   , i_pin_id                   in     lm_package_instructions.id%type
+   , io_rt_pae                  in out lm_packages%rowtype
+   )
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.PROCESS_PRIORITY_INDICATOR';
+
+      
+      cursor c_package_destinations_by_pin
+       (i_pin_id in lm_package_instructions.id%type
+       )
+      is
+      select pon.id pon_id
+      ,      pon.id_cust pon_id_cust
+      from   lm_package_destinations pdn
+      ,      lm_physical_destinations pon
+      where  pdn.pon_id = pon.id
+      and    pdn.pin_id = i_pin_id;
+
+      l_found                      boolean;
+      l_idx_pon                    binary_integer := 0;
+      l_num                        number;
+      l_interval_travel_time       interval day to second;
+      l_priority_time              interval day to second;
+      l_current_priority_indicator lm_packages.priority_indicator%type;
+      l_rt_pin                     lm_package_instructions%rowtype;
+      l_it_pon_id_cust             lm_common.g_it_pon_id_cust;
+      l_ims_id                     lm_ifc_messages.id%type;
+      l_rt_haa                     lm_handling_areas%rowtype;
+      l_it_pon_id                  lm_topology_administration.g_it_dst;
+      l_nt_screeninginstruction    nt_screeninginstruction;
+      l_package_instruction        lm_common.g_rt_package_instruction;
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      
+      l_current_priority_indicator  := io_rt_pae.priority_indicator;
+      
+      l_interval_travel_time        := numtodsinterval( i_travel_time
+                                                      , lm_constant.g_con_cmn_numtodsintervalsecon
+                                                      );
+      l_priority_time               :=
+                      numtodsinterval( lm_common.get_parameter_value( lm_constant.g_con_pve_priority_time )
+                                     , lm_constant.g_con_cmn_numtodsintervalsecon
+                                     );
+
+      
+      
+      
+      if    i_travel_time is null
+         or ( lm_common.default_timestamp + l_interval_travel_time >= i_time_limit - l_priority_time )
+      then
+         
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_prioritypackage
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_additional_data        =>    'PID = '
+                                                             || io_rt_pae.pid
+                                                             || '; Time Limit = '
+                                                             || i_time_limit
+                                                             || '; Travel time = '
+                                                             || round(i_travel_time)
+                               );
+
+         
+         
+         
+         
+         if l_current_priority_indicator = lm_constant.g_con_pae_priority_low
+         then
+            
+            io_rt_pae.priority_indicator  := lm_constant.g_con_pae_priority_high;
+
+            
+            
+            for idx_pon in c_package_destinations_by_pin( i_pin_id      => i_pin_id )
+            loop
+               l_idx_pon                      := l_idx_pon + 1;
+               l_it_pon_id_cust( l_idx_pon )  := idx_pon.pon_id_cust;
+               l_it_pon_id     ( l_idx_pon )  := idx_pon.pon_id;
+            end loop;
+
+            
+            
+            l_found          := lm_pin_tapi_pck.pin_select_row( i_pin_id      => i_pin_id
+                                                              , o_rt_pin      => l_rt_pin
+                                                              );
+            
+            if l_rt_pin.haa_id is not null
+            then
+               l_found := lm_haa_tapi_pck.haa_select_row( i_haa_id      => l_rt_pin.haa_id
+                                                        , o_rt_haa      => l_rt_haa
+                                                        );
+            end if;
+
+            
+            lm_package_administration.store_package_instruction( i_pid            => l_rt_pin.pid
+                                                               , i_pty_id         => io_rt_pae.pty_id
+                                                               , i_it_pon_id      => l_it_pon_id
+                                                               , i_haa_id         => l_rt_pin.haa_id
+                                                               , o_rt_pin         => l_rt_pin
+                                                               );
+
+            l_nt_screeninginstruction := lm_package_administration.get_screeninginstruction(i_pid => l_rt_pin.pid);
+
+            l_package_instruction.instruction.it_pon_id_cust          := l_it_pon_id_cust;
+            l_package_instruction.instruction.destination_haa_id_cust := l_rt_haa.id_cust;
+            l_package_instruction.instruction.priority_indicator      := io_rt_pae.priority_indicator;
+            l_package_instruction.instruction.release_group_id        := io_rt_pae.rgp_id;
+            l_package_instruction.screeninginstruction                := l_nt_screeninginstruction;
+            
+            
+            lm_package_administration.send_instruction_for_package(i_pty_id     => io_rt_pae.pty_id
+                                                                  ,i_event_time => lm_common.default_timestamp
+                                                                  ,i_pid        => io_rt_pae.pid
+                                                                  ,i_lic_id     => io_rt_pae.lic
+                                                                  ,i_pi         => l_package_instruction
+                                                                  ,o_ims_id     => l_ims_id
+                                                                  );
+
+            
+            l_rt_pin.ims_id  := l_ims_id;
+            l_num            := lm_pin_tapi_pck.pin_update_row( i_pin_id       => l_rt_pin.id
+                                                              , io_rt_pin      => l_rt_pin
+                                                              );
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_priority_indicator;
+
+   
+   procedure process_ind_in_time
+   ( i_travel_time              in     lm_constant.st_travel_time
+   , i_task_instruction_type    in     lm_task_definitions.task_instruction_type%type
+   , i_time_limit               in     lm_task_instructions.time_limit%type
+   , i_current_rst_id           in     lm_route_segments.id%type
+   , i_pin_id                   in     lm_package_instructions.id%type
+   , io_rt_pae                  in out lm_packages%rowtype
+   )
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.process_ind_in_time';
+
+      l_it_lpc                 nt_lpc := nt_lpc();
+      l_timelimit_error        varchar2(40) := lm_constant.g_con_mae_timelimit_expired;
+      l_rt_taskreport_result   lm_package_administration.g_rt_taskreport_result;
+
+      
+      cursor c_package_destinations_by_pin(i_pin_id in lm_package_instructions.id%type)
+      is
+      select pon.id pon_id
+      ,      pon.id_cust pon_id_cust
+      from   lm_package_destinations pdn
+      ,      lm_physical_destinations pon
+      where  pdn.pon_id = pon.id
+      and    pdn.pin_id = i_pin_id;
+      
+      
+      cursor c_destination_proximities
+             ( i_pon_id in lm_physical_destinations.id%type
+             , i_rst_id in lm_route_segments.id%type
+             )
+      is
+      
+      
+      
+      select *
+      from   lm_destination_proximities dpy
+      where  dpy.pon_id = i_pon_id
+      and    dpy.rst_id = i_rst_id;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      if    i_travel_time is null
+      then
+         
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_packageoutoftime
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_additional_data        =>    'PID = '
+                                                             || io_rt_pae.pid
+                                                             || '; Time Limit = '
+                                                             || i_time_limit
+                                                             || '; Travel time = '
+                                                             || round(i_travel_time)
+                               );
+      
+      elsif lm_common.default_timestamp + numtodsinterval( i_travel_time
+                                                         , lm_constant.g_con_cmn_numtodsintervalsecon
+                                                         )
+            >= i_time_limit
+      then
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_packageoutoftime
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_additional_data        =>    'PID = '
+                                                             || io_rt_pae.pid
+                                                             || '; Time Limit = '
+                                                             || i_time_limit
+                                                             || '; Travel time = '
+                                                             || round(i_travel_time)
+                               );
+         
+         if io_rt_pae.ind_in_time = lm_constant.g_con_yesno_yes
+         then
+            
+            io_rt_pae.ind_in_time  := lm_constant.g_con_yesno_no;
+
+            
+            
+            <<physical_desinations>>
+            for rec_pdn in c_package_destinations_by_pin( i_pin_id      => i_pin_id )
+            loop
+
+               
+               
+               <<destination_proximities>>
+               for rec_dpy in c_destination_proximities( i_pon_id      => rec_pdn.pon_id
+                                                       , i_rst_id      => i_current_rst_id
+                                                       )
+               loop
+                  
+                  
+                  
+                  
+                  
+                  l_timelimit_error  := lm_constant.g_con_mae_timelimit_exp_porr;
+                  exit physical_desinations;
+               end loop destination_proximities;
+            end loop physical_desinations;
+            
+            
+            l_rt_taskreport_result.it_lpc := l_it_lpc; 
+            l_rt_taskreport_result.error  := l_timelimit_error;
+            lm_package_administration.send_task_report( i_event_time        => lm_common.default_timestamp
+                                                      , i_bid               => io_rt_pae.bid
+                                                      , i_bid_extension     => io_rt_pae.bid_extension
+                                                      , i_pid               => io_rt_pae.pid
+                                                      , i_area_id_cust      => null
+                                                      , i_zone_id_cust      => null
+                                                      , i_stn_id_cust       => null
+                                                      , i_tasktype          => i_task_instruction_type
+                                                      , i_register_reason   => null
+                                                      , i_deregister_reason => null
+                                                      , i_rt_result         => l_rt_taskreport_result
+                                                      , i_rt_bir            => null
+                                                      );
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_ind_in_time;
+
+
+   
+   procedure process_exp_time_to_arrive
+   ( i_travel_time              in     lm_constant.st_travel_time
+   , io_rt_pae                  in out lm_packages%rowtype
+   )
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.process_exp_time_to_arrive';
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      if i_travel_time is null
+      then
+         
+         io_rt_pae.expected_time_to_arrive := null;
+      else
+         
+         io_rt_pae.expected_time_to_arrive := lm_common.default_timestamp
+                                            + numtodsinterval( i_travel_time
+                                                             , lm_constant.g_con_cmn_numtodsintervalsecon
+                                                             );
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_exp_time_to_arrive;
+
+   
+   function update_travel_times
+   ( i_pon_id                   in     lm_physical_destinations.id%type
+   ) return integer
+   is
+      
+
+
+
+
+
+      l_con_proc_name     constant lm_constant.st_proc_name := g_con_package || '.update_travel_times';
+
+      l_nt_nde_id           nt_nde_id;
+      l_nt_travel_times     nt_node_travel_times := nt_node_travel_times();
+      l_num_rows            integer := 0;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      
+      
+      
+      
+      
+      l_nt_nde_id := lm_topology_administration.get_nde_from_pon(i_pon_id => i_pon_id);
+
+      for idx in 1 .. l_nt_nde_id.count
+      loop
+         l_nt_travel_times := l_nt_travel_times
+                       multiset union all
+                       shortest_paths( i_nde_id_end   => l_nt_nde_id(idx)
+                                     , i_pon_id_end   => i_pon_id
+                                     , i_nde_id_start => null
+                                     );
+      end loop;
+
+      
+      merge /*+ APPEND */ into lm_routes r1
+      using (select distinct                                    nde_id
+             ,      numtodsinterval( travel_time
+                                    , 'SECOND'
+                                   )                            travel_time
+             ,      numtodsinterval( travel_time_next_rep_node
+                                   , 'SECOND'
+                                   )                            travel_time_next_rep_node
+             from   (
+                     select t.nde_id
+                     ,      t.travel_time
+                     ,      t.travel_time_next_rep_node
+                     ,      rank () over (partition by t.nde_id
+                                          order by t.travel_time
+                                          ,        t.travel_time_next_rep_node
+                                         ) t_rank
+                     from   table(l_nt_travel_times) t
+                    )
+             where  t_rank = 1
+            ) r2
+      on    (r1.nde_id = r2.nde_id
+             and
+             r1.pon_id = i_pon_id
+             and
+             r1.rme_id = lm_constant.g_con_rme_name_system
+            )
+      when matched
+      then update
+           set    r1.ind_dirty = lm_constant.g_con_yesno_no
+           ,      r1.total_travel_time = r2.travel_time
+           ,      r1.travel_time_to_next_rep_node = r2.travel_time_next_rep_node
+      when not matched
+      then insert
+           (      nde_id
+           ,      pon_id
+           ,      rme_id
+           ,      total_travel_time
+           ,      travel_time_to_next_rep_node
+           ,      ind_dirty
+           )
+           values
+           (      r2.nde_id
+           ,      i_pon_id
+           ,      lm_constant.g_con_rme_name_system
+           ,      r2.travel_time
+           ,      r2.travel_time_next_rep_node
+           ,      lm_constant.g_con_yesno_no
+           );
+           
+      l_num_rows := sql%rowcount;
+
+      
+      
+      update lm_routes
+      set    ind_dirty                    = lm_constant.g_con_yesno_no
+      ,      total_travel_time            = null
+      ,      travel_time_to_next_rep_node = null
+      where  pon_id    = i_pon_id
+      and    ind_dirty = lm_constant.g_con_yesno_yes
+      ;
+
+      l_num_rows := l_num_rows + sql%rowcount;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_num_rows;
+      
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+   end update_travel_times;
+
+   
+   procedure mark_routes
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_proc_name     constant lm_constant.st_proc_name := g_con_package || '.mark_routes';
+      c_commit_step       constant integer := 10000;
+
+      l_signal_name                varchar2(30);
+      l_send_signal                boolean := false;
+
+      pragma autonomous_transaction;
+
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      
+      
+      loop
+         update lm_routes roe
+         set    roe.ind_dirty = lm_constant.g_con_yesno_yes
+         where  roe.ind_dirty = lm_constant.g_con_yesno_no   
+         and    exists
+                (select ''
+                 from   lm_route_segment_usages_v     rse
+                 ,      lm_dest_routing_members       drr
+                 ,      lm_rse_determined_preferences rde
+                 where  roe.rme_id = rse.rme_id
+                 and    roe.pon_id = drr.pon_id
+                 and    drr.drp_id = rse.drp_id
+                 and    rde.rse_id = rse.id
+                 and    rde.ind_dirty = lm_constant.g_con_yesno_yes
+                )
+         and   rownum <= c_commit_step;
+         if sql%rowcount > 0
+         then
+            l_send_signal := true;
+         end if;
+         if sql%rowcount < c_commit_step 
+         then
+            exit;
+         end if;
+
+         commit;
+      end loop;
+
+      if l_send_signal
+      then
+         
+         l_signal_name := lm_common.build_signal( i_signal_identifier => lm_constant.g_con_alert_travel_times);
+         dbms_alert.signal(l_signal_name, l_signal_name);
+      end if;
+  
+      commit; 
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+   end mark_routes;
+
+   
+   procedure monitor_marked_routes
+   is
+      
+
+
+
+
+
+
+
+
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.monitor_marked_routes';
+      c_timeout       constant integer := 60; 
+
+      l_alertname              varchar2(30);
+      l_alertname_stop         varchar2(30);
+      l_alertname_do_something varchar2(30);
+      l_alertstatus            integer := lm_constant.g_con_alert_waitany_timeout;
+      l_message                varchar2(40);
+
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      
+      l_alertname_stop         := lm_common.build_signal( i_signal_identifier => lm_constant.g_con_alert_travel_time_mon);
+      l_alertname_do_something := lm_common.build_signal( i_signal_identifier => lm_constant.g_con_alert_travel_times);
+
+      
+      
+      dbms_alert.register(l_alertname_stop );
+      dbms_alert.register(l_alertname_do_something );
+
+      loop
+         begin
+            
+            dbms_alert.waitany ( name    => l_alertname
+                               , message => l_message
+                               , status  => l_alertstatus
+                               , timeout => c_timeout
+                              );
+
+            
+            if  l_alertstatus =  lm_constant.g_con_alert_waitany_alert
+            then
+               
+               
+               
+               
+               if l_alertname = l_alertname_stop
+               then
+                  exit;
+               elsif l_alertname = l_alertname_do_something
+               then
+                  
+
+                  
+                  acl_application_control.register_process;
+
+                  process_marked_routes;
+
+                  
+                  acl_application_control.update_aps_stats;
+
+                  commit;
+
+               end if;
+            end if;
+
+            commit;
+         exception
+            when others
+            then
+               
+               
+               
+               rollback;
+               viu_info.handle_info ();
+
+               dbms_alert.waitany ( name          => l_alertname
+                                  , message       => l_message
+                                  , status        => l_alertstatus
+                                  , timeout       => lm_constant.g_con_job_delay
+                                  );
+         end;
+
+      end loop;
+
+      dbms_alert.removeall();
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         rollback;
+         dbms_alert.removeall();
+
+         viu_module.leave_module( i_module      => l_con_proc_name
+                                , i_debug_info  => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure  => l_con_proc_name );
+   end monitor_marked_routes;
+
+   
+   procedure process_marked_routes
+   is
+      
+
+
+
+
+
+
+
+
+      l_con_proc_name     constant lm_constant.st_proc_name := g_con_package || '.process_marked_routes';
+      c_commit_step       constant integer := 10000;
+
+      l_numrows                    integer := 0;
+
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      
+      
+      for rec_pon in ( select distinct pon_id
+                       from   lm_routes
+                       where  ind_dirty = lm_constant.g_con_yesno_yes)
+      loop
+         l_numrows := l_numrows
+                    + lm_in_time_delivery.update_travel_times( i_pon_id => rec_pon.pon_id);
+         if l_numrows > c_commit_step
+         then
+            commit;
+            l_numrows := 0;
+         end if;
+      end loop;
+
+      commit;  
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+   end process_marked_routes;
+
+end lm_in_time_delivery;
+/

@@ -1,0 +1,186 @@
+procedure inspect_table
+( p_title      in varchar2
+, p_table_name in varchar2
+, p_max        in varchar2
+, p_where      in varchar2
+, p_order_by   in varchar2 ) is
+v_msg       varchar2(32767);
+v_stm       varchar2(32767);
+v_table     varchar2(  40);
+v_title     varchar2( 200);
+v_where     varchar2( 500);
+v_order_by  varchar2( 200);
+v_cols      varchar2(32767) := '';
+v_alias     varchar2(32767) := '';
+v_ignore    boolean;
+v_okay      boolean;
+v_count     number(14) := 0;
+v_max       number(14) := 0;
+v_cursor    integer;
+v_return    integer;
+type array_str is table of varchar2(2000) index by pls_integer;
+a_js array_str;
+cursor c_cols (c_col_name varchar2) is
+  select column_name, data_type from user_tab_columns
+  where table_name=c_col_name and rownum <= 80   
+  order by column_id;
+begin
+
+  a_js(1) := 'function exec_requery()';
+  a_js(2) := '{ var h1=trimAll(s_max.value);';
+  a_js(3) := '  var h2=trimAll(s_where.value);';
+  a_js(4) := '  var h3=trimAll(s_order_by.value);';
+  a_js(5) := '  var s1="INSPECT_TABLE?p_title='||p_title||'@p_table_name='||p_table_name||'@p_max="';
+  a_js(6) := '  s1+=h1+"@p_where="+h2+"@p_order_by="+h3;';
+  a_js(7) := '  document.location=s1;';
+  a_js(8) := '}';
+
+  htp.print('<SCRIPT>');
+  for i in 1..a_js.count loop
+    htp.print(replace(a_js(i), '@', chr(38)));
+  end loop;
+  htp.print('</SCRIPT>');
+
+  v_table := upper(p_table_name);
+
+  htp.print(gui.head(ui_menu.full_path(p_title), p_title));
+  htp.print('<div class="neutral">');
+
+  
+  begin
+    v_max := to_number(p_max);
+  exception when others then
+    v_max := 0;
+  end;
+  if v_max < 1 then
+    v_max := 1000;
+  end if;
+
+  
+  for c_rec in c_cols(v_table) loop
+    v_count := v_count+1;
+    if (v_table like 'FACT_BAGTRACE%' and c_rec.column_name = 'EVENTTS') then
+      
+      null;
+    else
+      v_cols  := v_cols||c_rec.column_name||', ';
+      v_alias := v_alias||replace(c_rec.column_name, '_', ' ')||', ';
+    end if;
+  end loop;
+  v_cols := substr(v_cols, 1, length(v_cols)-2);
+  v_alias := substr(v_alias, 1, length(v_alias)-2);
+
+  if v_count > 0 then
+    v_okay := true;
+
+    v_stm := 'SELECT * FROM '||v_table;
+    v_order_by := trim(p_order_by);
+    if (v_order_by is null) or (length(v_order_by)=0) then
+      v_order_by := '';
+    else
+      v_order_by := ' ORDER BY '||v_order_by;
+      begin
+        v_cursor := dbms_sql.open_cursor;
+        dbms_sql.parse( v_cursor, v_stm||v_order_by, dbms_sql.native);
+        dbms_sql.close_cursor(v_cursor);
+      exception
+        when others then
+          v_msg := v_stm||v_order_by||'<br><br>';
+          v_msg := v_msg||sqlerrm||'<br><br>';
+          v_msg := v_msg||'Allowable columns: '||v_cols||', 1..'||to_char(v_count)||'<br>';
+          v_okay := false;
+      end;
+    end if;
+
+    if v_okay then
+      v_stm := 'SELECT COUNT(*) FROM '||v_table;
+      v_where := trim(p_where);
+      if (v_where is null) or (length(v_where)=0) then
+        v_where := '';
+      else
+        v_where := ' WHERE '||v_where;
+      end if;
+
+      begin
+        v_cursor := dbms_sql.open_cursor;
+        dbms_sql.parse( v_cursor, v_stm||v_where, dbms_sql.native);
+        dbms_sql.define_column(v_cursor, 1, v_count);
+        v_return := dbms_sql.execute(v_cursor);
+        v_return := dbms_sql.fetch_rows(v_cursor);
+        dbms_sql.column_value(v_cursor, 1, v_count);
+        dbms_sql.close_cursor(v_cursor);
+      exception
+        when others then
+          v_msg := v_stm||v_where||'<br><br>';
+          v_msg := v_msg||sqlerrm||'<br><br>';
+          v_msg := v_msg||'Allowable columns: '||v_cols||', Expression operators: =,<,>,<=,>=  etc.<br>';
+          v_okay := false;
+      end;
+    end if;
+
+    htp.print('<TABLE>');
+
+    htp.print('<tr><td align=RIGHT valign=MIDDLE>');
+    htp.print('<SPAN TITLE="The maximum number of records to be displayed. Decrease to lighten the load. Increase if necessary to see full table contents.">');
+    htp.print('Maximum number of records : <td><input type=text name=s_max value="'||p_max||'" size="7">');
+    htp.print('</SPAN>');
+
+    htp.print('<tr><td align=RIGHT valign=MIDDLE>');
+    htp.print('<SPAN TITLE="A ''where clause''. For example: ID=''34'' or ID BETWEEN 234 and 456 ">');
+    htp.print('WHERE <td><input type=text name=s_where value="'||p_where||'" size="110">');
+    htp.print('</SPAN>');
+
+    htp.print('<tr><td align=RIGHT valign=MIDDLE>');
+    htp.print('<SPAN TITLE="Column names or column numbers separated by commas. By default ascending (ASC). For descending order specify DESC.">');
+    htp.print('ORDER BY <td><input type=text name=s_order_by value="'||p_order_by||'" size="55">');
+    htp.print('</SPAN>');
+
+    htp.print('<tr><td>'||chr(38)||'nbsp;<td>');
+    htp.print('<SPAN TITLE="Press this button to re-query based on the above given criteria.">');
+    htp.print('<INPUT TYPE="Button" VALUE="Re-query" onClick=exec_requery()>');
+    htp.print('</SPAN>');
+
+    htp.print('</TABLE><br>');
+
+    htp.print('Database table name: '||v_table||'. <b>');
+
+
+    if v_okay then
+
+      if v_count > v_max then
+        htp.print(to_char(v_count)||' Records. Output limited to '||ltrim(rtrim(to_char(v_max, '999999999')))||'.');
+      else
+        htp.print(to_char(v_count)||' Records.');
+      end if;
+      htp.print('</b><br><br>');
+
+
+
+
+
+
+
+      v_ignore :=
+        owa_util.tableprint( v_table
+          , 'border=5 bordercolor="#8B4513" bgcolor="#FFEBCD" cellspacing=2 cellpadding=1'
+          , owa_util.html_table, v_cols, trim(v_where||v_order_by), v_alias, 0, v_max );
+
+      
+
+    else
+      htp.print('<br><br>');
+      htp.print(v_msg);
+    end if;
+  else
+    htp.print('<br>Unknown table or view: '||v_table||'<br><br>');
+  end if;
+
+
+  htp.print('<br></div>');
+  htp.print(gui.tail);
+
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

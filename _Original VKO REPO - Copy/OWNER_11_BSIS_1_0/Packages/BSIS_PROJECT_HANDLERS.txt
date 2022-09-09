@@ -1,0 +1,572 @@
+create or replace PACKAGE bsis_project_handlers
+IS
+   /******************************************************************************
+      NAME:       bsis_project_handlers
+      PURPOSE:
+        Package contains handlers for project specific solutions.
+      REVISIONS:
+      Ver        Date        Author           Description
+      ---------  ----------  ---------------  ------------------------------------
+       1.0       15-10-2021  insrc            Created for VKO DCS implementation
+                                               - Transmit BPM for Dump task
+                                               - Add customer names in ScannerIdentification, ReadingLocation and SenttoLocation
+
+   ******************************************************************************/
+    --
+    PROCEDURE amd_extension_out_for_mds
+    (i_new_xml_data        IN  XMLTYPE
+    ,i_old_xml_data        IN  XMLTYPE
+    ,i_msg_id_obj          IN  ot_msg_id
+    ,i_attribute_id        IN  bsis_attributes.id%TYPE
+    ,o_processed_attribute OUT CLOB
+    );
+    --
+    PROCEDURE processing_information
+    (i_new_xml_data        IN  XMLTYPE
+    ,i_old_xml_data        IN  XMLTYPE
+    ,i_msg_id_obj          IN  ot_msg_id
+    ,i_attribute_id        IN  bsis_attributes.id%TYPE
+    ,o_processed_attribute OUT CLOB
+    );
+    --
+
+END bsis_project_handlers;
+/
+
+
+
+
+package body bsis_project_handlers
+is
+    
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    
+    g_con_package constant varchar2(30) := 'bsis_project_handlers';
+    
+
+    
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure amd_extension_out_for_mds
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'AMDExtensionOut';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.amd_extension_out_for_mds';
+
+      cursor c_check_lpc_not_null
+        (b_bid           in bsis_baggage_data.bid%type
+        ,b_bid_extension in bsis_baggage_data.bid_extension%type
+        )
+      is
+         select 1
+         from   bsis_baggage_data bda
+         where  bda.bid = b_bid
+         and (  b_bid_extension is null
+             or b_bid_extension = bda.bid_extension
+             )
+         and    bda.deleted_ind = 'N'
+         and    bda.lpc         is not null;
+      
+      r_check_lpc_not_null        c_check_lpc_not_null%rowtype;
+      l_add_extension_out_for_mds boolean := false;
+      
+      l_domdoc_new                dbms_xmldom.domdocument;
+      l_doc_nodes_new             dbms_xmldom.domnode;
+      l_domdoc_old                dbms_xmldom.domdocument;
+      l_doc_nodes_old             dbms_xmldom.domnode;
+      
+      l_node_name                 varchar2(200);
+      l_node_value                varchar2(32767);
+      l_el_xpath                  varchar2(200);
+      l_node_value_equipment_type varchar2(32767);
+      l_node_value_eq_type_old    varchar2(32767);
+      l_station_value             varchar2(32767);    
+      
+      l_amdextensionout           varchar2(32767);
+      l_amd_ext_out_facility_id   varchar2(240);
+      l_equipmentid               varchar2(240);
+      l_qualificationstate        varchar2(240);
+      l_qualificationstate_new    varchar2(240);
+      l_qualificationstate_old    varchar2(240);
+      l_recognition_state         varchar2(32767);
+      
+      l_issecondaryflow           boolean := false;
+      l_isitemtracklocation       boolean := false;
+      l_isfallback_airport_tag    boolean := false;
+  begin
+      
+      
+      l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+      l_domdoc_old    := dbms_xmldom.newdomdocument(i_old_xml_data);
+      l_doc_nodes_old := dbms_xmldom.makenode(doc => l_domdoc_old);
+      
+      l_issecondaryflow := bsis_custom_handlers.determ_secondary_flow(i_doc_nodes => l_doc_nodes_new);
+      
+      
+      
+      l_el_xpath   := '//ProcessingInformationExtension/RecognitionState[1]';
+      l_recognition_state := bsis_custom_handlers.get_node_value(l_el_xpath, l_doc_nodes_new);
+      if l_recognition_state is null
+      then
+        l_el_xpath   := '//ProcessingInformationExtensionKeep/RecognitionState[1]';
+        l_recognition_state := bsis_custom_handlers.get_node_value(l_el_xpath, l_doc_nodes_old);
+      end if;
+
+      
+      
+      if substr(i_msg_id_obj.bda_id_obj.lpc,1,1) = '1' or substr(i_msg_id_obj.bda_id_obj.lpc,2,3) = '000' then
+        l_isfallback_airport_tag := true;
+      end if;
+      
+      if nvl(l_recognition_state,'Unknown') <> 'NO_READ' and l_isfallback_airport_tag = false then
+        if i_msg_id_obj.bda_id_obj.bid is not null and
+           i_msg_id_obj.bda_id_obj.lpc is not null
+        then
+          l_add_extension_out_for_mds := true;
+        else 
+          open c_check_lpc_not_null(b_bid           => i_msg_id_obj.bda_id_obj.bid
+                                   ,b_bid_extension => i_msg_id_obj.bda_id_obj.bid_extension
+                                   );
+          fetch c_check_lpc_not_null into r_check_lpc_not_null;
+          l_add_extension_out_for_mds := c_check_lpc_not_null%found;
+          close c_check_lpc_not_null;
+        end if;
+      end if;
+      
+      if l_add_extension_out_for_mds
+      then
+        
+        l_el_xpath   := '//BagProcessedMessageType[1]';
+        l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new);
+        
+        if l_node_value = 'Tracking'
+        then
+          if l_issecondaryflow
+          then
+            l_node_value := null;
+          else
+            l_node_value := bsis_custom_handlers.get_aze_number(i_doc_nodes => l_doc_nodes_new);
+            l_node_value_equipment_type := nvl(bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'AreaZoneSectionToEquipmentType'
+                                                                     ,i_gmd_key  => l_node_value)
+                                              ,'---');
+
+            
+            l_el_xpath   := '//BagEventExtensionIn/Tracking/RouteSegmentID';
+            l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new);
+            if l_node_value is not null
+            then
+              if bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'ItemTrackOnRouteSegment',i_gmd_key  => l_node_value) = 'TRUE'
+              then
+                l_isitemtracklocation := true;
+              end if;
+            end if;
+                                              
+            l_node_value := bsis_custom_handlers.get_aze_number(i_doc_nodes => l_doc_nodes_old);
+            l_node_value_eq_type_old := nvl(bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'AreaZoneSectionToEquipmentType'
+                                                                  ,i_gmd_key  => l_node_value)
+                                           ,'---');
+            if l_node_value_eq_type_old = 'RCK' and l_node_value_equipment_type <> 'RCK'
+            then
+              
+              l_node_value := 'Item Withdrawal';
+            elsif l_node_value_equipment_type = 'RCK' and l_node_value_eq_type_old <> 'RCK'
+            then
+              
+              l_node_value := 'Item Receipt';
+            else
+              l_el_xpath   := '//BagEventExtensionIn/Tracking/PackageState[1]';
+              l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new);
+              if l_node_value in ('OPEN','SUSPECT','MISSING') and l_node_value_equipment_type <> 'RCK' and l_isitemtracklocation
+              then
+                
+                l_node_value := 'Item Track';
+              else
+                l_node_value := null;
+              end if;
+            end if;
+          end if;
+        elsif  l_node_value = 'Qualification'
+        then
+          if l_issecondaryflow
+          then
+            l_node_value := null;
+          else
+            
+            l_el_xpath   := '//ProcessingInformationExtension/ExecutedTask[1]';
+            l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new);
+            if l_node_value is not null
+            then
+
+              
+              l_el_xpath      := '//ProcessingInformationExtension/CurrentStationID[1]';
+              l_station_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new);
+
+              if l_station_value not in (200,733,743,755,93,330) then
+                
+                
+                case l_node_value
+                when 'AutoScan'           then l_node_value := 'Item Qualification';
+                when 'ManualScan'         then l_node_value := 'Item Qualification';
+                when 'DataCapture'        then l_node_value := 'Item Qualification';
+                when 'Retag'              then l_node_value := 'Item Qualification';
+                when 'ScreenL1L2'         then l_node_value := 'Item Screen';
+                when 'ScreenL1L2TC'       then l_node_value := 'Item Screen';
+                when 'ScreenL2'           then l_node_value := 'Item Screen';
+                when 'ScreenL3'           then l_node_value := 'Item Screen';
+                when 'ScreenL3SC'         then l_node_value := 'Item Screen';
+                when 'ScreenL4'           then l_node_value := 'Item Screen';
+                when 'RouteToOutputPoint' then l_node_value := 'Item Sort';
+                when 'Deregistration'     then l_node_value := 'Item Delivery';         
+                when 'Dump'               then l_node_value := 'Item Dump';             
+                when 'StoreProduct'       then l_node_value := 'Item Receipt';
+                when 'Release'            then l_node_value := 'Item Withdrawal';
+                when 'Registration'       then l_node_value := 'Item Acquisition';
+                when 'Reclaim'            then l_node_value := 'Item Acquisition';
+                when 'VolumeScan'         then l_node_value := 'Item Verification';
+                when 'SpecialDestination' then l_node_value := 'Item Identification';
+                when 'OperationalControl' then l_node_value := 'Item Identification';
+                else l_node_value := null;
+                end case;
+              end if;
+            else
+              l_el_xpath   := '//ProcessingInformationExtension/ActiveProcess[1]';
+              if nvl(bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new),'NULL') != nvl(bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_old),'NULL')
+              then
+                
+                l_node_value := 'Item Qualification';
+              else
+                l_node_value := null;
+              end if;
+            end if;
+            if l_node_value is null
+            then
+              
+              l_el_xpath   := '//ProcessingInformationExtension/QualificationState[1]';
+              l_qualificationstate_new := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new);
+              l_el_xpath   := '//ProcessingInformationExtensionKeep/QualificationState[1]';
+              l_qualificationstate_old := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_old);
+              if ((not(l_qualificationstate_old = 'OUTBOUND_FLIGHTPLAN' or l_qualificationstate_old = 'OUTBOUND_FLIGHTPLAN_BATCH') or l_qualificationstate_old is null) and (l_qualificationstate_new = 'OUTBOUND_FLIGHTPLAN' or l_qualificationstate_new = 'OUTBOUND_FLIGHTPLAN_BATCH'))
+              then
+                
+                l_node_value := 'Item Sort';
+              else
+                l_node_value := null;
+              end if;
+            end if;
+          end if;
+        else
+          l_el_xpath   := '//LoadingDataExtension/ULDIdentificationCode/ULDTypeCode';
+          l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes_new);
+          if l_node_value is not null
+          then
+            l_node_value := 'Item Load';
+          else
+            l_node_value := null;
+          end if;
+        end if;
+
+        if l_node_value is not null then
+          l_node_name  := 'TriggerMessageType';
+          l_amdextensionout := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                           ,i_node_value => l_node_value
+                                           ,i_node       => l_amdextensionout);
+        end if;
+      end if;
+      
+      if l_amdextensionout is not null
+      then
+         l_node_name  := c_processed_attribute;
+         l_node_value := l_amdextensionout;
+         o_processed_attribute := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                              ,i_node_value => l_node_value
+                                              ,i_node       => o_processed_attribute);
+      end if;
+
+      dbms_xmldom.freedocument(l_domdoc_new);
+      dbms_xmldom.freedocument(l_domdoc_old);
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc_new);
+        dbms_xmldom.freedocument(l_domdoc_old);
+        if c_check_lpc_not_null%isopen then
+          close c_check_lpc_not_null;
+        end if;
+
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end amd_extension_out_for_mds;
+
+    
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure processing_information
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'ProcessingInformation';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.processing_information';
+      
+      l_domdoc         dbms_xmldom.domdocument;
+      l_doc_nodes      dbms_xmldom.domnode;
+      
+      l_nodelist       dbms_xmldom.domnodelist;
+      l_node           dbms_xmldom.domnode;
+      
+      l_node_name                   varchar2(200);
+      l_node_value                  varchar2(32767);
+      l_mapped_value                varchar2(32767);    
+      l_station_value               varchar2(32767);    
+      l_dest_value                  varchar2(32767);    
+      l_secondaryflow               varchar2(32767);
+      l_el_xpath                    varchar2(200);
+      l_currenthandlingareaid       varchar2(200);
+      l_stationtype                 varchar2(200);
+      l_processinginformation       varchar2(32767);
+      l_issecondaryflow             boolean := false;
+      l_executed_task               varchar2(32767);
+  begin
+      
+      l_domdoc        := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes     := dbms_xmldom.makenode(doc => l_domdoc);
+
+      l_issecondaryflow := bsis_custom_handlers.determ_secondary_flow(i_doc_nodes => l_doc_nodes);
+
+
+
+
+      
+      
+      
+      l_el_xpath   := '//ProcessingInformation/SecondaryCode';
+      l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes);
+
+      if l_node_value is not null then
+        l_node_name  := 'SecondaryCode';
+        l_processinginformation := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                               ,i_node_value => l_node_value
+                                               ,i_node       => l_processinginformation);
+      end if;
+
+      
+      l_el_xpath   := '//LoadSequence/LoadSequenceNumber';
+      l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes);
+
+      if l_issecondaryflow = true or l_node_value is not null
+      then
+        
+        l_node_name  := 'AgentIdentification';
+        l_el_xpath   := '//ProcessingInformationExtension/OperatorID';
+        l_node_value := substr(bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes), 1, 9);
+
+        if l_node_value is not null then
+          l_processinginformation := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                                 ,i_node_value => l_node_value
+                                                 ,i_node       => l_processinginformation);
+        end if;
+      end if;
+
+      
+      l_el_xpath   := '//ProcessingInformationExtension/ExecutedTask[1]';
+      l_executed_task := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes);
+      if l_executed_task in ('ManualScan', 'AutoScan')
+      then
+        l_node_name  := 'ScannerIdentification';
+        l_el_xpath   := '//ProcessingInformation/ScannerIdentification[1]';
+        l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes);
+        
+
+        
+        l_mapped_value := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'StationToEnduserID',i_gmd_key  => l_node_value);
+        if l_mapped_value is not null and l_mapped_value != '#' then
+          l_node_value := l_mapped_value;
+        end if;
+
+        if l_node_value is not null then
+          l_processinginformation := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                                 ,i_node_value => l_node_value
+                                                 ,i_node       => l_processinginformation);
+        end if;
+      end if;
+
+      
+      l_node_name  := 'DateTime';
+      l_el_xpath   := '//ProcessingInformation/DateTime[1]';
+      l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes);
+
+      l_processinginformation := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                             ,i_node_value => l_node_value
+                                             ,i_node       => l_processinginformation);
+
+      
+      l_node_name  := 'ReadingLocation';
+      l_el_xpath   := '//ProcessingInformation/ReadingLocation[1]';
+      l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes);
+      
+
+      
+      
+      
+      if l_node_value in ('01S21','01S22','01S23','01S24','01S25','01S26','01S27','01S28','01S29','01S30',
+                          '01S31','01S32','01S33','01S34','01S35','01S36','01S37','01S38','01S39','01S40',
+                          '01S41','01S42','01S43','01S44','01S45','01S46','01S47','01S48',
+                          '01S51','01S52','01S53','01S54','01S55','01S56','01S57','01S58','01S59','01S60',
+                          '01S61','01S62','01S63','01S64','01S65','01S66','01S67','01S68','01S69','01S70',
+                          '01S71','01S72','01S73','01S74','01S91','01S92','01S732','01S742','01S752','01S754') then
+
+        
+        l_mapped_value := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'StationToEnduserID',i_gmd_key  => l_node_value);
+          if l_mapped_value is not null and l_mapped_value != '#' then
+            l_node_value := l_mapped_value;
+        end if;
+
+      else
+        l_node_value := 'UNKNOWN';
+
+        
+        l_mapped_value := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'StationToEnduserID',i_gmd_key  => l_node_value);
+          if l_mapped_value is not null and l_mapped_value != '#' then
+            l_node_value := l_mapped_value;
+        end if;
+      end if;
+
+      
+      l_mapped_value := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'StationToEnduserID',i_gmd_key  => l_node_value);
+      if l_mapped_value is not null and l_mapped_value != '#' then
+        l_node_value := l_mapped_value;
+      end if;
+
+
+      if l_node_value is not null then
+        l_processinginformation := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                                                    ,i_node_value => l_node_value
+                                                                    ,i_node       => l_processinginformation);
+      end if;
+
+      
+      if l_executed_task in ('RouteToOutputPoint','Dump','Deregistration','ManualDeliver')
+      then
+
+        
+        l_node_name  := 'SentToLocation';
+        l_el_xpath   := '//ProcessingInformation/ReadingLocation[1]';
+        l_node_value := bsis_custom_handlers.get_node_value(l_el_xpath,l_doc_nodes);
+
+        
+
+      
+      
+      
+      if l_node_value in ('01S21','01S22','01S23','01S24','01S25','01S26','01S27','01S28','01S29','01S30',
+                          '01S31','01S32','01S33','01S34','01S35','01S36','01S37','01S38','01S39','01S40',
+                          '01S41','01S42','01S43','01S44','01S45','01S46','01S47','01S48',
+                          '01S51','01S52','01S53','01S54','01S55','01S56','01S57','01S58','01S59','01S60',
+                          '01S61','01S62','01S63','01S64','01S65','01S66','01S67','01S68','01S69','01S70',
+                          '01S71','01S72','01S73','01S74','01S91','01S92','01S732','01S742','01S752','01S754') then
+
+        
+        l_mapped_value := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'StationToEnduserID',i_gmd_key  => l_node_value);
+          if l_mapped_value is not null and l_mapped_value != '#' then
+            l_node_value := l_mapped_value;
+        end if;
+
+      else
+        l_node_value := 'UNKNOWN';
+
+        
+        l_mapped_value := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'StationToEnduserID',i_gmd_key  => l_node_value);
+          if l_mapped_value is not null and l_mapped_value != '#' then
+            l_node_value := l_mapped_value;
+        end if;
+      end if;
+
+        if l_node_value is not null then
+          l_processinginformation := bsis_custom_handlers.compose_node(i_node_name  => l_node_name
+                                                                      ,i_node_value => l_node_value
+                                                                      ,i_node       => l_processinginformation);
+        end if;
+      end if;
+      
+      if l_processinginformation is not null
+      then
+         o_processed_attribute         := bsis_custom_handlers.compose_node(i_node_name   => c_processed_attribute
+                                                                            ,i_node_value => l_processinginformation
+                                                                            ,i_node       => o_processed_attribute);
+      end if;
+      
+      dbms_xmldom.freedocument(l_domdoc);
+      
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end processing_information;
+
+end bsis_project_handlers;
+/

@@ -1,0 +1,329 @@
+create or replace PACKAGE UI_MENU IS
+
+  TYPE M_REC IS RECORD ( TITLE       VARCHAR2(200)
+                       , LINK        VARCHAR2(300)
+                       , PREDECESSOR VARCHAR2(200)
+                       , TYPE        VARCHAR2(  1)
+                       , LEVEL       NUMBER  (  3)
+                       , ID          VARCHAR2( 50) );
+
+  TYPE M_ARR IS TABLE OF M_REC INDEX BY BINARY_INTEGER;
+
+  FUNCTION CONSTRUCT return M_ARR;
+  FUNCTION GET_LEVEL_MENU (p_title IN varchar2, p_arr IN m_arr) return M_ARR;
+  FUNCTION GET_PATH (p_title IN varchar2, p_arr IN m_arr) return VARCHAR2;
+  FUNCTION GET_TITLE (p_link IN varchar2, p_arr IN m_arr) return VARCHAR2;
+  FUNCTION FULL_PATH (p_title IN varchar2) return VARCHAR2;
+  FUNCTION TITLE (p_link IN varchar2) return VARCHAR2;
+  Procedure A_LEVEL_SUB_MENU (p_title IN varchar2, p_head_tail IN boolean default true);
+  FUNCTION HTML_MENU (p_title IN varchar2) return VARCHAR2;
+  Procedure TEXT_MENU;
+  FUNCTION HEAD_FROM_LINK (p_LINK IN varchar2) return VARCHAR2;
+END ui_menu;
+/
+
+
+
+
+package body ui_menu is
+v_title  varchar2(200);
+v_link   varchar2(300);
+
+  function construct return m_arr is
+  v_arr m_arr;
+  v_rec m_rec;
+  v_app_title  varchar2(200) := gui.app_name;
+
+    procedure add_rec ( p_arr         in out m_arr
+                      , p_title       in varchar2
+                      , p_link        in varchar2
+                      , p_predecessor in varchar2
+                      , p_type        in varchar2
+                      , p_level       in number
+                      , p_id          in varchar2  ) is
+    v_rec m_rec;
+    v_num binary_integer;
+    begin
+      v_rec.title       := replace(p_title, '@', chr(38));
+      v_rec.link        := p_link;
+      v_rec.predecessor := replace(p_predecessor, '@', chr(38));
+      v_rec.type        := p_type;
+      v_rec.level       := p_level;
+      v_rec.id          := p_id;
+      v_num             := p_arr.count + 1;
+      p_arr(v_num)      := v_rec;
+    end;
+
+    procedure expand_insp_link ( p_arr in out m_arr, p_index in number ) is
+    begin
+      p_arr(p_index).link := 'inspect_table?p_title='||p_arr(p_index).title||chr(38)||'p_table_name='
+         ||p_arr(p_index).link||chr(38)||'p_max=1000'||chr(38)||'p_where='||chr(38)||'p_order_by=1';
+    end;
+
+  begin
+    
+    
+    
+    
+    
+    
+    
+    
+
+    add_rec(v_arr, v_app_title , '#', null        ,'M' , 0, null);
+
+    add_rec(v_arr, 'Application Control','app_mgt.show_status', v_app_title, 'L', 1 ,null  );
+
+    add_rec(v_arr, 'Configuration' , '#', v_app_title, 'M' , 1, null);
+
+    add_rec(v_arr, 'Update CMN_PARAMETER_VALUES','Update_CMN_PARAMETER_VALUES', 'Configuration', 'L', 2 ,null  );
+    add_rec(v_arr, 'Upload Files'          ,'document_api.upload'     , 'Configuration', 'L', 2 ,null  );
+    add_rec(v_arr, 'Process TOPO'          ,'ProcessTOPO'   , 'Configuration', 'L', 2 ,null  );
+    add_rec(v_arr, 'Process META'          ,'ProcessMETA'   , 'Configuration', 'L', 2 ,null  );
+    add_rec(v_arr, 'Process TOPO_APPL'     ,'ProcessTOPOAPPL'   , 'Configuration', 'L', 2 ,null  );
+    add_rec(v_arr, 'Remove Dimension Version','Remove_DIM_version'   , 'Configuration', 'L', 2 ,null  );
+    add_rec(v_arr, 'Logging Level'         ,'app_mgt.show_loglevel'   , 'Configuration', 'L', 2 ,null  );
+
+
+
+    add_rec(v_arr, 'Standard Reports', '#', v_app_title, 'M' , 1, null);
+
+	add_rec(v_arr, 'Bag Trace per LPC, BID or PID' ,'REP_BAG_TRACE' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'Bag Trace per LPC/BID/PID and/or Period'     ,'REP_BTPERPERIOD' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'Bag Summaries per Period'          ,'REP_BAGSUMMARY' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'RegisterPackages per Period'       ,'REP_REGSPERPERIOD' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'DeRegisterPackages per Period'     ,'REP_DEREGSPERPERIOD' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'TrackingReports per Period'        ,'REP_TRACKREPSPERPERIOD' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'Item Hand Overs per Period'        ,'REP_ITEMHANDOVER' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'Application Performance'  ,'REP_APP_PERFORMANCE' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'Application Logging per Period'      ,'REP_APP_LOGGING' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'Current Application Versions'  ,'REP_VERSIONLOGDATA' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'XML Throughput'  ,'REP_XMLTHROUGHPUT' , 'Standard Reports', 'L', 2 ,null  );
+	add_rec(v_arr, 'Stored XML Messages'  ,'REP_XML_MESSAGE_STORE' , 'Standard Reports', 'L', 2 ,null  );
+
+    add_rec(v_arr, null, null, 'Standard Reports','D', 2, null); 
+
+    begin
+      v_link := cmn_common.get_parameter_value('QlikviewURL');
+    exception when others then
+      v_link := 'not_yet';
+    end;
+   	add_rec(v_arr, 'QlikView Reports', v_link, 'Standard Reports', 'L', 2 ,null  );
+
+  	add_rec(v_arr, null, null, 'Standard Reports','D', 2, null); 
+
+    add_rec(v_arr, 'Throughput' , 'not_yet' , 'Standard Reports', 'L', 2 ,null  );
+    add_rec(v_arr, 'AWR Report' , 'rep_awr' , 'Standard Reports', 'L', 2 ,null  );
+    
+    add_rec(v_arr, 'Browse', 'ui_browser.tables_views', v_app_title, 'L' , 1, null);
+
+    add_rec(v_arr, 'Help', 'bpir_help', v_app_title, 'L' , 1, null);
+
+    add_rec(v_arr, 'Installation Manual','DOCS/InstallationManual.pdf', 'Manuals', 'L', 4 ,null ); 
+    add_rec(v_arr, 'Operator Manual','DOCS/OperatorManual.pdf', 'Manuals', 'L', 4 ,null );         
+    add_rec(v_arr, 'Service Manual','DOCS/ServiceManual.pdf', 'Manuals', 'L', 4 ,null ); 
+
+    return v_arr;
+  end;
+
+  function get_level_menu (p_title in varchar2, p_arr in m_arr) return m_arr is
+  n     number(5) := 0;
+  v_rec m_rec;
+  v_arr m_arr;
+  begin
+    for i in 1..p_arr.count loop
+      if p_title = p_arr(i).predecessor then
+        n:=n+1; v_arr(n) := p_arr(i);
+      end if;
+    end loop;
+    return v_arr;
+  end;
+
+  function get_path (p_title in varchar2, p_arr in m_arr) return varchar2 is
+  v_path   varchar2(300) := '';
+  begin
+    for i in 1..p_arr.count loop
+      if upper(p_title) = upper(p_arr(i).title) then
+        if p_arr(i).predecessor is not null then
+          v_path := ui_menu.get_path(p_arr(i).predecessor, p_arr)||' > '||p_arr(i).predecessor||v_path;
+        else
+          v_path := null;
+        end if;
+        return v_path;
+      end if;
+    end loop;
+    return v_path;
+  end;
+  
+  
+  
+
+  function get_title (p_link in varchar2, p_arr in m_arr) return varchar2 is
+  v_title   varchar2(200) := null;
+  begin
+    for i in 1..p_arr.count loop
+      if upper(p_link) = upper(p_arr(i).link) then
+        v_title := p_arr(i).title;
+        return v_title;
+      end if;
+    end loop;
+    return v_title;
+  end;
+  
+
+
+  function full_path (p_title in varchar2) return varchar2 is
+  v_path varchar2(300);
+  begin
+    v_path := ui_menu.get_path(p_title, ui_menu.construct);
+    if substr(v_path, 1, 3) = ' > ' then
+      v_path := substr(v_path, 4);
+    end if;
+    return v_path||' > '||p_title;
+  end;
+
+  function title (p_link in varchar2) return varchar2 is
+  begin
+    return ui_menu.get_title(p_link, ui_menu.construct);
+  end;
+
+  procedure a_level_sub_menu (p_title in varchar2, p_head_tail in boolean default true) is
+  v_menu    ui_menu.m_arr;
+  v_submenu ui_menu.m_arr;
+  v_count   number(5) := 0;
+  begin
+    begin
+      v_menu    := ui_menu.construct;
+      v_submenu := ui_menu.get_level_menu(p_title, v_menu);
+      if p_head_tail then
+        htp.print(gui.head(ui_menu.full_path(p_title), p_title));
+      end if;
+      htp.print('<div class="neutral">');
+
+      for i in 1..v_submenu.count loop
+        if v_submenu(i).type = 'L' then
+          htp.print(gui.butlnk(v_submenu(i).title, v_submenu(i).link));
+          v_count := v_count + 1;
+        elsif v_submenu(i).type = 'D' then
+          htp.print('<br>');
+        else
+          null;
+        end if;
+      end loop;
+      if v_count < 1 then
+        htp.print('<br>This menu contains no links. <br>');
+      end if;
+      htp.print('<br></div>');
+      if p_head_tail then
+        htp.print(gui.tail);
+      end if;
+    exception
+      when others then htp.print(sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>'));
+    end;
+  end;
+
+  function html_menu (p_title in varchar2) return varchar2 is
+  v_menu        ui_menu.m_arr;
+  v_submenu     ui_menu.m_arr;
+  v_msg         varchar2(32767) := '';
+
+    function m_link(p_rec in ui_menu.m_rec) return varchar2 is
+    v_txt         varchar2(200);
+    v_white_space varchar2( 200) := lpad(chr(38)||'nbsp;',6*8, chr(38)||'nbsp;');
+    begin
+      v_txt := lpad(' ', p_rec.level, ' ');
+      if p_rec.id is not null then
+        v_txt := v_txt||'<li><a id="'||p_rec.id||'" href="'||p_rec.link||'">'||v_white_space||p_rec.title
+                 ||'</a></li>'||chr(13)||chr(10);
+      else
+        v_txt := v_txt||'<li><a href="'||p_rec.link||'">'||p_rec.title
+                 ||'</a></li>'||chr(13)||chr(10);
+      end if;
+      return v_txt;
+    end;
+
+    function d_line (p_level in number) return varchar2 is
+    v_txt varchar2(200);
+    begin
+      v_txt := lpad(' ', p_level, ' ')||'<li><a id="line" href="#"></a></li>'
+               ||chr(13)||chr(10);
+      return v_txt;
+    end;
+
+    function m_head(p_rec in ui_menu.m_rec) return varchar2 is
+    v_txt         varchar2(200);
+    v_white_space varchar2(200) := lpad(chr(38)||'nbsp;',6*8, chr(38)||'nbsp;');
+    begin
+      v_txt := lpad(' ', p_rec.level, ' ');
+      if p_rec.id is not null then
+        v_txt := v_txt||'<li><a id="'||p_rec.id||'" href="#">'
+                 ||v_white_space||p_rec.title
+                 ||'</a><ul>'||chr(13)||chr(10);
+      else
+        v_txt := v_txt||'<li><a href="#">'||p_rec.title||'</a><ul>'
+                 ||chr(13)||chr(10);
+      end if;
+      return v_txt;
+    end;
+
+    function m_tail(p_level in number) return varchar2 is
+    v_txt         varchar2(200);
+    begin
+      v_txt := lpad(' ', p_level, ' ')||'</ul></li>'||chr(13)||chr(10);
+      return v_txt;
+    end;
+
+  begin
+
+    begin
+      v_menu    := ui_menu.construct;
+      v_submenu := ui_menu.get_level_menu(p_title, v_menu);
+
+      for i in 1..v_submenu.count loop
+        if length(v_msg) > 32500 then
+          htp.print('<br>Warning menu has been truncated.<br>');
+          exit;
+        else
+          if v_submenu(i).type = 'L' then
+            v_msg := v_msg||m_link(v_submenu(i));
+          elsif v_submenu(i).type = 'D' then
+            v_msg := v_msg||d_line(v_submenu(i).level);
+          elsif v_submenu(i).type = 'M' then
+            v_msg := v_msg||m_head(v_submenu(i));
+            v_msg := v_msg||ui_menu.html_menu(v_submenu(i).title);
+            v_msg := v_msg||m_tail(v_submenu(i).level);
+          else
+            null;
+          end if;
+        end if;
+      end loop;
+    exception
+      when others then v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+    end;
+
+    return v_msg;
+  end;
+
+
+  procedure text_menu is
+  v_menu    ui_menu.m_arr;
+  v_submenu ui_menu.m_arr;
+  begin
+    begin
+      htp.print('<html><body>');
+      htp.print(ui_menu.html_menu(gui.app_name));
+      htp.print('</body></html>');
+    exception when others then
+      htp.print(sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>'));
+    end;
+  end;
+
+  function head_from_link (p_link in varchar2) return varchar2 is
+  v_title   varchar2(50) := null;
+  begin
+    v_title := ui_menu.title(p_link);
+    return gui.head(ui_menu.full_path(v_title), v_title);
+  end;
+
+end ui_menu;
+/

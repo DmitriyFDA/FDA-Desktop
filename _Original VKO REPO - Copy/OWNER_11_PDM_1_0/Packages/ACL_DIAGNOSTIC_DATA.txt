@@ -1,0 +1,312 @@
+create or replace PACKAGE acl_diagnostic_data
+IS
+   /* Get version data. */
+   FUNCTION get_version_data( i_pty_id_cust VARCHAR2)
+   RETURN XMLTYPE
+   ;
+   /* Get StateOverview Message */
+   FUNCTION get_state_overview
+   RETURN XMLTYPE;
+   --
+END acl_diagnostic_data;
+/
+
+
+
+
+
+package body acl_diagnostic_data
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   g_con_package   constant varchar2( 20 ) := 'acl_diagnostic_data';
+
+   
+   function get_version_data( i_pty_id_cust varchar2)
+   return xmltype
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   is
+      l_con_proc_name  constant acl_constant.st_proc_name
+                                                         := g_con_package || '.get_version_data';
+
+      
+      cursor c_rgy_xml is
+      select xmlagg
+             ( xmlelement
+               ( "Version"
+               , xmlconcat
+                 ( xmlelement( "VersionType", rgy.comp_id)
+                 , xmlelement( "VersionNumber", rgy.version)
+                 , xmlelement( "VersionInstallDate", acl_common.timestamp_to_varchar(rgy.date_installed))
+                 )
+               )
+             )
+      from   acl_registry rgy
+      ;
+      
+      cursor c_rhy_xml is
+      select xmlagg
+             ( xmlelement
+               ( "Patches"
+               , xmlconcat
+                 ( xmlelement( "PatchId", patch_id)
+                 , xmlelement( "PatchInstallDate", acl_common.timestamp_to_varchar(event_time))
+                 )
+               )
+             )
+      from   acl_v_installed_patches
+      where  rank = 1
+      ;
+      l_version        xmltype;
+      l_patches        xmltype;
+      l_message        xmltype;
+      l_event_time_fmt varchar2(100);
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      l_event_time_fmt := acl_common.timestamp_to_varchar( i_timestamp => acl_common.default_timestamp);
+
+      
+      open c_rgy_xml;
+      fetch c_rgy_xml
+      into l_version;
+      close c_rgy_xml;
+
+      
+      open c_rhy_xml;
+      fetch c_rhy_xml
+      into l_patches;
+      close c_rhy_xml;
+
+      
+      select xmlroot
+             ( xmlelement
+               ( "VersionLogData"
+               , ( xmlconcat
+                   ( xmlelement
+                     ( "EventTime"
+                     , l_event_time_fmt
+                     )
+                   , xmlelement
+                     ( "ApplicationId"
+                     , i_pty_id_cust
+                     )
+                   , l_version
+                   , l_patches
+                   )
+                 )
+               )
+             , version acl_constant.g_con_xmlroot
+             )
+      into   l_message
+      from   dual;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      
+      return l_message;
+   exception
+      when others
+      then
+         if c_rgy_xml%isopen
+         then
+            close c_rgy_xml;
+         end if;
+
+         if c_rhy_xml%isopen
+         then
+            close c_rhy_xml;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.handle_info;
+   end get_version_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_state_overview
+     return xmltype
+   is
+      l_con_proc_name constant acl_constant.st_proc_name
+                                  := g_con_package || '.get_state_overview';
+                                  
+                                  
+      
+      cursor c_rhy_xml is
+      select xmlagg( xmlelement( "patchVersion"
+               			, xmlconcat( xmlelement( "PatchVersion", patch_id)
+                 			   , xmlelement( "PatchTime", acl_common.timestamp_to_varchar(event_time)
+                 			   	       )
+                 			   )
+                               )
+             	   )
+      from   acl_v_installed_patches
+      where  rank = 1
+      ;
+      l_patches        xmltype;
+
+      
+      l_return xmltype;
+   begin
+   
+      
+      open c_rhy_xml;
+      fetch c_rhy_xml
+      into l_patches;
+      close c_rhy_xml;
+   
+      for r_state in (select
+      xmlelement("StateOverview"
+                ,xmlattributes('http://www.vanderlande.com/AMCWebService' as "xmlns"
+                              )
+                ,xmlagg(xmlelement("applicationID"
+                                  ,(select aet1.id_cust
+                                    from   acl_application_elements aet1
+                                    where  aet1.aet_type = acl_constant.g_con_aet_type_application
+                                   )
+                                  )
+                       )
+                ,xmlagg((select xmlagg(xmlelement("applicationElement"
+                                                 ,xmlconcat(xmlelement("applicationElementID",aet2.aet_id_cust)
+                                                           ,xmlelement("mandate"
+                                                                      ,case aet2.weight
+                                                                         when 'primary'
+                                                                           then 'MANDATORY_PRIMARY'
+                                                                         when 'secondary'
+                                                                           then 'MANDATORY_SECONDARY'
+                                                                         when 'optional'
+                                                                           then 'OPTIONAL'
+                                                                         else null
+                                                                         end
+                                                                      )
+                                                           ,xmlelement("aggregationType",'ALL_INSTANCES_REQUIRED')
+                                                           ,xmlelement("generalState"
+                                                                      ,case dst.ind_status
+                                                                         when 'Y'
+                                                                           then dst.id_cust
+                                                                         else
+                                                                           aet2.aet_status 
+                                                                                           
+                                                                       end)
+                                                           ,case dst.ind_status
+                                                              when 'Y'
+                                                              then
+                                                                (select xmlagg(xmlelement("detailedState"
+                                                                            ,xmlconcat(xmlelement("byteID",dst2.byte_id)
+                                                                                      ,xmlelement("bitID",dst2.bit_id)
+                                                                                      )
+                                                                                         )
+                                                                            )
+                                                                 from  (select ads.aet_id                     aet_id
+                                                                       ,       dsd.byte_id                    byte_id
+                                                                        ,      dsd.bit_id                     bit_id
+                                                                        from   acl_aet_detailed_states        ads
+                                                                        ,      acl_detailed_state_definitions dsd
+                                                                        where  dsd.id                       = ads.dsd_id
+                                                                        and    ads.ind_status               = 'Y' ) dst2
+                                                                 where dst2.aet_id                          = dst.aet_id
+                                                                 )
+                                                              else
+                                                                null
+                                                            end
+                                                         )
+                                                 )
+                                       order by aet2.aet_id
+                                      )
+                         from   acl_application_elements_v aet2
+                         left   outer join (  select dst3.aet_id
+                                                    ,dst3.ind_status
+                                                    ,asm.id_cust
+                                              from  (select ads.aet_id                     aet_id
+                                                     ,      ads.ind_status                 ind_status
+                                                     ,      max(dsd.asm_id)                asm_id
+                                                     from   acl_aet_detailed_states        ads
+                                                     ,      acl_detailed_state_definitions dsd
+                                                     where  dsd.id                       = ads.dsd_id
+                                                     and    ads.ind_status               = 'Y'
+                                                     group  by ads.aet_id
+                                                              ,ads.ind_status
+                                                    ) dst3
+                                                    ,acl_aet_statuses_dom asm
+                                              where dst3.asm_id = asm.id
+                                            ) dst
+                         on     aet2.aet_id  = dst.aet_id
+                         where  aet2.weight is not null 
+                       ))
+                ,xmlelement("applicationVersionNumber"
+                           ,substr(acl_common.get_application_version_number,1,15)
+                           )
+                ,case when acl_common.get_application_version_descr is not null then xmlelement("applicationVersionDescription"
+                           ,substr(acl_common.get_application_version_descr,1,255)
+                           ) end
+                ,case when acl_common.get_application_installed_dt is not null then xmlelement("installDateTime"
+                           ,acl_common.get_application_installed_dt
+                           ) end
+                ,l_patches
+                ) stateoverview
+      from dual)
+      loop
+        l_return := r_state.stateoverview;
+      end loop;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_state_overview;
+   
+end acl_diagnostic_data;
+/

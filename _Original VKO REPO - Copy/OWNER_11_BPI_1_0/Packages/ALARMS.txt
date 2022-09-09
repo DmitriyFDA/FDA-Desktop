@@ -1,0 +1,1107 @@
+create or replace package ALARMS is
+G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'Alarms';
+procedure SUMMARIZE_FACILITY_ALARMS;
+procedure SUMMARIZE_EQUIPMENTEVENTS;
+procedure SUMMARIZE_ITINFRA_ALARMS;
+end ALARMS;
+/
+
+
+
+
+package body alarms is
+
+procedure fact_facility_alarm_update(p_fact_rec fact_facility_alarm_summaries%rowtype, p_wc_rec wc_processeventreport%rowtype, p_eventts timestamp) is
+l_con_proc_name constant varchar2(61) := g_con_package||'.fact_facility_alarm_update';
+l_eventseconds number(23,8) := p_fact_rec.eventseconds;
+l_duration_ack number(23,4) := p_fact_rec.duration_ack;
+l_duration_went_out number(23,4) := p_fact_rec.duration_went_out;
+l_completed number(1,0) := p_fact_rec.completed;
+begin
+  if p_wc_rec.state = 'CAME_IN' then
+    if p_fact_rec.dt_went_out is not null then
+      l_duration_went_out := interval_in_seconds(p_eventts, p_fact_rec.dt_went_out);
+      l_eventseconds := period.seconds_since_millennium(p_eventts) + (to_number(to_char(p_eventts,'FF')) * 0.00000001);
+    end if;
+    if p_fact_rec.dt_ack_by_operator is not null then
+      l_duration_ack := interval_in_seconds(p_eventts, p_fact_rec.dt_ack_by_operator);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      
+      update fact_facility_alarm_summaries
+      set id = p_wc_rec.key
+        , dt_came_in = p_eventts
+        , duration_ack = l_duration_ack
+        , duration_went_out = l_duration_went_out
+        , severity = nvl(p_wc_rec.severity, 'NA')
+        , statisticalid = p_wc_rec.referencestatisticalid
+        , eventseconds = l_eventseconds
+        , completed = l_completed
+        , m5_periodid = period.periodid(p_eventts,'M5')
+        , h1_periodid = period.periodid(p_eventts,'H1')
+        , d1_periodid = period.periodid(p_eventts,'D1')
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  elsif p_wc_rec.state = 'WENT_OUT' then
+
+    if p_fact_rec.dt_came_in is not null then
+      l_duration_went_out := interval_in_seconds(p_fact_rec.dt_came_in, p_eventts);
+      l_eventseconds := period.seconds_since_millennium(p_fact_rec.dt_came_in) + (to_number(to_char(p_fact_rec.dt_came_in,'FF')) * 0.00000001);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      update fact_facility_alarm_summaries
+      set id = p_wc_rec.key
+        , dt_went_out = p_eventts
+        , duration_went_out = l_duration_went_out
+        , eventseconds = l_eventseconds
+        , completed = l_completed
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  elsif p_wc_rec.state = 'ACK_BY_OPERATOR' then
+
+    if p_fact_rec.dt_came_in is not null then
+      l_duration_ack := interval_in_seconds(p_fact_rec.dt_came_in, p_eventts);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      update fact_facility_alarm_summaries
+      set id = p_wc_rec.key
+        , dt_ack_by_operator = p_eventts
+        , duration_ack = l_duration_ack
+        , completed = l_completed
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  end if;
+  commit;
+end;
+
+procedure fact_facility_alarm_insert(p_wc_rec wc_processeventreport%rowtype, p_eventts timestamp) is
+l_con_proc_name constant varchar2(61) := g_con_package||'.fact_facility_alarm_insert';
+l_dt_came_in timestamp := null;
+l_dt_ack_by_operator timestamp := null;
+l_dt_went_out timestamp := null;
+l_eventseconds number(23,8) := 0;
+l_subjecttype varchar2(100);
+l_subjectid varchar2(100);
+begin
+  l_eventseconds := period.seconds_since_millennium(p_eventts) + (to_number(to_char(p_eventts,'FF')) * 0.00000001);
+  if p_wc_rec.state = 'CAME_IN' then
+    l_dt_came_in := p_eventts;
+  elsif p_wc_rec.state = 'WENT_OUT' then
+    l_dt_went_out := p_eventts;
+  elsif p_wc_rec.state = 'ACK_BY_OPERATOR' then
+    l_dt_ack_by_operator := p_eventts;
+  else
+    return;
+  end if;
+  
+  
+  if p_wc_rec.idtype = 'FlightProcessSubjectID' then
+    l_subjecttype := 'FlightProcessSubjectID';
+    l_subjectid := p_wc_rec.commonprocessdefinitionname ||'.'|| p_wc_rec.processplanname;
+  elsif p_wc_rec.idtype = 'SystemProcessSubjectID' then
+    l_subjecttype := 'SystemProcessSubjectID';
+    l_subjectid := p_wc_rec.commonprocessdefinitionname ||'.'|| p_wc_rec.processdefinitionname;
+  elsif p_wc_rec.idtype = 'LogisticSubjectID' then
+    l_subjecttype := p_wc_rec.logisticsubjectid;
+  
+    if p_wc_rec.logisticsubjectid = 'LinkID' then
+      l_subjectid := p_wc_rec.linkid;
+    elsif p_wc_rec.logisticsubjectid = 'HandlingAreaID' then
+      l_subjectid := p_wc_rec.handlingareaid;
+    elsif p_wc_rec.logisticsubjectid = 'StatusSegmentID' then
+      l_subjectid :=  p_wc_rec.statussegmentid;
+    elsif p_wc_rec.logisticsubjectid = 'LogisticStepID' then
+      l_subjectid := p_wc_rec.logisticstepid;
+    elsif p_wc_rec.logisticsubjectid = 'LogisticStepAtLink' then
+      l_subjectid :=p_wc_rec.logisticstepid ||'.'|| p_wc_rec.handlingareaid;
+    elsif p_wc_rec.logisticsubjectid = 'StationID' then
+      l_subjectid := p_wc_rec.stationid;
+    end if;
+
+  end if;
+  
+  
+  begin
+    insert into fact_facility_alarm_summaries
+    ( id
+    , message_nr
+    , process_id
+    , dt_created
+    , dt_came_in
+    , dt_ack_by_operator
+    , dt_went_out
+    , severity
+    , statisticalid
+    , subjecttype
+    , subjectid
+    , eventseconds
+    , m5_periodid
+    , h1_periodid
+    , d1_periodid )
+    values
+    ( p_wc_rec.key
+    , to_number(p_wc_rec.msgnr)
+    , p_wc_rec.sourceprocessid
+    , p_wc_rec.insertts
+    , l_dt_came_in
+    , l_dt_ack_by_operator
+    , l_dt_went_out
+    , nvl(p_wc_rec.severity, 'NA')
+    , p_wc_rec.referencestatisticalid
+    , l_subjecttype
+    , l_subjectid
+    , l_eventseconds
+    , period.periodid(p_eventts,'M5')
+    , period.periodid(p_eventts,'H1')
+    , period.periodid(p_eventts,'D1')
+    );
+  exception when dup_val_on_index then
+    viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Insert'
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||',0,'||to_char(l_eventseconds)
+      );
+  end;
+end;
+
+
+procedure summarize_facility_alarms is
+l_con_proc_name constant varchar2(61) := g_con_package||'.SUMMARIZE_FACILITY_ALARMS';
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_curr_state varchar2(50) := '';
+l_count number := 0;
+l_msg varchar2(4000);
+l_conf_rec metric_config%rowtype;
+l_fact_rec fact_facility_alarm_summaries%rowtype;
+l_eventts fact_facility_alarm_summaries.dt_came_in%type;
+l_timeout_point fact_facility_alarm_summaries.dt_created%type;
+
+cursor c_alarms(c_id number, c_maxrecs number) is
+select * from
+( select * from wc_processeventreport
+  where key > c_id
+  order by key
+) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  l_timeout_point := sys_extract_utc(systimestamp) - interval '1 00:00:00.0' day to second;
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+      l_conf_rec.max_measurements := 5000;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc_name
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+    else
+    
+      
+      
+      begin
+        update fact_facility_alarm_summaries set completed = 2
+        where completed = 0 and dt_created < l_timeout_point;
+        commit;
+
+      exception when others then
+        l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        viu_info.operator_info( i_ifo_nr    => viu_constant.c_ifo_bpiexceptionupdate
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => 'FACT_FACILITY_ALARM_SUMMARIES'
+                         , i_additional_data        => 'Exception on marking alarms older than one day with COMPLETED = 2. '|| l_msg
+                         );
+      end;
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_facility_alarm_summaries;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing alarms with ID greater than '||to_char(l_max_id)
+                         );
+
+        for c_rec in c_alarms(l_max_id, l_conf_rec.max_measurements) loop
+
+          l_curr_id := c_rec.key;
+          l_curr_state := c_rec.state;
+
+          
+          l_eventts := bpi_util.convert_eventtime(i_eventtime => c_rec.eventtime, i_default_eventts => c_rec.eventts);
+          l_fact_rec.id := null;
+
+          if c_rec.state = 'CAME_IN' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_facility_alarm_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                and dt_came_in is null
+                and (dt_ack_by_operator >= l_eventts or dt_went_out >= l_eventts)
+                and completed = 0 order by id
+              ) where rownum = 1;
+            exception when no_data_found then
+              l_fact_rec.id := null;
+            end;
+          elsif c_rec.state = 'ACK_BY_OPERATOR' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_facility_alarm_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                and dt_ack_by_operator is null
+                and dt_came_in <= l_eventts
+                and completed = 0 order by id
+              ) where rownum = 1;
+            exception when no_data_found then 
+              begin
+                select * into l_fact_rec from
+                ( select * from fact_facility_alarm_summaries
+                  where message_nr = to_number(c_rec.msgnr)
+                  and process_id = c_rec.sourceprocessid
+                  and dt_ack_by_operator is null
+                  and dt_came_in is null
+                  and completed = 0 order by id
+                ) where rownum = 1;
+              exception when no_data_found then
+                l_fact_rec.id := null;
+              end;
+            end;
+          elsif c_rec.state = 'WENT_OUT' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_facility_alarm_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                
+                and dt_came_in <= l_eventts
+                and completed = 0 order by dt_came_in desc
+              ) where rownum = 1;
+              if l_fact_rec.dt_went_out is not null then
+               continue;
+              end if;
+            exception when no_data_found then 
+              begin
+                select * into l_fact_rec from
+                ( select * from fact_facility_alarm_summaries
+                  where message_nr = to_number(c_rec.msgnr)
+                  and process_id = c_rec.sourceprocessid
+                  and dt_went_out is null
+                  and dt_came_in is null
+                  and completed = 0 order by id
+                ) where rownum = 1;
+              exception when no_data_found then
+                l_fact_rec.id := null;
+              end;
+            end;
+          end if;
+
+          if l_fact_rec.id is not null then
+            
+            fact_facility_alarm_update(l_fact_rec, c_rec, l_eventts);
+          else
+            fact_facility_alarm_insert(c_rec, l_eventts);
+          end if;
+
+          
+          l_count := l_count + 1;
+        end loop;
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc_name);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' alarm messages.'
+                         );
+      exception when others then
+        l_msg := l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||to_char(l_fact_rec.id)||', '||l_curr_state ||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+      end;
+    end if;
+  exception when others then
+    l_msg := l_con_proc_name||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+
+
+procedure fact_equipmentevent_update(p_fact_rec fact_equipmentevent_summaries%rowtype, p_wc_rec wc_equipmenteventreport%rowtype, p_eventts timestamp) is
+l_con_proc_name constant varchar2(61) := g_con_package||'.fact_equipmentevent_update';
+l_eventseconds number(23,8) := p_fact_rec.eventseconds;
+l_duration_ack number(23,4) := p_fact_rec.duration_ack;
+l_duration_went_out number(23,4) := p_fact_rec.duration_went_out;
+l_completed number(1,0) := p_fact_rec.completed;
+begin
+  if p_wc_rec.state = 'CAME_IN' then
+    if p_fact_rec.dt_went_out is not null then
+      l_duration_went_out := interval_in_seconds(p_eventts, p_fact_rec.dt_went_out);
+      l_eventseconds := period.seconds_since_millennium(p_eventts) + (to_number(to_char(p_eventts,'FF')) * 0.00000001);
+    end if;
+    if p_fact_rec.dt_ack_by_operator is not null then
+      l_duration_ack := interval_in_seconds(p_eventts, p_fact_rec.dt_ack_by_operator);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      
+      update fact_equipmentevent_summaries
+      set id = p_wc_rec.key
+        , dt_came_in = p_eventts
+        , duration_ack = l_duration_ack
+        , duration_went_out = l_duration_went_out
+        , error_type = p_wc_rec.errortype
+        , severity = nvl(p_wc_rec.severity, 'NA')
+        , description = substr(p_wc_rec.l_description,1,500)
+        , isc_id = bpi_util.isc_id( p_wc_rec.areaid, p_wc_rec.zoneid, p_wc_rec.equipmentid )
+        , eventseconds = l_eventseconds
+        , completed = l_completed
+		, alarm_comment = p_wc_rec.comment_
+        , m5_periodid = period.periodid(p_eventts,'M5')
+        , h1_periodid = period.periodid(p_eventts,'H1')
+        , d1_periodid = period.periodid(p_eventts,'D1')
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  elsif p_wc_rec.state = 'WENT_OUT' then
+
+    if p_fact_rec.dt_came_in is not null then
+      l_duration_went_out := interval_in_seconds(p_fact_rec.dt_came_in, p_eventts);
+      l_eventseconds := period.seconds_since_millennium(p_fact_rec.dt_came_in)  + (to_number(to_char(p_fact_rec.dt_came_in,'FF')) * 0.00000001);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      update fact_equipmentevent_summaries
+      set id = p_wc_rec.key
+        , dt_went_out = p_eventts
+        , duration_went_out = l_duration_went_out
+        , eventseconds = l_eventseconds
+        , completed = l_completed
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  elsif p_wc_rec.state = 'ACK_BY_OPERATOR' then
+
+    if p_fact_rec.dt_came_in is not null then
+      l_duration_ack := interval_in_seconds(p_fact_rec.dt_came_in, p_eventts);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      update fact_equipmentevent_summaries
+      set id = p_wc_rec.key
+        , dt_ack_by_operator = p_eventts
+        , duration_ack = l_duration_ack
+        , completed = l_completed
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  end if;
+  commit;
+end;
+
+
+
+procedure fact_equipmentevent_insert(p_wc_rec wc_equipmenteventreport%rowtype, p_eventts timestamp) is
+l_con_proc_name constant varchar2(61) := g_con_package||'.fact_equipmentevent_insert';
+l_dt_came_in timestamp := null;
+l_dt_ack_by_operator timestamp := null;
+l_dt_went_out timestamp := null;
+l_eventseconds number(23,8) := 0;
+begin
+  l_eventseconds := period.seconds_since_millennium(p_eventts)  + (to_number(to_char(p_eventts,'FF')) * 0.00000001);
+  if p_wc_rec.state = 'CAME_IN' then
+    l_dt_came_in := p_eventts;
+  elsif p_wc_rec.state = 'WENT_OUT' then
+    l_dt_went_out := p_eventts;
+  elsif p_wc_rec.state = 'ACK_BY_OPERATOR' then
+    l_dt_ack_by_operator := p_eventts;
+  else
+    return;
+  end if;
+  begin
+    insert into fact_equipmentevent_summaries
+    ( id
+    , message_nr
+    , process_id
+    , dt_created
+    , dt_came_in
+    , dt_ack_by_operator
+    , dt_went_out
+    , error_type
+    , severity
+    , description
+    , isc_id
+    , eventseconds
+    , alarm_comment
+    , m5_periodid
+    , h1_periodid
+    , d1_periodid
+    , areaid
+    , zoneid
+    , equipmentid
+    , mis_address
+    )
+    values
+    ( p_wc_rec.key
+    , to_number(p_wc_rec.msgnr)
+    , p_wc_rec.sourceprocessid
+    , p_wc_rec.insertts
+    , l_dt_came_in
+    , l_dt_ack_by_operator
+    , l_dt_went_out
+    , p_wc_rec.errortype
+    , nvl(p_wc_rec.severity, 'NA')
+    , substr(p_wc_rec.l_description,1,500)
+    , bpi_util.isc_id( p_wc_rec.areaid, p_wc_rec.zoneid, p_wc_rec.equipmentid )
+    , l_eventseconds
+    , p_wc_rec.comment_
+    , period.periodid(p_eventts, 'M5')
+    , period.periodid(p_eventts, 'H1')
+    , period.periodid(p_eventts, 'D1')
+    , substr(trim(p_wc_rec.areaid),1,5)
+    , substr(trim(p_wc_rec.zoneid),1,3)
+    , substr(trim(p_wc_rec.equipmentid),1,5)
+    , bpi_util.bytenumbervaluepair2misaddress(p_wc_rec.bytenumber,p_wc_rec.value)
+    );
+  exception when dup_val_on_index then
+    viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Insert'
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||',0,'||to_char(l_eventseconds)
+      );
+  end;
+end;
+
+
+procedure summarize_equipmentevents is
+l_con_proc_name constant varchar2(61) := g_con_package||'.SUMMARIZE_EQUIPMENTEVENTS';
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_curr_state varchar2(50) := '';
+l_count number := 0;
+l_msg varchar2(4000);
+l_conf_rec metric_config%rowtype;
+l_fact_rec fact_equipmentevent_summaries%rowtype;
+l_eventts fact_equipmentevent_summaries.dt_came_in%type;
+l_timeout_point fact_equipmentevent_summaries.dt_created%type;
+
+cursor c_alarms(c_id number, c_maxrecs number) is
+select * from
+( select * from wc_equipmenteventreport
+  where key > c_id
+  
+  and hostname is null and service is null
+  
+  and eventtime is not null
+  order by key
+) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  l_timeout_point := sys_extract_utc(systimestamp) - interval '1 00:00:00.0' day to second;
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+      l_conf_rec.max_measurements := 5000;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc_name
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+    else
+
+      
+      
+      begin
+        update fact_equipmentevent_summaries set completed = 2
+        where completed = 0 and dt_created < l_timeout_point;
+        commit;
+      exception when others then
+        l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        viu_info.operator_info( i_ifo_nr    => viu_constant.c_ifo_bpiexceptionupdate
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => 'FACT_EQUIPMENTEVENT_SUMMARIES'
+                         , i_additional_data        => 'Exception on marking alarms older than one day with COMPLETED = 2. '|| l_msg
+                         );
+      end;
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_equipmentevent_summaries;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing alarms with ID greater than '||to_char(l_max_id)
+                         );
+
+        for c_rec in c_alarms(l_max_id, l_conf_rec.max_measurements) loop
+
+          l_curr_id := c_rec.key;
+          l_curr_state := c_rec.state;
+
+          
+          l_eventts := bpi_util.convert_eventtime(i_eventtime => c_rec.eventtime, i_default_eventts => c_rec.eventts);
+          l_fact_rec.id := null;
+
+          if c_rec.state = 'CAME_IN' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_equipmentevent_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                and dt_came_in is null
+                and (dt_ack_by_operator >= l_eventts or dt_went_out >= l_eventts)
+                and completed = 0 order by id
+              ) where rownum = 1;
+            exception when no_data_found then
+              l_fact_rec.id := null;
+            end;
+          elsif c_rec.state = 'ACK_BY_OPERATOR' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_equipmentevent_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                and dt_ack_by_operator is null
+                and dt_came_in <= l_eventts
+                and completed = 0 order by id
+              ) where rownum = 1;
+            exception when no_data_found then 
+              begin
+                select * into l_fact_rec from
+                ( select * from fact_equipmentevent_summaries
+                  where message_nr = to_number(c_rec.msgnr)
+                  and process_id = c_rec.sourceprocessid
+                  and dt_ack_by_operator is null
+                  and dt_came_in is null
+                  and dt_went_out >= l_eventts
+                  and completed = 0 order by id
+                ) where rownum = 1;
+              exception when no_data_found then
+                l_fact_rec.id := null;
+              end;
+            end;
+          elsif c_rec.state = 'WENT_OUT' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_equipmentevent_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                
+                and dt_came_in <= l_eventts
+                and completed = 0 order by dt_came_in desc
+              ) where rownum = 1;
+              if l_fact_rec.dt_went_out is not null then
+               continue;
+              end if;
+            exception when no_data_found then 
+              begin
+                select * into l_fact_rec from
+                ( select * from fact_equipmentevent_summaries
+                  where message_nr = to_number(c_rec.msgnr)
+                  and process_id = c_rec.sourceprocessid
+                  and dt_went_out is null
+                  and dt_came_in is null
+                  and completed = 0 order by id
+                ) where rownum = 1;
+              exception when no_data_found then
+                l_fact_rec.id := null;
+              end;
+            end;
+          end if;
+
+          if l_fact_rec.id is not null then
+            
+            fact_equipmentevent_update(l_fact_rec, c_rec, l_eventts);
+          else
+            fact_equipmentevent_insert(c_rec, l_eventts);
+          end if;
+
+          
+          l_count := l_count + 1;
+
+        end loop;
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc_name);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' alarm messages.'
+                         );
+      exception when others then
+        l_msg := l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||to_char(l_fact_rec.id)||', '||l_curr_state ||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+      end;
+    end if;
+  exception when others then
+    l_msg := l_con_proc_name||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+procedure fact_itinfra_alarm_update(p_fact_rec fact_itinfra_alarm_summaries%rowtype, p_wc_rec wc_equipmenteventreport%rowtype, p_eventts timestamp) is
+l_con_proc_name constant varchar2(61) := g_con_package||'.fact_itinfra_alarm_update';
+l_eventseconds number(23,8) := p_fact_rec.eventseconds;
+l_duration_ack number(23,4) := p_fact_rec.duration_ack;
+l_duration_went_out number(23,4) := p_fact_rec.duration_went_out;
+l_completed number(1,0) := p_fact_rec.completed;
+begin
+  if p_wc_rec.state = 'CAME_IN' then
+    if p_fact_rec.dt_went_out is not null then
+      l_duration_went_out := interval_in_seconds(p_eventts, p_fact_rec.dt_went_out);
+      l_eventseconds := period.seconds_since_millennium(p_eventts)  + (to_number(to_char(p_eventts,'FF')) * 0.00000001);
+    end if;
+    if p_fact_rec.dt_ack_by_operator is not null then
+      l_duration_ack := interval_in_seconds(p_eventts, p_fact_rec.dt_ack_by_operator);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      
+      update fact_itinfra_alarm_summaries
+      set id = p_wc_rec.key
+        , dt_came_in = p_eventts
+        , duration_ack = l_duration_ack
+        , duration_went_out = l_duration_went_out
+        , error_type = p_wc_rec.errortype
+        , severity = nvl(p_wc_rec.severity, 'NA')
+        , description = substr(p_wc_rec.l_description,1, 500)
+        , eventseconds = l_eventseconds
+        , completed = l_completed
+        , m5_periodid = period.periodid(p_eventts,'M5')
+        , h1_periodid = period.periodid(p_eventts,'H1')
+        , d1_periodid = period.periodid(p_eventts,'D1')
+        
+        , host_id = p_wc_rec.hostname
+        , service = p_wc_rec.service
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  elsif p_wc_rec.state = 'WENT_OUT' then
+
+    if p_fact_rec.dt_came_in is not null then
+      l_duration_went_out := interval_in_seconds(p_fact_rec.dt_came_in, p_eventts);
+      l_eventseconds := period.seconds_since_millennium(p_fact_rec.dt_came_in)  + (to_number(to_char(p_fact_rec.dt_came_in,'FF')) * 0.00000001);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      update fact_itinfra_alarm_summaries
+      set id = p_wc_rec.key
+        , dt_went_out = p_eventts
+        , duration_went_out = l_duration_went_out
+        , eventseconds = l_eventseconds
+        , completed = l_completed
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  elsif p_wc_rec.state = 'ACK_BY_OPERATOR' then
+
+    if p_fact_rec.dt_came_in is not null then
+      l_duration_ack := interval_in_seconds(p_fact_rec.dt_came_in, p_eventts);
+    end if;
+    if l_duration_went_out is not null and l_duration_ack is not null then
+      l_completed := 1;
+    end if;
+    begin
+      update fact_itinfra_alarm_summaries
+      set id = p_wc_rec.key
+        , dt_ack_by_operator = p_eventts
+        , duration_ack = l_duration_ack
+        , completed = l_completed
+      where id = p_fact_rec.id;
+    exception when dup_val_on_index then
+      
+      viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Update '||to_char(p_fact_rec.id)
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||','||to_char(l_completed)||','||to_char(l_eventseconds)
+      );
+    end;
+
+  end if;
+  commit;
+end;
+
+
+procedure fact_itinfra_alarm_insert(p_wc_rec wc_equipmenteventreport%rowtype, p_eventts timestamp) is
+l_con_proc_name constant varchar2(61) := g_con_package||'.fact_itinfra_alarm_insert';
+l_dt_came_in timestamp := null;
+l_dt_ack_by_operator timestamp := null;
+l_dt_went_out timestamp := null;
+l_eventseconds number(23,8) := 0;
+begin
+  l_eventseconds := period.seconds_since_millennium(p_eventts)  + (to_number(to_char(p_eventts,'FF')) * 0.00000001);
+  if p_wc_rec.state = 'CAME_IN' then
+    l_dt_came_in := p_eventts;
+  elsif p_wc_rec.state = 'WENT_OUT' then
+    l_dt_went_out := p_eventts;
+  elsif p_wc_rec.state = 'ACK_BY_OPERATOR' then
+    l_dt_ack_by_operator := p_eventts;
+  else
+    return;
+  end if;
+  begin
+    insert into fact_itinfra_alarm_summaries
+    ( id
+    , message_nr
+    , process_id
+    , dt_created
+    , dt_came_in
+    , dt_ack_by_operator
+    , dt_went_out
+    , error_type
+    , severity
+    , description
+    , eventseconds
+    , m5_periodid
+    , h1_periodid
+    , d1_periodid
+    
+    , host_id
+    , service)
+    values
+    ( p_wc_rec.key
+    , to_number(p_wc_rec.msgnr)
+    , p_wc_rec.sourceprocessid
+    , p_wc_rec.insertts
+    , l_dt_came_in
+    , l_dt_ack_by_operator
+    , l_dt_went_out
+    , p_wc_rec.errortype
+    , nvl(p_wc_rec.severity, 'NA')
+    , substr(p_wc_rec.l_description,1,500)
+    , l_eventseconds
+    , period.periodid(p_eventts,'M5')
+    , period.periodid(p_eventts,'H1')
+    , period.periodid(p_eventts,'D1')
+    
+    , p_wc_rec.hostname
+    , p_wc_rec.service);
+  exception when dup_val_on_index then
+    viu_info.operator_info( i_ifo_nr  => viu_constant.c_ifo_bpidebuginfo
+      , i_calling_procedure => l_con_proc_name
+      , i_severity          => viu_info.c_severity_warning
+      , i_info_arguments    => to_char(p_wc_rec.key)||' Insert'
+      , i_additional_data   => l_con_proc_name||' DUP_VAL_ON_INDEX: '||p_wc_rec.msgnr||','||p_wc_rec.sourceprocessid||',0,'||to_char(l_eventseconds)
+      );
+  end;
+end;
+
+
+procedure summarize_itinfra_alarms is
+l_con_proc_name constant varchar2(61) := g_con_package||'.SUMMARIZE_ITINFRA_ALARMS';
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_curr_state varchar2(50) := '';
+l_count number := 0;
+l_msg varchar2(4000);
+l_conf_rec metric_config%rowtype;
+l_fact_rec fact_itinfra_alarm_summaries%rowtype;
+l_eventts fact_itinfra_alarm_summaries.dt_came_in%type;
+l_timeout_point fact_itinfra_alarm_summaries.dt_created%type;
+
+cursor c_alarms(c_id number, c_maxrecs number) is
+select * from
+( select * from wc_equipmenteventreport
+  where key > c_id
+  and (hostname is not null or service is not null )
+  order by key
+) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  l_timeout_point := sys_extract_utc(systimestamp) - interval '1 00:00:00.0' day to second;
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+      l_conf_rec.max_measurements := 5000;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc_name
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+    else
+    
+      
+      
+      begin
+        update fact_itinfra_alarm_summaries set completed = 2
+        where completed = 0 and dt_created < l_timeout_point;
+        commit;
+      exception when others then
+        l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        viu_info.operator_info( i_ifo_nr    => viu_constant.c_ifo_bpiexceptionupdate
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => 'FACT_ITINFRA_ALARM_SUMMARIES'
+                         , i_additional_data        => 'Exception on marking alarms older than one day with COMPLETED = 2. '|| l_msg
+                         );
+      end;
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_itinfra_alarm_summaries;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing alarms with ID greater than '||to_char(l_max_id)
+                         );
+
+        for c_rec in c_alarms(l_max_id, l_conf_rec.max_measurements) loop
+
+          l_curr_id := c_rec.key;
+          l_curr_state := c_rec.state;
+
+          
+          l_eventts := bpi_util.convert_eventtime(i_eventtime => c_rec.eventtime, i_default_eventts => c_rec.eventts);
+          l_fact_rec.id := null;
+
+          if c_rec.state = 'CAME_IN' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_itinfra_alarm_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                and dt_came_in is null
+                and (dt_ack_by_operator >= l_eventts or dt_went_out >= l_eventts)
+                and completed = 0 order by id
+              ) where rownum = 1;
+            exception when no_data_found then
+              l_fact_rec.id := null;
+            end;
+          elsif c_rec.state = 'ACK_BY_OPERATOR' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_itinfra_alarm_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                and dt_ack_by_operator is null
+                and dt_came_in <= l_eventts
+                and completed = 0 order by id
+              ) where rownum = 1;
+            exception when no_data_found then 
+              begin
+                select * into l_fact_rec from
+                ( select * from fact_itinfra_alarm_summaries
+                  where message_nr = to_number(c_rec.msgnr)
+                  and process_id = c_rec.sourceprocessid
+                  and dt_ack_by_operator is null
+                  and dt_came_in is null
+                  and completed = 0 order by id
+                ) where rownum = 1;
+              exception when no_data_found then
+                l_fact_rec.id := null;
+              end;
+            end;
+          elsif c_rec.state = 'WENT_OUT' then
+            
+            begin
+              select * into l_fact_rec from
+              ( select * from fact_itinfra_alarm_summaries
+                where message_nr = to_number(c_rec.msgnr)
+                and process_id = c_rec.sourceprocessid
+                
+                and dt_came_in <= l_eventts
+                and completed = 0 order by dt_came_in desc
+              ) where rownum = 1;
+              if l_fact_rec.dt_went_out is not null then
+               continue;
+              end if;
+            exception when no_data_found then 
+              begin
+                select * into l_fact_rec from
+                ( select * from fact_itinfra_alarm_summaries
+                  where message_nr = to_number(c_rec.msgnr)
+                  and process_id = c_rec.sourceprocessid
+                  and dt_went_out is null
+                  and dt_came_in is null
+                  and completed = 0 order by id
+                ) where rownum = 1;
+              exception when no_data_found then
+                l_fact_rec.id := null;
+              end;
+            end;
+          end if;
+
+          if l_fact_rec.id is not null then
+            
+            fact_itinfra_alarm_update(l_fact_rec, c_rec, l_eventts);
+          else
+            fact_itinfra_alarm_insert(c_rec, l_eventts);
+          end if;
+
+          
+          l_count := l_count + 1;
+        end loop;
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc_name);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' alarm messages.'
+                         );
+      exception when others then
+        l_msg := l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||to_char(l_fact_rec.id)||', '||l_curr_state;
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+      end;
+    end if;
+  exception when others then
+    bpi_log.raise_fatal_error(l_con_proc_name);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+end alarms;
+/

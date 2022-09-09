@@ -1,0 +1,528 @@
+create or replace PACKAGE ACL_CONSTANT IS
+
+G_CON_PACKAGE CONSTANT VARCHAR2(61) := 'ACL_Constant';
+G_CON_YESNO_YES CONSTANT VARCHAR2(1) := 'Y';
+G_CON_YESNO_NO CONSTANT VARCHAR2(1) := 'N';
+G_CON_CMN_TIMESTAMP_FORMAT CONSTANT VARCHAR2(240) := 'YYYY-MM-DD"T"HH24:MI:SS.FF3';
+G_CON_CMN_IN_TIMESTAMP_FORMAT CONSTANT VARCHAR2(240) := 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"';
+G_CON_CMN_TIMESTAMP_SUFFIX CONSTANT VARCHAR2(240) := 'Z';
+G_CON_ACE_NAME_START CONSTANT ACL_AET_CONTROL_REQUEST_TYPES.ID%TYPE := 1;
+G_CON_ACE_NAME_STOP CONSTANT ACL_AET_CONTROL_REQUEST_TYPES.ID%TYPE := 2;
+G_CON_ACE_NAME_ABORT CONSTANT ACL_AET_CONTROL_REQUEST_TYPES.ID%TYPE := 3;
+G_CON_ACE_NAME_GET_STATUS CONSTANT ACL_AET_CONTROL_REQUEST_TYPES.ID%TYPE := 4;
+G_CON_ACE_NAME_LIST_APPLICATIO CONSTANT ACL_AET_CONTROL_REQUEST_TYPES.ID%TYPE := 5;
+G_CON_ACE_NAME_APPLICATIONINFO CONSTANT ACL_AET_CONTROL_REQUEST_TYPES.ID%TYPE := 6;
+G_CON_ASM_NAME_STARTED CONSTANT ACL_AET_STATUSES_DOM.ID%TYPE := 1;
+G_CON_ASM_NAME_STOPPED CONSTANT ACL_AET_STATUSES_DOM.ID%TYPE := 2;
+G_CON_ASM_NAME_WARNING CONSTANT ACL_AET_STATUSES_DOM.ID%TYPE := 3;
+G_CON_ASM_NAME_ERROR CONSTANT ACL_AET_STATUSES_DOM.ID%TYPE := 4;
+G_CON_AWT_NAME_OPTIONAL CONSTANT ACL_AET_WEIGHTS.ID%TYPE := 3;
+G_CON_AWT_NAME_PRIMARY_MANDATO CONSTANT ACL_AET_WEIGHTS.ID%TYPE := 1;
+G_CON_AWT_NAME_SECONDARY_MANDA CONSTANT ACL_AET_WEIGHTS.ID%TYPE := 2;
+G_CON_AET_TYPE_APPLICATION CONSTANT VARCHAR2(3) := 'ATN';
+G_CON_AET_TYPE_SUBAPPLICATION CONSTANT VARCHAR2(3) := 'SAN';
+G_CON_AET_TYPE_SWITCH CONSTANT VARCHAR2(3) := 'SWH';
+G_CON_AET_TYPE_BACKGROUND_JOB CONSTANT VARCHAR2(3) := 'BJB';
+G_CON_AET_STARTUP_TYPE_AUTO CONSTANT VARCHAR2(1) := 'A';
+G_CON_AET_STARTUP_TYPE_MANUAL CONSTANT VARCHAR2(1) := 'M';
+G_CON_CMN_DATE_FORMAT CONSTANT VARCHAR2(240) := 'YYYYMMDD.HH24MISS';
+G_CON_APS_STATUS_PREREGISTERED CONSTANT VARCHAR2(20) := 'PreRegistered';
+G_CON_APS_STATUS_REGISTERED CONSTANT VARCHAR2(20) := 'Registered';
+G_CON_APS_STATUS_DEREGISTERED CONSTANT VARCHAR2(20) := 'Deregistered';
+G_CON_APS_REASON_STARTFAILED CONSTANT VARCHAR2(30) := 'Failure to start';
+G_CON_APS_REASON_COMPLETED CONSTANT VARCHAR2(30) := 'Completed';
+G_CON_APS_REASON_FATALERROR CONSTANT VARCHAR2(30) := 'Fatal error';
+G_CON_APS_REASON_ABORTED CONSTANT VARCHAR2(30) := 'Aborted';
+G_CON_APS_REASON_STOPPED CONSTANT VARCHAR2(30) := 'Stopped';
+G_CON_APS_REASON_BROKEN CONSTANT VARCHAR2(30) := 'Broken';
+G_CON_APS_REASON_UNKNOWN CONSTANT VARCHAR2(30) := 'Unknown';
+G_CON_APS_REASON_FATALAPPERROR CONSTANT VARCHAR2(30) := 'Fatal Application error';
+G_CON_DSD_NAME_APPLICATION CONSTANT VARCHAR2(30) := 'Application';
+G_CON_DSD_NAME_APPL_ELEMENT CONSTANT VARCHAR2(30) := 'ApplicationElement';
+G_CON_DSD_NAME_ATTENTIONBELOW CONSTANT VARCHAR2(30) := 'AttentionBelow';
+G_CON_DSD_NAME_COMMUNICATION CONSTANT VARCHAR2(30) := 'Communication';
+G_CON_DSD_NAME_COMM_INTERN CONSTANT VARCHAR2(30) := 'CommunicationIntern';
+G_CON_DSD_NAME_DATABASE CONSTANT VARCHAR2(30) := 'Database';
+G_CON_DSD_NAME_QUEUEFULL CONSTANT VARCHAR2(30) := 'QueueFull';
+G_CON_DSD_NAME_QUEUENEARLYFULL CONSTANT VARCHAR2(30) := 'QueueNearlyFull';
+G_CON_FREQ_UNIT_WEEK CONSTANT VARCHAR2(2) := 'IW';
+G_CON_FREQ_UNIT_DAY CONSTANT VARCHAR2(2) := 'DD';
+G_CON_FREQ_UNIT_HOUR CONSTANT VARCHAR2(2) := 'HH';
+G_CON_FREQ_UNIT_MINUTE CONSTANT VARCHAR2(2) := 'MI';
+G_CON_SEC_PER_WEEK CONSTANT NUMBER := 604800;
+G_CON_SEC_PER_DAY CONSTANT NUMBER := 86400;
+G_CON_SEC_PER_HOUR CONSTANT NUMBER := 3600;
+G_CON_SEC_PER_MINUTE CONSTANT NUMBER := 60;
+G_CON_PVE_DLT_APS_REG CONSTANT VARCHAR2(240) := 'INTERVAL_DELETE_APPL_CONTROL';
+G_CON_PVE_DLT_APS_UNREG CONSTANT VARCHAR2(240) := 'INTERVAL_DELETE_APPL_CONTROL_UNREGISTERED';
+G_CON_CMN_NUMTODSINTERVALSECON CONSTANT VARCHAR2(6) := 'SECOND';
+G_CON_PVE_APP_MON_DOMAIN CONSTANT VARCHAR2(240) := 'APP_MONITORING_DOMAIN';
+G_CON_PVE_APPMON_INIT_OBJNAME CONSTANT VARCHAR2(240) := 'APP_MONITORING_INIT_OBJECT_NAME';
+G_CON_PVE_APPMON_OBJNAME_SEP CONSTANT VARCHAR2(240) := 'APP_MONITORING_OBJECT_NAME_SEPARATOR';
+G_CON_PVE_APPMON_DOMAIN_TAG CONSTANT VARCHAR2(240) := 'APP_MONITORING_TAG_DOMAIN';
+G_CON_PVE_APPMON_ADN_TAG CONSTANT VARCHAR2(240) := 'APP_MONITORING_TAG_APPLICATION_ELEMENT_DESCRIPTION';
+G_CON_PVE_APPMON_ATN_TAG CONSTANT VARCHAR2(240) := 'APP_MONITORING_TAG_APPLICATION';
+G_CON_PVE_APPMON_AET_TAG CONSTANT VARCHAR2(240) := 'APP_MONITORING_TAG_APPLICATION_ELEMENT';
+G_CON_PVE_APPMON_HOST_TAG CONSTANT VARCHAR2(240) := 'APP_MONITORING_TAG_HOST';
+G_CON_PVE_APPMON_MANDATE_TAG CONSTANT VARCHAR2(240) := 'APP_MONITORING_TAG_MANDATE';
+G_CON_PVE_APPMON_ADN_PROPERTY CONSTANT VARCHAR2(240) := 'APP_MONITORING_PROPERTY_APPLICATION_ELEMENT_DESCRIPTION';
+G_CON_PVE_APPMON_ATN_PROPERTY CONSTANT VARCHAR2(240) := 'APP_MONITORING_PROPERTY_APPLICATION';
+G_CON_PVE_APPMON_AET_PROPERTY CONSTANT VARCHAR2(240) := 'APP_MONITORING_PROPERTY_APPLICATION_ELEMENT';
+G_CON_PVE_APPMON_PROPERTY_SEP CONSTANT VARCHAR2(240) := 'APP_MONITORING_PROPERTY_SEPARATOR';
+G_CON_PVE_APPMON_IND_FIRST_PRO CONSTANT VARCHAR2(240) := 'APP_MONITORING_FIRST_PROPERTY_INDICATOR';
+G_CON_PVE_APPMON_OBJ_NAME_DELI CONSTANT VARCHAR2(240) := 'APP_MONITORING_OBJECT_NAME_DELIMITER';
+G_CON_PVE_MAX_SIGNAL_WAIT_TIME CONSTANT VARCHAR2(240) := 'MAX_SIGNAL_WAIT_TIME';
+G_CON_PVE_SIGNAL_WAIT_INTERVAL CONSTANT VARCHAR2(240) := 'SIGNAL_WAIT_INTERVAL';
+G_CON_JOB_TYPE_STORED_PROC CONSTANT VARCHAR2(240) := 'STORED_PROCEDURE';
+G_CON_JOB_TYPE_PLSQL_BLOCK CONSTANT VARCHAR2(240) := 'PLSQL_BLOCK';
+G_CON_JOB_CLASS_DEFAULT CONSTANT VARCHAR2(240) := 'DEFAULT_JOB_CLASS';
+G_CON_JOB_STATE_BROKEN CONSTANT VARCHAR2(15) := 'BROKEN';
+G_CON_JOB_STATE_CHAIN_STALLED CONSTANT VARCHAR2(15) := 'CHAIN_STALLED';
+G_CON_JOB_STATE_COMPLETED CONSTANT VARCHAR2(15) := 'COMPLETED';
+G_CON_JOB_STATE_DISABLED CONSTANT VARCHAR2(15) := 'DISABLED';
+G_CON_JOB_STATE_FAILED CONSTANT VARCHAR2(15) := 'FAILED';
+G_CON_JOB_STATE_RETRY_SCHEDULE CONSTANT VARCHAR2(15) := 'RETRY SCHEDULED';
+G_CON_JOB_STATE_RUNNING CONSTANT VARCHAR2(15) := 'RUNNING';
+G_CON_JOB_STATE_SCHEDULED CONSTANT VARCHAR2(15) := 'SCHEDULED';
+G_CON_JOB_STATE_STOPPED CONSTANT VARCHAR2(15) := 'STOPPED';
+G_CON_JOB_STATE_SUCCEEDED CONSTANT VARCHAR2(15) := 'SUCCEEDED';
+
+g_con_xmlroot CONSTANT VARCHAR2(240) := '1.0" encoding="UTF-8';
+
+/* Message attributes */
+g_con_xml_appl CONSTANT VARCHAR2(20) := 'APPLICATION';
+g_con_xml_conf CONSTANT VARCHAR2(20) := 'PROJECT';	-- Not changed yet
+
+/* Constants related to Version and registry entries */
+g_con_rgy_appl CONSTANT VARCHAR2(20) := 'APPL';
+g_con_rgy_proj CONSTANT VARCHAR2(20) := 'PROJECT';
+g_con_rgy_conf CONSTANT VARCHAR2(20) := 'CONFIGURATION'; -- New constant for Registry interpretation
+
+-- Subtype for constants holding a module's name in the form <package_name>.<procedure_name>
+SUBTYPE st_proc_name IS VARCHAR2 (61);
+--
+-- Subtype for variables, parameters etc. holding a unique session id
+-- as returned by Dbms_Session.Unique_Session_Id
+SUBTYPE st_unique_session_id IS VARCHAR2 (24);
+--
+-- Subtype for constants holding an Oracle table name
+SUBTYPE st_table_name IS VARCHAR2 (30);
+--
+-- Subtype for variables, parameters etc. holding the fully
+-- qualified global name of the Oracle database
+-- (so including it's domain).
+-- The domain-string may be up to 256 long; the db-name may be up to
+-- 30 long, so 512 should be sufficient (Oracle 10g, May 2006)
+-- For details, see Oracle documentation on
+--  SYS_CONTEXT('userenv', '<param>')
+-- where <param> is DB_DOMAIN or DB_NAME, respectively.
+--
+SUBTYPE st_DB_global_name IS VARCHAR2 (512);
+--
+-- Subtype for objectNames that may be sent to / received from
+-- Application Monitoring (function INVOKE).
+SUBTYPE st_AppMon_ObjectName IS VARCHAR2(32767);
+--
+-- Subtype for the return value to return to Application Monitoring
+-- (function INVOKE).
+SUBTYPE st_AppMon_Return_Value IS VARCHAR2(32767);
+
+/* Return the constant g_con_yesno_yes (for use in queries) */
+FUNCTION GET_YESNO_YES
+ RETURN VARCHAR2 DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_YESNO_YES, WNDS, WNPS, RNDS);
+/* Return the constant g_con_yesno_no (for use in queries) */
+FUNCTION GET_YESNO_NO
+ RETURN VARCHAR2 DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_YESNO_NO, WNDS, WNPS, RNDS);
+/* Return constant g_con_AET_type_Application (for use in queries) */
+FUNCTION GET_AET_TYPE_APPLICATION
+ RETURN ACL_APPLICATION_ELEMENTS.AET_TYPE%TYPE DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_AET_TYPE_APPLICATION, WNDS, WNPS, RNDS);
+/* Return constant g_con_AET_type_Switch (for use in queries) */
+FUNCTION GET_AET_TYPE_SWITCH
+ RETURN ACL_APPLICATION_ELEMENTS.AET_TYPE%TYPE DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_AET_TYPE_SWITCH, WNDS, WNPS, RNDS);
+/* Return constant g_con_AET_type_Background_Job (for use in queries) */
+FUNCTION GET_AET_TYPE_BACKGROUND_JOB
+ RETURN ACL_APPLICATION_ELEMENTS.AET_TYPE%TYPE DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_AET_TYPE_BACKGROUND_JOB, WNDS, WNPS, RNDS);
+/* Return constant g_con_APS_Status_Registered (for use in queries) */
+FUNCTION GET_APS_STATUS_REGISTERED
+ RETURN ACL_APPLICATION_PROCESSES.STATUS%TYPE DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_APS_STATUS_REGISTERED, WNDS, WNPS, RNDS);
+/* Return constant g_con_APS_Status_PreRegistered (for use in queries) */
+FUNCTION GET_APS_STATUS_PREREGISTERED
+ RETURN ACL_APPLICATION_PROCESSES.STATUS%TYPE DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_APS_STATUS_PREREGISTERED, WNDS, WNPS, RNDS);
+/* Return constant g_con_APS_Status_DeRegistered (for use in queries) */
+FUNCTION GET_APS_STATUS_DEREGISTERED
+ RETURN ACL_APPLICATION_PROCESSES.STATUS%TYPE DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_APS_STATUS_DEREGISTERED, WNDS, WNPS, RNDS);
+/* Return constant g_con_AET_type_SubApplication (for use in queries) */
+FUNCTION GET_AET_TYPE_SUBAPPLICATION
+ RETURN ACL_APPLICATION_ELEMENTS.AET_TYPE%TYPE DETERMINISTIC;
+PRAGMA RESTRICT_REFERENCES (GET_AET_TYPE_SUBAPPLICATION, WNDS, WNPS, RNDS);
+END ACL_CONSTANT;
+/
+
+
+
+
+
+package body acl_constant is
+
+
+function get_yesno_yes
+ return varchar2
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_yesno_Yes';
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_yesno_yes;
+end get_yesno_yes;
+
+function get_yesno_no
+ return varchar2
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_yesno_No';
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_yesno_no;
+end get_yesno_no;
+
+function get_aet_type_application
+ return acl_application_elements.aet_type%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_AET_type_Application';
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_aet_type_application;
+end get_aet_type_application;
+
+function get_aet_type_switch
+ return acl_application_elements.aet_type%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_AET_type_Switch';
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_aet_type_switch;
+end get_aet_type_switch;
+
+function get_aet_type_background_job
+ return acl_application_elements.aet_type%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_AET_type_Background_Job';
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_aet_type_background_job;
+end get_aet_type_background_job;
+
+function get_aps_status_registered
+ return acl_application_processes.status%type
+ is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_aps_status_registered;
+
+end get_aps_status_registered;
+
+function get_aps_status_preregistered
+ return acl_application_processes.status%type
+ is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_aps_status_preregistered;
+
+end get_aps_status_preregistered;
+
+function get_aps_status_deregistered
+ return acl_application_processes.status%type
+ is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_aps_status_deregistered;
+
+end get_aps_status_deregistered;
+
+function get_aet_type_subapplication
+ return acl_application_elements.aet_type%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_AET_type_Application';
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   
+
+
+
+
+
+
+   return g_con_aet_type_subapplication;
+end get_aet_type_subapplication;
+
+end acl_constant;
+/

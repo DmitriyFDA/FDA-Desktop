@@ -1,0 +1,43 @@
+procedure bpir_show_user_db_state  is
+v_msg varchar2(32767);
+begin
+  htp.print(gui.head(gui.app_name||' > Help > User and Database Status', 'User and Database Status'));
+  htp.print('<div class="neutral">');
+
+  begin
+    select ts2str(created) into v_msg from all_users where username=user;
+  
+    htp.print('<p><u>User <b>'||user||'</b>, created '||v_msg||'</u></p>');
+
+	select 'Host name: '||host_name||'<br>'
+	
+    ||'Oracle database version: '||version||'<br>'
+    ||'Instance name: '||instance_name||'<br>'
+    ||'Instance number: '||to_char(instance_number)||'<br>'
+	||'Instance role: '||instance_role||'<br>'
+    ||'Database status: '||database_status||'<br>'
+    ||'Startup time: '||ts2str(startup_time)||'<br>'
+    ||'Database status: '||status||'<br>'
+    ||'Archiver: '||archiver||'<br>'
+    ||'Logins: '||logins||'<br>'
+    ||'Shutdown pending: '||shutdown_pending||'<br>'
+    ||'Active state: '||active_state||'<br>'
+    ||'Blocked: '||blocked||'<br>'
+     into v_msg from v$instance;
+	 htp.print(v_msg);
+	 
+	 htp.print('<br><u>CGI Environment</u><br>');
+     owa_util.print_cgi_env;
+
+  exception when others then
+      v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+      htp.print(v_msg||'<br><br>');
+  end;
+
+  htp.print('<br></div>');
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

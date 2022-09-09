@@ -1,0 +1,240 @@
+create or replace PACKAGE MaintenanceCounters IS
+G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'MaintenanceCounters';
+function maintenance_is_late(p_DT_MAINTENANCE_RESET timestamp, p_MAINTENANCE_INTERVAL number) return number;
+procedure add_up;
+PROCEDURE convert_mc ( i_statistical IN fact_external_metrics.statistical%TYPE
+                     , io_value      IN OUT fact_external_metrics.value%TYPE
+                     , io_unit       IN OUT fact_external_metrics.unit%TYPE
+                     );
+end;
+/
+
+
+
+
+package body maintenancecounters is
+
+function maintenance_is_late(p_dt_maintenance_reset timestamp, p_maintenance_interval number) return number is
+
+l_maintenance_interval number := p_maintenance_interval;
+l_due_date timestamp;
+begin
+  if l_maintenance_interval is null then
+    begin
+      select to_number(value) into l_maintenance_interval from cmn_parameter_values where pve_comment='DefaultMaintenanceInterval';
+    exception when others then
+      l_maintenance_interval := 720; 
+    end;
+  end if;
+  l_due_date := sys_extract_utc(systimestamp) - numtodsinterval(l_maintenance_interval, 'HOUR');
+  
+  
+  
+  
+
+  if p_dt_maintenance_reset < l_due_date then
+    
+    return 1;
+  end if;
+  return 0;
+end;
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure convert_mc ( i_statistical in fact_external_metrics.statistical%type
+                     , io_value      in out fact_external_metrics.value%type
+                     , io_unit       in out fact_external_metrics.unit%type
+                     )
+is
+   l_rules  cmn_parameter_values.value%type;
+   l_rule   varchar2(32767);
+   l_unit   fact_external_metrics.unit%type;
+   l_value  fact_external_metrics.value%type;
+   l_factor number;
+begin
+   
+   for pmr in ( select pve.value
+                from   cmn_parameter_values pve
+                where  pve.pve_comment = 'MaintenanceCounterTransform'
+              )
+   loop
+      
+      l_rule := regexp_substr(pmr.value, i_statistical||':'||io_unit||'=[^,]+',1,1,'i');
+      if l_rule is null
+      then
+         
+         l_rule := ltrim(regexp_substr(pmr.value, '(^|,)'||io_unit||'=[^,]+',1,1,'i'),',');
+      end if;
+      if l_rule is not null
+      then
+         l_factor := to_number(regexp_substr(l_rule, '[^=*/]+', 1, 3));
+         if instr(l_rule, '*') > 0
+         then
+            
+            
+            l_value := io_value*l_factor;
+         elsif instr(l_rule, '/') > 0
+         then
+            l_value := io_value/l_factor;
+         else
+            l_value := io_value;
+         end if;
+
+         l_unit   := regexp_substr(l_rule, '[^=*/]+', 1, 2);
+      end if;
+   end loop;
+   if l_unit is not null or l_value is not null
+   then
+      io_unit  := l_unit;
+      io_value := l_value;
+   end if;
+exception
+   when others then null; 
+end;
+
+procedure add_up is
+l_con_proc_name constant varchar2(61) := g_con_package||'.add_up';
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_counter number;
+l_unit varchar2(32);
+l_msg viu_info_logs.additional_data%type;
+l_maintenance_interval number;
+
+cursor c_metrics(c_id number) is
+select max(a.id) as id
+, b.markcode
+, b.kpi
+, a.unit
+, a.areaid
+, a.zoneid
+, a.equipmentid
+, nvl(a.process_step,'-') as logisticstep
+, sum(value) as counter
+from fact_external_metrics a, dim_maintenance_kpi b
+where a.id > c_id
+and a.sampletype='CUMULATIVE'
+and a.mark_code = b.markcode
+and a.statistical = b.kpi
+group by b.markcode, b.kpi, a.unit, a.areaid, a.zoneid, a.equipmentid, a.process_step
+order by id;
+
+begin
+  viu_module.enter_module(i_module => l_con_proc_name, i_debug_info => to_char(sys_extract_utc(systimestamp)));
+  begin
+    select nvl(max(id), 0) into l_max_id from fact_maintenance_counters;
+    
+    begin
+      select to_number(value) into l_maintenance_interval from cmn_parameter_values where pve_comment='DefaultMaintenanceInterval';
+    exception when others then
+      l_maintenance_interval := 720; 
+    end;
+
+    viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing Metrics with ID greater than '||to_char(l_max_id)
+                         );
+
+    for c_rec in c_metrics(l_max_id) loop
+      l_curr_id := c_rec.id;
+      l_counter := c_rec.counter;
+      l_unit    := c_rec.unit;
+      convert_mc(c_rec.kpi, l_counter, l_unit);
+
+      begin
+        update fact_maintenance_counters
+        set id = c_rec.id
+        , updatets = sys_extract_utc(systimestamp)
+        , value_since_operational = value_since_operational + l_counter
+        , value_since_maintenance_reset = value_since_maintenance_reset + l_counter
+        , value_since_operator_reset = value_since_operator_reset + l_counter
+        , dt_maintenance_required = case when (dt_maintenance_required is not null) then dt_maintenance_required
+                                         when (value_since_maintenance_reset + l_counter >= maintenance_interval) then sys_extract_utc(systimestamp)
+                                    end
+        where markcode = c_rec.markcode
+        and kpi = c_rec.kpi
+        and areaid = c_rec.areaid
+        and zoneid = c_rec.zoneid
+        and equipmentid = c_rec.equipmentid
+        and logisticstep = c_rec.logisticstep;
+        
+        if sql%rowcount <> 1 then
+          insert into fact_maintenance_counters
+          ( id
+          , insertts
+          , updatets
+          , markcode
+          , kpi
+          , areaid
+          , zoneid
+          , equipmentid
+          , logisticstep
+          , dt_operational
+          , dt_maintenance_reset
+          , dt_operator_reset
+          , value_since_operational
+          , value_since_maintenance_reset
+          , value_since_operator_reset
+          , maintenance_interval
+          , unit )
+          values
+          ( c_rec.id
+          , sys_extract_utc(systimestamp)
+          , sys_extract_utc(systimestamp)
+          , c_rec.markcode
+          , c_rec.kpi
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.logisticstep
+          , sys_extract_utc(systimestamp)
+          , sys_extract_utc(systimestamp)
+          , sys_extract_utc(systimestamp)
+          , l_counter
+          , l_counter
+          , l_counter
+          , l_maintenance_interval
+          , l_unit );
+        end if;
+      exception when others then
+          metrics.raise_fatal_error(l_con_proc_name,'Add up of FACT_MAINTENANCE_COUNTERS FAILED. '
+          ||',MARKCODE='||c_rec.markcode
+          ||',KPI='||c_rec.kpi
+          ||',AREAID='||c_rec.areaid
+          ||',ZONEID='||c_rec.zoneid
+          ||',EQUIPMENTID='||c_rec.equipmentid
+          ||',ID='||to_char(c_rec.id));
+      end;
+      commit;
+      l_count := l_count + 1;
+    end loop;
+
+    viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                       , i_calling_procedure      => l_con_proc_name
+                       , i_severity               => viu_info.c_severity_notification
+                       , i_info_arguments         => null
+                       , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' Metrics.'
+                       );
+  exception when others then
+    l_msg := substr(l_con_proc_name||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+
+  viu_module.leave_module( i_module      => l_con_proc_name );
+end;
+
+end;
+/

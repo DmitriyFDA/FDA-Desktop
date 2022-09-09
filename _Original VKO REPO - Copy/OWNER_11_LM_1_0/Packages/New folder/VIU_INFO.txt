@@ -1,0 +1,854 @@
+create or replace PACKAGE VIU_INFO IS
+
+/* Value from viu_parameters table */
+V_TRANSLATEMETHOD VIU_PARAMETERS.VALUE%TYPE;
+/* Value from viu_parameters table */
+V_MAXLVLOPRINFOLOGGED VIU_PARAMETERS.VALUE%TYPE;
+V_ORACLE_TEXT VIU_INFO_LOGS.ORACLE_TEXT%TYPE;
+		/* Maximum operator info level to be logged */
+C_PTR_MaxLvlOprInfoLogged           CONSTANT	viu_parameters.id%TYPE := 1;
+		/* Is extended info logging active */
+C_PTR_ExtendedLoggingActive         CONSTANT	viu_parameters.id%TYPE := 2;
+		/* Method for translations */
+C_PTR_TranslateMethod               CONSTANT	viu_parameters.id%TYPE := 3;
+MIN_C_PTR                           CONSTANT	viu_parameters.id%TYPE := C_PTR_MaxLvlOprInfoLogged;
+MAX_C_PTR                           CONSTANT	viu_parameters.id%TYPE := C_PTR_TranslateMethod;
+
+/* Required to circumvent the restriction on User-defined constrained sub-types */
+v_dummy_severity NUMBER(2,0);
+SUBTYPE severity_t IS v_dummy_severity%TYPE;
+		/* Error situation */
+C_SEVERITY_Error                         CONSTANT	severity_t := 1;
+		/* Warning situation */
+C_SEVERITY_Warning                       CONSTANT	severity_t := 2;
+		/* Info notification */
+C_SEVERITY_Notification                  CONSTANT	severity_t := 3;
+		/* Debug messages */
+C_SEVERITY_Debug                         CONSTANT	severity_t := 4;
+		/* Procedure call messages with debug-info */
+C_SEVERITY_Proc_arguments                CONSTANT	severity_t := 5;
+		/* Procedure call messages without debug-info */
+C_SEVERITY_Proc_call                     CONSTANT	severity_t := 6;
+
+MIN_C_SEVERITY                      CONSTANT	severity_t := C_SEVERITY_Error;
+MAX_C_SEVERITY                      CONSTANT	severity_t := C_SEVERITY_Proc_call;
+
+C_ARG_LENGTH CONSTANT NUMBER := 4000;
+
+PROCEDURE HANDLE_INFO
+ (I_IFO_NR IN VIU_INFO_LOGS.IFO_NR%TYPE := NULL
+ ,I_CALLING_PROCEDURE IN VIU_INFO_LOGS.CALLING_PROCEDURE%TYPE := NULL
+ ,I_SEVERITY IN VIU_INFO_LOGS.SEVERITY%TYPE := NULL
+ ,I_INFO_ARGUMENTS IN VIU_INFO_LOGS.INFO_ARGUMENTS%TYPE := NULL
+ ,I_ADDITIONAL_DATA IN VIU_INFO_LOGS.ADDITIONAL_DATA%TYPE := NULL
+ ,I_AUTONOMOUS IN BOOLEAN := TRUE
+ );
+PROCEDURE OPERATOR_INFO
+ (I_IFO_NR IN VIU_INFO_LOGS.IFO_NR%TYPE
+ ,I_CALLING_PROCEDURE IN VIU_INFO_LOGS.CALLING_PROCEDURE%TYPE
+ ,I_SEVERITY IN VIU_INFO_LOGS.SEVERITY%TYPE
+ ,I_INFO_ARGUMENTS IN VIU_INFO_LOGS.INFO_ARGUMENTS%TYPE := NULL
+ ,I_ADDITIONAL_DATA IN VIU_INFO_LOGS.ADDITIONAL_DATA%TYPE := NULL
+ ,I_AUTONOMOUS IN BOOLEAN := TRUE
+ );
+PROCEDURE RAISE_INFO
+ (I_IFO_NR IN VIU_INFO_LOGS.IFO_NR%TYPE := NULL
+ ,I_CALLING_PROCEDURE IN VIU_INFO_LOGS.CALLING_PROCEDURE%TYPE := NULL
+ ,I_SEVERITY IN VIU_INFO_LOGS.SEVERITY%TYPE := NULL
+ ,I_INFO_ARGUMENTS IN VIU_INFO_LOGS.INFO_ARGUMENTS%TYPE := NULL
+ ,I_ADDITIONAL_DATA IN VIU_INFO_LOGS.ADDITIONAL_DATA%TYPE := NULL
+ );
+PROCEDURE RESET_PACKAGE_VARIABLES;
+PROCEDURE INSERT_INFO_AUTONOMOUS
+ (I_IFO_NR IN VIU_INFO_LOGS.IFO_NR%TYPE
+ ,I_CALLING_PROCEDURE IN VIU_INFO_LOGS.CALLING_PROCEDURE%TYPE
+ ,I_SEVERITY IN VIU_INFO_LOGS.SEVERITY%TYPE
+ ,I_INFO_ARGUMENTS IN VIU_INFO_LOGS.INFO_ARGUMENTS%TYPE
+ ,I_ADDITIONAL_DATA IN VIU_INFO_LOGS.ADDITIONAL_DATA%TYPE
+ ,I_USERNAME IN VIU_INFO_LOGS.USERNAME%TYPE
+ ,I_CALLED_PROCEDURE_CHAIN IN VIU_INFO_LOGS.CALLED_PROCEDURE_CHAIN%TYPE
+ ,I_APPLICATION IN VIU_INFO_LOGS.IFO_APPLICATION%TYPE
+ ,I_ORACLE_TEXT IN VIU_INFO_LOGS.ORACLE_TEXT%TYPE
+ );
+/* Cleanup Info Logs */
+PROCEDURE CLEANUP
+ (I_MAX_ROWS IN NUMBER
+ ,I_RETENTION_DATE IN TIMESTAMP
+ );
+PROCEDURE INSERT_INFO
+ (I_IFO_NR IN VIU_INFO_LOGS.IFO_NR%TYPE
+ ,I_CALLING_PROCEDURE IN VIU_INFO_LOGS.CALLING_PROCEDURE%TYPE
+ ,I_SEVERITY IN VIU_INFO_LOGS.SEVERITY%TYPE
+ ,I_INFO_ARGUMENTS IN VIU_INFO_LOGS.INFO_ARGUMENTS%TYPE
+ ,I_ADDITIONAL_DATA IN VIU_INFO_LOGS.ADDITIONAL_DATA%TYPE
+ ,I_USERNAME IN VIU_INFO_LOGS.USERNAME%TYPE
+ ,I_APPLICATION IN VIU_INFO_LOGS.IFO_APPLICATION%TYPE
+ ,I_ORACLE_TEXT IN VIU_INFO_LOGS.ORACLE_TEXT%TYPE
+ ,I_CALLED_PROCEDURE_CHAIN IN VIU_INFO_LOGS.CALLED_PROCEDURE_CHAIN%TYPE
+ );
+/* Determine current loglevel */
+FUNCTION CURRENT_LOG_LEVEL
+ RETURN NUMBER;
+/* Generate symbols to draw a calling tree */
+FUNCTION CALLING_TREE
+ (I_NESTING_LEVEL IN NUMBER
+ )
+ RETURN varchar2;
+/* interface to c_severity_error */
+FUNCTION SEVERITY_ERROR
+ RETURN NUMBER;
+/* interface to c_severity_warning */
+FUNCTION SEVERITY_WARNING
+ RETURN NUMBER;
+/* interface to c_severity_notification */
+FUNCTION SEVERITY_NOTIFICATION
+ RETURN NUMBER;
+/* interface to c_severity_debug */
+FUNCTION SEVERITY_DEBUG
+ RETURN NUMBER;
+/* interface to c_severity_proc_arguments */
+FUNCTION SEVERITY_PROC_ARGUMENTS
+ RETURN NUMBER;
+/* interface to c_severity_proc_call */
+FUNCTION SEVERITY_PROC_CALL
+ RETURN NUMBER;
+PROCEDURE UPDATE_INFO_REPORTED
+ (I_ID IN VIU_INFO_LOGS.ID%TYPE
+ ,I_DATETIME IN TIMESTAMP
+ );
+END VIU_INFO;
+/
+
+
+
+
+package body viu_info is
+
+v_ifo_nr viu_info_logs.ifo_nr%type;
+v_username viu_info_logs.username%type;
+v_sessionid viu_info_logs.sessionid%type;
+v_calling_procedure viu_info_logs.calling_procedure%type;
+v_called_procedure_chain viu_info_logs.called_procedure_chain%type;
+v_severity viu_info_logs.severity%type;
+v_info_arguments viu_info_logs.info_arguments%type;
+v_additional_data viu_info_logs.additional_data%type;
+
+procedure raise_error
+ (i_error_code in positive
+ ,i_error_text in varchar2
+ );
+procedure do_commit;
+procedure do_rollback;
+
+procedure handle_info
+( i_ifo_nr in viu_info_logs.ifo_nr%type := null
+                     , i_calling_procedure in viu_info_logs.calling_procedure%type := null
+                     , i_severity in viu_info_logs.severity%type := null
+                     , i_info_arguments in viu_info_logs.info_arguments%type := null
+                     , i_additional_data in viu_info_logs.additional_data%type := null
+                     , i_autonomous in boolean := true
+)
+is
+
+   v_active_severity           viu_info_logs.severity%type;
+   v_local_max_severity_logged viu_info_logs.severity%type;
+
+
+begin
+   
+   v_active_severity           := nvl( i_severity, nvl( viu_info.v_severity, viu_info.c_severity_error ) );
+
+   
+   v_local_max_severity_logged := viu_info.current_log_level;
+
+   if v_active_severity <= v_local_max_severity_logged
+   then
+      
+      viu_info.v_calling_procedure := nvl( viu_info.v_calling_procedure
+                                         , i_calling_procedure
+                                         );
+
+      
+      if v_called_procedure_chain is null
+      then
+         if viu_trace.v_extendedloggingactive = viu_configuration.c_boolean_true
+         then
+            begin
+               viu_info.v_called_procedure_chain := viu_trace.get_calls( 1, 1 )
+                                                    || ' '
+                                                    || viu_trace.get_calls( 2 );
+            exception
+               when others
+               then
+                  viu_info.v_called_procedure_chain := 'Failed to retrieve';
+            end;
+         else
+            viu_info.v_called_procedure_chain := dbms_utility.format_call_stack;
+         end if;
+      end if;
+
+      if ( i_ifo_nr is not null )
+         or( i_info_arguments is not null )
+         or( i_additional_data is not null )
+      then
+         
+         viu_info.v_ifo_nr            := i_ifo_nr;
+         viu_info.v_info_arguments    := i_info_arguments;
+         viu_info.v_additional_data   := i_additional_data;
+
+         
+         viu_info.v_oracle_text       := nvl( viu_info.v_oracle_text, case when sqlerrm not like 'ORA-0000:%'
+                                                                         then sqlerrm
+                                                                         else null
+                                                                      end
+                                            );
+
+      elsif viu_info.v_ifo_nr is null
+      then
+         
+         viu_info.v_ifo_nr         := viu_constant.c_ifo_nonedefinedexception;
+         viu_info.v_oracle_text    := case when sqlerrm not like 'ORA-0000:%'
+                                         then sqlerrm
+                                         else null
+                                      end;
+
+      end if;
+
+      begin
+         if i_autonomous
+         then
+            viu_info.insert_info_autonomous( i_ifo_nr                 => viu_info.v_ifo_nr
+                                           , i_username               => viu_info.v_username
+                                           , i_application            => 'DB'
+                                           , i_calling_procedure      => viu_info.v_calling_procedure
+                                           , i_called_procedure_chain => viu_info.v_called_procedure_chain
+                                           , i_oracle_text            => viu_info.v_oracle_text
+                                           , i_severity               => v_active_severity
+                                           , i_info_arguments         => viu_info.v_info_arguments
+                                           , i_additional_data        => viu_info.v_additional_data );
+         else
+            viu_info.insert_info( i_ifo_nr                 => viu_info.v_ifo_nr
+                                , i_username               => viu_info.v_username
+                                , i_application            => 'DB'
+                                , i_calling_procedure      => viu_info.v_calling_procedure
+                                , i_called_procedure_chain => viu_info.v_called_procedure_chain
+                                , i_oracle_text            => viu_info.v_oracle_text
+                                , i_severity               => v_active_severity
+                                , i_info_arguments         => viu_info.v_info_arguments
+                                , i_additional_data        => viu_info.v_additional_data );
+         end if;
+      exception
+         when others
+         then
+            null;
+      end;
+   end if;
+
+   
+   
+   
+   
+   
+   viu_info.reset_package_variables;
+
+exception
+   when others
+   then
+      null;
+end handle_info;
+
+procedure operator_info
+ (i_ifo_nr in viu_info_logs.ifo_nr%type
+ ,i_calling_procedure in viu_info_logs.calling_procedure%type
+ ,i_severity in viu_info_logs.severity%type
+ ,i_info_arguments in viu_info_logs.info_arguments%type := null
+ ,i_additional_data in viu_info_logs.additional_data%type := null
+ ,i_autonomous in boolean := true
+ )
+ is
+
+v_called_procedure_chain_local viu_info_logs.called_procedure_chain%type;
+v_local_max_severity_logged viu_info_logs.severity%type;
+v_active_severity viu_info_logs.severity%type;
+
+begin
+v_active_severity := nvl( i_severity, viu_info.c_severity_error );
+
+	
+	v_local_max_severity_logged := viu_info.current_log_level;
+
+
+	if	v_active_severity <= v_local_max_severity_logged
+	then
+	  
+      
+      
+      if viu_trace.v_extendedloggingactive = viu_configuration.c_boolean_true
+      then
+	    begin
+	      v_called_procedure_chain_local :=
+                  viu_trace.get_calls(1,1) || ' ' || viu_trace.get_calls(2);
+	    exception
+            when others
+            then
+               v_called_procedure_chain_local := 'Failed to retrieve';
+	    end;
+      else
+         v_called_procedure_chain_local := dbms_utility.format_call_stack;
+      end if;
+
+	  
+		begin
+          if i_autonomous then
+			viu_info.insert_info_autonomous
+				(	i_ifo_nr			=> i_ifo_nr
+				,	i_username			=> user
+				,	i_application		=> 'DB'
+				,	i_calling_procedure		=> i_calling_procedure
+				,	i_called_procedure_chain	=> v_called_procedure_chain_local
+				,	i_oracle_text		=> null
+				,	i_severity			=> v_active_severity
+				,	i_info_arguments		=> i_info_arguments
+				,	i_additional_data		=> i_additional_data
+				);
+          else
+			viu_info.insert_info
+				(	i_ifo_nr			=> i_ifo_nr
+				,	i_username			=> user
+				,	i_application		=> 'DB'
+				,	i_calling_procedure		=> i_calling_procedure
+				,	i_called_procedure_chain	=> v_called_procedure_chain_local
+				,	i_oracle_text		=> null
+				,	i_severity			=> v_active_severity
+				,	i_info_arguments		=> i_info_arguments
+				,	i_additional_data		=> i_additional_data
+				);
+          end if;
+		exception
+			when	others
+			then
+				null;
+		end;
+	end if;
+
+
+exception
+	when	others
+	then
+		null;
+end operator_info;
+
+
+procedure raise_info
+ (i_ifo_nr in viu_info_logs.ifo_nr%type := null
+ ,i_calling_procedure in viu_info_logs.calling_procedure%type := null
+ ,i_severity in viu_info_logs.severity%type := null
+ ,i_info_arguments in viu_info_logs.info_arguments%type := null
+ ,i_additional_data in viu_info_logs.additional_data%type := null
+ )
+ is
+
+c_proc_name constant varchar2(64) := 'viu_info.raise_info';
+
+v_handle integer;
+v_error_text varchar2(4000);
+v_debug_msg varchar2(4000);
+
+
+begin
+if  ( i_ifo_nr is not null )
+then
+
+  viu_info.reset_package_variables;
+
+  
+  
+  if viu_trace.v_extendedloggingactive = viu_configuration.c_boolean_true
+  then
+    begin
+      viu_info.v_called_procedure_chain :=
+                viu_trace.get_calls(1,1) || ' ' || viu_trace.get_calls(2);
+    exception
+      when others
+      then
+        viu_info.v_called_procedure_chain := 'Failed to retrieve';
+    end;
+  else
+    viu_info.v_called_procedure_chain := dbms_utility.format_call_stack;
+  end if;
+
+  
+  viu_info.v_ifo_nr := i_ifo_nr;
+  viu_info.v_calling_procedure := i_calling_procedure;
+  viu_info.v_severity := i_severity;
+  viu_info.v_info_arguments := i_info_arguments;
+  viu_info.v_additional_data := i_additional_data;
+
+  
+  if sqlerrm not like 'ORA-0000:%'
+  then
+    viu_info.v_oracle_text := sqlerrm;
+  end if;
+
+else  
+
+  
+  
+  
+  
+  
+  if viu_info.v_ifo_nr is null
+  then
+    
+    
+    if viu_trace.v_extendedloggingactive = viu_configuration.c_boolean_true
+    then
+      begin
+        viu_info.v_called_procedure_chain :=
+                      viu_trace.get_calls(1,1) || ' ' || viu_trace.get_calls(2);
+      exception
+        when others
+        then
+          viu_info.v_called_procedure_chain := 'Failed to retrieve';
+      end;
+    else
+      viu_info.v_called_procedure_chain := dbms_utility.format_call_stack;
+    end if;
+
+    
+    if sqlerrm not like 'ORA-0000:%'
+    then
+      viu_info.v_oracle_text := sqlerrm;
+    end if;
+
+    
+    viu_info.v_ifo_nr := viu_constant.c_ifo_nonedefinedexception;
+    viu_info.v_info_arguments := sqlerrm;
+
+  end if;
+end if;
+
+
+
+if viu_info.v_translatemethod = 0 then
+  
+  
+  if sqlerrm not like 'ORA-0000:%' then
+    
+    if viu_info.v_ifo_nr = viu_constant.c_ifo_nonedefinedexception
+       and sqlerrm not like 'ORA-'||viu_constant.c_ifo_nonedefinedexception||':%'
+    then
+      v_error_text := sqlerrm;
+    else
+      v_error_text := substr(sqlerrm, instr(sqlerrm, ':')+2);
+    end if;
+  else
+    v_error_text := viu_translation.complete_text_of_info
+      (i_info_nr        => viu_info.v_ifo_nr
+      ,i_info_arguments => viu_info.v_info_arguments
+      ,i_language       => viu_configuration.v_default_language
+      );
+  end if;
+  v_debug_msg := v_error_text;
+else
+  
+  
+  
+  if viu_info.v_translatemethod = 1 then
+    
+    v_error_text := '##'||viu_info.v_info_arguments;
+  else
+    
+    v_error_text := viu_info.v_info_arguments;
+  end if;
+  v_debug_msg  := 'ORA-'||viu_info.v_ifo_nr||': '||viu_info.v_info_arguments;
+end if;
+
+
+
+
+
+if i_ifo_nr is not null then
+  viu_info.operator_info
+    (i_ifo_nr            => viu_constant.c_ifo_exceptionraised
+    ,i_calling_procedure => c_proc_name
+    ,i_severity          => viu_info.c_severity_debug
+    ,i_info_arguments    => v_debug_msg
+    ,i_additional_data   => 'Message: [-'||i_ifo_nr||']'||
+                            ', Raised by: ['||i_calling_procedure||']'
+    );
+end if;
+
+
+viu_info.raise_error(i_error_code => viu_info.v_ifo_nr
+                    ,i_error_text => v_error_text);
+end raise_info;
+procedure raise_error
+ (i_error_code in positive
+ ,i_error_text in varchar2
+ )
+ is
+begin
+if	i_error_code between viu_constant.min_c_ifo and viu_constant.max_c_ifo
+	then
+
+		
+
+		raise_application_error( -i_error_code, i_error_text );
+	else
+
+		
+
+		raise_application_error( -viu_constant.c_ifo_constraintviolated, i_error_text );
+	end if;
+end raise_error;
+procedure reset_package_variables
+ is
+begin
+viu_info.v_oracle_text := null;
+	viu_info.v_called_procedure_chain := null;
+	viu_info.v_calling_procedure := null;
+	viu_info.v_severity := null;
+	viu_info.v_info_arguments := null;
+	viu_info.v_additional_data := null;
+	viu_info.v_ifo_nr := null;
+end reset_package_variables;
+
+
+procedure insert_info_autonomous
+ (i_ifo_nr in viu_info_logs.ifo_nr%type
+ ,i_calling_procedure in viu_info_logs.calling_procedure%type
+ ,i_severity in viu_info_logs.severity%type
+ ,i_info_arguments in viu_info_logs.info_arguments%type
+ ,i_additional_data in viu_info_logs.additional_data%type
+ ,i_username in viu_info_logs.username%type
+ ,i_called_procedure_chain in viu_info_logs.called_procedure_chain%type
+ ,i_application in viu_info_logs.ifo_application%type
+ ,i_oracle_text in viu_info_logs.oracle_text%type
+ )
+ is
+
+v_application viu_infos.application%type;
+
+cursor c_application
+ (i_ifo_nr in viu_infos.nr%type
+ )
+ is
+select  ifo.application
+from    viu_infos ifo
+where nr = i_ifo_nr
+;
+pragma autonomous_transaction;
+
+begin
+open c_application( i_ifo_nr => i_ifo_nr);
+     fetch c_application into v_application;
+     close c_application;
+      
+	
+	insert into viu_info_logs
+	(	id
+	, atn_id
+	,	ifo_application
+	,	ifo_nr
+	,	datetime_created
+	,	username
+	, sessionid
+	,	calling_procedure
+	,	called_procedure_chain
+	, nesting_level
+	,	oracle_text
+	,	severity
+	,	info_arguments
+	,	additional_data
+	)
+	values
+	(	viu_ilg_seq.nextval
+	, viu_action.current_action
+	,	v_application
+	,	i_ifo_nr
+	,	viu_transaction.current_datetime
+	,	nvl(i_username, viu_info.v_username)
+	, viu_info.v_sessionid
+	,	i_calling_procedure
+	,	i_called_procedure_chain
+	, nvl(viu_module.current_nesting_level, 0)
+	,	i_oracle_text
+	,	i_severity
+	,	i_info_arguments
+	,	i_additional_data
+	);
+
+	viu_info.do_commit;
+
+exception
+	when others
+	then
+            if c_application%isopen then close c_application; end if;
+		viu_info.do_rollback;
+end insert_info_autonomous;
+procedure do_commit
+ is
+begin
+commit;
+end do_commit;
+procedure do_rollback
+ is
+begin
+rollback;
+end do_rollback;
+
+procedure cleanup
+ (i_max_rows in number
+ ,i_retention_date in timestamp
+ )
+ is
+
+
+c_proc constant varchar2(100) := 'viu_info.cleanup';
+
+v_nr_deletes number := 0;
+
+
+
+
+begin
+  viu_module.enter_module( i_module     => c_proc
+                          ,i_debug_info => 'Max-rows: ['||i_max_rows||']'||
+                                           ', Retention-date: ['||i_retention_date||']'
+                         );
+
+  loop
+    begin
+      delete viu_info_logs
+      where  datetime_created < i_retention_date
+      and    rownum <= i_max_rows;
+    exception
+      when others then
+        viu_info.raise_info
+          ( i_ifo_nr            => viu_constant.c_ifo_deletefailed
+	     ,i_calling_procedure => c_proc
+	     ,i_severity          => viu_info.c_severity_error
+	     ,i_info_arguments    => 'viu_info_logs'
+          );
+    end;
+
+    v_nr_deletes := v_nr_deletes + sql%rowcount;
+    exit when sql%rowcount = 0;
+    commit;
+  end loop;
+
+  viu_info.operator_info
+    (i_ifo_nr            => viu_constant.c_ifo_cleanupmsg
+    ,i_calling_procedure => c_proc
+    ,i_severity          => viu_info.c_severity_notification
+    ,i_info_arguments    => v_nr_deletes||'##info loggings'
+    );
+
+  viu_module.leave_module(i_module => c_proc);
+
+exception
+  when others then
+    viu_module.leave_module( i_module     => c_proc
+                            ,i_debug_info => 'Max-rows: ['||i_max_rows||']'||
+                                             ', Retention-date: '||i_retention_date||']'
+                           );
+    viu_info.raise_info(i_calling_procedure => c_proc);
+end cleanup;
+
+
+procedure insert_info
+ (i_ifo_nr in viu_info_logs.ifo_nr%type
+ ,i_calling_procedure in viu_info_logs.calling_procedure%type
+ ,i_severity in viu_info_logs.severity%type
+ ,i_info_arguments in viu_info_logs.info_arguments%type
+ ,i_additional_data in viu_info_logs.additional_data%type
+ ,i_username in viu_info_logs.username%type
+ ,i_application in viu_info_logs.ifo_application%type
+ ,i_oracle_text in viu_info_logs.oracle_text%type
+ ,i_called_procedure_chain in viu_info_logs.called_procedure_chain%type
+ )
+ is
+
+v_application viu_infos.application%type;
+
+cursor c_application
+ (i_ifo_nr in viu_infos.nr%type
+ )
+ is
+select  ifo.application
+from    viu_infos ifo
+where nr = i_ifo_nr
+;
+
+begin
+open c_application( i_ifo_nr => i_ifo_nr);
+     fetch c_application into v_application;
+     close c_application;
+      
+	
+	insert into viu_info_logs
+	(	id
+	, atn_id
+	,	ifo_application
+	,	ifo_nr
+	,	datetime_created
+	,	username
+	, sessionid
+	,	calling_procedure
+	,	called_procedure_chain
+	, nesting_level
+	,	oracle_text
+	,	severity
+	,	info_arguments
+	,	additional_data
+	)
+	values
+	(	viu_ilg_seq.nextval
+	, viu_action.current_action
+	,	v_application
+	,	i_ifo_nr
+	,	viu_transaction.current_datetime
+	,	nvl(i_username, viu_info.v_username)
+	, viu_info.v_sessionid
+	,	i_calling_procedure
+	,	i_called_procedure_chain
+	, nvl(viu_module.current_nesting_level, 0)
+	,	i_oracle_text
+	,	i_severity
+	,	i_info_arguments
+	,	i_additional_data
+	);
+
+exception
+	when others
+	then
+            if c_application%isopen then close c_application; end if;
+end insert_info;
+
+function current_log_level
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.current_log_level';
+begin
+if viu_transaction.initialized
+   and viu_action.current_action is not null
+then
+  
+  return viu_action.current_loglevel;
+else
+  
+  return nvl( viu_info.v_maxlvloprinfologged, viu_info.max_c_severity );
+end if;
+end current_log_level;
+
+function calling_tree
+ (i_nesting_level in number
+ )
+ return varchar2
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.calling_tree';
+
+v_tree varchar2(100);
+
+
+
+begin
+  if i_nesting_level = 0 then
+    v_tree := '+--';
+  else
+    v_tree := '|  '||lpad('+--',i_nesting_level*3,'|  ');
+  end if;
+
+  return v_tree;
+end calling_tree;
+
+function severity_error
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.severity_error';
+begin
+return c_severity_error;
+end severity_error;
+
+function severity_warning
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.severity_warning';
+begin
+return c_severity_warning;
+end severity_warning;
+
+function severity_notification
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.severity_notification';
+begin
+return c_severity_notification;
+end severity_notification;
+
+function severity_debug
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.severity_debug';
+begin
+return c_severity_debug;
+end severity_debug;
+
+function severity_proc_arguments
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.severity_proc_arguments';
+begin
+return c_severity_proc_arguments;
+end severity_proc_arguments;
+
+function severity_proc_call
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Info.severity_proc_call';
+begin
+return c_severity_proc_call;
+end severity_proc_call;
+procedure update_info_reported
+ (i_id in viu_info_logs.id%type
+ ,i_datetime in timestamp
+ )
+ is
+begin
+update viu_info_logs
+set    datetime_reported = i_datetime
+where  id = i_id;
+
+exception
+	when others
+	then
+            raise;
+end update_info_reported;
+begin
+  v_username := user;
+  v_sessionid := userenv('SESSIONID');
+
+  v_maxlvloprinfologged :=
+    viu_configuration.get_parameter_value(i_param_id => viu_info.c_ptr_maxlvloprinfologged);
+
+  v_translatemethod :=
+    viu_configuration.get_parameter_value(i_param_id => viu_info.c_ptr_translatemethod);
+end viu_info;
+/

@@ -1,0 +1,14 @@
+function stdnumstr(str in varchar2) return varchar2 is
+n number(15,5) := 0;
+vc varchar2(50);
+begin
+  if str is null then return null; end if;
+  begin
+    n := to_number(str);
+    vc := trim(to_char(n));
+  exception when others then
+    vc := '0';
+  end;
+  return vc;
+end;
+/

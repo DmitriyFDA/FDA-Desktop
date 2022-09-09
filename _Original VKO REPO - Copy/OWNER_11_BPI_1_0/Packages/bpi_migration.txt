@@ -1,0 +1,761 @@
+create or replace PACKAGE bpi_migration
+IS
+   PROCEDURE logit( i_severity INTEGER
+                  , i_msg in varchar2
+                  );
+   PROCEDURE prepare;
+   PROCEDURE prepare_tables( i_tables   IN VARCHAR2
+                           , i_option   IN bpi_migration_tables.migrate_option%TYPE
+                           , i_sql_do   IN CLOB := NULL
+                           , i_sql_undo IN CLOB := NULL
+                           );
+   FUNCTION  prepare_tables( i_tables   IN VARCHAR2
+                           , i_option   IN bpi_migration_tables.migrate_option%TYPE
+                           , i_sql_do   IN CLOB := NULL
+                           , i_sql_undo IN CLOB := NULL
+                           )
+      RETURN VARCHAR2;
+   PROCEDURE prepare_sequence( i_sequence   IN VARCHAR2 );
+   PROCEDURE import_tables( i_tables IN VARCHAR2
+                          , i_name   IN dba_directories.directory_name%TYPE
+                          , i_path   IN dba_directories.directory_path%TYPE
+                          , i_schema IN dba_users.username%TYPE := USER
+                          , i_file   IN VARCHAR2 := NULL
+                          );
+                          
+                          
+   PROCEDURE sync_table( i_table user_tables.table_name%TYPE );
+
+   PROCEDURE finalize;
+
+-- TBD:
+--   Logfile/Dumpfile names
+--   Transfer files to other location
+
+END bpi_migration;
+/
+
+
+
+
+package body bpi_migration
+is
+
+   dp_directory_not_found  exception;
+
+
+function expand_tablelist(i_tables in varchar2)
+   return varchar2
+is
+   l_pattern      varchar2(30);
+   l_tables       varchar2(32767);
+   l_return_value varchar2(32767);
+   l_next         integer;
+begin
+   l_tables := trim(i_tables);
+   while l_tables is not null
+   loop
+      l_next := instr(l_tables, ',') + 1;
+      if l_next > 1
+      then
+         l_pattern := substr(l_tables, 1, l_next-2);
+         l_tables  := substr(l_tables, l_next);
+      else
+         l_pattern := l_tables;
+         l_tables  := null;
+      end if;
+         
+      if l_pattern is not null
+      then
+         select nvl2(l_return_value, l_return_value||',', null)||listagg(table_name, ',') within group (order by 1)
+         into   l_return_value
+         from   user_tables
+         where  table_name like l_pattern escape '\';
+      end if;
+   end loop;
+   
+   return l_return_value;
+end;
+
+procedure logit( i_severity integer
+               , i_msg in varchar2
+               )
+is
+begin
+   
+   insert
+   into   bpi_migration_log ( id
+                            , ts
+                            , severity
+                            , message
+                            )
+   values ( bpi_migration_log_seq.nextval
+          , sys_extract_utc(systimestamp)
+          , i_severity
+          , substr(i_msg, 1, 4000)
+          );
+   commit;
+end;
+
+function find_directory
+( i_name  in  dba_directories.directory_name%type
+, i_path  in  dba_directories.directory_path%type
+)
+   return dba_directories.directory_name%type
+is
+   l_return_value dba_directories.directory_name%type;
+begin
+   
+   
+   select directory_name
+   into   l_return_value
+   from   dba_directories
+   where  directory_path = trim(i_path)
+   and    directory_name = i_name
+   ;
+   
+   return l_return_value;
+exception
+   when others then
+      
+      
+      raise dp_directory_not_found;
+end;
+
+
+function is_empty( i_table_name user_tables.table_name%type)
+   return boolean
+is
+   l_count integer;
+begin
+   execute immediate 'SELECT COUNT(*) FROM '||i_table_name||' WHERE ROWNUM=1' into l_count;
+   
+   return l_count=0;
+end;
+
+procedure prepare
+is
+begin
+   
+   delete from bpi_migration_sequences;
+   delete from bpi_migration_tables;
+   delete from bpi_migration_log;
+   delete from bpi_migration_exceptions;
+   commit;
+end;
+
+
+function  prepare_tables( i_tables   in varchar2
+                        , i_option   in bpi_migration_tables.migrate_option%type
+                        , i_sql_do   in clob
+                        , i_sql_undo in clob
+                        )
+   return varchar2
+is
+   l_tables    varchar2(32767) := expand_tablelist(i_tables);
+
+   l_numrows   number;
+   l_numlblks  number;
+   l_numdist   number;
+   l_avglblk   number;
+   l_avgdblk   number;
+   l_clstfct   number;
+   l_indlevel  number;
+   l_guessq    number;
+   l_cachedblk number;
+   l_cachehit  number;
+   l_option    bpi_migration_tables.migrate_option%type := 'APPEND';
+
+   pragma autonomous_transaction;
+begin
+   for tbl in ( select val as name
+                from   table(csv.vals(l_tables))
+              )
+   loop
+      
+      begin
+         insert into bpi_migration_tables( table_name, seq, migrate_option, sql_undo )
+         values ( tbl.name, bpi_migration_seq.nextval, i_option, trim(i_sql_undo) );
+         commit;
+      exception
+         when dup_val_on_index then null; 
+      end;
+
+      
+      for trg in ( select trigger_name
+                   from   user_triggers
+                   where  table_name = tbl.name
+                   and    status = 'ENABLED'
+                   order by trigger_name
+                 )
+      loop
+         update  bpi_migration_tables
+         set     sql_undo = 'ALTER TRIGGER '||trg.trigger_name||' ENABLE'||'/'||chr(10)||sql_undo
+         where   table_name = tbl.name;
+         commit;
+
+         execute immediate 'ALTER TRIGGER '||trg.trigger_name||' DISABLE';
+      end loop;
+
+      
+      for fk in ( select owner
+                  ,      table_name
+                  ,      constraint_name
+                  from   user_constraints
+                  where  constraint_type = 'R'
+                  and    r_constraint_name in ( select constraint_name
+                                                from   user_constraints
+                                                where  constraint_type in ('P','U')
+                                                and    table_name = tbl.name
+                                              )
+                )
+      loop
+         update  bpi_migration_tables
+         set     sql_undo = 'ALTER TABLE '||fk.owner||'.'||fk.table_name
+                                          ||' ENABLE CONSTRAINT '||fk.constraint_name||' EXCEPTIONS INTO bpi_migration_exceptions'||'/'||chr(10)
+                                          ||sql_undo
+         where   table_name = tbl.name;
+         commit;
+
+         execute immediate 'ALTER TABLE '||fk.owner||'.'||fk.table_name||' DISABLE CONSTRAINT '||fk.constraint_name||' KEEP INDEX';
+      end loop;
+
+      
+      for fk  in ( select owner
+                   ,      table_name
+                   ,      constraint_name
+                   from   user_constraints
+                   where  table_name = tbl.name
+                   and    constraint_type not in ('C')      
+                 )
+      loop
+         update  bpi_migration_tables
+         set     sql_undo = 'ALTER TABLE '||fk.owner||'.'||fk.table_name
+                                          ||' ENABLE CONSTRAINT '||fk.constraint_name||' EXCEPTIONS INTO bpi_migration_exceptions'||'/'||chr(10)
+                                          ||sql_undo
+         where   table_name = tbl.name;
+         commit;
+
+         execute immediate 'ALTER TABLE '||fk.owner||'.'||fk.table_name||' DISABLE CONSTRAINT '||fk.constraint_name||' KEEP INDEX';
+      end loop;
+
+      if i_option = 'REPLACE'
+      then
+         execute immediate 'TRUNCATE TABLE '||tbl.name;
+      end if;
+
+      if not is_empty(tbl.name)
+      then
+         l_option := i_option;
+      else
+         
+         
+         
+         for idx  in ( select table_owner
+                       ,      index_name
+                       from   user_indexes
+                       where  table_name = tbl.name
+                     )
+         loop
+            begin
+               dbms_stats.get_index_stats ( ownname   => user
+                                          , indname   => idx.index_name
+                                          , numrows   => l_numrows
+                                          , numlblks  => l_numlblks
+                                          , numdist   => l_numdist
+                                          , avglblk   => l_avglblk
+                                          , avgdblk   => l_avgdblk
+                                          , clstfct   => l_clstfct
+                                          , indlevel  => l_indlevel
+                                          , guessq    => l_guessq
+                                          , cachedblk => l_guessq
+                                          , cachehit  => l_cachehit
+                                          );
+
+               update  bpi_migration_tables
+               set     sql_undo =   'BEGIN DBMS_STATS.SET_INDEX_STATS(ownname=>USER'
+                                  ||',indname=>'''||idx.index_name
+                                  ||''',numrows=>'||to_char(l_numrows)
+                                  ||',numlblks=>' ||to_char(l_numlblks)
+                                  ||',numdist=>'  ||to_char(l_numdist)
+                                  ||',avglblk=>'  ||to_char(l_avglblk)
+                                  ||',avgdblk=>'  ||to_char(l_avgdblk)
+                                  ||',clstfct=>'  ||to_char(l_clstfct)
+                                  ||',indlevel=>' ||to_char(l_indlevel)
+                                  ||',force=>TRUE); END;'||'/'||chr(10)
+                                  ||sql_undo
+               where   table_name = tbl.name;
+               commit;
+            exception
+               when others then null;
+            end;
+       
+            update  bpi_migration_tables
+            set     sql_undo = replace( dbms_metadata.get_ddl('INDEX', idx.index_name)
+                                      , 'COMPUTE STATISTICS'
+                                      , ''
+                                      )||'/'||chr(10)
+                               ||sql_undo
+            where   table_name = tbl.name;
+            commit;
+
+            
+            execute immediate 'DROP INDEX '||idx.table_owner||'.'||idx.index_name;
+         end loop;
+      end if;
+
+   end loop;
+
+   
+   if i_sql_do is not null
+   then
+      execute immediate i_sql_do;
+   end if;
+   
+   return l_option;
+end;
+
+
+procedure prepare_tables( i_tables   in varchar2
+                        , i_option   in bpi_migration_tables.migrate_option%type
+                        , i_sql_do   in clob
+                        , i_sql_undo in clob
+                        )
+is
+   l_option bpi_migration_tables.migrate_option%type;
+begin
+   l_option := prepare_tables( i_tables   => i_tables
+                             , i_option   => i_option
+                             , i_sql_do   => i_sql_do
+                             , i_sql_undo => i_sql_undo
+                             );
+end;
+
+      
+procedure prepare_sequence( i_sequence in varchar2 )
+is
+begin
+   insert into bpi_migration_sequences(sequence_name) values (i_sequence);
+   commit;
+end;
+
+procedure finalize
+is
+   l_undo clob;
+   l_eoln integer;
+   l_sql  varchar2(32767);
+begin
+   for tbl in ( select table_name as name
+                ,      sql_undo
+                from   bpi_migration_tables
+                order by seq desc
+              )
+   loop
+      l_undo := tbl.sql_undo;
+      while l_undo is not null
+      loop
+         l_eoln := instr(l_undo, '/'||chr(10));
+         if l_eoln > 0
+         then
+            l_sql  := substr(l_undo, 1, l_eoln-1);
+            l_undo := substr(l_undo, l_eoln+2);
+         else
+            l_sql  := l_undo;
+            l_undo := null;
+         end if;
+         
+         if l_sql is not null
+         then
+            execute immediate l_sql;
+            
+            update bpi_migration_tables
+            set    sql_undo = l_undo
+            where  table_name = tbl.name;
+            commit;
+         end if;
+      end loop;
+   end loop;
+
+   for seq in ( select * from bpi_migration_sequences )
+   loop
+      begin
+         execute immediate q'[SELECT 'CREATE SEQUENCE '||sequence_name
+                                                       ||' START WITH '||last_number
+                                                       ||' MAXVALUE '||max_value
+                                                       ||' MINVALUE '||min_value
+                                                       ||CASE WHEN cycle_flag = 'Y' THEN ' CYCLE ' ELSE ' NOCYCLE ' END
+                                                       ||CASE WHEN cache_size=0 THEN ' NOCACHE ' ELSE ' CACHE '||cache_size END
+                                                       ||CASE WHEN order_flag = 'Y' THEN ' ORDER ' ELSE ' NOORDER ' END
+                             FROM     user_sequences@bpi_migration_tempdblink
+                             WHERE    sequence_name = :sequence_name]'
+             into l_sql using seq.sequence_name;
+         execute immediate 'DROP SEQUENCE '||seq.sequence_name;
+         execute immediate l_sql;
+      exception
+         when others then null;
+      end;
+   end loop;
+end;
+
+procedure sync_table( i_table user_tables.table_name%type )
+is
+   l_select varchar2(32767);
+   l_where  varchar2(32767);
+   l_max    number;
+begin
+   logit(4, 'Sync('||i_table||')');
+
+
+   
+   
+   select 'SELECT NVL(MAX('||column_name||'),0) FROM '||i_table
+   into   l_select
+   from   user_constraints csn
+   ,      user_ind_columns icn
+   where  csn.table_name = i_table
+   and    csn.constraint_type = 'P'
+   and    icn.table_name = i_table
+   and    icn.index_name = csn.constraint_name
+   and    icn.column_position = 1;
+   
+   execute immediate l_select into l_max;
+
+   select ' WHERE '||column_name||' > '||to_char(l_max) ||' ORDER BY '||column_name
+   into   l_where
+   from   user_constraints csn
+   ,      user_ind_columns icn
+   where  csn.table_name = i_table
+   and    csn.constraint_type = 'P'
+   and    icn.table_name = i_table
+   and    icn.index_name = csn.constraint_name
+   and    icn.column_position = 1;
+   
+
+   
+   execute immediate
+      q'[ SELECT 'SELECT '||LISTAGG( NVL( ( SELECT column_name
+                                            FROM   user_tab_columns@bpi_migration_tempdblink
+                                            WHERE  table_name = tcn.table_name
+                                            AND    column_name = tcn.column_name
+                                          )
+                                        , 'NULL'
+                                        )
+                                    , ','
+                                    ) WITHIN GROUP (ORDER BY column_id)
+                 || ' FROM '||:i_table||'@bpi_migration_tempdblink'
+                 || :l_where
+          INTO   :l_select
+          FROM   user_tab_columns tcn
+          WHERE  table_name = :i_table
+        ]'
+      into l_select
+      using i_table, l_where, i_table;
+
+
+   execute immediate
+      'DECLARE
+          l_cursor SYS_REFCURSOR;
+          TYPE t_bsys IS TABLE OF '||i_table||'%ROWTYPE;
+          l_bsys t_bsys;
+          l_count PLS_INTEGER := 0;
+       BEGIN
+          OPEN l_cursor FOR :select;
+          LOOP
+             FETCH l_cursor BULK COLLECT INTO l_bsys LIMIT 10000;
+             EXIT WHEN l_bsys.COUNT = 0;
+             FORALL i IN 1..l_bsys.LAST
+                INSERT INTO '||i_table||' VALUES l_bsys(i);
+             COMMIT WRITE BATCH NOWAIT;
+             l_count := l_count + l_bsys.COUNT;
+          END LOOP;
+          bpi_migration.logit(3, ''Table '||i_table||': ''||l_count||'' rows inserted'');
+       EXCEPTION
+          WHEN OTHERS THEN bpi_migration.logit(1, ''Table '||i_table||': ''||SQLERRM);
+       END;
+      ' using l_select;
+end;
+
+procedure impdp_tables( i_tables in varchar2
+                      , i_name   in dba_directories.directory_name%type
+                      , i_path   in dba_directories.directory_path%type
+                      , i_schema in dba_users.username%type
+                      , i_file   in varchar2
+                      )
+is
+   l_con_dp_job_name   constant varchar2(30) := 'DP$BPI$IMP';
+   l_con_dp_log_file   constant varchar2(30) := nvl(i_file, 'impdp_plsql')||'.log';
+   l_con_dp_dmp_file   constant varchar2(30) := nvl(i_file, 'expdp_plsql')||'.dmp';
+   l_con_include_meta  constant number       := 0;
+   l_con_data_options  constant number       := dbms_datapump.ku$_dataopt_skip_const_err; --+dbms_datapump.ku$_dataopt_disabl_append_hint;
+   l_con_object_path   constant varchar2(30) := 'TABLE_DATA';
+   l_con_source_schema constant varchar2(30) := upper(i_schema);
+   l_con_target_schema constant varchar2(30) := user;
+   l_con_name_expr     constant varchar2(60) := null; 
+   l_tables            constant varchar2(32767) := expand_tablelist(i_tables);
+   l_con_name_list     constant varchar2(32767) := ''''||replace(l_tables, ',', ''',''')||'''';
+   
+   l_dp_dir            dba_directories.directory_name%type;
+   l_migrate_option    bpi_migration_tables.migrate_option%type;
+   l_handle            number;
+   l_state             varchar2(32);
+   l_status            ku$_status;
+   l_logentry          ku$_logentry;         
+   l_jobstatus         ku$_jobstatus;        
+   l_percent_done      number;               
+   l_msg               varchar2(2000);
+   l_spos              number;               
+   l_slen              number;               
+   i                   number;               
+begin
+   logit(4, 'Data Pump import('||i_tables||','||i_path||','||i_schema||')');
+   
+   l_dp_dir := find_directory(i_name => i_name
+                             ,i_path => i_path
+                             );
+
+   l_handle := dbms_datapump.open( operation => 'IMPORT'
+                                 , job_mode  => 'TABLE'
+                                 , job_name  => l_con_dp_job_name
+                                 , version   => 'COMPATIBLE'
+                                 );
+                                 
+   
+   dbms_datapump.add_file( handle    => l_handle
+                         , filename  => l_con_dp_log_file
+                         , directory => l_dp_dir
+                         , filetype  => dbms_datapump.ku$_file_type_log_file
+                         );
+
+   
+   dbms_datapump.add_file( handle    => l_handle
+                         , filename  => l_con_dp_dmp_file
+                         , directory => l_dp_dir
+                         , filetype  => dbms_datapump.ku$_file_type_dump_file
+                         );
+                         
+   
+   dbms_datapump.set_parameter( handle => l_handle
+                              , name   => 'INCLUDE_METADATA'
+                              , value  => l_con_include_meta
+                              );
+
+   dbms_datapump.set_parameter( handle => l_handle
+                              , name   => 'DATA_OPTIONS'
+                              , value  => l_con_data_options
+                              );
+
+   
+   
+   dbms_datapump.set_parameter( handle => l_handle
+                              , name   => 'SKIP_UNUSABLE_INDEXES'
+                              , value  => 0
+                              );
+
+   
+   dbms_datapump.metadata_remap( handle    => l_handle
+                               , name      => 'REMAP_SCHEMA'
+                               , old_value => l_con_source_schema
+                               , value     => l_con_target_schema
+                               );
+
+   if l_con_name_expr is not null
+   then
+      dbms_datapump.metadata_filter( handle      => l_handle
+                                   , name        => 'NAME_EXPR'
+                                   , value       => l_con_name_expr
+                                   , object_path => l_con_object_path
+                                   );
+   end if;
+   if l_con_name_list is not null
+   then
+      dbms_datapump.metadata_filter( handle      => l_handle
+                                   , name        => 'NAME_LIST'
+                                   , value       => l_con_name_list
+                                   , object_path => l_con_object_path
+                                   );
+   end if;
+   
+   
+   
+   
+   
+   
+   begin
+      dbms_datapump.start_job(l_handle);
+      
+      logit(3,'Data Pump job started successfully');
+   exception
+      when others then
+         if sqlcode = dbms_datapump.success_with_info_num
+         then
+            logit(3,'Data Pump job started with info available:');
+            
+            dbms_datapump.get_status(handle    => l_handle
+                                    ,mask      => dbms_datapump.ku$_status_job_error
+                                    ,timeout   => 0
+                                    ,job_state => l_state
+                                    ,status    => l_status
+                                    );
+            if (bitand(l_status.mask,dbms_datapump.ku$_status_job_error) != 0)
+            then
+               l_logentry := l_status.error;
+               if l_logentry is not null
+               then
+                  i := l_logentry.first;
+                  while i is not null
+                  loop
+                     logit(4,l_logentry(i).logtext);
+                     i := l_logentry.next(i);
+                  end loop;
+               end if;
+            end if;
+         else
+            raise;
+         end if;
+   end;
+   
+   
+   
+   l_percent_done := 0;
+   l_state    := 'UNDEFINED';
+   
+   while l_state not in ('COMPLETED','STOPPED')
+   loop
+      dbms_datapump.get_status(handle    => l_handle
+                              ,mask      => dbms_datapump.ku$_status_job_error +
+                                            dbms_datapump.ku$_status_job_status +
+                                            dbms_datapump.ku$_status_wip
+                              ,timeout   => -1
+                              ,job_state => l_state
+                              ,status    => l_status
+                              );
+      l_jobstatus := l_status.job_status;
+      
+      if l_jobstatus.percent_done != l_percent_done
+      then
+         logit(4,'*** Job percent done = ' || to_char(l_jobstatus.percent_done));
+         l_percent_done := l_jobstatus.percent_done;
+      end if;
+      
+      if (bitand(l_status.mask,dbms_datapump.ku$_status_wip) != 0)
+      then
+         l_logentry := l_status.wip;
+      else
+         if (bitand(l_status.mask,dbms_datapump.ku$_status_job_error) != 0)
+         then
+            l_logentry := l_status.error;
+         else
+            l_logentry := null;
+         end if;
+      end if;
+      if l_logentry is not null
+      then
+         i := l_logentry.first;
+         while i is not null
+         loop
+            logit(4,l_logentry(i).logtext);
+            i := l_logentry.next(i);
+         end loop;
+      end if;
+   end loop;
+   
+   logit(3,'Job has completed. Final job state = ' || l_state);
+   
+   dbms_datapump.detach( handle => l_handle );
+   
+   logit(4, 'End Data Pump import('||i_tables||','||i_path||','||i_schema||')');
+exception
+   when dp_directory_not_found then
+      l_msg := 'Import directory could not be found for entered path '||trim(i_path);
+      
+      bpi_migration.logit(1,l_msg);
+      
+      raise_application_error(-20001,l_msg);
+   when others then
+      dbms_datapump.get_status( handle    => l_handle
+                              , mask      => dbms_datapump.ku$_status_job_error
+                              , job_state => l_state
+                              , status    => l_status
+                              );
+   
+      logit(1,'Exception in Data Pump job - Handle:'||l_handle||',State: '||l_state||',Status:'||l_status.mask);
+      l_logentry := l_status.error;
+      if l_logentry is not null
+      then
+         i := l_logentry.first;
+         while i is not null
+         loop
+            l_spos := 1;
+            l_slen := length(l_logentry(i).logtext);
+            if l_slen > 255
+            then
+              l_slen := 255;
+            end if;
+            while l_slen > 0
+            loop
+               logit(1,substr(l_logentry(i).logtext,l_spos,l_slen));
+               l_spos := l_spos + 255;
+               l_slen := length(l_logentry(i).logtext) + 1 - l_spos;
+            end loop;
+            i := l_logentry.next(i);
+         end loop;
+      end if;
+      
+      if l_handle is not null
+      then
+        dbms_datapump.detach( handle => l_handle );
+      end if;
+      
+      raise;
+end;
+
+procedure import_tables( i_tables in varchar2
+                       , i_name   in dba_directories.directory_name%type
+                       , i_path   in dba_directories.directory_path%type
+                       , i_schema in dba_users.username%type
+                       , i_file   in varchar2
+                       )
+is
+   l_tables        constant varchar2(32767) := expand_tablelist(i_tables);
+   l_impdp_tables  varchar2(32767);
+begin
+   logit(4, 'Import('||i_tables||','||i_path||','||i_schema||')');
+   
+   l_impdp_tables := null;
+   for mte in ( select mte.*
+                from   table(csv.vals(l_tables))
+                ,      bpi_migration_tables mte
+                where  mte.table_name = val
+              )
+   loop
+      begin
+         execute immediate 'SELECT 1 FROM '||mte.table_name||'@bpi_migration_tempdblink WHERE ROWNUM=0';
+
+         if     i_path is not null
+            and (    mte.migrate_option in ('REPLACE','APPEND')
+                  or mte.migrate_option = 'SYNC' and is_empty(mte.table_name)
+                )
+         then
+            l_impdp_tables := case when l_impdp_tables is not null then l_impdp_tables||',' end || mte.table_name;
+         else
+            sync_table(mte.table_name);
+         end if;
+      exception
+         when others then null; 
+      end;
+   end loop;
+   
+   if l_impdp_tables is not null
+   then
+      impdp_tables( i_tables => l_impdp_tables
+                  , i_name   => i_name
+                  , i_path   => i_path
+                  , i_schema => i_schema
+                  , i_file   => i_file
+                  );
+   end if;
+end;
+
+
+end bpi_migration;
+/

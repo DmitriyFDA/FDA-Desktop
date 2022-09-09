@@ -1,0 +1,107 @@
+procedure report_btperperiod2(p_input in varchar2 default ' '
+						, p_period in varchar2 default ' '
+						, p_sortby in varchar2 default ' '
+						,p_radio in varchar2 default 'Transport') is
+v_msg      varchar2(32767);
+v_select   varchar2(8000);
+v_sql      varchar2(1000);
+v_id       varchar2(50);
+v_lpcpid   varchar2(50);
+v_clause   varchar2(50) := ' ';
+v_dt1      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24.MI');
+v_dt2      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24.MI');
+v_sdate date;
+v_edate date;
+v_rc       number(5) := 0;
+v_errmsg   varchar2(32767);
+v_title    varchar2( 200) := 'Report Bag Trace - Period '||p_period||', '||p_input||', dd '||ts2str(sysdate);
+v_filename varchar2( 200);
+v_clob clob;
+v_view	   varchar2(50);
+begin
+  v_filename := replace(v_title, ' ','_')||'.csv';
+  v_filename := replace(v_filename, ',','');
+  v_filename := replace(v_filename, ':','.');
+  htp.print(ui_menu.head_from_link('REP_BTPERPERIOD2'));
+  htp.print('<BUTTON onClick="document.location=''DOWNLOADREPORT?p_file='||v_filename||''';">Download</BUTTON>');
+  htp.print('<br>');
+  htp.print('<div class="reports">');
+
+  v_errmsg := '';
+  begin
+
+    v_lpcpid := substr(p_input,1,3);
+    v_id := trim(substr(p_input,5));
+    if v_id is not null then
+      if v_lpcpid = 'PID' then
+        v_clause := 'XPID = '||trim(v_id)||' AND ';
+      elsif v_lpcpid = 'BID' then
+        v_clause := 'XBID = '''||trim(v_id)||''' AND ';
+      else
+        v_clause := 'XLPC = '||trim(v_id)||' AND ';
+      end if;
+    else
+      v_clause := null;
+    end if;
+
+    v_msg := 'Calculating start date time. ';
+    v_dt1 := substr(p_period, 1, 14);
+    v_sdate := to_date(v_dt1,'YYYYMMDD.HH24.MI');
+    v_msg := 'Calculating end date time. ';
+    v_dt2 := substr(p_period, 16, 14);
+    v_edate := to_date(v_dt2,'YYYYMMDD.HH24.MI');
+
+    if p_radio = 'TRANSPORT' then
+    	v_view := 'FACT_BAGTRACE_V';
+    else
+    	v_view := 'FACT_BAGTRACE_FULL_V';
+    end if;
+
+    if (v_clause is null) and (abs(v_sdate - v_edate) > 1) then
+      v_errmsg := 'ERROR: Requested Period: '||v_dt1||' to '||v_dt2
+             ||'. With no constriction of LPC/BID/PID, a period must not exceed 24 hours.';
+    else
+      v_msg := 'Report Bag Trace, dd '||ts2str(sysdate)||chr(10)||chr(10)
+        ||'Registered events in period '||v_dt1||' to '||v_dt2;
+      if v_clause is null then
+        v_msg := v_msg||'.';
+      else
+        v_msg := v_msg||' for '||v_lpcpid||' '||v_id||'.';
+      end if;
+
+      v_sql :='alter session set nls_timestamp_format=''yyyy-mm-dd hh24:mi:ss.ff''';
+      execute immediate(v_sql);
+
+      v_select := 'SELECT * FROM '||v_view|| ' WHERE '||v_clause||'EVENTTS BETWEEN TO_DATE('''
+        ||v_dt1||''',''YYYYMMDD.HH24:MI'') AND TO_DATE('''
+        ||v_dt2||''',''YYYYMMDD.HH24:MI'')';
+      if trim(p_sortby) is not null then
+        v_select := v_select||' ORDER BY '||p_sortby;
+      end if;
+
+      v_clob := tab2csv.to_csv(v_select, v_msg);
+      delete from reports where name = v_filename;
+      insert into reports (name, clob_content) values (v_filename, v_clob);
+      commit;
+      showclob(v_clob);
+
+    end if;
+
+  exception
+    when others then v_errmsg := sqlerrm;
+  end;
+
+  if length(v_errmsg) > 0 then
+    htp.print(v_title||'<br>');
+    htp.print(v_errmsg||'<br></div>');
+  else
+    htp.print('<br></div>');
+    htp.print('<BUTTON onClick="document.location=''DOWNLOADREPORT?p_file='||v_filename||''';">Download</BUTTON>');
+  end if;
+
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

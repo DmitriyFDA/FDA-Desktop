@@ -1,0 +1,3927 @@
+create or replace PACKAGE pdm_cpad
+IS
+   -- Helper function to produce a local name for the attribute definition
+   FUNCTION map_adn_to_variable( i_adn_id IN pdm_attribute_definitions.id%TYPE)
+   RETURN PLS_INTEGER;
+
+   PROCEDURE hdl_message (i_message IN XMLTYPE);
+   
+END pdm_cpad;
+/
+
+
+
+
+package body pdm_cpad
+is
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   type it_strings     is table of varchar(32767) index by pls_integer;
+   type it_string_hash is table of varchar(32767) index by varchar2(1000);
+   type t_adn          is table of pdm_attribute_definitions.id%type;
+
+   g_con_package                  constant varchar2(20)    := 'pdm_cpad';
+   g_con_name_procedure           constant varchar2(30)    := 'pdm_store_derived_attributes';
+   g_con_name_procedure_validate  constant varchar2(30)    := 'pdm_validate';
+   g_con_name_prc_validate_cond   constant varchar2(30)    := 'pdm_validate_condition';
+
+   g_con_xpath_cpad                constant varchar2(1000) := '//CommonProcessAttributeDefinitions/CommonProcessAttributeDefinition';
+   g_con_xpath_version             constant varchar2(1000) := '//CommonProcessAttributeDefinitions/Version';
+   g_con_xpath_priority            constant varchar2(1000) := '//CommonProcessAttributeDefinitions/DefaultPriorities';
+   g_con_xpath_sourcelifespans     constant varchar2(1000) := '//CommonProcessAttributeDefinitions/SourceLifeSpans';
+   g_con_xpath_func_extensions      constant varchar2(1000) := '//CommonProcessAttributeDefinitions/FunctionalExtensions';
+
+   g_con_xpath_attribute_name      constant varchar2(1000) := '//CommonProcessAttributeDefinition/AttributeName';
+   g_con_xpath_derived_definition  constant varchar2(1000) := '//CommonProcessAttributeDefinition/DerivedAttributeDefinition';
+   g_con_xpath_attribute_sources   constant varchar2(1000) := '//CommonProcessAttributeDefinition/AttributeSources';
+   g_con_xpath_attribute_targets   constant varchar2(1000) := '//CommonProcessAttributeDefinition/AttributeTargets';
+   g_con_xpath_default_value       constant varchar2(1000) := '//CommonProcessAttributeDefinition/DefaultValue';
+
+   g_con_xpath_attribute_source    constant varchar2(1000) := '//AttributeSources/Source';
+   g_con_xpath_source_xpath        constant varchar2(1000) := '//Source/XPath';
+   g_con_xpath_source_priority     constant varchar2(1000) := '//Source/Priority';
+
+   g_con_xpath_attribute_target    constant varchar2(1000) := '//AttributeTargets/Target';
+   g_con_xpath_sending_condition   constant varchar2(1000) := '//AttributeTargets/SendingCondition';
+   g_con_xpath_target              constant varchar2(1000) := '//Target';
+
+   g_con_xpath_enum                constant varchar2(1000) := '//DerivedAttributeDefinition/Enum';
+   g_con_node_expression           constant varchar2(1000) := 'Expression';
+
+   g_con_xpath_derivation_attr     constant varchar2(1000) := '//DerivedAttributeDefinition/Attribute';
+
+   g_con_xpath_messagetype         constant varchar2(1000) := '//DefaultPriorities/MessageType';
+
+   g_con_xpath_sourcelifespan      constant varchar2(1000) := '//SourceLifeSpans/SourceLifeSpan';
+   g_con_xpath_source_attribute    constant varchar2(1000) := '//SourceLifeSpan/SourceAttribute';
+   g_con_xpath_lifespan            constant varchar2(1000) := '//SourceLifeSpan/LifeSpan';
+   g_con_xpath_lifespan_msgtype    constant varchar2(1000) := '//LifeSpan/MessageType';
+   g_con_xpath_lifespan_msgsubtyp  constant varchar2(1000) := '//LifeSpan/MessageSubType';
+
+   g_con_xpath_func_extension      constant varchar2(1000) := '//FunctionalExtensions/FunctionalExtension';
+   g_con_xpath_fe_name             constant varchar2(1000) := '//FunctionalExtension/Name';
+   g_con_xpath_incr_cntr           constant varchar2(1000) := 'IncreaseCounterCondition';
+   g_con_xpath_rst_cntr            constant varchar2(1000) := 'ResetCounterCondition';
+   g_con_xpath_rst_already         constant varchar2(1000) := 'AlreadyCountedResetCondition';
+   g_con_xpath_fe_cnt_incr_cntr    constant varchar2(1000) := '//FunctionalExtension/Count/' || g_con_xpath_incr_cntr;
+   g_con_xpath_fe_cnt_rst_cntr     constant varchar2(1000) := '//FunctionalExtension/Count/' || g_con_xpath_rst_cntr;
+   g_con_xpath_fe_cnt_rst_already  constant varchar2(1000) := '//FunctionalExtension/Count/' || g_con_xpath_rst_already;
+
+   g_con_xpath_idx_placeholderesc  constant varchar2( 30 )  := '\[\]';
+
+   g_con_mae_direction_outgoing    constant varchar2(  1 )  := 'O';
+
+   g_con_msgtype_packagedata       constant varchar2( 30 )  := 'PackageData';
+   g_con_msgtype_packageinfo       constant varchar2( 30 )  := 'PackageInfo';
+   g_con_msgtype_taskreport        constant varchar2( 30 )  := 'TaskReport';
+
+   g_con_dtn_placeholder           constant varchar2( 30 )  := ':ARG';
+   g_con_dtn_placeholder_bare      constant varchar2( 30 )  := 'ARG';
+   g_con_dtn_placeholder_multi     constant varchar2( 30 )  := ':ARGM';
+
+   g_con_min_adn_id                constant pdm_attribute_definitions.id%type := 100001;
+   g_con_min_apy_id                constant pdm_attribute_definitions.id%type := 100001;
+   g_con_min_avy_id                constant pdm_attribute_definitions.id%type :=      1;
+   g_con_offset_functional_pd      constant pdm_attribute_definitions.id%type :=  50000;
+   g_con_min_id_funct_ext          constant pdm_attribute_definitions.id%type :=  71000;
+   g_con_max_id_funct_ext          constant pdm_attribute_definitions.id%type :=  71999;
+   g_con_min_id_funct_ext_resume   constant pdm_attribute_definitions.id%type :=  72000;
+   g_con_max_id_funct_ext_resume   constant pdm_attribute_definitions.id%type :=  72999;
+
+   g_recursive_parent_started               boolean := false;
+
+   g_adns                                   t_adn;
+   g_it_derivations                         pdm_nt_derivations := pdm_nt_derivations();
+
+   function get_adn( i_adn_path     in  pdm_attribute_definitions.path%type
+                   , i_ind_create   in  boolean
+                   , i_min_id_range in  pdm_attribute_definitions.id%type default null
+                   , i_max_id_range in  pdm_attribute_definitions.id%type default null
+                   , i_fen_id       in  pdm_functional_extensions.id%type default null
+                   , o_rt_adn       out pdm_attribute_definitions%rowtype
+                   )
+   return boolean;
+
+   
+
+
+
+
+
+
+
+
+   function map_adn_to_variable( i_adn_id in pdm_attribute_definitions.id%type)
+   return pls_integer
+   as
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.map_adn_to_variable';
+
+      l_return_value             varchar2(32) := null;
+      i                          integer := 0;
+   begin
+         viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      
+      
+      if g_adns is null
+      then
+         select ady.adn_id_base
+         bulk   collect into g_adns
+         from   pdm_attribute_dependencies ady
+         union
+         select adn_id_child
+         from   pdm_attribute_dependencies
+         order by 1;
+      end if;
+
+      
+      while l_return_value is null
+      and   i < g_adns.count
+      loop
+         i := i + 1;
+         if g_adns(i) = i_adn_id
+         then
+            l_return_value := i;
+         end if;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_return_value;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+   end map_adn_to_variable;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function derivation_to_plsql (i_adn_id pdm_attribute_definitions.id%type)
+   return clob
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.derivation_to_plsql';
+
+      
+      
+      
+      
+      
+      
+      
+      
+
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      cursor c_expr (b_adn_id pdm_attribute_definitions.id%type)
+      is
+         with  derivation_replaced(adn_id, expression, ranking)
+         as    ( select vady1.adn_id
+                 ,      vady.expression
+                 ,      vady1.ranking
+                 from   table(cast(g_it_derivations as pdm_nt_derivations)) vady
+                 ,      ( select   ady1.adn_id_base adn_id
+                          ,        count(*) +1         ranking       
+                          from     pdm_attribute_dependencies ady1
+                          group    by adn_id_base
+                        ) vady1
+                 where  vady1.adn_id = vady.adn_id
+                 union all
+                 select   vady2.adn_id
+                 ,        replace( replace( expression
+                                          , g_con_dtn_placeholder || vady2.sequence
+                                          , 'l_' || g_con_dtn_placeholder_bare || vady2.sequence
+                                          )
+                                 , g_con_dtn_placeholder_multi || vady2.sequence
+                                 , 'l_values(' || to_clob(pdm_cpad.map_adn_to_variable(vady2.adn_id_child)) || ')'
+                                 ) expression
+                 ,        vady2.ranking
+                 from     ( select ady2.adn_id_base adn_id
+                            ,      ady2.sequence    sequence
+                            ,      ady2.adn_id_child
+                            ,      (rank() over (partition by ady2.adn_id_base order by ady2.sequence asc)) as ranking
+                            from   pdm_attribute_dependencies ady2
+                          ) vady2
+                 ,        derivation_replaced dar
+                 where    vady2.ranking  = dar.ranking - 1
+                 and      vady2.adn_id   = dar.adn_id
+               )
+         select expression
+         from   derivation_replaced
+         where  adn_id  = b_adn_id
+         and    ranking = 1;
+
+      
+      cursor c_child_adns( b_adn_id in pdm_attribute_definitions.id%type )
+      is
+      select ady.adn_id_child adn_id
+      ,      adn.path         adn_path
+      ,      ady.sequence     sequence
+      from   pdm_attribute_dependencies ady
+      ,      pdm_attribute_definitions  adn
+      where  ady.adn_id_child = adn.id
+      and    ady.adn_id_base  = b_adn_id
+      order  by ady.sequence;
+
+      l_expr               clob;
+      l_pbe_current        pls_integer;
+      l_return_value       clob;
+      l_rt_adn             pdm_attribute_definitions%rowtype;
+      l_dummy              boolean;
+
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      open  c_expr( b_adn_id => i_adn_id );
+      fetch c_expr into l_expr;
+      close c_expr;
+
+      
+      for r_child_adns in c_child_adns( b_adn_id => i_adn_id )
+      loop
+         l_return_value := l_return_value
+                           || '      ' || rpad( 'l_ARG' || r_child_adns.sequence, 7)
+                           || ' := '
+                           || rpad( 'get_value(' || to_char(map_adn_to_variable(r_child_adns.adn_id)) || ');', 17 )
+                           || ' -- ' || r_child_adns.adn_path || '
+';
+      end loop;
+
+      
+      l_return_value := l_return_value || '
+      l_tmp_value := ' || l_expr || ';
+';
+
+      
+      l_dummy := pdm_adn_tapi_pck.adn_select_row( i_adn_id => i_adn_id
+                                                , o_rt_adn => l_rt_adn
+                                                );
+
+      l_pbe_current := map_adn_to_variable(l_rt_adn.id);
+
+      l_return_value := l_return_value ||'
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => '   || l_pbe_current || '
+                    , i_adn_path       => ''' || l_rt_adn.path || '''
+                    , i_adn_id         => '   || l_rt_adn.id   || '
+                    );
+
+';
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_return_value;
+
+   exception
+      when others
+      then
+         if c_expr%isopen
+         then
+            close c_expr;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+   end derivation_to_plsql;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_procedure_plsql ( i_cpad_version    in  pdm_tpl_process_specifications.version%type
+                                    , i_adn_id_base     in  pdm_attribute_dependencies.adn_id_base%type
+                                    , o_procedure_plsql out clob
+                                    )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_procedure_plsql';
+
+      
+      cursor c_derivation_level
+      is
+      select             ady.adn_id_base adn_id_base
+      ,                  max(level) max_lvl
+      from               pdm_attribute_dependencies ady
+      connect by nocycle ady.adn_id_base = prior ady.adn_id_child
+      group by           ady.adn_id_base
+      order by           max_lvl desc
+      ,                  ady.adn_id_base;
+
+      
+      cursor c_sequences
+      is
+      select distinct sequence
+      from   pdm_attribute_dependencies ady
+      order  by ady.sequence
+      ;
+
+      
+      cursor c_sequences_adn (b_adn_id_base in number)
+      is
+      select distinct sequence
+      from   pdm_attribute_dependencies ady
+      where  ady.adn_id_base = b_adn_id_base
+      order  by ady.sequence;
+
+      l_var_block clob;
+      l_proc_name varchar2(30);
+      
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if i_adn_id_base is null
+      then
+
+         
+         l_proc_name := g_con_name_procedure;
+
+         
+         for r_sequences in c_sequences
+         loop
+            l_var_block := l_var_block || '      ' || rpad('l_ARG' || r_sequences.sequence, 26) || ' pdm_package_attributes.value%TYPE;
+';
+         end loop;
+      else
+
+         
+         l_proc_name := g_con_name_procedure_validate;
+
+         
+         for r_sequences in c_sequences_adn (b_adn_id_base => i_adn_id_base)
+         loop
+            l_var_block := l_var_block || '      ' || rpad('l_ARG' || r_sequences.sequence, 26) || ' pdm_package_attributes.value%TYPE;
+';
+         end loop;
+      end if;
+
+      o_procedure_plsql :=
+   '
+   PROCEDURE '||l_proc_name||                          '( i_pae_id IN pdm_packages.id%TYPE
+                                                        , i_pet_id IN pdm_package_events.id%TYPE
+                                                        )
+   IS
+
+      -- Generated by CPAD version ' || i_cpad_version || ' at ' || to_char(cmn_common.default_timestamp,'DD-MM-YYYY HH24:MI:SS') || '    
+   
+      g_con_proc_name   CONSTANT cmn_constant.st_proc_name := '''||l_proc_name||''';
+
+      TYPE t_values     IS TABLE OF VARCHAR2(32767);
+      TYPE t_adns       IS TABLE OF pdm_attribute_definitions.id%TYPE INDEX BY PLS_INTEGER;
+
+      l_values                   t_values;
+      l_it_attributes            pdm_attributes.attribute_coll;
+      l_it_attributes_concat     pdm_attributes.attribute_coll;
+      l_attr                     pdm_attribute_definitions.path%type;
+      l_tmp_value                VARCHAR2(32767);
+' || l_var_block || '
+
+      -- Procedure to process the result of the derivation expression
+      PROCEDURE process_result( i_tmp_value      IN     VARCHAR2
+                              , i_index          IN     PLS_INTEGER
+                              , i_adn_path       IN     pdm_attribute_definitions.path%TYPE
+                              , i_adn_id         IN     pdm_attribute_definitions.id%TYPE
+                              )
+      IS
+         l_con_proc_name   CONSTANT cmn_constant.st_proc_name := g_con_proc_name || ''.process_result'';
+
+         l_separator_position INTEGER;
+         l_value_nr           INTEGER;
+      BEGIN
+         -- Check NULL assigned to i_tmp_value
+         -- and NOT NULL hash table entry exist
+
+         IF i_tmp_value IS NULL
+            AND l_values(i_index) IS NOT NULL
+         THEN
+
+            -- Clear hash table entry
+            l_values(i_index) := NULL;
+
+            -- Put ATTRIBUTE DEFINITION into attribute list with value NULL
+            l_it_attributes(i_adn_path).adn_id   := i_adn_id;
+            l_it_attributes(i_adn_path).adn_type := ''STRING'';
+            l_it_attributes(i_adn_path).value(1) := NULL;
+         END IF;
+
+         -- Check NOT NULL assigned to i_tmp_value
+         -- and i_tmp_value differs from hash table entry
+         IF     i_tmp_value IS NOT NULL
+            AND (   l_values(i_index) IS NULL
+                 OR i_tmp_value <> l_values(i_index) 
+                )
+         THEN
+
+            -- Update hash table entry
+            l_values(i_index) := i_tmp_value;
+
+            -- Append separator for searching in separated string
+            l_tmp_value := i_tmp_value || ''<>'';
+
+            -- Put ATTRIBUTE DEFINITION into attribute list with all values
+            l_it_attributes(i_adn_path).adn_id   := i_adn_id;
+            l_it_attributes(i_adn_path).adn_type := ''STRING'';
+            l_value_nr := 1;
+            LOOP
+               -- Determine first separator position
+               l_separator_position := INSTR( l_tmp_value, ''<>'');
+
+               -- Put value into attribute list
+               l_it_attributes(i_adn_path).value(l_value_nr) := SUBSTR( l_tmp_value, 1, l_separator_position - 1);
+
+               -- Remove value and separator from separated string
+               l_tmp_value := SUBSTR( l_tmp_value, l_separator_position + 2);
+
+               -- Exit loop when no values left
+               EXIT WHEN l_tmp_value IS NULL;
+
+               -- Increment value number
+               l_value_nr := l_value_nr + 1;
+            END LOOP;
+         END IF;
+
+      EXCEPTION
+         WHEN OTHERS
+         THEN
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      END process_result;
+
+      -- Function to get first value from separated string
+      FUNCTION get_value( i_index IN PLS_INTEGER)
+      RETURN pdm_package_attributes.value%TYPE
+      IS
+         l_con_proc_name CONSTANT cmn_constant.st_proc_name := g_con_proc_name || ''.get_value'';
+      BEGIN
+         RETURN SUBSTR( l_values(i_index)
+                      , 1
+                      , INSTR( l_values(i_index)||''<>'', ''<>'')-1
+                      );
+      EXCEPTION
+         WHEN OTHERS
+         THEN
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      END get_value;
+
+      -- Function to verify whether a list contains a given value
+      FUNCTION list_lookup( i_list IN VARCHAR2
+                          , i_value IN pdm_package_attributes.value%TYPE
+                          )
+      RETURN BOOLEAN
+      IS
+         l_con_proc_name CONSTANT cmn_constant.st_proc_name := g_con_proc_name || ''.list_lookup'';
+
+         l_result BOOLEAN := FALSE;
+      BEGIN
+         IF INSTR( ''<>''||i_list||''<>'', ''<>''||i_value||''<>'') > 0
+            THEN
+               l_result := TRUE;
+            END IF;
+
+         RETURN l_result;
+
+      EXCEPTION
+         WHEN OTHERS
+         THEN
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      END list_lookup;
+
+      -- Function to get the TYPE of a given STATION
+      FUNCTION get_stationtype( i_stn_id_cust IN pdm_package_attributes.value%TYPE)
+      RETURN pdm_stations.type%TYPE
+      IS
+         l_con_proc_name   CONSTANT cmn_constant.st_proc_name := g_con_proc_name || ''.get_stationtype'';
+
+         l_rt_stn                 pdm_stations%ROWTYPE;
+         l_found                  BOOLEAN;
+
+      BEGIN
+      
+         -- Check STATION.ID CUST given
+         IF i_stn_id_cust IS NOT NULL
+         THEN
+
+            -- Check entry already exists in collection
+            IF pdm_attributes.g_station_coll.exists(i_stn_id_cust)
+            THEN
+
+               -- Get STATION.TYPE from collection
+               l_rt_stn.type := pdm_attributes.g_station_coll(i_stn_id_cust);
+            ELSE
+
+               -- Get STATION.TYPE from table
+               l_found := pdm_stn_tapi_pck.stn_select_row_uk1( i_stn_id_cust => i_stn_id_cust
+                                                             , o_rt_stn      => l_rt_stn
+                                                             );
+
+               -- Store entry in collection
+               pdm_attributes.g_station_coll(i_stn_id_cust) := l_rt_stn.type;
+            END IF;
+         END IF;
+   
+         RETURN l_rt_stn.type;
+
+      EXCEPTION
+         WHEN OTHERS
+         THEN
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      END get_stationtype;
+
+      -- Function to get the PARAMETER VALUE of a given PARAMETER
+      FUNCTION get_par_val( i_prr_name IN cmn_parameters.NAME%TYPE )
+      RETURN cmn_parameter_values.VALUE%TYPE
+      IS
+         l_con_proc_name   CONSTANT cmn_constant.st_proc_name := g_con_proc_name || ''.get_par_val'';
+   
+         l_found   BOOLEAN;
+         l_rt_ptr  cmn_parameters%ROWTYPE;
+         l_rt_pve  cmn_parameter_values%ROWTYPE;
+      BEGIN
+   
+         -- Get PARAMETER VALUE from context
+         l_rt_pve.value := cmn_context.get_param( i_prr_name );
+   
+         -- Check PARAMETER VALUE not found
+         IF l_rt_pve.value IS NULL
+         THEN
+   
+            -- Get PARAMETER from table
+            l_found := cmn_ptr_tapi_pck.ptr_select_row_uk( i_ptr_name => i_prr_name
+                                                         , o_rt_ptr   => l_rt_ptr
+                                                         );
+            -- Check PARAMETER found
+            IF l_found
+            THEN
+   
+               -- Get PARAMETER VALUE from table
+               l_found := cmn_pve_tapi_pck.pve_select_row_uk( i_pve_ptr_id => l_rt_ptr.id
+                                                            , o_rt_pve     => l_rt_pve
+                                                            );
+            END IF;
+         END IF;
+   
+         RETURN l_rt_pve.value;
+      EXCEPTION
+         WHEN OTHERS
+         THEN
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      END get_par_val;
+
+   BEGIN
+      viu_module.enter_module( i_module => g_con_proc_name );
+    
+      -- Fill value list
+      --
+      -- The following query retrieves the ATTRIBUTE DEFINITIONs.
+      -- The row number corresponds with the entry in the value list.
+      -- 
+      -- SELECT ady.adn_id_base
+      -- FROM   pdm_attribute_dependencies ady
+      -- UNION
+      -- SELECT adn_id_child
+      -- FROM   pdm_attribute_dependencies
+      -- ORDER BY 1;
+
+      SELECT value_list
+      BULK   COLLECT INTO l_values
+      FROM   ( SELECT LISTAGG(pbe.value, ''<>'') WITHIN GROUP (ORDER BY pbe.value_nr)  value_list
+               FROM   ( SELECT adn_id_child id
+                        FROM   pdm_attribute_dependencies ady
+                        UNION
+                        SELECT adn_id_base  id
+                        FROM   pdm_attribute_dependencies ady
+                      ) adn
+               ,      pdm_v_pbe_active pbe
+               WHERE  pbe.adn_id   (+) = adn.id
+               AND    pbe.pae_id   (+) = i_pae_id
+               GROUP  BY adn.id
+               ORDER  BY adn.id
+             );
+
+';
+
+      
+      if i_adn_id_base is null
+      then
+
+         
+         for r_derivation_level in c_derivation_level
+         loop
+            o_procedure_plsql := o_procedure_plsql || derivation_to_plsql( r_derivation_level.adn_id_base );
+         end loop;
+
+      else
+
+         
+         o_procedure_plsql := o_procedure_plsql || derivation_to_plsql( i_adn_id_base );
+
+      end if;
+
+
+      o_procedure_plsql := o_procedure_plsql || '
+      -- Check local attribute list not empty
+      IF l_it_attributes.COUNT > 0
+      THEN
+
+         -- Store the values
+         pdm_attributes.store_attributes( i_pae_id                     => i_pae_id
+                                        , i_it_attributes              => l_it_attributes
+                                        , i_pet_id                     => i_pet_id
+                                        , i_event_time                 => cmn_common.default_timestamp
+                                        , i_ind_use_attribs_event_time => FALSE
+                                        );
+
+      END IF;
+
+      -- Store concatenated attributes
+      pdm_attributes.store_concat_attributes ( i_pae_id        => i_pae_id
+                                             , i_pet_id        => i_pet_id
+                                             , o_it_attributes => l_it_attributes_concat
+                                             );
+
+      IF l_it_attributes_concat.COUNT > 0
+      THEN
+
+         -- Store the values
+         pdm_attributes.store_attributes( i_pae_id                     => i_pae_id
+                                        , i_it_attributes              => l_it_attributes_concat
+                                        , i_pet_id                     => i_pet_id
+                                        , i_event_time                 => cmn_common.default_timestamp
+                                        , i_ind_use_attribs_event_time => FALSE
+                                        );
+
+      END IF;
+
+      viu_module.leave_module( i_module => g_con_proc_name );
+   EXCEPTION
+      WHEN OTHERS
+      THEN
+         viu_module.leave_module( i_module     => g_con_proc_name
+                                , i_debug_info => ''exception''
+                                );
+
+         viu_info.raise_info( i_calling_procedure => g_con_proc_name );
+   END '||l_proc_name||';
+';
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_procedure_plsql;
+
+   
+
+
+
+
+
+
+
+
+   procedure exec_immediate_autonomous (i_statement in clob)
+   is
+      pragma autonomous_transaction;
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.exec_immediate_autonomous';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      execute immediate i_statement;
+
+      
+      commit;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         
+         rollback;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end exec_immediate_autonomous;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure generate_sourcecode (i_cpad_version in pdm_tpl_process_specifications.version%type)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.generate_sourcecode';
+
+      
+      
+      
+      cursor c_derivation_level
+      is
+      select             ady.adn_id_base adn_id_base
+      ,                  max(level) max_lvl
+      from               pdm_attribute_dependencies ady
+      connect by nocycle ady.adn_id_base = prior ady.adn_id_child
+      group by           ady.adn_id_base
+      order by           max_lvl desc
+      ,                  ady.adn_id_base;
+      
+      l_procedure_plsql clob;
+      l_rt_adn          pdm_attribute_definitions%rowtype;
+      l_dummy           boolean;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      for r_derivation_level in c_derivation_level
+      loop
+         begin
+
+            
+            create_procedure_plsql ( i_cpad_version    => i_cpad_version
+                                   , i_adn_id_base     => r_derivation_level.adn_id_base
+                                   , o_procedure_plsql => l_procedure_plsql
+                                   );
+            exec_immediate_autonomous (i_statement => 'CREATE OR REPLACE ' || l_procedure_plsql);
+         exception
+            when others
+            then
+
+               
+               exec_immediate_autonomous (i_statement => 'DROP PROCEDURE ' || g_con_name_procedure_validate);
+
+               
+               l_dummy := pdm_adn_tapi_pck.adn_select_row ( i_adn_id => r_derivation_level.adn_id_base
+                                                          , o_rt_adn => l_rt_adn
+                                                          );
+
+               viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   =>    'No valid code can be generated for derivation '
+                                           || l_rt_adn.path
+                                           || ', check if correct ARG/ARGM variables are used that correspond with the <Attribute> definitions'
+                  );
+         end;
+      end loop;
+
+      
+      exec_immediate_autonomous (i_statement => 'DROP PROCEDURE ' || g_con_name_procedure_validate);
+
+      
+      create_procedure_plsql ( i_cpad_version    => i_cpad_version
+                             , i_adn_id_base     => null
+                             , o_procedure_plsql => l_procedure_plsql
+                             );
+
+      exec_immediate_autonomous (i_statement => 'CREATE OR REPLACE ' || l_procedure_plsql);
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end generate_sourcecode;
+
+   
+
+
+
+
+
+
+
+
+   function extract_list( i_xml   in xmltype
+                        , i_xpath in varchar2
+                        )
+   return it_strings
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.extract_list';
+
+      l_value                    varchar2(32767);
+      l_value_index              pls_integer;
+      l_ind_last_element         boolean;
+      l_it_values                it_strings;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      l_value_index      := 0;
+      l_ind_last_element := false;
+
+      
+      while not l_ind_last_element
+      loop
+         
+         l_value_index := l_value_index + 1;
+
+         
+         l_value := cmn_xml_util.extract_value( i_xml   => i_xml
+                                              , i_xpath => i_xpath                  ||
+                                                           '['                      ||
+                                                           to_char(l_value_index)   ||
+                                                           ']'
+                                              );
+
+         if l_value is null
+         then
+            
+            l_ind_last_element := true;
+         else
+            
+            l_it_values(l_value_index) := l_value;
+
+         end if;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_it_values;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end extract_list;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_derivation( i_adn_id     in pdm_attribute_definitions.id%type
+                              , i_expression in clob
+                              )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_derivation';
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      g_it_derivations.extend;
+      g_it_derivations(g_it_derivations.count) := pdm_ot_derivation(i_adn_id, i_expression);
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_derivation;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure verify_derivation( i_expression in clob )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.verify_derivation';
+
+      l_expression               clob;
+      l_string                   clob;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+
+      
+      l_expression := regexp_replace( srcstr     => i_expression
+                                    , pattern    => '(^|[^[:alpha:]]):ARGM*\d+'  
+                                    , replacestr => '\1NULL\2'
+                                    , position   => 1
+                                    , occurrence => 0
+                                    , modifier   => 'c' 
+                                    );
+
+      l_string := '
+         DECLARE
+            l_tmp_value pdm_package_attributes.value%TYPE;
+         BEGIN
+            l_tmp_value := ' || l_expression || ';
+         END;
+';
+
+      
+      begin
+         execute immediate l_string;
+      exception
+         when others
+         then
+            
+            if  sqlerrm not like '%PLS-00617: at least one result in the CASE expression must not be NULL%'
+            and sqlerrm not like '%PLS-00621: at least one operand in the COALESCE expression must not be NULL%'
+            then
+               viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => substr( 'Oracle error: ' || sqlerrm || ', Invalid derivation expression: ' || nvl(l_expression, 'NULL')
+                                                 , 1
+                                                 , 4000
+                                                 )
+                  );
+            end if;
+      end;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end verify_derivation;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure translate_expression( io_expression    in out clob
+                                 , i_it_enums       in     it_strings
+                                 )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.translate_expression';
+
+      l_translations             it_string_hash;
+      l_vc_index                 varchar2(1000);
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+
+      l_translations('lt') := '<';
+      l_translations('gt') := '>';
+      l_translations('le') := '<=';
+      l_translations('ge') := '>=';
+
+      
+      l_vc_index := l_translations.first;
+
+      
+      while l_vc_index is not null
+      loop
+         
+         io_expression := regexp_replace( srcstr     => io_expression
+                                        , pattern    => '(^|[^[:alpha:]])' || l_vc_index || '($|[^[:alpha:]])'
+                                        , replacestr => '\1' || l_translations(l_vc_index) || '\2'
+                                        , position   => 1
+                                        , occurrence => 0
+                                        , modifier   => 'c' 
+                                        );
+
+         l_vc_index := l_translations.next(l_vc_index);
+      end loop;
+
+      
+      for i in reverse 1 .. i_it_enums.count
+      loop
+         io_expression := regexp_replace( srcstr     => io_expression
+                                        , pattern    => '(^|[^[:alpha:]])' || 'ENUM' || to_char(i) || '($|[^[:alpha:]])'
+                                        , replacestr => '\1' || chr(39) || i_it_enums(i) || chr(39) || '\2'
+                                        , position   => 1
+                                        , occurrence => 0
+                                        , modifier   => 'c' 
+                                        );
+      end loop;
+
+      
+      io_expression := regexp_replace( srcstr     => io_expression
+                                     , pattern    => '(^|[^[:alpha:]])' || '(ARGM*\d+)'
+                                     , replacestr => '\1' || ':' || '\2'
+                                     , position   => 1
+                                     , occurrence => 0
+                                     , modifier   => 'c'
+                                     );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end translate_expression;
+
+   
+
+
+
+
+
+
+
+
+   procedure update_default_value( i_rt_adn in pdm_attribute_definitions%rowtype
+                                 )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.update_default_value';
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      update pdm_attribute_definitions
+      set    value    = i_rt_adn.value
+      where  id       = i_rt_adn.id;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end update_default_value;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_attribute( io_rt_adn      in out pdm_attribute_definitions%rowtype
+                             , i_min_id_range in     pdm_attribute_definitions.id%type
+                             , i_max_id_range in     pdm_attribute_definitions.id%type
+                             , i_fen_id       in     pdm_functional_extensions.id%type
+                             )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_attribute';
+
+      l_rt_adn_parent            pdm_attribute_definitions%rowtype;
+      l_parent_path              pdm_attribute_definitions.path%type;
+      l_adn_id                   pdm_attribute_definitions.id%type;
+      l_found                    boolean := false;
+      l_found_adn                boolean := false;
+      l_child                    boolean := false;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      
+      
+      if instr(io_rt_adn.path,'/',1,1) > 0
+      then
+         
+         
+         if not g_recursive_parent_started
+         then
+            g_recursive_parent_started := true;
+            l_child := true;
+         end if;
+         
+         
+         l_parent_path := substr(io_rt_adn.path
+                                ,1
+                                ,instr(io_rt_adn.path,'/',-1,1) - 1
+                                );
+
+         
+         
+         l_found_adn := get_adn( i_adn_path   => l_parent_path
+                               , i_ind_create => true
+                               , o_rt_adn     => l_rt_adn_parent
+                               );
+         
+         io_rt_adn.adn_id := l_rt_adn_parent.id;
+      end if;
+
+      
+      if i_min_id_range is not null
+      then
+
+         
+         
+         
+         
+         
+         select max(id) + 1
+         into   l_adn_id
+         from   pdm_attribute_definitions
+         where  id between i_min_id_range and i_max_id_range
+         ;
+      else
+
+         
+         select greatest( max(id) + 1
+                        , g_con_min_adn_id
+                        )
+         into   l_adn_id
+         from   pdm_attribute_definitions;
+      end if;
+
+
+
+
+      insert into pdm_attribute_definitions( id
+                                           , path
+                                           , name
+                                           , type
+                                           , adn_id
+                                           , value
+                                           , fen_id
+                                           )
+      values ( l_adn_id
+             , io_rt_adn.path
+             , io_rt_adn.path
+             , nvl(io_rt_adn.type, 'STRING')
+             , io_rt_adn.adn_id
+             , io_rt_adn.value
+             , i_fen_id
+             );
+
+      l_found := pdm_adn_tapi_pck.adn_select_row( i_adn_id => l_adn_id
+                                                , o_rt_adn => io_rt_adn
+                                                );
+
+      
+      
+      
+      if not l_child
+      and g_recursive_parent_started
+      then
+         viu_info.operator_info
+            ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_notification
+            , i_additional_data   => 'Parent attribute definition ('
+                                   || nvl(to_char(io_rt_adn.id), 'NULL')
+                                   ||') '
+                                   || nvl(io_rt_adn.path, 'NULL')
+                                   ||' created.'
+            );
+
+      end if;
+      
+      if l_child
+      then
+         g_recursive_parent_started := false;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         
+         
+         g_recursive_parent_started := false;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_attribute;
+
+   
+
+
+
+
+
+
+
+
+
+
+   function get_adn( i_adn_path     in  pdm_attribute_definitions.path%type
+                   , i_ind_create   in  boolean
+                   , i_min_id_range in  pdm_attribute_definitions.id%type default null
+                   , i_max_id_range in  pdm_attribute_definitions.id%type default null
+                   , i_fen_id       in  pdm_functional_extensions.id%type default null
+                   , o_rt_adn       out pdm_attribute_definitions%rowtype
+                   )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_adn';
+      l_found                    boolean;
+      l_result                   number;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_found := pdm_adn_tapi_pck.adn_select_row_upd_uk1( i_adn_path => i_adn_path
+                                                        , o_rt_adn   => o_rt_adn
+                                                        );
+      if not l_found
+      then
+         
+         savepoint sp1;
+
+         update pdm_attribute_definitions
+         set    path = regexp_replace( path
+                                     , g_con_xpath_idx_placeholderesc
+                                     , ''
+                                     , 1
+                                     , 0            
+                                     , 'c' 
+                                     )
+         where  regexp_like( path, g_con_xpath_idx_placeholderesc, 'c' );
+
+         l_found := pdm_adn_tapi_pck.adn_select_row_upd_uk1( i_adn_path => i_adn_path
+                                                           , o_rt_adn   => o_rt_adn
+                                                           );
+
+         rollback to savepoint sp1;
+
+         if not l_found
+         then
+            if i_ind_create
+            then
+               o_rt_adn.path   := i_adn_path;
+
+               create_attribute( io_rt_adn      => o_rt_adn
+                               , i_min_id_range => i_min_id_range
+                               , i_max_id_range => i_max_id_range
+                               , i_fen_id       => i_fen_id
+                               );
+
+               l_found := true;
+            else
+               viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'Non-existing attribute with path: ' || nvl(i_adn_path, 'NULL')
+                  );
+            end if;
+         end if;
+      
+      
+      elsif i_fen_id is not null
+      then
+
+         
+         o_rt_adn.fen_id := i_fen_id;
+         l_result := pdm_adn_tapi_pck.adn_update_row( i_adn_id  => o_rt_adn.id
+                                                    , io_rt_adn => o_rt_adn
+                                                    );
+      
+      end if; 
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_found;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_adn;
+
+   
+
+
+
+
+
+
+
+
+   function check_source_attribute
+   ( i_adn_id   in  pdm_attribute_definitions.id%type )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.check_source_attribute';
+
+      cursor c_pea
+      (b_adn_id  pdm_package_type_attributes.adn_id%type)
+      is
+         select 1
+         from   pdm_package_type_attributes  pea
+         where  pea.adn_id    = b_adn_id
+         ;
+      r_pea       c_pea%rowtype;
+      l_return    boolean;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      open  c_pea(b_adn_id => i_adn_id);
+      fetch c_pea into r_pea;
+      l_return := c_pea%found;
+      close c_pea;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_return;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end check_source_attribute;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure create_derivation_attributes( i_adn_id        in pdm_attribute_definitions.id%type
+                                         , i_expression    in clob
+                                         , i_it_attributes in it_strings
+                                         )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_derivation_attributes';
+      l_found                    boolean;
+      l_rt_adn                   pdm_attribute_definitions%rowtype;
+      l_expression               clob;
+      l_ady_id                   pdm_attribute_dependencies.id%type;
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      l_expression := regexp_replace( srcstr     => i_expression
+                                    , pattern    => '/\*.*?*\/'  
+                                    , replacestr => ''
+                                    , position   => 1
+                                    , occurrence => 0
+                                    , modifier   => 'cn'         
+                                    );
+
+      select nvl(max(id), 0)
+      into   l_ady_id
+      from   pdm_attribute_dependencies;
+
+      for i in 1 .. i_it_attributes.count
+      loop
+
+         
+         if regexp_like( l_expression, 'ARGM*' || i || '[^0-9]|$', 'c' )
+         then
+            
+            l_found := get_adn( i_adn_path   => i_it_attributes(i)
+                              , i_ind_create => true
+                              , o_rt_adn     => l_rt_adn
+                              );
+
+            if l_found
+            then
+               l_ady_id := l_ady_id + 1;
+
+               insert into pdm_attribute_dependencies( id, adn_id_base, adn_id_child, sequence )
+               values ( l_ady_id, i_adn_id, l_rt_adn.id, i);
+            end if;
+
+         else
+
+            
+            viu_info.operator_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_warning
+               , i_additional_data   => 'Allowed, but check nevertheless: Listed attribute not used in derivation: ADN: ' || nvl(to_char(i_adn_id), 'NULL') || ', attribute list entry: ' || i
+               );
+
+         end if;
+
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_derivation_attributes;
+
+   
+
+
+
+
+
+
+
+
+   procedure create_apy_packagedata ( i_source_adn_id in pdm_attribute_definitions.id%type)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_apy_packagedata';
+
+      l_rt_apy pdm_attribute_priorities%rowtype;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      
+      if not pdm_apy_tapi_pck.apy_select_row( i_apy_id => i_source_adn_id + g_con_offset_functional_pd
+                                            , o_rt_apy => l_rt_apy
+                                            )
+      then
+
+         
+         
+         
+         insert into pdm_attribute_priorities( id
+                                             , adn_id_functional
+                                             , adn_id_source
+                                             , ordering
+                                             )
+         values( i_source_adn_id + g_con_offset_functional_pd
+               , i_source_adn_id + g_con_offset_functional_pd
+               , i_source_adn_id
+               , 1
+               );
+      end if;
+      	
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_apy_packagedata;
+
+   
+
+
+
+
+
+
+
+
+
+
+   procedure process_packagedata_der_attr
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_packagedata_der_attr';
+
+      
+      
+      cursor c_source_packagedata
+      is
+      select adn.*
+      from   pdm_attribute_dependencies ady
+      ,      pdm_attribute_definitions  adn
+      where  ady.adn_id_child = adn.id
+      and    adn.path like 'PackageData%'
+      ;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      
+      for r_source_packagedata in c_source_packagedata
+      loop
+
+         
+         create_apy_packagedata ( i_source_adn_id => r_source_packagedata.id);
+      	
+      end loop;
+
+      
+      
+      
+      
+      update pdm_attribute_dependencies ady
+      set    ady.adn_id_child = ady.adn_id_child + g_con_offset_functional_pd
+      where  ady.adn_id_child in (select adn.id
+                                  from   pdm_attribute_definitions  adn
+                                  where  adn.path like 'PackageData%'
+                                 )
+      ;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_packagedata_der_attr;
+
+   
+
+
+
+
+
+
+
+
+   procedure create_attribute_priority( i_adn_id_functional     in pdm_attribute_definitions.id%type
+                                      , i_rt_adn_source         in pdm_attribute_definitions%rowtype
+                                      , i_priority              in pdm_attribute_priorities.ordering%type
+                                      , i_default_priorities    in it_string_hash
+                                      )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_attribute_priority';
+
+      l_ordering                 pdm_attribute_priorities.ordering%type;
+      l_apy_id                   pdm_attribute_priorities.id%type;
+      l_imd_name                 pdm_attribute_definitions.path%type;
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      
+      if i_priority is null
+      then
+
+         
+         l_imd_name := substr(i_rt_adn_source.path
+                             ,1                                                   
+                             ,case
+                                 when instr(i_rt_adn_source.path,'/',1,1) > 0     
+                                 then
+                                      instr(i_rt_adn_source.path,'/',1,1) - 1       
+                                 else
+                                      length(i_rt_adn_source.path)                  
+                              end
+                             );
+         
+         if l_imd_name = 'Resume'
+         then
+            l_imd_name := substr(i_rt_adn_source.path
+                                ,case
+                                    when instr(i_rt_adn_source.path,'/',1,1) > 0      
+                                    then
+                                        instr(i_rt_adn_source.path,'/',1,1) + 1        
+                                    else
+                                        1                                              
+                                 end
+                                ,case
+                                    when instr(i_rt_adn_source.path,'/',1,2) > 0      
+                                    then
+                                        instr(i_rt_adn_source.path,'/',1,2)            
+                                        - instr(i_rt_adn_source.path,'/',1,1) - 1     
+
+                                    when instr(i_rt_adn_source.path,'/',1,2) = 0      
+                                    and  instr(i_rt_adn_source.path,'/',1,1) > 0      
+                                    then
+                                        length(i_rt_adn_source.path)                   
+                                        - instr(i_rt_adn_source.path,'/',1,1)         
+
+                                    else
+                                        length(i_rt_adn_source.path)                   
+                                 end
+                                );
+         end if;
+         
+         if l_imd_name is null
+         or not i_default_priorities.exists(l_imd_name)
+         then
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'IMD.name '
+                                     || nvl(l_imd_name, 'NULL')
+                                     || ' not included in CPAD. Current functional ADN: '
+                                     || nvl(to_char(i_adn_id_functional), 'NULL')
+                                     || ' Current source ADN: '
+                                     || nvl(to_char(i_rt_adn_source.id), 'NULL')
+                                     || ' , path='
+                                     || nvl(to_char(i_rt_adn_source.path), 'NULL')
+               );
+         else
+            l_ordering := i_default_priorities(l_imd_name);
+         end if;
+
+      else
+         l_ordering := i_priority;
+
+      end if;
+
+      if l_ordering is not null 
+      then
+         
+         select greatest( nvl(max(id), 0) + 1
+                        , g_con_min_apy_id
+                        )
+         into   l_apy_id
+         from   pdm_attribute_priorities;
+
+         insert into pdm_attribute_priorities( id
+                                             , adn_id_functional
+                                             , adn_id_source
+                                             , ordering
+                                             )
+         values( l_apy_id
+               , i_adn_id_functional
+               , i_rt_adn_source.id
+               , l_ordering
+               );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_attribute_priority;
+
+   
+
+
+
+
+
+
+
+
+   procedure create_attribute_volatility( i_rt_adn           in  pdm_attribute_definitions%rowtype
+                                        , i_message_type     in  cmn_ifc_msg_definitions.name%type
+                                        , i_message_subtype  in  varchar2
+                                        )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_attribute_volatility';
+
+      
+      cursor c_mse_pd
+      (b_imd_id     pdm_message_subtypes.imd_id%type
+      ,b_pd_status  pdm_message_subtypes.pd_status%type
+      )
+      is
+         select mse.id
+         from   pdm_message_subtypes  mse
+         where  mse.imd_id    = b_imd_id
+         and    mse.pd_status = b_pd_status
+         ;
+
+      
+      cursor c_mse_tte
+      (b_imd_id     pdm_message_subtypes.imd_id%type
+      ,b_tte_name   pdm_task_types.name%type
+      )
+      is
+         select mse.id
+         from   pdm_message_subtypes  mse
+         ,      pdm_task_types        tte
+         where  mse.tte_id = tte.id
+         and    mse.imd_id = b_imd_id
+         and    tte.name   = b_tte_name
+         ;
+
+      
+      
+      
+      
+      
+      
+      
+      cursor c_avy
+      (b_adn_id    pdm_attribute_volatilities.adn_id%type
+      ,b_imd_id    pdm_attribute_volatilities.imd_id%type
+      ,b_mse_id    pdm_attribute_volatilities.mse_id%type
+      )
+      is
+         select 1
+         from   pdm_attribute_volatilities  avy
+         where  avy.adn_id = b_adn_id
+         and    avy.imd_id = b_imd_id
+         and    (   b_mse_id is null
+                 or (    b_mse_id is not null
+                     and nvl(avy.mse_id,b_mse_id) = b_mse_id
+                    )
+                )
+      ;
+      
+      r_avy                      c_avy%rowtype;
+      l_rt_imd                   cmn_ifc_msg_definitions%rowtype;
+      l_imd_found                boolean;
+      l_avy_found                boolean;
+      l_avy_id                   pdm_attribute_priorities.id%type;
+      l_mse_id                   pdm_message_subtypes.id%type;
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      l_imd_found := cmn_imd_tapi_pck.imd_select_row_uk(i_imd_name  => i_message_type
+                                                       ,o_rt_imd    => l_rt_imd
+                                                       );
+      if l_imd_found
+      then
+         
+         case
+            when i_message_type     = g_con_msgtype_packagedata
+            and  i_message_subtype is not null
+            then
+               
+               open  c_mse_pd ( b_imd_id    => l_rt_imd.id
+                              , b_pd_status => i_message_subtype
+                              );
+               fetch c_mse_pd into l_mse_id;
+               close c_mse_pd;
+
+            when i_message_type     = g_con_msgtype_taskreport
+            and  i_message_subtype is not null
+            then
+               
+               open  c_mse_tte ( b_imd_id   => l_rt_imd.id
+                               , b_tte_name => i_message_subtype
+                               );
+               fetch c_mse_tte into l_mse_id;
+               close c_mse_tte;
+
+            else
+               null;
+         end case;
+
+         
+         if i_message_subtype is null
+         or l_mse_id          is not null
+         then
+            
+            open  c_avy(b_adn_id => i_rt_adn.id
+                       ,b_imd_id => l_rt_imd.id
+                       ,b_mse_id => l_mse_id
+                       );
+            fetch c_avy into r_avy;
+            l_avy_found := c_avy%found;
+            close c_avy;
+
+            if l_avy_found
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_error
+                                  , i_additional_data   => 'This combination of Message SubType '||nvl(i_message_subtype,'NULL')
+                                                         ||' and Message Definition '||nvl(i_message_type,'NULL')
+                                                         ||' for Source Attribute '||i_rt_adn.path||' conflicts with an existing ATTRIBUTE VOLATILITY'
+                                  );
+            else
+               
+               select greatest( nvl(max(id), 0) + 1
+                              , g_con_min_avy_id
+                              )
+               into   l_avy_id
+               from   pdm_attribute_volatilities;
+               
+               insert into pdm_attribute_volatilities( id
+                                                     , adn_id
+                                                     , imd_id
+                                                     , mse_id
+                                                     )
+               values( l_avy_id
+                     , i_rt_adn.id
+                     , l_rt_imd.id
+                     , l_mse_id
+                     );
+             end if;
+         else
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_additional_data   => 'The Message SubType '||nvl(i_message_subtype,'NULL')
+                                                      ||' for Message Definition '||nvl(i_message_type,'NULL')
+                                                      ||' for Source Attribute '||i_rt_adn.path||' could not be found.'
+                               );
+         end if;
+
+      else
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_additional_data   => 'Message Definition  '||nvl(i_message_type,'NULL')||' for Source Attribute '||i_rt_adn.path||' could not be found'
+                            );
+      end if;
+
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_attribute_volatility;
+
+
+
+   
+
+
+
+
+
+
+
+
+   procedure process_attribute_sources( i_rt_adn        in pdm_attribute_definitions%rowtype
+                                      , i_xml_sources   in xmltype
+                                      , i_it_priorities in it_string_hash
+                                      )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_attribute_sources';
+
+      l_value_index              pls_integer;
+      l_ind_last_element         boolean;
+      l_found_adn                boolean;
+      l_source                   xmltype;
+
+      l_xpath                    varchar2(32767);
+      l_priority                 varchar2(32767);
+
+      l_rt_adn_source            pdm_attribute_definitions%rowtype;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      l_value_index      := 0;
+      l_ind_last_element := false;
+
+      
+      while not l_ind_last_element
+      loop
+         
+         l_value_index := l_value_index + 1;
+
+         
+         l_source := cmn_xml_util.extract_element
+                                ( i_xml   => i_xml_sources
+                                , i_xpath => g_con_xpath_attribute_source ||
+                                             '['                      ||
+                                             to_char(l_value_index)   ||
+                                             ']'
+                                );
+
+         if l_source is null
+         then
+
+            
+            l_ind_last_element := true;
+         else
+            
+            l_xpath := cmn_xml_util.extract_value( i_xml   => l_source
+                                                 , i_xpath => g_con_xpath_source_xpath
+                                                 );
+
+            l_priority := cmn_xml_util.extract_value( i_xml   => l_source
+                                                    , i_xpath => g_con_xpath_source_priority
+                                                    );
+
+            
+            l_found_adn := get_adn( i_adn_path   => l_xpath
+                                  , i_ind_create => false
+                                  , o_rt_adn     => l_rt_adn_source
+                                  );
+
+            if l_found_adn
+            then
+               
+               if check_source_attribute( i_adn_id => l_rt_adn_source.id)
+               then
+                  
+                  create_attribute_priority( i_adn_id_functional     => i_rt_adn.id
+                                           , i_rt_adn_source         => l_rt_adn_source
+                                           , i_priority              => l_priority
+                                           , i_default_priorities    => i_it_priorities
+                                           );
+               else
+                  
+                  viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'Functional Attribute '||i_rt_adn.path||' contains Attribute ' || l_rt_adn_source.path || ' which is not an AttributeSource'
+                  );
+               end if;
+            end if;
+         end if;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_attribute_sources;
+
+   
+
+
+
+
+
+
+
+
+   procedure process_attribute_targets( i_rt_adn        in pdm_attribute_definitions%rowtype
+                                      , i_xml_targets   in xmltype
+                                      )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_attribute_targets';
+
+      l_value_index              pls_integer;
+      l_ind_last_element         boolean;
+      l_found                    boolean;
+      l_target                   xmltype;
+      l_sending_condition        varchar2(100);
+
+      l_xpath                    varchar2(32767);
+
+      l_rt_mae                   pdm_message_attributes%rowtype;
+      l_rt_imd                   cmn_ifc_msg_definitions%rowtype;
+      l_mae_name                 pdm_message_attributes.name%type;
+      l_imd_name                 cmn_ifc_msg_definitions.name%type;
+      l_ind_current_event        pdm_message_attributes.ind_current_event%type := cmn_constant.g_con_yesno_no;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      l_sending_condition := cmn_xml_util.extract_value( i_xml   => i_xml_targets
+                                                       , i_xpath => g_con_xpath_sending_condition
+                                                       );
+      if l_sending_condition = 'SET_BY_CURRENT_EVENT'
+      then
+         l_ind_current_event := cmn_constant.g_con_yesno_yes;
+      end if;
+
+      l_value_index      := 0;
+      l_ind_last_element := false;
+
+      
+      while not l_ind_last_element
+      loop
+         
+         l_value_index := l_value_index + 1;
+
+         
+         l_target := cmn_xml_util.extract_element
+                                ( i_xml   => i_xml_targets
+                                , i_xpath => g_con_xpath_attribute_target ||
+                                             '['                      ||
+                                             to_char(l_value_index)   ||
+                                             ']'
+                                );
+
+         if l_target is null
+         then
+            
+            l_ind_last_element := true;
+         else
+            
+            l_xpath := cmn_xml_util.extract_value( i_xml   => l_target
+                                                 , i_xpath => g_con_xpath_target
+                                                 );
+
+            
+            l_imd_name := substr(l_xpath
+                                ,1                                        
+                                ,case
+                                    when instr(l_xpath,'/',1,1) > 0       
+                                    then
+                                         instr(l_xpath,'/',1,1) - 1       
+                                    else
+                                         length(l_xpath)                  
+                                 end
+                                );
+
+            
+            l_found := cmn_imd_tapi_pck.imd_select_row_uk(i_imd_name => l_imd_name
+                                                         ,o_rt_imd   => l_rt_imd
+                                                         );
+
+            if l_found
+            then
+               
+               l_mae_name := substr(l_xpath
+                                   ,case
+                                       when instr(l_xpath,'/',1,1) > 0       
+                                       then
+                                            instr(l_xpath,'/',1,1) + 1       
+                                       else
+                                            1                                
+                                    end
+                                   );
+
+               
+               l_found := pdm_mae_tapi_pck.mae_select_row_uk1(i_mae_name      => l_mae_name
+                                                             ,i_mae_direction => g_con_mae_direction_outgoing
+                                                             ,i_mae_imd_id    => l_rt_imd.id
+                                                             ,o_rt_mae        => l_rt_mae
+                                                             );
+
+               if l_found
+               then
+                  case
+                     
+                     when l_rt_mae.ind_mapped_internally = cmn_constant.g_con_yesno_yes
+                     then
+                        viu_info.raise_info
+                        ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                        , i_calling_procedure => l_con_proc_name
+                        , i_severity          => viu_info.c_severity_error
+                        , i_additional_data   => 'Mapping is not allowed for Target '||l_xpath ||' of ATTRIBUTE DEFINITION '||i_rt_adn.path
+                        );
+
+                     
+                     when l_rt_mae.adn_id is not null
+                     then
+                        viu_info.raise_info
+                        ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                        , i_calling_procedure => l_con_proc_name
+                        , i_severity          => viu_info.c_severity_error
+                        , i_additional_data   => 'MESSAGE ATTRIBUTE '||l_mae_name||' is not free for mapping to ATTRIBUTE DEFINITION '||i_rt_adn.path
+                        );
+                     else
+                        
+                        update pdm_message_attributes
+                        set    adn_id            = i_rt_adn.id
+                        ,      ind_current_event = l_ind_current_event
+                        where  id                = l_rt_mae.id
+                        ;
+
+                  end case;
+
+               else
+                  
+                  viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'MESSAGE ATTRIBUTE '||l_mae_name||' for outgoing message '||l_imd_name||' does not exist (ATTRIBUTE DEFINITION '||i_rt_adn.path||')'
+                  );
+
+               end if;
+
+            else
+               
+               viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'IFC MSG DEFINITION '||l_imd_name||' does not exist or is wrong in CPAD for Target '||l_xpath
+               );
+
+            end if;
+
+         end if;
+
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_attribute_targets;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_attribute( i_xml           in xmltype
+                              , i_it_priorities in it_string_hash
+                              )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_attribute';
+
+      l_definition               xmltype;
+      l_attribute_sources        xmltype;
+      l_attribute_targets        xmltype;
+      l_attribute_name           varchar2(32767);
+      l_default_value            varchar2(32767);
+
+      l_it_enums                 it_strings;
+      l_it_attributes            it_strings;
+      l_expression               clob;
+      l_rt_adn                   pdm_attribute_definitions%rowtype;
+      l_adn_found                boolean;
+      l_internal                 boolean;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      l_attribute_name := cmn_xml_util.extract_value( i_xml   => i_xml
+                                                    , i_xpath => g_con_xpath_attribute_name
+                                                    );
+      
+      l_internal := substr(l_attribute_name,1 ,8) = 'Internal' ;
+
+      
+      
+      l_adn_found := get_adn( i_adn_path   => l_attribute_name
+                            , i_ind_create => not l_internal
+                            , o_rt_adn     => l_rt_adn
+                            );
+
+      
+      if check_source_attribute( i_adn_id => l_rt_adn.id)
+      then
+         viu_info.operator_info ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                                , i_calling_procedure => l_con_proc_name
+                                , i_severity          => viu_info.c_severity_notification
+                                , i_additional_data   => 'Source Attribute '||l_attribute_name||' is only allowed as reference'
+                                );
+                                
+      
+      elsif l_adn_found
+      then
+
+         
+         l_definition := cmn_xml_util.extract_element( i_xml   => i_xml
+                                                     , i_xpath => g_con_xpath_derived_definition
+                                                     );
+
+         
+         case
+            when l_internal
+            and  l_definition is not null
+            then
+               
+               viu_info.raise_info ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                                   , i_calling_procedure => l_con_proc_name
+                                   , i_severity          => viu_info.c_severity_error
+                                   , i_additional_data   => 'CPAD contains a PDM Internal with derivation : ' || l_attribute_name
+                                   );
+            when not l_internal
+            and  l_definition is not null
+            then
+               
+               
+               
+               l_it_enums := extract_list( i_xml   => l_definition
+                                         , i_xpath => g_con_xpath_enum
+                                         );
+
+               
+               l_it_attributes := extract_list( i_xml   => l_definition
+                                              , i_xpath => g_con_xpath_derivation_attr
+                                              );
+
+               
+
+
+
+
+
+
+
+
+               l_expression   := cmn_xml_util.get_element_value( i_xmldoc  => l_definition.getclobval()
+                                                                , i_element => g_con_node_expression
+                                                                );
+
+               
+               translate_expression( io_expression    => l_expression
+                                   , i_it_enums       => l_it_enums
+                                   );
+
+               
+               verify_derivation(i_expression => l_expression);
+
+               
+               create_derivation( i_adn_id     => l_rt_adn.id
+                                , i_expression => l_expression
+                                );
+
+               
+               create_derivation_attributes( i_adn_id        => l_rt_adn.id
+                                           , i_expression    => l_expression
+                                           , i_it_attributes => l_it_attributes
+                                           );
+
+               
+               process_packagedata_der_attr;
+               
+            else
+               
+               null;
+         end case;
+
+         
+         l_attribute_sources := cmn_xml_util.extract_element( i_xml   => i_xml
+                                                            , i_xpath => g_con_xpath_attribute_sources
+                                                            );
+
+         
+         case
+            when l_internal
+            and  l_attribute_sources is not null
+            then
+               
+               viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'CPAD contains a PDM Internal with source attributes : ' || l_attribute_name
+               );
+            when not l_internal
+            and  l_attribute_sources is not null
+            then
+               
+               process_attribute_sources( i_rt_adn        => l_rt_adn
+                                        , i_xml_sources   => l_attribute_sources
+                                        , i_it_priorities => i_it_priorities
+                                        );
+            else
+               
+               null;
+         end case;
+
+         
+         l_default_value := cmn_xml_util.extract_value( i_xml   => i_xml
+                                                      , i_xpath => g_con_xpath_default_value
+                                                      );
+         case
+            when l_internal
+            and  l_default_value is not null
+            then
+               
+               viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'CPAD contains a PDM Internal with a default value : ' || l_attribute_name
+               );
+            when not l_internal
+            and  l_default_value is not null
+            then
+               l_rt_adn.value := l_default_value;
+               update_default_value( i_rt_adn => l_rt_adn );
+            else
+               
+               null;
+         end case;
+
+         
+         l_attribute_targets := cmn_xml_util.extract_element( i_xml   => i_xml
+                                                            , i_xpath => g_con_xpath_attribute_targets
+                                                            );
+
+         if l_attribute_targets is not null
+         then
+            
+            process_attribute_targets( i_rt_adn        => l_rt_adn
+                                     , i_xml_targets   => l_attribute_targets
+                                     );
+         end if;
+      end if; 
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_attribute;
+
+   
+
+
+
+
+
+
+
+
+   procedure process_lifespan
+   ( i_xml     in  xmltype
+   , i_rt_adn  in  pdm_attribute_definitions%rowtype
+   )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_lifespan';
+
+
+      l_value_index_lifespan     pls_integer := 0;
+      l_value_index_msg_subtype  pls_integer := 0;
+      l_ind_last_lifespan        boolean;
+      l_ind_last_msg_sub_type    boolean;
+      l_xml                      xmltype;
+      l_message_type             varchar2(32767);
+      l_message_sub_type         varchar2(32767);
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      l_ind_last_lifespan := false;
+
+      
+      while not l_ind_last_lifespan
+      loop
+         
+         l_value_index_lifespan := l_value_index_lifespan + 1;
+
+        
+         l_xml := cmn_xml_util.extract_element( i_xml   => i_xml
+                                              , i_xpath => g_con_xpath_lifespan   ||
+                                                           '['                    ||
+                                                           to_char(l_value_index_lifespan) ||
+                                                           ']'
+                                              );
+
+         if l_xml is null
+         then
+
+            
+            l_ind_last_lifespan := true;
+         else
+
+            
+            l_message_type := cmn_xml_util.extract_value( i_xml   => l_xml
+                                                        , i_xpath => g_con_xpath_lifespan_msgtype
+                                                        );
+
+            l_ind_last_msg_sub_type   := false;
+            l_value_index_msg_subtype := 0;
+
+            
+            while not l_ind_last_msg_sub_type
+            loop
+               
+               l_value_index_msg_subtype := l_value_index_msg_subtype + 1;
+
+              
+               l_message_sub_type := cmn_xml_util.extract_value( i_xml   => l_xml
+                                                               , i_xpath => g_con_xpath_lifespan_msgsubtyp     ||
+                                                                            '['                                ||
+                                                                            to_char(l_value_index_msg_subtype) ||
+                                                                            ']'
+                                                               );
+
+               
+               case
+                  when l_message_type is null
+                  then
+                     
+                     l_ind_last_msg_sub_type := true;
+
+                     
+                     if l_message_sub_type is not null
+                     then
+                        viu_info.raise_info ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                                            , i_calling_procedure => l_con_proc_name
+                                            , i_severity          => viu_info.c_severity_error
+                                            , i_additional_data   => 'When MessageType is empty then the MessageSubType must be empty (SourceAttribute '||i_rt_adn.path||')'
+                                            );
+                     else
+                        
+                        create_attribute_volatility(i_rt_adn          => i_rt_adn
+                                                   ,i_message_type    => g_con_msgtype_packageinfo
+                                                   ,i_message_subtype => null
+                                                   );
+                        create_attribute_volatility(i_rt_adn          => i_rt_adn
+                                                   ,i_message_type    => g_con_msgtype_packagedata
+                                                   ,i_message_subtype => null
+                                                   );
+                        create_attribute_volatility(i_rt_adn          => i_rt_adn
+                                                   ,i_message_type    => g_con_msgtype_taskreport
+                                                   ,i_message_subtype => null
+                                                   );
+                     end if;
+
+                  when l_message_type = g_con_msgtype_packageinfo
+                  then
+                     
+                     l_ind_last_msg_sub_type := true;
+
+                     
+                     if l_message_sub_type is not null
+                     then
+                        viu_info.raise_info ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                                            , i_calling_procedure => l_con_proc_name
+                                            , i_severity          => viu_info.c_severity_error
+                                            , i_additional_data   => 'For MessageType "PackageInfo" the MessageSubType must be empty (SourceAttribute '||i_rt_adn.path||')'
+                                            );
+                     else
+                        
+                        create_attribute_volatility(i_rt_adn          => i_rt_adn
+                                                   ,i_message_type    => l_message_type
+                                                   ,i_message_subtype => null
+                                                   );
+                     end if;
+
+                  when l_message_type in ( g_con_msgtype_packagedata
+                                         , g_con_msgtype_taskreport
+                                         )
+                  then
+                     
+                     
+                     
+                     if  l_message_sub_type is null
+                     and l_value_index_msg_subtype > 1
+                     then
+                        
+                        l_ind_last_msg_sub_type := true;
+
+                     else
+                        
+                        create_attribute_volatility(i_rt_adn          => i_rt_adn
+                                                   ,i_message_type    => l_message_type
+                                                   ,i_message_subtype => l_message_sub_type
+                                                   );
+                     end if;
+                  else
+                     
+                     l_ind_last_msg_sub_type := true;
+                     
+                     viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_error
+                     , i_additional_data   => 'MessageType '||l_message_type||' is not allowed (SourceAttribute '||i_rt_adn.path||')'
+                     );
+
+               end case;
+
+            end loop;
+
+         end if;
+
+      end loop;
+
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_lifespan;
+
+   
+
+
+
+
+
+
+
+
+   procedure process_sourcelifespans ( i_xml  in  xmltype )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_sourcelifespans';
+
+      cursor c_avy (b_adn_id  pdm_attribute_volatilities.adn_id%type)
+      is
+         select 1
+         from   pdm_attribute_volatilities  avy
+         where  avy.adn_id = b_adn_id
+         ;
+      
+      r_avy                      c_avy%rowtype;
+      l_rt_adn                   pdm_attribute_definitions%rowtype;
+      
+      l_value_index              pls_integer := 0;
+      l_ind_last_element         boolean;
+      l_ind_value_found          boolean;
+      l_xml                      xmltype;
+      l_attribute_name           varchar2(32767);
+      l_adn_found                boolean;
+      l_avy_found                boolean;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      l_ind_last_element := false;
+      l_ind_value_found  := false;
+
+      
+      while not l_ind_last_element
+      loop
+         
+         l_value_index := l_value_index + 1;
+
+        
+         l_xml := cmn_xml_util.extract_element( i_xml   => i_xml
+                                              , i_xpath => g_con_xpath_sourcelifespan ||
+                                                           '['                        ||
+                                                           to_char(l_value_index)     ||
+                                                           ']'
+                                              );
+
+         if l_xml is null
+         then
+
+            
+            l_ind_last_element := true;
+         else
+
+            
+            l_attribute_name := cmn_xml_util.extract_value( i_xml   => l_xml
+                                                          , i_xpath => g_con_xpath_source_attribute
+                                                          );
+
+            
+            
+            l_adn_found := get_adn( i_adn_path   => l_attribute_name
+                                  , i_ind_create => false
+                                  , o_rt_adn     => l_rt_adn
+                                  );
+
+            
+            if l_adn_found
+            then
+               
+               if check_source_attribute(i_adn_id => l_rt_adn.id)
+               then
+                  
+                  
+                  open  c_avy (b_adn_id => l_rt_adn.id);
+                  fetch c_avy into r_avy;
+                  l_avy_found := c_avy%found;
+                  close c_avy;
+
+                  if l_avy_found
+                  then
+                     
+                     viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_error
+                     , i_additional_data   => 'CPAD contains multiple SourceLifeSpan for SourceAttribute ' || l_attribute_name
+                     );
+                  else
+                     
+                     process_lifespan(i_xml    => l_xml
+                                     ,i_rt_adn => l_rt_adn
+                                     );
+                  end if;
+               else
+                  
+                  viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'Attribute ' || l_attribute_name || ' is not a SourceAttribute as is required for a SourceLifeSpan'
+                  );
+               end if;
+
+            end if;
+         end if;
+      end loop;
+
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_sourcelifespans;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_condition ( io_condition     in out varchar2
+                               , i_name           in     varchar2
+                               , i_condition_name in     varchar2
+                               )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_condition';
+
+      l_con_prefix            constant varchar2(2) := '_*';
+      l_con_postfix           constant varchar2(2) := '*_';
+      l_con_length_prepostfix constant number := 2;
+
+      l_adn_path              pdm_attribute_definitions.path%type;
+      l_rt_adn                pdm_attribute_definitions%rowtype;
+      l_procedure_plsql       clob;
+      l_continue              boolean := true;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      while l_continue
+      loop
+
+         
+         
+         
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+         
+         l_adn_path := substr( io_condition
+                             , instr(io_condition, l_con_prefix)  + l_con_length_prepostfix
+                             , instr(io_condition, l_con_postfix) - instr(io_condition, l_con_prefix) - l_con_length_prepostfix
+                             );
+                             
+         
+         if l_adn_path is null
+         then
+            l_continue := false;
+         else
+
+            
+            if not pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => l_adn_path
+                                                      , o_rt_adn   => l_rt_adn
+                                                      )
+            then
+
+               
+               viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'ATTRIBUTE DEFINITION '
+                                        || l_adn_path
+                                        || ' not exists'
+                  );
+            end if;
+
+            
+            if not check_source_attribute( i_adn_id => l_rt_adn.id)
+            then
+
+               
+               viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => i_condition_name||' for FunctionalExtension '||i_name||' contains Attribute ' || l_rt_adn.path || ' which is not an AttributeSource'
+               );
+            end if;
+
+            
+            
+            io_condition := replace ( io_condition
+                                    , l_con_prefix||l_adn_path||l_con_postfix
+                                    , 'pdm_common.pbe_select_value( i_pae_id   => i_pae_id
+                                         , i_adn_path => '''||l_adn_path||'''
+                                         )'
+                                    );
+                                
+            
+            if l_adn_path like 'PackageData%'
+            then
+
+               
+               
+               
+   
+               
+               
+               io_condition := replace ( io_condition
+                                       , 'i_adn_path => ''PackageData'
+                                       , 'i_adn_path => ''FunctionalSource/PackageData'
+                                       );
+
+               
+               create_apy_packagedata ( i_source_adn_id => l_rt_adn.id);
+
+            end if;
+
+         end if;
+      end loop;
+
+      
+      l_procedure_plsql :=
+
+         '
+         PROCEDURE '||g_con_name_prc_validate_cond||   '( i_pae_id       IN pdm_packages.id%TYPE             
+                                                        , i_pet_id       IN pdm_package_events.id%TYPE       
+                                                        , i_message_type IN cmn_ifc_msg_definitions.name%TYPE
+                                                        )
+         IS
+         BEGIN
+            IF '||io_condition||'
+            THEN
+               null;
+            END IF;
+         END;
+         '
+      ;
+
+      begin
+
+         exec_immediate_autonomous (i_statement => 'CREATE OR REPLACE ' || l_procedure_plsql);
+
+      exception
+         when others
+         then
+   
+            
+            exec_immediate_autonomous (i_statement => 'DROP PROCEDURE ' || g_con_name_prc_validate_cond);
+   
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   =>    'No valid '||i_condition_name||' for FunctionalExtension '||i_name
+               );
+      end;
+
+      
+      exec_immediate_autonomous (i_statement => 'DROP PROCEDURE ' || g_con_name_prc_validate_cond);
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_condition;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure create_proc_funct_extension ( i_proc_name           in pdm_functional_extensions.procedure_name%type
+                                      , i_fe_cnt_incr_cntr    in varchar2
+                                      , i_fe_cnt_rst_cntr     in varchar2
+                                      , i_fe_cnt_rst_already  in varchar2
+                                      , i_adn_path_ctr        in pdm_attribute_definitions.path%type
+                                      , i_adn_path_ctr_resume in pdm_attribute_definitions.path%type
+                                      , i_adn_path_already    in pdm_attribute_definitions.path%type
+                                      , i_cpad_version        in pdm_tpl_process_specifications.version%type
+                                      )
+is
+   l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_proc_funct_extension';
+
+   l_procedure_plsql   clob;
+   l_invalid_proc_name pdm_functional_extensions.procedure_name%type;
+   
+begin
+viu_module.enter_module( i_module     => l_con_proc_name );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+l_procedure_plsql :=
+
+   '
+   PROCEDURE '||i_proc_name||'
+   
+   ( i_pae_id       IN pdm_packages.id%TYPE             
+   , i_pet_id       IN pdm_package_events.id%TYPE       
+   , i_message_type IN cmn_ifc_msg_definitions.name%TYPE
+   )
+
+   IS
+
+      -- Generated by CPAD version ' || i_cpad_version || ' at ' || to_char(cmn_common.default_timestamp,'DD-MM-YYYY HH24:MI:SS') || '    
+      
+      l_con_proc_name CONSTANT cmn_constant.st_proc_name := '''||i_proc_name||''';
+   '
+;
+
+
+l_procedure_plsql := l_procedure_plsql ||
+   '
+      -- Constants for ATTRIBUTE DEFINITION.ADN PATHs of FUNCTIONAL EXTENSION
+      l_con_counter         CONSTANT pdm_attribute_definitions.path%type  := '''||i_adn_path_ctr||''';
+      l_con_counter_resume  CONSTANT pdm_attribute_definitions.path%type  := '''||i_adn_path_ctr_resume||''';
+      '
+;
+
+
+
+if i_fe_cnt_rst_already is not null
+then
+
+   
+   l_procedure_plsql := l_procedure_plsql ||
+      'l_con_already_counted CONSTANT pdm_attribute_definitions.path%type  := '''||i_adn_path_already||''';
+      '
+   ;
+end if;
+
+
+l_procedure_plsql := l_procedure_plsql ||
+      '
+      -- Attribute collection
+      l_it_attributes pdm_attributes.attribute_coll;
+
+      -- Variables for PACKAGE ATTRIBUTE.VALUEs of FUNCTIONAL EXTENSION
+      l_counter         pdm_package_attributes.value%TYPE;
+      l_counter_resume  pdm_package_attributes.value%TYPE;
+      '
+;
+
+
+if i_fe_cnt_rst_already is not null
+then
+
+   
+   l_procedure_plsql := l_procedure_plsql ||
+      'l_already_counted pdm_package_attributes.value%TYPE;
+      '
+   ;
+end if;
+
+
+l_procedure_plsql := l_procedure_plsql ||
+   '
+   BEGIN
+      viu_module.enter_module( i_module => l_con_proc_name );
+   '
+;
+
+
+l_procedure_plsql := l_procedure_plsql ||
+   '
+      -- Check condition increase counter
+
+      IF '||i_fe_cnt_incr_cntr||'
+      THEN
+   '
+;
+
+
+if i_fe_cnt_rst_already is not null
+then
+
+   
+   l_procedure_plsql := l_procedure_plsql ||
+   '
+         -- Check not already counted
+         l_already_counted := pdm_common.pbe_select_value( i_pae_id   => i_pae_id
+                                                         , i_adn_path => l_con_already_counted
+                                                         );
+         
+         IF l_already_counted IS NULL
+         THEN
+         
+            -- Set already counted = TRUE
+            pdm_attributes.add_attribute_value( i_adn_path       => l_con_already_counted
+                                              , i_value          => pdm_constant.g_con_attr_value_true
+                                              , io_it_attributes => l_it_attributes
+                                              );
+   '
+   ;
+end if;
+
+
+l_procedure_plsql := l_procedure_plsql ||
+   '
+            -- Check counter exists (still in tracking)
+            l_counter := pdm_common.pbe_select_value( i_pae_id   => i_pae_id
+                                                    , i_adn_path => l_con_counter
+                                                    );
+            
+            IF l_counter IS NOT NULL
+            THEN
+            
+               -- Increase existing counter
+               l_counter := TO_NUMBER(l_counter) + 1;
+            ELSE
+            
+               -- Check resumed counter exists
+               l_counter_resume := pdm_common.pbe_select_value( i_pae_id   => i_pae_id
+                                                              , i_adn_path => l_con_counter_resume
+                                                              );
+               IF l_counter_resume  IS NOT NULL
+               THEN
+            
+                  -- Increase existing resumed counter
+                  l_counter := TO_NUMBER(l_counter_resume) + 1;
+               ELSE
+            
+                  -- Set counter to 1
+               	 l_counter := 1;
+               END IF; -- Check resumed counter exists
+            
+            END IF; -- Check counter exists (still in tracking)
+            
+            -- Set PACKAGE ATTRIBUTE counter
+            pdm_attributes.add_attribute_value( i_adn_path       => l_con_counter
+                                              , i_value          => l_counter
+                                              , io_it_attributes => l_it_attributes
+                                              );
+            
+   '
+;
+
+
+if i_fe_cnt_rst_already is not null
+then
+
+   
+   l_procedure_plsql := l_procedure_plsql ||
+   '
+         END IF; -- Check not already counted
+   '
+   ;
+end if;
+
+
+l_procedure_plsql := l_procedure_plsql ||
+   '
+      END IF; -- Check condition increase counter
+   '
+;
+
+
+
+if i_fe_cnt_rst_already is not null
+then
+
+   
+   l_procedure_plsql := l_procedure_plsql ||
+   '
+
+
+
+
+      -- Check condition reset already counted
+      IF '||i_fe_cnt_rst_already||'
+      THEN
+         -- Delete PACKAGE ATTRIBUTE already counted
+         pdm_attributes.add_attribute_null( i_adn_path       => l_con_already_counted
+                                          , io_it_attributes => l_it_attributes
+                                          );
+      END IF; -- Check condition reset already counted
+   '
+   ;
+end if;
+
+
+if i_fe_cnt_rst_cntr is not null
+then
+
+   
+   l_procedure_plsql := l_procedure_plsql ||
+   '
+
+
+
+
+      -- Check condition reset counter
+      IF '||i_fe_cnt_rst_cntr||'
+      THEN
+         -- Delete PACKAGE ATTRIBUTE counter
+         pdm_attributes.add_attribute_null( i_adn_path       => l_con_counter
+                                          , io_it_attributes => l_it_attributes
+                                          );
+
+         -- Delete PACKAGE ATTRIBUTE resumed counter
+         pdm_attributes.add_attribute_null( i_adn_path       => l_con_counter_resume
+                                          , io_it_attributes => l_it_attributes
+                                          );
+      END IF; -- Check condition reset counter
+   '
+   ;
+end if;
+
+
+l_procedure_plsql := l_procedure_plsql ||
+   '
+      -- Check attribute collection not empty
+      IF l_it_attributes.COUNT > 0
+      THEN
+
+         -- Store attributes
+         pdm_attributes.store_attributes( i_pae_id                     => i_pae_id
+                                        , i_it_attributes              => l_it_attributes
+                                        , i_pet_id                     => i_pet_id
+                                        , i_event_time                 => NULL -- Force update
+                                        , i_ind_use_attribs_event_time => FALSE
+                                        );
+      END IF;
+                                          
+   
+      viu_module.leave_module( i_module => l_con_proc_name );
+   
+   EXCEPTION
+      WHEN OTHERS
+      THEN
+   
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => SQLERRM
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   END;
+   '
+;
+
+begin
+
+   
+   exec_immediate_autonomous (i_statement => 'CREATE OR REPLACE ' || l_procedure_plsql);
+
+exception
+   when others
+   then
+
+      
+
+      
+      
+      
+      select object_name
+      into   l_invalid_proc_name
+      from   user_objects
+      where  status      = 'INVALID'
+      and    object_type = 'PROCEDURE'
+      ;
+
+      
+      exec_immediate_autonomous (i_statement => 'DROP PROCEDURE ' || l_invalid_proc_name);
+
+      viu_info.raise_info
+         ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+         , i_calling_procedure => l_con_proc_name
+         , i_severity          => viu_info.c_severity_error
+         , i_additional_data   =>    'No valid procedure can be generated for FunctionalExtension '
+                                  || i_proc_name
+                                  || ', check for correctness, e.g. correct name without spaces and invalid charcaters'
+         );
+end;
+
+viu_module.leave_module( i_module => l_con_proc_name );
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end create_proc_funct_extension;
+
+   
+
+
+
+
+
+
+
+
+   procedure process_functional_extensions ( i_xml          in  xmltype
+                                           , i_cpad_version in pdm_tpl_process_specifications.version%type
+                                           )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_functional_extensions';
+
+      l_rt_adn                   pdm_attribute_definitions%rowtype;
+      l_adn_path_ctr             pdm_attribute_definitions.path%type;
+      l_adn_path_ctr_resume      pdm_attribute_definitions.path%type;
+      l_adn_path_already         pdm_attribute_definitions.path%type;
+      l_adn_path_already_resume  pdm_attribute_definitions.path%type;
+      l_proc_name                pdm_functional_extensions.procedure_name%type;
+      l_value_index              pls_integer := 0;
+      l_ind_last_element         boolean;
+      l_ind_value_found          boolean;
+      l_xml                      xmltype;
+      l_name                     varchar2(32767);
+      l_fe_cnt_incr_cntr         varchar2(32767);
+      l_fe_cnt_rst_cntr          varchar2(32767);
+      l_fe_cnt_rst_already       varchar2(32767);
+      l_adn_found                boolean;
+      l_max_name_length          number := 20;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      l_ind_last_element := false;
+      l_ind_value_found  := false;
+
+      
+      while not l_ind_last_element
+      loop
+
+         
+         l_value_index := l_value_index + 1;
+         l_xml := cmn_xml_util.extract_element( i_xml   => i_xml
+                                              , i_xpath => g_con_xpath_func_extension ||
+                                                           '['                        ||
+                                                           to_char(l_value_index)     ||
+                                                           ']'
+                                              );
+
+         
+         if l_xml is null
+         then
+
+            l_ind_last_element := true;
+
+         else
+
+            
+            l_adn_path_ctr             := null;
+            l_adn_path_ctr_resume      := null;
+            l_adn_path_already         := null;
+            l_adn_path_already_resume  := null;
+
+            
+            l_name := cmn_xml_util.extract_value( i_xml   => l_xml
+                                                , i_xpath => g_con_xpath_fe_name
+                                                );
+
+            
+            l_fe_cnt_incr_cntr := cmn_xml_util.extract_value( i_xml   => l_xml
+                                                            , i_xpath => g_con_xpath_fe_cnt_incr_cntr
+                                                            );
+
+            
+            l_fe_cnt_rst_cntr := cmn_xml_util.extract_value( i_xml   => l_xml
+                                                           , i_xpath => g_con_xpath_fe_cnt_rst_cntr
+                                                           );
+            
+            l_fe_cnt_rst_already := cmn_xml_util.extract_value( i_xml   => l_xml
+                                                              , i_xpath => g_con_xpath_fe_cnt_rst_already
+                                                              );
+
+            
+            if length (l_name) > l_max_name_length
+            then
+
+               
+               viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   =>    'Name of FunctionalExtension too long (maximum length = '||l_max_name_length||'): '
+                                           || l_name
+                  );
+            end if;
+
+            
+            l_proc_name := 'pdm_'||l_name;
+           
+            insert into pdm_functional_extensions ( id
+                                                  , procedure_name
+                                                  )
+            values   ( l_value_index
+                     , l_proc_name
+                     )
+            ;
+
+            
+            l_adn_path_ctr := 'FunctionalExtension/'||l_name;
+            l_adn_found := get_adn( i_adn_path     => l_adn_path_ctr
+                                  , i_ind_create   => true
+                                  , i_min_id_range => g_con_min_id_funct_ext
+                                  , i_max_id_range => g_con_max_id_funct_ext
+                                  , i_fen_id       => l_value_index
+                                  , o_rt_adn       => l_rt_adn
+                                  );
+
+            l_adn_path_ctr_resume := 'Resume/FunctionalExtension/'||l_name;
+            l_adn_found := get_adn( i_adn_path     => l_adn_path_ctr_resume
+                                  , i_ind_create   => true
+                                  , i_min_id_range => g_con_min_id_funct_ext_resume
+                                  , i_max_id_range => g_con_max_id_funct_ext_resume
+                                  , i_fen_id       => l_value_index
+                                  , o_rt_adn       => l_rt_adn
+                                  );
+
+            
+            if l_fe_cnt_rst_already is not null
+            then
+
+               
+               l_adn_path_already := 'FunctionalExtension/'||l_name||'/AlreadyCounted';
+               l_adn_found := get_adn( i_adn_path     => l_adn_path_already
+                                     , i_ind_create   => true
+                                     , i_min_id_range => g_con_min_id_funct_ext
+                                     , i_max_id_range => g_con_max_id_funct_ext
+                                     , i_fen_id       => l_value_index
+                                     , o_rt_adn       => l_rt_adn
+                                     );
+   
+               l_adn_path_already_resume := 'Resume/FunctionalExtension/'||l_name||'/AlreadyCounted';
+               l_adn_found := get_adn( i_adn_path     => l_adn_path_already_resume
+                                     , i_ind_create   => true
+                                     , i_min_id_range => g_con_min_id_funct_ext_resume
+                                     , i_max_id_range => g_con_max_id_funct_ext_resume
+                                     , i_fen_id       => l_value_index
+                                     , o_rt_adn       => l_rt_adn
+                                     );
+            end if;
+
+            
+            process_condition ( io_condition     => l_fe_cnt_incr_cntr
+                              , i_name           => l_name
+                              , i_condition_name => g_con_xpath_incr_cntr
+                              );
+
+            
+            if l_fe_cnt_rst_cntr is not null
+            then
+
+               
+               process_condition ( io_condition     => l_fe_cnt_rst_cntr
+                                 , i_name           => l_name
+                                 , i_condition_name => g_con_xpath_rst_cntr
+                                 );
+            end if;
+
+            
+            if l_fe_cnt_rst_already is not null
+            then
+
+               
+               process_condition ( io_condition     => l_fe_cnt_rst_already
+                                 , i_name           => l_name
+                                 , i_condition_name => g_con_xpath_rst_already
+                                 );
+            end if;
+
+            
+            create_proc_funct_extension ( i_proc_name           => l_proc_name
+                                        , i_fe_cnt_incr_cntr    => l_fe_cnt_incr_cntr
+                                        , i_fe_cnt_rst_cntr     => l_fe_cnt_rst_cntr
+                                        , i_fe_cnt_rst_already  => l_fe_cnt_rst_already
+                                        , i_adn_path_ctr        => l_adn_path_ctr
+                                        , i_adn_path_ctr_resume => l_adn_path_ctr_resume
+                                        , i_adn_path_already    => l_adn_path_already
+                                        , i_cpad_version        => i_cpad_version
+                                        );
+         end if;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_functional_extensions;
+
+   
+
+
+
+
+
+
+
+
+   procedure check_derivation_loop
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.check_derivation_loop';
+
+      
+      
+      
+      
+      
+      cursor c_derivations
+      is
+      select     ady.adn_id_base adn_id
+      ,          max(level) max_lvl
+      from       pdm_attribute_dependencies ady
+      connect by ady.adn_id_base  = prior ady.adn_id_child
+      group by   ady.adn_id_base
+      order by   max_lvl desc
+      ,          ady.adn_id_base;
+
+      r_derivations              c_derivations%rowtype;
+
+      exc_connect_by_loop        exception;
+      pragma exception_init( exc_connect_by_loop, -1436 );
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      begin
+         
+         open  c_derivations;
+         fetch c_derivations
+         into  r_derivations;
+         close c_derivations;
+      exception
+         when exc_connect_by_loop
+         then
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_infinitederivationloop
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  );
+      end;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_derivations%isopen
+         then
+            close c_derivations;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end check_derivation_loop;
+
+   
+
+
+
+
+
+
+
+
+   procedure link_resume_functional_attr
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.link_resume_functional_attr';
+
+      
+      cursor c_adn
+      is
+         select     adn.*
+         from       pdm_attribute_definitions adn
+         where      adn.path like 'Resume/%'
+         and        adn.adn_id_resume is null
+         ;
+
+     l_rt_adn_functional        pdm_attribute_definitions%rowtype;
+     l_dml_amount               pls_integer;
+     l_found                    boolean;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      for r_adn in c_adn
+      loop
+
+         
+         l_found := pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => ltrim(r_adn.path,'Resume/')
+                                                       , o_rt_adn   => l_rt_adn_functional
+                                                       );
+      
+         if not l_found
+         then
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_nonedefinedexception
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'Functional ADN '
+                                     || ltrim(r_adn.path,'Resume/')
+                                     || ' not found for resume functional ADN '
+                                     || r_adn.path
+               );
+          
+         else
+
+            
+            
+            r_adn.adn_id_resume := l_rt_adn_functional.id;
+            l_dml_amount := pdm_adn_tapi_pck.adn_update_row( i_adn_id  => r_adn.id
+                                                           , io_rt_adn => r_adn
+                                                           );
+         	
+         end if;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end link_resume_functional_attr;
+
+   
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_message (i_message in xmltype)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.hdl_message';
+
+      l_value_index              pls_integer := 0;
+      l_ind_last_element         boolean;
+      l_ind_value_found          boolean;
+      l_xml                      xmltype;
+      l_it_priorities            it_strings;
+      l_it_priorities_hash       it_string_hash;
+      l_cpad_version             pdm_tpl_process_specifications.version%type;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+
+      
+      update pdm_attribute_definitions adn
+      set    adn.fen_id = null
+      ;
+
+      
+      delete pdm_attribute_dependencies;
+      delete pdm_attribute_priorities;
+      delete pdm_attribute_volatilities;
+      delete pdm_functional_extensions;
+      
+      
+      
+      update pdm_message_attributes mae
+      set    mae.adn_id                     = null
+      ,      mae.ind_current_event          = cmn_constant.g_con_yesno_no
+      where  mae.direction                  =  pdm_constant.g_con_direction_outgoing
+      and    (    mae.ind_mapped_internally is null
+      	       or mae.ind_mapped_internally <> cmn_constant.g_con_yesno_yes
+      	     )
+      ;
+
+      
+      l_xml := cmn_xml_util.extract_element( i_xml   => i_message
+                                           , i_xpath => g_con_xpath_priority
+                                           );
+
+      
+      l_it_priorities := extract_list( i_xml   => l_xml
+                                     , i_xpath => g_con_xpath_messagetype
+                                     );
+
+      
+      if l_it_priorities.count > 0
+      then
+         for i in 1 .. l_it_priorities.count
+         loop
+            l_it_priorities_hash( l_it_priorities(i) ) := i;
+         end loop;
+      end if;
+
+      
+      l_xml := cmn_xml_util.extract_element( i_xml   => i_message
+                                           , i_xpath => g_con_xpath_sourcelifespans
+                                           );
+
+      if l_xml is not null
+      then
+         
+         process_sourcelifespans( i_xml => l_xml );
+      end if;
+
+      l_ind_last_element := false;
+      l_ind_value_found  := false;
+
+      
+      while not l_ind_last_element
+      loop
+         
+         l_value_index := l_value_index + 1;
+
+        
+         l_xml := cmn_xml_util.extract_element( i_xml   => i_message
+                                              , i_xpath => g_con_xpath_cpad       ||
+                                                           '['                    ||
+                                                           to_char(l_value_index) ||
+                                                           ']'
+                                              );
+
+         if l_xml is null
+         then
+
+            
+            l_ind_last_element := true;
+         else
+
+            process_attribute( i_xml           => l_xml
+                             , i_it_priorities => l_it_priorities_hash
+                             );
+
+         end if;
+      end loop;
+
+      
+      l_cpad_version := cmn_xml_util.extract_value( i_xml   => i_message
+                                                  , i_xpath => g_con_xpath_version
+                                                  );
+
+      
+      l_xml := cmn_xml_util.extract_element( i_xml   => i_message
+                                           , i_xpath => g_con_xpath_func_extensions
+                                           );
+
+      if l_xml is not null
+      then
+         process_functional_extensions( i_xml          => l_xml
+                                      , i_cpad_version => l_cpad_version
+                                      );
+      end if;
+
+      
+      check_derivation_loop;
+
+      
+      link_resume_functional_attr;
+      
+      
+      generate_sourcecode(i_cpad_version => l_cpad_version);
+
+      
+      update acl_registry rgy
+      set    rgy.version        = l_cpad_version
+      ,      rgy.status         = 'VALID'
+      ,      rgy.date_installed = cmn_common.default_timestamp
+      where  rgy.comp_id = 'CPAD'
+      ;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         
+         
+         viu_info.handle_info;
+
+         
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end hdl_message;
+
+end pdm_cpad;
+/

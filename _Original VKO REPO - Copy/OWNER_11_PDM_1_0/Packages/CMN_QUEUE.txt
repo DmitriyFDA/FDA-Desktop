@@ -1,0 +1,1146 @@
+create or replace PACKAGE cmn_queue AS
+/******************************************************************************
+   NAME:       cmn_queue
+   PURPOSE:
+
+   REVISIONS:
+   Ver        Date        Author           Description
+   ---------  ----------  ---------------  ------------------------------------
+   1.0        20-11-2006             1. Created this package.
+******************************************************************************/
+
+   PROCEDURE create_all_queues( i_schema_name IN VARCHAR2 DEFAULT USER);
+   
+   PROCEDURE drop_all_queues( i_schema_name IN VARCHAR2 DEFAULT USER);
+   
+   PROCEDURE start_all_queues( i_schema_name IN VARCHAR2 DEFAULT USER);
+   
+   PROCEDURE stop_all_queues( i_schema_name IN VARCHAR2 DEFAULT USER);
+   
+   PROCEDURE dequeue_message( i_subscriber_id IN cmn_subscribers.id%TYPE);
+   
+   FUNCTION dequeue_message( i_subscriber_id    IN cmn_subscribers.id%TYPE
+                           , i_wait_period      IN NUMBER DEFAULT NULL
+                           , i_navigation       IN BINARY_INTEGER DEFAULT DBMS_AQ.NEXT_MESSAGE
+                           , i_immediate_commit IN BOOLEAN DEFAULT TRUE
+                           , i_visibility       IN BINARY_INTEGER DEFAULT NULL
+                           )
+   RETURN XMLTYPE;
+
+   PROCEDURE enqueue_message( i_subscriber_id        IN cmn_subscribers.id%TYPE
+                            , i_payload              IN XMLTYPE
+                            , i_visibility_immediate IN BOOLEAN DEFAULT TRUE
+                            );
+   
+   PROCEDURE grant_rights;
+
+   PROCEDURE purge_queue_table ( i_subscriber_id IN cmn_subscribers.id%TYPE);
+
+   PROCEDURE create_all_queue_tables( i_schema_name IN VARCHAR2 DEFAULT USER);
+   
+   PROCEDURE drop_all_queue_tables( i_schema_name IN VARCHAR2 DEFAULT USER);
+	  
+	  
+END cmn_queue;
+/
+
+
+
+
+package body cmn_queue
+as
+   
+
+
+
+
+
+
+
+
+   g_con_package        constant varchar2( 9 ) := 'cmn_queue';
+
+   
+   procedure create_queue( i_queue_id in cmn_queues.id%type );
+
+   procedure drop_queue( i_queue_id in cmn_queues.id%type );
+
+   procedure start_queue( i_schema_name in cmn_queues.schema_name%type
+                        , i_queue_name  in cmn_queues.name%type
+                        );
+
+   procedure stop_queue( i_schema_name in cmn_queues.schema_name%type
+                       , i_queue_name in cmn_queues.name%type
+                       );
+
+   
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_all_queues( i_schema_name in varchar2)
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.create_all_queues';
+
+      cursor c_que( b_schema_name in varchar2)
+      is
+         select id,
+                name
+         from   cmn_queues
+         where  schema_name = b_schema_name;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      for r_que in c_que( i_schema_name)
+      loop
+         create_queue( r_que.id );
+      end loop;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end create_all_queues;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_queue( i_queue_id in cmn_queues.id%type )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.create_queue';
+      l_queue_rec                   cmn_queues%rowtype;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      if cmn_que_tapi_pck.que_select_row( i_que_id      => i_queue_id,
+                                          o_rt_que      => l_queue_rec
+                                        )
+      then
+         dbms_aqadm.create_queue( queue_name          => l_queue_rec.name,
+                                  queue_table         => l_queue_rec.queue_table,
+                                  retention_time      => nvl( l_queue_rec.retention_time,
+                                                              0
+                                                            ),
+                                  max_retries         => nvl( l_queue_rec.max_retries,
+                                                              5
+                                                            ),
+                                  comment             => l_queue_rec.que_comment
+                                );
+         start_queue( i_schema_name => l_queue_rec.schema_name
+                    , i_queue_name  => l_queue_rec.name
+                    );
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end create_queue;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure start_all_queues( i_schema_name in varchar2)
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.start_all_queues';
+
+      cursor c_que(b_schema_name in varchar2)
+      is
+         select id,
+                name
+         from   cmn_queues
+         where  schema_name = b_schema_name;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      for r_que in c_que(i_schema_name)
+      loop
+         start_queue( i_schema_name => i_schema_name
+                    , i_queue_name  => r_que.name
+                    );
+      end loop;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end start_all_queues;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure start_queue( i_schema_name in cmn_queues.schema_name%type
+                        , i_queue_name  in cmn_queues.name%type
+                        )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.start_queue';
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+      
+      dbms_aqadm.start_queue( queue_name      => i_schema_name ||'.'|| i_queue_name,
+                              enqueue         => true,
+                              dequeue         => true
+                            );
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end start_queue;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure stop_all_queues( i_schema_name in varchar2 default user)
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.stop_all_queues';
+
+      cursor c_que(b_schema_name in varchar2)
+      is
+         select id,
+                name
+         from   cmn_queues
+         where  schema_name = b_schema_name;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      for r_que in c_que(i_schema_name)
+      loop
+         stop_queue( i_schema_name => i_schema_name
+                   , i_queue_name  => r_que.name
+                   );
+      end loop;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end stop_all_queues;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure stop_queue( i_schema_name in cmn_queues.schema_name%type
+                       , i_queue_name  in cmn_queues.name%type
+                       )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.stop_queue';
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+      dbms_aqadm.stop_queue( queue_name      => i_schema_name ||'.'|| i_queue_name,
+                             enqueue         => true,
+                             dequeue         => true
+                           );
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end stop_queue;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure dequeue_message (i_subscriber_id in cmn_subscribers.id%type)
+   is
+      l_con_procedure   constant cmn_constant.st_proc_name
+                                       := g_con_package || '.dequeue_message';
+      l_ssr_rec                  cmn_subscribers%rowtype;
+      l_que_rec                  cmn_queues%rowtype;
+      l_msg_id                   raw (16);
+      l_dequeue_options          dbms_aq.dequeue_options_t;
+      l_message_properties       dbms_aq.message_properties_t;
+      l_payload                  xmltype;
+      l_agent                    sys.aq$_agent;
+      l_agent_list               dbms_aq.aq$_agent_list_t;
+      l_agent_name               varchar2 (255);
+      l_queue_name               varchar2 (255);
+
+      l_delivery_mode            pls_integer;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      if cmn_ssr_tapi_pck.ssr_select_row (i_ssr_id      => i_subscriber_id,
+                                          o_rt_ssr      => l_ssr_rec
+                                         )
+      then
+         if (cmn_que_tapi_pck.que_select_row (i_que_id      => l_ssr_rec.que_id,
+                                              o_rt_que      => l_que_rec
+                                             )
+            )
+         then
+            case l_ssr_rec.delivery_mode
+               when cmn_constant.g_con_buffered
+               then
+                  l_delivery_mode := dbms_aqadm.buffered;
+               when cmn_constant.g_con_persistent
+               then
+                  l_delivery_mode := dbms_aqadm.persistent;
+               when cmn_constant.g_con_persistent_or_buffered
+               then
+                  l_delivery_mode := dbms_aqadm.persistent_or_buffered;
+               else
+                  l_delivery_mode := dbms_aqadm.persistent;
+            end case;
+
+            l_agent_list (1) :=
+                         sys.aq$_agent (l_ssr_rec.name, l_que_rec.name, null);
+            l_dequeue_options.consumer_name := l_ssr_rec.name;
+            l_dequeue_options.visibility := dbms_aq.immediate;
+            l_dequeue_options.delivery_mode := l_delivery_mode;
+
+            loop
+               dbms_aq.dequeue (queue_name         => l_que_rec.schema_name || '.' || l_que_rec.name,
+                                dequeue_options    => l_dequeue_options,
+                                message_properties => l_message_properties,
+                                payload            => l_payload,
+                                msgid              => l_msg_id
+                               );
+               
+               cmn_interface.process_message (i_message => l_payload);
+            end loop;
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_procedure );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.handle_info( i_calling_procedure      => l_con_procedure, i_additional_data => sqlerrm );
+
+   end dequeue_message;
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function dequeue_message( i_subscriber_id    in cmn_subscribers.id%type
+                           , i_wait_period      in number default null
+                           , i_navigation       in binary_integer default dbms_aq.next_message
+                           , i_immediate_commit in boolean default true
+                           , i_visibility       in binary_integer default null)
+   return xmltype
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.dequeue_message';
+      l_ssr_rec                     cmn_subscribers%rowtype;
+      l_que_rec                     cmn_queues%rowtype;
+      l_msg_id                      raw( 16 );
+      l_dequeue_options             dbms_aq.dequeue_options_t;
+      l_message_properties          dbms_aq.message_properties_t;
+      l_payload                     xmltype;
+      l_agent                       sys.aq$_agent;
+      l_agent_list                  dbms_aq.aq$_agent_list_t;
+      l_agent_name                  varchar2( 255 );
+      l_queue_name                  varchar2( 255 );
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      if cmn_ssr_tapi_pck.ssr_select_row( i_ssr_id      => i_subscriber_id,
+                                          o_rt_ssr      => l_ssr_rec
+                                        )
+      then
+         if ( cmn_que_tapi_pck.que_select_row( i_que_id      => l_ssr_rec.que_id,
+                                               o_rt_que      => l_que_rec
+                                             ))
+         then
+            l_agent_list( 1 )                := sys.aq$_agent( l_ssr_rec.name,
+                                                               l_que_rec.name,
+                                                               null
+                                                             );
+            l_dequeue_options.consumer_name := l_ssr_rec.name;
+            l_dequeue_options.navigation    := i_navigation;
+
+            if i_visibility is not null
+            then
+               l_dequeue_options.visibility := i_visibility;
+            end if;
+
+            if (i_wait_period is not null) then
+               l_dequeue_options.wait := i_wait_period;
+            end if;
+
+            begin
+               dbms_aq.dequeue( queue_name              => l_que_rec.schema_name || '.' || l_que_rec.name,
+                                dequeue_options         => l_dequeue_options,
+                                message_properties      => l_message_properties,
+                                payload                 => l_payload,
+                                msgid                   => l_msg_id
+                              );
+               
+               if i_immediate_commit then
+                  commit;
+               end if;
+               
+               viu_module.leave_module( i_module      => l_con_procedure );
+               return l_payload;
+            exception when others then
+               viu_module.leave_module( i_module      => l_con_procedure );
+               return null;
+            end;
+
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_procedure );
+      return null;
+      
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.handle_info( i_calling_procedure      => l_con_procedure, i_additional_data => sqlerrm );
+   end dequeue_message;
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure enqueue_message( i_subscriber_id        in cmn_subscribers.id%type
+                            , i_payload              in xmltype
+                            , i_visibility_immediate in boolean default true
+                            )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.enqueue_message';
+      enqopt                        dbms_aq.enqueue_options_t;
+      mprop                         dbms_aq.message_properties_t;
+      enqu_msgid                    raw( 16 );
+      l_ssr_rec                     cmn_subscribers%rowtype;
+      l_que_rec                     cmn_queues%rowtype;
+      l_delivery_mode               pls_integer;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      if cmn_ssr_tapi_pck.ssr_select_row( i_ssr_id      => i_subscriber_id,
+                                          o_rt_ssr      => l_ssr_rec
+                                        )
+      then
+         if cmn_que_tapi_pck.que_select_row( i_que_id      => l_ssr_rec.que_id,
+                                             o_rt_que      => l_que_rec
+                                           )
+         then
+            
+            case l_ssr_rec.delivery_mode
+               when cmn_constant.g_con_buffered
+               then
+                  l_delivery_mode := dbms_aqadm.buffered;
+               when cmn_constant.g_con_persistent
+               then
+                  l_delivery_mode := dbms_aqadm.persistent;
+               when cmn_constant.g_con_persistent_or_buffered
+               then
+                  l_delivery_mode := dbms_aqadm.persistent_or_buffered;
+               else
+                  l_delivery_mode := dbms_aqadm.persistent;
+            end case;
+            
+            mprop.sender_id        := sys.aq$_agent (l_ssr_rec.name, null, null);
+            mprop.delivery_mode    := l_delivery_mode;
+            enqopt.delivery_mode   := l_delivery_mode;
+
+            if i_visibility_immediate
+            then
+               enqopt.visibility      := dbms_aq.immediate;
+            else
+               enqopt.visibility      := dbms_aq.on_commit;
+            end if;
+
+            
+            dbms_aq.enqueue( queue_name => l_que_rec.schema_name || '.' || l_que_rec.name,
+                             enqueue_options => enqopt,
+                             message_properties => mprop,
+                             payload => i_payload,
+                             msgid => enqu_msgid
+                           );
+
+         end if;
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end enqueue_message;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure grant_rights
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.grant_rights';
+
+      cursor c_ifc_user
+      is
+         select *
+         from   cmn_ifc_users
+         where  que_id is not null;
+
+      l_que_rec                     cmn_queues%rowtype;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      for r_ifc_user in c_ifc_user
+      loop
+         if cmn_que_tapi_pck.que_select_row( i_que_id      => r_ifc_user.que_id,
+                                             o_rt_que      => l_que_rec
+                                           )
+         then
+            begin
+               dbms_aqadm.grant_queue_privilege( privilege         => r_ifc_user.privilege,
+                                                 queue_name        => l_que_rec.name,
+                                                 grantee           => r_ifc_user.grantee,
+                                                 grant_option      => false
+                                               );
+            exception
+               when others
+               then
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmninternalerror,
+                                       i_calling_procedure      => l_con_procedure,
+                                       i_severity               => viu_info.c_severity_error,
+                                       i_additional_data        =>    'GRANT '
+                                                                   || r_ifc_user.privilege
+                                                                   || ' to '
+                                                                   || r_ifc_user.grantee
+                                                                   || ' on '
+                                                                   || l_que_rec.name
+                                                                   || ' FAILED'
+                                     );
+            end;
+         end if;
+      end loop;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end grant_rights;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure drop_all_queues( i_schema_name in varchar2 default user)
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.drop_all_queues';
+
+      cursor c_que ( b_schema_name in varchar2)
+      is
+         select id,
+                name,
+                queue_table
+         from   cmn_queues
+         where  schema_name = b_schema_name;
+
+      cursor c_uqe
+      is
+         select *
+         from   user_queues;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      for r_que in c_que(i_schema_name)
+      loop
+         drop_queue( r_que.id );
+      end loop;
+
+      for r_uqe in c_uqe
+      loop
+         dbms_aqadm.stop_queue( queue_name      => r_uqe.name );
+         dbms_aqadm.drop_queue( queue_name       => r_uqe.name,
+                                auto_commit      => true
+                              );
+      end loop;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end drop_all_queues;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure drop_queue( i_queue_id in cmn_queues.id%type )
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.drop_queue';
+      l_queue_rec                   cmn_queues%rowtype;
+
+      cursor c_uqe( b_queue_name in varchar2 )
+      is
+         select *
+         from   user_queues
+         where  name = b_queue_name;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      if cmn_que_tapi_pck.que_select_row( i_que_id      => i_queue_id,
+                                          o_rt_que      => l_queue_rec
+                                        )
+      then
+         if l_queue_rec.schema_name = user
+         then
+            for r_uqe in c_uqe( l_queue_rec.name )
+            loop
+               if    trim( r_uqe.enqueue_enabled ) = 'YES'
+                  or trim( r_uqe.dequeue_enabled ) = 'YES'
+               then
+                  stop_queue( i_schema_name => l_queue_rec.schema_name
+                            , i_queue_name  => l_queue_rec.name
+                            );
+               end if;
+
+               dbms_aqadm.drop_queue( queue_name       => l_queue_rec.name,
+                                      auto_commit      => true
+                                    );
+            end loop;
+         end if;
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end drop_queue;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure purge_queue_table (i_subscriber_id in cmn_subscribers.id%type)
+   is
+      l_con_procedure   constant cmn_constant.st_proc_name
+                                    := g_con_package || '.purge_queue_table' ;
+      l_ssr_rec                  cmn_subscribers%rowtype;
+      l_que_rec                  cmn_queues%rowtype;
+      l_purge_options            dbms_aqadm.aq$_purge_options_t;
+   begin
+      
+      viu_module.enter_module (i_module => l_con_procedure);
+
+      
+      if cmn_ssr_tapi_pck.ssr_select_row (i_ssr_id   => i_subscriber_id,
+                                          o_rt_ssr   => l_ssr_rec)
+      then
+         if (cmn_que_tapi_pck.que_select_row (i_que_id   => l_ssr_rec.que_id,
+                                              o_rt_que   => l_que_rec))
+         then
+            l_purge_options.block := false;
+            dbms_aqadm.purge_queue_table (
+               queue_table       => l_que_rec.queue_table,
+               purge_condition   => '1 = 1',
+               purge_options     => l_purge_options);
+         end if;
+      end if;
+
+      
+      viu_module.leave_module (i_module => l_con_procedure);
+   
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module       => l_con_procedure,
+                                  i_debug_info   => sqlerrm);
+         viu_info.handle_info (i_calling_procedure => l_con_procedure);
+   end purge_queue_table;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_all_queue_tables ( i_schema_name in varchar2 default user)
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.create_all_queue_tables';
+
+      cursor c_qte_gettablespace
+      is
+         select tablespace_name
+         from   user_tables
+         where  table_name = 'CMN_QUEUES';
+
+      cursor c_qte(b_schema_name in varchar2)
+      is
+         select distinct ( queue_table ) queue_table
+         from            cmn_queues
+         where           upper( schema_name ) = upper(b_schema_name)
+         and             queue_table not in( select queue_table
+                                            from   user_queue_tables );
+                                            
+      l_tablespace_name varchar2(30);
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      open c_qte_gettablespace;
+      fetch c_qte_gettablespace into l_tablespace_name;
+
+      if c_qte_gettablespace%found
+      then
+         null;
+      else
+         l_tablespace_name := 'DYNAMIC';
+      end if;
+
+      close c_qte_gettablespace;
+
+      
+      for r_qte in c_qte(i_schema_name)
+      loop
+         dbms_aqadm.create_queue_table( queue_table             => upper( r_qte.queue_table ),
+                                        queue_payload_type      => 'SYS.XMLTYPE',
+                                        storage_clause=> 'TABLESPACE '|| l_tablespace_name,
+                                        multiple_consumers      => true,
+                                        compatible              => '10.2',
+                                        comment                 => 'Generated queue table by the Common module'
+                                      );
+      end loop;
+
+      viu_module.leave_module( i_module      => l_con_procedure );
+
+   exception
+      when others
+      then
+         if c_qte_gettablespace%isopen
+         then
+            close c_qte_gettablespace;
+         end if;
+         
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end create_all_queue_tables;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure drop_all_queue_tables( i_schema_name in varchar2 default user)
+   is
+      l_con_procedure      constant cmn_constant.st_proc_name := g_con_package || '.drop_all_queue_tables';
+
+      cursor c_qte ( b_schema_name in varchar2)
+      is
+         select distinct ( que.queue_table ) queue_table
+         from   cmn_queues que
+         ,      user_queue_tables qte
+         where  qte.queue_table = que.queue_table
+         and    que.schema_name = b_schema_name;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+
+      
+      for r_qte in c_qte(i_schema_name)
+      loop
+         dbms_aqadm.drop_queue_table( queue_table      => upper( r_qte.queue_table ),
+                                      force            => true,
+                                      auto_commit      => true
+                                    );
+      end loop;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure,
+                                  i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure );
+   end drop_all_queue_tables;
+end cmn_queue;
+/

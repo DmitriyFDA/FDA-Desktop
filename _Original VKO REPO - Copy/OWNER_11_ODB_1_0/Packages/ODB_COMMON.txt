@@ -1,0 +1,639 @@
+create or replace PACKAGE odb_common
+IS
+   FUNCTION get_my_systimestamp RETURN TIMESTAMP WITH TIME ZONE;
+
+   FUNCTION get_my_sysdate RETURN DATE;
+   
+   PROCEDURE set_offset (i_offset IN INTERVAL DAY TO SECOND);
+   
+   PROCEDURE set_offset_days (i_offset_day IN NUMBER);
+   
+   PROCEDURE set_offset_hours (i_offset_hours IN NUMBER);
+
+   PROCEDURE set_offset_minutes (i_offset_minutes IN NUMBER);
+
+   PROCEDURE set_offset_seconds (i_offset_seconds IN NUMBER);
+
+   PROCEDURE set_fixed_timestamp (i_timestamp IN TIMESTAMP);
+
+   PROCEDURE set_fixed_date (i_date IN DATE);
+
+   PROCEDURE reset_fixed_timestamp;
+
+   PROCEDURE reset_fixed_date;
+
+   PROCEDURE reset_offset;
+
+   PROCEDURE reset_all;
+
+   FUNCTION get_offset RETURN INTERVAL DAY TO SECOND DETERMINISTIC;
+
+   FUNCTION get_fixed_timestamp RETURN TIMESTAMP WITH TIME ZONE DETERMINISTIC;
+   
+   PROCEDURE store_offset_parameter;
+   
+   PROCEDURE retrieve_offset_parameter;
+
+   PROCEDURE truncate_table (table_name IN VARCHAR2);
+    
+   PROCEDURE enable_foreign_keys;
+   
+   PROCEDURE disable_foreign_keys_to_table (fk_table_name IN VARCHAR2);
+
+END odb_common;
+/
+
+
+
+PACKAGE BODY odb_common
+IS
+   
+
+
+
+
+ 
+   C_MY_SYSDATE_OFFSET_OR_FIX CONSTANT JEECMN_PARAMETERS.NAME%TYPE
+                                := 'MY_SYSDATE_OFFSET_OR_FIX';
+   C_FIXED_PREFIX             CONSTANT VARCHAR2(10) := 'FIXED:';
+   C_OFFSET_PREFIX            CONSTANT VARCHAR2(10) := 'OFFSET:';
+   C_FIXED_TIMESTAP_FORMAT    CONSTANT VARCHAR2(30) := 'DD-MM-YYYY HH24:MI:SS.FF';
+   G_OFFSET                   INTERVAL DAY(2) TO SECOND (4);
+   G_FIXED_TIMESTAMP          TIMESTAMP(6) WITH TIME ZONE;  
+
+   
+
+
+
+
+
+
+
+
+
+   FUNCTION CNVRT_OFFSET_FIX_TO_PRM_VALUE
+   RETURN JEECMN_PARAMETERS.NAME%TYPE
+   IS
+     L_RETURN_VALUE JEECMN_PARAMETERS.NAME%TYPE;
+   BEGIN
+      IF     G_FIXED_TIMESTAMP IS NULL AND G_OFFSET IS NULL
+      THEN
+        L_RETURN_VALUE := NULL;
+      ELSIF G_FIXED_TIMESTAMP IS NOT NULL AND G_OFFSET IS NULL
+      THEN
+        L_RETURN_VALUE := C_FIXED_PREFIX||TO_CHAR(G_FIXED_TIMESTAMP, C_FIXED_TIMESTAP_FORMAT);
+      ELSIF G_FIXED_TIMESTAMP IS NULL AND G_OFFSET IS NOT NULL
+      THEN
+        L_RETURN_VALUE := C_OFFSET_PREFIX||TO_CHAR(G_OFFSET);
+      END IF;
+      RETURN L_RETURN_VALUE;
+   END CNVRT_OFFSET_FIX_TO_PRM_VALUE;
+   
+   
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE CNVRT_PRM_VALUE_TO_OFFSET_FIX (I_PARAM_VALUE IN JEECMN_PARAMETERS.VALUE%TYPE)
+   IS
+      L_PARAM_VALUE              JEECMN_PARAMETERS.VALUE%TYPE := I_PARAM_VALUE;
+      L_OFFSET                   INTERVAL DAY(2) TO SECOND (4);
+      L_FIXED_TIMESTAMP          TIMESTAMP;
+   BEGIN
+      DBMS_OUTPUT.PUT_LINE ('--> convert 1');
+      IF INSTR(L_PARAM_VALUE, C_FIXED_PREFIX) > 0
+      THEN
+         L_PARAM_VALUE := REPLACE(L_PARAM_VALUE, C_FIXED_PREFIX);
+         L_FIXED_TIMESTAMP := TO_TIMESTAMP(L_PARAM_VALUE, C_FIXED_TIMESTAP_FORMAT);
+		      DBMS_OUTPUT.PUT_LINE ('--> convert 2 setting fixed timestamp : ' || L_FIXED_TIMESTAMP);
+         SET_FIXED_TIMESTAMP(L_FIXED_TIMESTAMP);
+      ELSIF INSTR(L_PARAM_VALUE, C_OFFSET_PREFIX) > 0
+      THEN
+		      DBMS_OUTPUT.PUT_LINE ('--> convert 3 NOT setting fixed timestamp : ');
+
+
+         L_PARAM_VALUE := REPLACE(L_PARAM_VALUE, C_OFFSET_PREFIX);
+         L_OFFSET := L_PARAM_VALUE;
+         SET_OFFSET(L_OFFSET);
+      END IF;
+   END CNVRT_PRM_VALUE_TO_OFFSET_FIX;
+   
+   
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE STORE_OFFSET_PARAMETER
+   IS
+     PRAGMA AUTONOMOUS_TRANSACTION;
+     L_VALUE JEECMN_PARAMETERS.VALUE%TYPE;
+   BEGIN
+     L_VALUE := CNVRT_OFFSET_FIX_TO_PRM_VALUE;
+     IF L_VALUE IS NOT NULL
+     THEN
+         BEGIN
+             INSERT INTO JEECMN_PARAMETERS
+             (ID
+             ,NAME
+             ,DESCRIPTION
+             ,VALUE
+             ,TYPE)
+             VALUES
+             (JEECMN_PTR_SEQ1.NEXTVAL
+             ,C_MY_SYSDATE_OFFSET_OR_FIX
+             ,'Fixed date/timestamp (FIXED:) or offset (OFFSET:) as parameter for my_sysdate / my_systimestap'
+             ,L_VALUE
+             ,'STRING');
+          EXCEPTION
+            
+            WHEN DUP_VAL_ON_INDEX
+            THEN
+              UPDATE JEECMN_PARAMETERS PRM
+              SET    PRM.VALUE = L_VALUE
+              WHERE  PRM.NAME = C_MY_SYSDATE_OFFSET_OR_FIX;
+            WHEN OTHERS
+            THEN
+               RAISE;
+          END;
+      ELSE
+        
+        DELETE JEECMN_PARAMETERS PRM
+        WHERE  PRM.NAME = C_MY_SYSDATE_OFFSET_OR_FIX;
+      END IF;
+      
+      COMMIT;
+   END STORE_OFFSET_PARAMETER;
+   
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE RETRIEVE_OFFSET_PARAMETER
+   IS
+     L_PARAM_VALUE JEECMN_PARAMETERS.VALUE%TYPE;
+   BEGIN
+      SELECT VALUE
+      INTO   L_PARAM_VALUE
+      FROM   JEECMN_PARAMETERS
+      WHERE  NAME = C_MY_SYSDATE_OFFSET_OR_FIX;
+      
+      CNVRT_PRM_VALUE_TO_OFFSET_FIX(L_PARAM_VALUE);
+   EXCEPTION
+     WHEN NO_DATA_FOUND
+     THEN
+        RESET_ALL;
+     WHEN OTHERS
+     THEN
+        RAISE;
+   END RETRIEVE_OFFSET_PARAMETER;
+
+   
+
+
+
+
+
+
+
+
+
+   FUNCTION GET_DSINTERVAL_STRING
+     (I_DAYS IN NUMBER, I_HOURS IN NUMBER, I_MINUTES IN NUMBER
+     ,I_SECONDS IN NUMBER, I_FRACTIONS IN NUMBER)
+   RETURN VARCHAR2
+   IS
+     C_DSINTERVAL_FORMAT CONSTANT VARCHAR2(20) := 'DD HH:MI:SS';
+     L_RETURN_VALUE VARCHAR2(20) := C_DSINTERVAL_FORMAT;
+   BEGIN
+     L_RETURN_VALUE := REPLACE(L_RETURN_VALUE, 'DD',  LPAD(I_DAYS, 3));
+     L_RETURN_VALUE := REPLACE(L_RETURN_VALUE, 'HH',   LPAD(I_HOURS, 2));
+     L_RETURN_VALUE := REPLACE(L_RETURN_VALUE, 'MI',   LPAD(I_MINUTES, 2));
+     L_RETURN_VALUE := REPLACE(L_RETURN_VALUE, 'SS',   LPAD(I_SECONDS, 2));
+     RETURN L_RETURN_VALUE;
+   END GET_DSINTERVAL_STRING;
+
+   
+
+
+
+
+
+
+
+
+
+   FUNCTION GET_MY_SYSTIMESTAMP
+   RETURN TIMESTAMP WITH TIME ZONE
+   AS
+      L_RETURN_VALUE TIMESTAMP WITH TIME ZONE;
+   BEGIN
+      IF  (G_FIXED_TIMESTAMP IS NULL
+           AND
+           G_OFFSET IS NULL) THEN
+        L_RETURN_VALUE := SYSTIMESTAMP;
+      ELSIF (G_FIXED_TIMESTAMP IS NOT NULL
+             AND
+             G_OFFSET IS NULL) THEN
+        L_RETURN_VALUE := G_FIXED_TIMESTAMP;
+      ELSIF (G_FIXED_TIMESTAMP IS NULL
+             AND G_OFFSET IS NOT NULL) THEN
+        L_RETURN_VALUE := SYSTIMESTAMP + G_OFFSET;
+      ELSE
+         RAISE_APPLICATION_ERROR (-20000, 'Not allowed: g_fixed_timestamp and g_offset both NOT NULL');
+      END IF;
+      
+      RETURN L_RETURN_VALUE;
+   END GET_MY_SYSTIMESTAMP;
+
+   
+
+
+
+
+
+
+
+
+
+   FUNCTION GET_MY_SYSDATE
+   RETURN DATE
+   AS
+      L_RETURN_VALUE DATE;
+   BEGIN
+      L_RETURN_VALUE := CAST(GET_MY_SYSTIMESTAMP AS DATE);
+      RETURN L_RETURN_VALUE;
+   END GET_MY_SYSDATE;
+  
+    
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE SET_FIXED_TIMESTAMP (I_TIMESTAMP IN TIMESTAMP)
+   IS
+   BEGIN
+     RESET_OFFSET;
+     G_FIXED_TIMESTAMP := FROM_TZ(I_TIMESTAMP, 'UTC');
+   END SET_FIXED_TIMESTAMP;
+
+   
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE SET_FIXED_DATE (I_DATE IN DATE)
+   IS
+   BEGIN
+      SET_FIXED_TIMESTAMP(CAST(I_DATE AS TIMESTAMP));
+   END SET_FIXED_DATE;
+
+
+   
+
+
+
+
+
+
+
+
+
+   FUNCTION GET_OFFSET
+   RETURN INTERVAL DAY TO SECOND
+   DETERMINISTIC
+   AS
+     L_RETURN_VALUE INTERVAL DAY TO SECOND;
+   BEGIN
+     RETURN G_OFFSET;
+   END GET_OFFSET;
+
+   FUNCTION GET_FIXED_TIMESTAMP
+   RETURN TIMESTAMP WITH TIME ZONE
+   DETERMINISTIC
+   AS
+   BEGIN
+     RETURN G_FIXED_TIMESTAMP;
+   END GET_FIXED_TIMESTAMP;
+
+
+   
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE SET_OFFSET (I_OFFSET IN INTERVAL DAY TO SECOND)
+   AS
+   BEGIN
+     RESET_FIXED_TIMESTAMP;
+     G_OFFSET := I_OFFSET;
+   END SET_OFFSET;
+
+   
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE SET_OFFSET_DAYS (I_OFFSET_DAY IN NUMBER)
+   AS
+     L_INTERVAL_STRING   VARCHAR2 (20);
+   BEGIN
+     L_INTERVAL_STRING :=
+     GET_DSINTERVAL_STRING (I_DAYS        => I_OFFSET_DAY,
+                              I_HOURS       => 0,
+                              I_MINUTES     => 0,
+                              I_SECONDS     => 0,
+                              I_FRACTIONS   => 0);
+     SET_OFFSET(TO_DSINTERVAL (L_INTERVAL_STRING));
+   END SET_OFFSET_DAYS;
+   
+   
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE SET_OFFSET_HOURS (I_OFFSET_HOURS IN NUMBER)
+   AS
+     L_INTERVAL_STRING   VARCHAR2 (20);
+   BEGIN
+     L_INTERVAL_STRING :=
+     GET_DSINTERVAL_STRING (I_DAYS        => 0,
+                              I_HOURS       => I_OFFSET_HOURS,
+                              I_MINUTES     => 0,
+                              I_SECONDS     => 0,
+                              I_FRACTIONS   => 0);
+     SET_OFFSET(TO_DSINTERVAL (L_INTERVAL_STRING));
+   END SET_OFFSET_HOURS;
+
+   
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE SET_OFFSET_MINUTES (I_OFFSET_MINUTES IN NUMBER)
+   AS
+     L_INTERVAL_STRING   VARCHAR2 (20);
+   BEGIN
+     L_INTERVAL_STRING :=
+     GET_DSINTERVAL_STRING (I_DAYS        => 0,
+                              I_HOURS       => 0,
+                              I_MINUTES     => I_OFFSET_MINUTES,
+                              I_SECONDS     => 0,
+                              I_FRACTIONS   => 0);
+     SET_OFFSET(TO_DSINTERVAL (L_INTERVAL_STRING));
+   END SET_OFFSET_MINUTES;
+
+   
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE SET_OFFSET_SECONDS (I_OFFSET_SECONDS IN NUMBER)
+   AS
+     L_INTERVAL_STRING   VARCHAR2 (20);
+   BEGIN
+     L_INTERVAL_STRING :=
+     GET_DSINTERVAL_STRING (I_DAYS        => 0,
+                              I_HOURS       => 0,
+                              I_MINUTES     => 0,
+                              I_SECONDS     => I_OFFSET_SECONDS,
+                              I_FRACTIONS   => 0);
+     SET_OFFSET(TO_DSINTERVAL (L_INTERVAL_STRING));
+   END SET_OFFSET_SECONDS;
+
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE RESET_OFFSET
+   AS
+   BEGIN
+     G_OFFSET := NULL;
+   END RESET_OFFSET;
+
+    
+
+
+
+
+
+
+
+
+
+   PROCEDURE RESET_FIXED_TIMESTAMP
+   IS
+   BEGIN
+     G_FIXED_TIMESTAMP := NULL;
+   END RESET_FIXED_TIMESTAMP;
+
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE RESET_FIXED_DATE
+   IS
+   BEGIN
+     RESET_FIXED_TIMESTAMP;
+   END RESET_FIXED_DATE;
+
+  
+
+
+
+
+
+
+
+
+
+   PROCEDURE RESET_ALL
+   AS
+   BEGIN
+     RESET_FIXED_TIMESTAMP;
+     RESET_OFFSET;
+   END RESET_ALL;
+
+   
+
+
+
+
+
+
+
+
+
+   FUNCTION GET_INFO
+   RETURN VARCHAR
+   AS
+      L_RETURN_VALUE     VARCHAR(2000);
+      C_DATE_FORMAT      CONSTANT VARCHAR2(30) := 'DD-MM-YYYY HH24:MI:SS';
+      C_TIMESTAMP_FORMAT CONSTANT VARCHAR2(30) := C_DATE_FORMAT||'.FF';
+   BEGIN
+      L_RETURN_VALUE :=
+      CHR(10)||'-----------------'||CHR(10)||
+      'actual SYSDATE: ' ||TO_CHAR(SYSDATE, C_DATE_FORMAT)||CHR(10)||
+      'actual SYSTIMESTAMP: ' ||TO_CHAR(SYSTIMESTAMP, C_TIMESTAMP_FORMAT)||CHR(10)||
+      'get_offset(): '||GET_OFFSET()||CHR(10)||
+      'get_sysdate: ' ||TO_CHAR(GET_MY_SYSDATE(), C_DATE_FORMAT)||CHR(10)||
+      'get_systimestamp(): ' ||TO_CHAR(GET_MY_SYSTIMESTAMP(), C_TIMESTAMP_FORMAT)||CHR(10)||
+      '-----------------';
+      RETURN L_RETURN_VALUE;
+   END GET_INFO;
+   
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE INIT
+   IS
+   BEGIN
+      RETRIEVE_OFFSET_PARAMETER;
+   END INIT;
+   
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE TRUNCATE_TABLE (TABLE_NAME IN VARCHAR2)
+   IS
+     PRAGMA AUTONOMOUS_TRANSACTION;
+   BEGIN
+     EXECUTE IMMEDIATE 'truncate table ' || TABLE_NAME;
+   END TRUNCATE_TABLE;
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE DISABLE_FOREIGN_KEYS_TO_TABLE (FK_TABLE_NAME IN VARCHAR2)
+   IS
+     PRAGMA AUTONOMOUS_TRANSACTION;
+   BEGIN
+     FOR I IN (SELECT C1.TABLE_NAME SOURCE_TABLE, FK_TABLE_NAME AS TARGET_TABLE, C1.CONSTRAINT_NAME, C1.STATUS
+       FROM ALL_CONSTRAINTS C1
+       WHERE C1.CONSTRAINT_TYPE = 'R' AND C1.R_CONSTRAINT_NAME IN
+       (
+         SELECT C2.CONSTRAINT_NAME FROM ALL_CONSTRAINTS C2
+         WHERE C2.CONSTRAINT_TYPE IN ('P', 'U')
+         AND C2.TABLE_NAME = FK_TABLE_NAME
+       ))
+       LOOP
+         EXECUTE IMMEDIATE 'alter table ' || I.SOURCE_TABLE || ' disable constraint ' || I.CONSTRAINT_NAME;
+       END LOOP I;
+   END DISABLE_FOREIGN_KEYS_TO_TABLE;
+   
+
+
+
+
+
+
+
+
+
+   PROCEDURE ENABLE_FOREIGN_KEYS
+   IS
+     PRAGMA AUTONOMOUS_TRANSACTION;
+   BEGIN
+     FOR I IN (SELECT TABLE_NAME, CONSTRAINT_NAME
+       FROM USER_CONSTRAINTS
+       WHERE CONSTRAINT_TYPE ='R'
+       AND STATUS = 'DISABLED')
+       LOOP
+        EXECUTE IMMEDIATE 'alter table ' || I.TABLE_NAME || ' enable constraint ' || I.CONSTRAINT_NAME;
+       END LOOP I;
+   END ENABLE_FOREIGN_KEYS;
+BEGIN
+  INIT;
+END ODB_COMMON;
+/

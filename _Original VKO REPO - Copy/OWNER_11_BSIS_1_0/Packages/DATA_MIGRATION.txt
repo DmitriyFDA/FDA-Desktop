@@ -1,0 +1,843 @@
+create or replace PACKAGE data_migration
+AUTHID DEFINER
+AS
+  type conftable is record ( tName varchar2(30)
+                           , tOption varchar2(30)
+                           , isOK boolean
+                           , hasLOB boolean
+                           , hasLONG boolean
+                           , csvSrcCols varchar2(8000)  -- max = 255 * 31 = 7905
+                           , csvTgtCOLS varchar2(8000)
+                           , csvCmnCOLS varchar2(8000)
+                           , COLcount number
+                           , csvPK varchar2(500)
+                           , aliasedWhereAccPK varchar2(2000)
+                           , aliasedSet varchar2(8000)
+                           );
+  g_max_tables CONSTANT number := 1000;
+  -- a varray cannot be declared with a constant
+  -- so g_max_tables and the conf_table varray size must always be the same..
+  type conf_tables is varray(1000) of conftable;
+  
+  type confsequence is record ( sName varchar2(30)
+                              , sValue number );
+
+  type conf_sequences is varray(1000) of confsequence;
+  
+  PROCEDURE logit(severity integer, msg in varchar2);
+
+  FUNCTION ACL_state(i_id_cust IN VARCHAR2) RETURN varchar2;
+
+  FUNCTION switch_TRGs(p_tablename in varchar2, p_enable_disable in varchar2) return boolean;
+
+  FUNCTION switch_FKs(p_tablename in varchar2, p_enable_disable in varchar2) return boolean;
+
+  FUNCTION retrieve_tabinfo(p_tablename in varchar2, p_option in varchar2) return conftable;
+
+  PROCEDURE check_PreRequisites(o_lnk_count out number, o_seq_count out number, o_tab_count out number);
+
+  FUNCTION delete_statement(migrate_table conftable) return varchar2;
+
+  PROCEDURE migrate; -- PRE: TempDBLink exists, Table and Sequence lists exist
+
+END data_migration;
+/
+
+
+
+
+package body data_migration is
+
+  g_table_errors number := 0;
+  global_msg_no number := 0;
+  g_use_dblink varchar2(1) := 'Y';
+  g_mig_prefix varchar2(2000) :='';
+  g_mig_suffix varchar2(2000) :='';
+  g_source_user data_migration_source.user_source%type;
+
+procedure logit ( severity integer, msg in varchar2 ) is
+begin
+  
+  global_msg_no := global_msg_no + 1;
+  insert into data_migration_log ( id
+                                 , ts
+                                 , severity, message
+                                 )
+  values                         ( global_msg_no
+                                 , cmn_common.default_timestamp 
+                                 , severity
+                                 , substr(msg,1,2000)
+                                 );
+  commit;
+end logit;
+
+procedure create_dblink is
+  l_stm varchar2(2000);
+  l_user_source varchar2(2000);
+  l_password_source varchar2(2000);
+  l_address varchar2(2000);
+  l_port varchar2(2000);
+  l_sid varchar2(2000);
+  l_count number;
+begin
+  begin
+    select count(*) into l_count from data_migration_source;
+  exception when others then
+    logit(1, 'Error: Could not read database credentials: '||sqlerrm);
+  end;
+
+  begin
+    l_stm := 'drop DATABASE LINK tempdblink';
+    logit(4, l_stm);
+    execute immediate l_stm;
+  exception when others then
+    logit(3, 'Info: '||l_stm||' failed: '||sqlerrm);
+	end;
+
+  if l_count = 1 then
+    select dms.user_source,
+           dms.password_source,
+           dms.address,
+           dms.port,
+           dms.sid
+    into   l_user_source,
+           l_password_source,
+           l_address,
+           l_port,
+           l_sid
+    from   data_migration_source dms;
+
+	  begin
+      l_stm := 'CREATE DATABASE LINK tempdblink CONNECT TO ' || l_user_source || ' IDENTIFIED BY '|| l_password_source || ' USING ''(description=(address=(protocol=TCP)(host=' || l_address || ')(port='|| l_port ||'))(connect_data=(sid='|| l_sid ||')))''';
+      logit(4, l_stm);
+      execute immediate l_stm;
+    exception when others then
+      logit(1, 'Error: '||l_stm||' failed: '||sqlerrm);
+    end;
+  else
+    logit(2, 'Warning: None or multiple database credentials are present in table data_migration_source');
+  end if;
+end create_dblink;
+
+function acl_state ( i_id_cust in varchar2 ) return varchar2 is
+  
+  l_state varchar2(50) := '';
+  l_error number := 0;
+  l_main_app varchar2(100) := '';
+begin
+  begin
+    l_state := lower(acl_application_control.select_status(i_id_cust));
+  exception when others then
+    l_error := sqlcode;
+    if l_error = -20147 then
+      l_state := 'non-app';
+    else
+      l_state := 'ORA'||to_char(l_error);
+    end if;
+  end;
+  if l_state = 'started' then
+    begin
+      select ael.id_cust
+      into   l_main_app
+      from   acl_application_elements ael
+      where  ael.aet_type = 'SWH';
+      
+      if lower(acl_application_control.select_status(l_main_app)) != 'started' then
+        
+        l_state := 'started!';
+      end if;
+    exception when others then
+      l_state := 'ORA'||to_char(l_error);
+    end;
+  end if;
+  return l_state;
+end acl_state;
+
+function switch_fks ( p_tablename in varchar2, p_enable_disable in varchar2 ) return boolean is
+  l_msg varchar2(2000);
+  l_stm varchar2(2000);
+  l_enable_disable varchar2(20) := upper(trim(p_enable_disable));
+  l_ok boolean := true;
+  
+  cursor c_fks is select uct.owner
+                  ,      uct.table_name
+                  ,      uct.constraint_name
+                  from   user_constraints      uct
+                  where  uct.constraint_type   ='R'
+                  and    uct.r_constraint_name in ( select uc2.constraint_name
+                                                    from   user_constraints    uc2
+                                                    where  uc2.constraint_type in ('P','U')
+                                                    and    uc2.table_name      = p_tablename
+                                                  );
+begin
+  if l_enable_disable in ('ENABLE', 'DISABLE') then
+    for c_rec in c_fks loop
+   begin
+        l_stm := 'ALTER TABLE '||c_rec.owner||'.'||c_rec.table_name
+           ||' '||l_enable_disable||' CONSTRAINT '||c_rec.constraint_name;
+        logit(4, l_stm);
+        execute immediate l_stm;
+      exception
+        when others then
+          l_msg := substr(l_stm||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,2000);
+          logit(1, l_msg);
+          l_ok := false;
+      end;
+    end loop;
+  else
+    l_msg := 'Parameter '||p_enable_disable||' is incorrect. Must be ENABLE or DISABLE.';
+    logit(1, l_msg);
+    l_ok := false;
+  end if;
+  return l_ok;
+end switch_fks;
+
+function switch_trgs ( p_tablename in varchar2, p_enable_disable in varchar2 ) return boolean is
+  l_msg varchar2(8000);
+  l_stm varchar2(2000);
+  l_enable_disable varchar2(20) := upper(trim(p_enable_disable));
+  l_ok boolean := true;
+  cursor c_trgs is select utr.trigger_name
+                   from   user_triggers  utr
+                   where  utr.table_name = p_tablename;
+begin
+  if l_enable_disable in ('ENABLE', 'DISABLE') then
+    for c_rec in c_trgs loop
+   begin
+        l_stm := 'ALTER TRIGGER '||c_rec.trigger_name||' '||l_enable_disable;
+        logit(4, l_stm);
+        execute immediate l_stm;
+      exception
+        when others then
+          l_msg := substr(l_stm||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,2000);
+          logit(1, l_msg);
+          l_ok := false;
+      end;
+    end loop;
+  else
+    l_msg := 'Parameter '||p_enable_disable||' is incorrect. Must be ENABLE or DISABLE.';
+    logit(1, l_msg);
+    l_ok := false;
+  end if;
+  return l_ok;
+end switch_trgs;
+
+function retrieve_tabinfo ( p_tablename in varchar2, p_option in varchar2 ) return conftable is
+  l_msg varchar2(8000);
+  l_index integer;
+  l_sep varchar2(10) := '';
+  l_sep2 varchar2(10) := '';
+  l_sepand varchar2(10) := '';
+  l_table conftable;
+  
+  cursor c_tgtcols is select utc.column_name
+                      ,      utc.data_type
+                      ,      utc.nullable
+                      from   user_tab_columns utc
+                      where  utc.table_name   = upper(p_tablename)
+                      order by utc.column_id;
+  
+  
+  
+  
+  
+  type cur_typ is ref cursor;
+  c_srccols cur_typ;
+  l_col_name varchar2(30);
+  
+  cursor c_pks is select cols.column_name
+                  ,      cols.position
+                  ,      cons.status
+                  from   user_constraints     cons
+                  ,      user_cons_columns    cols
+                  where  cons.constraint_type = 'P'
+                  and    cons.constraint_name = cols.constraint_name
+                  and    cols.table_name      = upper(p_tablename)
+                  order by cols.position;
+  
+  cursor c_uks is select cols.column_name
+                  ,      cols.position
+                  ,      cons.status
+                  from   user_constraints     cons
+                  ,      user_cons_columns    cols
+                  where  cons.constraint_type = 'U'
+                  and    cons.constraint_name = cols.constraint_name
+                  and    cons.constraint_name in ( select distinct x.constraint_name
+                                                   from   user_cons_columns x
+                                                   where  x.table_name      = cols.table_name
+                                                   and    rownum            = 1
+                                                 )
+                  and    cols.table_name      = upper(p_tablename)
+                  order by cols.position;
+  
+  cursor c_tgtsetcols is select utc.column_name
+                         ,      utc.data_type
+                         ,      utc.nullable
+                         from   user_tab_columns utc
+                         where  utc.table_name   = upper(p_tablename)
+                         and    utc.column_name  not in ( select cols.column_name
+                                                          from   user_constraints     cons
+                                                          ,      user_cons_columns    cols
+                                                          where  cons.constraint_type = 'P'
+                                                          and    cons.constraint_name = cols.constraint_name
+                                                          and    cols.table_name      = upper(p_tablename)
+                                                        )
+                         order by utc.column_id;
+
+begin
+  begin
+    
+
+
+    l_table.tname             := p_tablename;
+    l_table.toption           := p_option;
+    l_table.isok              := true;
+    l_table.haslob            := false;
+    l_table.haslong           := false;
+    l_table.csvsrccols        := '';
+    l_table.csvtgtcols        := '';
+    l_table.csvcmncols        := '';
+    l_table.colcount          := 0;
+    l_table.csvpk             := '';
+    l_table.aliasedwhereaccpk := '';
+    l_table.aliasedset        := '';
+    
+
+
+    l_sep := '';
+    l_sepand := '';
+    for pk_rec in c_pks loop
+      if pk_rec.status != 'ENABLED' then
+        l_msg := 'WARNING: Table '||p_tablename||', primary key on column '||pk_rec.column_name||' is not enabled.';
+        logit(2, l_msg);
+      end if;
+      l_table.csvpk := l_table.csvpk||l_sep||pk_rec.column_name;
+      l_sep := ',';
+      l_table.aliasedwhereaccpk := l_table.aliasedwhereaccpk||l_sepand||'s.'||pk_rec.column_name||'=t.'||pk_rec.column_name;
+      l_sepand := ' AND ';
+    end loop;
+    
+    if l_table.csvpk is null then
+      l_sep := '';
+      l_sepand := '';
+      for pk_rec in c_uks loop
+        if pk_rec.status != 'ENABLED' then
+          l_msg := 'WARNING: Table '||p_tablename||', unique key on column '||pk_rec.column_name||' is not enabled.';
+          logit(2, l_msg);
+        end if;
+        l_table.csvpk := l_table.csvpk||l_sep||pk_rec.column_name;
+        l_sep := ',';
+        l_table.aliasedwhereaccpk := l_table.aliasedwhereaccpk||l_sepand||'s.'||pk_rec.column_name||'=t.'||pk_rec.column_name;
+        l_sepand := ' AND ';
+      end loop;
+    end if;
+    if l_table.csvpk is null and p_option <> 'REPLACE' then
+      l_msg := 'For option '||p_option||' a Primary Key must be present. Table '||p_tablename||' has no PK.';
+      logit(1, l_msg);
+      l_table.isok := false;
+    end if;
+    
+
+
+    l_sep := '';
+    l_sep2 := '';
+    for c_rec in c_tgtcols loop
+      if c_rec.data_type in ('LOB', 'CLOB', 'BLOB') then
+        l_table.haslob := true;
+      end if;
+      if c_rec.data_type = 'LONG' then
+        l_table.haslong := true;
+      end if;
+      l_table.csvtgtcols := l_table.csvtgtcols||l_sep||c_rec.column_name;
+      l_sep := ',';
+      l_table.colcount := l_table.colcount + 1;
+      if instr(','||l_table.csvpk||',', ','||c_rec.column_name||',') <= 0 then
+        l_table.aliasedset := l_table.aliasedset||l_sep2||'t.'||c_rec.column_name||'=s.'||c_rec.column_name;
+        l_sep2 := chr(10)||',';
+      end if;
+    end loop;
+
+    if l_table.colcount <= 0 then
+      l_msg := 'ERROR: Table '||p_tablename||' not found.';
+      logit(1, l_msg);
+      l_table.isok := false;
+    end if;
+    
+
+
+
+    l_sep := '';
+    l_sep2 := '';
+    if l_table.isok then
+      if ( g_use_dblink = 'N' ) then
+        open c_srccols for 'SELECT column_name from all_tab_columns where table_name = '''||upper(p_tablename)||''''
+             || ' and owner = '''||g_source_user||''''
+             || ' order by column_id';
+        loop
+          fetch c_srccols into l_col_name;
+          exit when c_srccols%notfound;
+          l_table.csvsrccols := l_table.csvsrccols||l_sep||trim(l_col_name);
+          l_sep := ',';
+          
+          if instr ( l_table.csvtgtcols, trim(l_col_name) ) > 0 then
+            l_table.csvcmncols := l_table.csvcmncols||l_sep2||trim(l_col_name);
+            l_sep2 := ',';
+          end if;
+        end loop;
+        close c_srccols;
+      else
+        open c_srccols for 'SELECT column_name from user_tab_columns@tempdblink where table_name = '''
+             ||upper(p_tablename)||''' order by column_id';
+        loop
+          fetch c_srccols into l_col_name;
+          exit when c_srccols%notfound;
+          l_table.csvsrccols := l_table.csvsrccols||l_sep||trim(l_col_name);
+          l_sep := ',';
+          
+          if instr ( l_table.csvtgtcols, trim(l_col_name) ) > 0 then
+            l_table.csvcmncols := l_table.csvcmncols||l_sep2||trim(l_col_name);
+            l_sep2 := ',';
+          end if;
+        end loop;
+        close c_srccols;
+      end if;
+
+      if not trim(l_table.csvsrccols) = trim(l_table.csvtgtcols) then
+        l_msg := 'Structure of source and target table '||p_tablename||' differ, migration will be based on common columns only.';
+        
+        
+        logit(3, l_msg);
+        
+      end if;
+    end if;
+    
+
+
+    if l_table.isok then
+      if l_table.haslong then
+        l_msg := 'Table '||p_tablename||' has a LONG column. Data Migration not possible.';
+        logit(1, l_msg);
+        l_table.isok := false;
+      end if;
+      if l_table.haslob and l_table.toption != 'REPLACE' then
+        l_msg := 'Table '||p_tablename||' has a LOB column. Data Migration only possible with option REPLACE.';
+        logit(1, l_msg);
+        l_table.isok := false;
+      end if;
+    end if;
+
+  exception
+    when others then
+      l_msg := substr(sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,2000);
+      logit(1, l_msg);
+      l_table.isok := false;
+  end;
+  return l_table;
+end retrieve_tabinfo;
+
+procedure check_prerequisites ( o_lnk_count out number, o_seq_count out number, o_tab_count out number ) is
+  l_count number := 0;
+  l_stm varchar2(2000) := '';
+begin
+  o_lnk_count := 0;
+  o_seq_count := 0;
+  o_tab_count := 0;
+
+  if ( g_use_dblink = 'Y' )
+  then
+    
+    begin
+      select count(*) into o_lnk_count from user_db_links where db_link = 'TEMPDBLINK' or db_link like 'TEMPDBLINK.%'; 
+
+    exception when others then
+      logit(1, 'Error: Bad TempDBLink: '||sqlerrm);
+      o_lnk_count := -1;
+    end;
+
+    
+    begin
+      l_stm := 'SELECT COUNT(*) FROM USER_TABLES@TEMPDBLINK';
+      execute immediate l_stm into l_count;
+    exception when others then
+      logit(1, 'Error:  Non viable TempDBLink: '||sqlerrm);
+      o_lnk_count := -2;
+    end;
+  end if;
+
+  
+  begin
+    l_stm := 'select count(*) from ACL_APPLICATION_ELEMENTS where upper(data_migration.ACL_state(ID_CUST)) = ''STARTED''';
+    execute immediate l_stm into l_count;
+  exception when others then
+    logit(1, 'Error:  Determining Application Element activity : '||sqlerrm);
+    o_lnk_count := -3;
+    l_count := -1;
+  end;
+  if l_count > 0 then
+    logit(1, 'Error:  There are still '||to_char(l_count)||' Application Elements active. They must be stopped during Data Migration.');
+    o_lnk_count := -4;
+  end if;
+
+  
+  begin
+    select count(*) into o_seq_count from data_migration_sequence_list;
+  exception when others then
+    logit(1, 'Error in DATA_MIGRATION_SEQUENCE_LIST: '||sqlerrm);
+    o_seq_count := -1;
+  end;
+
+  
+  begin
+    select count(*) into o_tab_count from data_migration_table_list;
+  exception when others then
+    logit(1, 'Error in DATA_MIGRATION_TABLE_LIST: '||sqlerrm);
+    o_tab_count := -1;
+  end;
+end check_prerequisites;
+
+function row_count(p_tabname in varchar2) return number is
+  l_stm varchar2(2000) := '';
+  l_num number;
+begin
+  begin
+    l_stm := 'select count(*) from '||p_tabname;
+    execute immediate l_stm into l_num;
+  exception when others then
+    logit(1, l_stm||': '||sqlerrm);
+    l_num := -1;
+  end;
+  return l_num;
+end row_count;
+
+procedure post_summarize_table ( p_tabname in varchar2 ) is
+  l_num number;
+begin
+  l_num := row_count(p_tabname);
+  logit(3, 'Target table '||p_tabname||' now has '||to_char(l_num)||' rows.');
+end post_summarize_table;
+
+procedure pre_summarize_table ( p_tabname in varchar2 ) is
+  l_num_src number;
+  l_num_tgt number;
+begin
+  l_num_tgt := row_count(p_tabname);
+  l_num_src := row_count(g_mig_prefix||p_tabname||g_mig_suffix);
+  logit(3, 'Table: '||p_tabname||'. Source table size: '||to_char(l_num_src)||'. Target table size: '||to_char(l_num_tgt)||'.');
+end pre_summarize_table;
+
+function delete_statement ( migrate_table conftable ) return varchar2 is
+  l_stm varchar2(2000) := '';
+begin
+  if migrate_table.toption = 'REPLACE' then
+    l_stm := 'TRUNCATE TABLE '||migrate_table.tname;
+  elsif migrate_table.toption = 'MERGE' then
+    
+    l_stm := 'DELETE FROM '||migrate_table.tname||' t WHERE EXISTS (SELECT 1 FROM '||g_mig_prefix||migrate_table.tname||g_mig_suffix||' s WHERE ';
+    l_stm := l_stm||chr(10)||migrate_table.aliasedwhereaccpk||')';
+  else
+    l_stm := null;
+  end if;
+  return l_stm;
+end delete_statement;
+
+function merge_statement ( migrate_table conftable ) return varchar2 is
+  l_stm varchar2(2000) := '';
+begin
+  
+  if migrate_table.toption = 'UPDATE' then
+    l_stm := 'MERGE INTO '||migrate_table.tname||' t USING '||g_mig_prefix||migrate_table.tname||g_mig_suffix||' s on '||chr(10)
+    ||'('||migrate_table.aliasedwhereaccpk||') '||chr(10)||'WHEN MATCHED THEN UPDATE SET '
+    ||chr(10)||migrate_table.aliasedset;
+  else
+    l_stm := null;
+  end if;
+  return l_stm;
+end merge_statement;
+
+function insert_statement ( migrate_table conftable ) return varchar2 is
+  l_stm   varchar2(9000) := '';
+begin
+  
+  if migrate_table.toption = 'REPLACE' or migrate_table.toption = 'MERGE' then
+    
+    l_stm := 'INSERT INTO '||migrate_table.tname||' (' || migrate_table.csvcmncols || ') '
+          || '( SELECT ' || migrate_table.csvcmncols ||' FROM '
+          || g_mig_prefix||migrate_table.tname||g_mig_suffix
+          || ')';
+  elsif migrate_table.toption = 'APPEND' then
+    
+    
+    
+    l_stm := 'INSERT INTO '||migrate_table.tname||' t  (' || migrate_table.csvcmncols || ') '
+          || '( SELECT ' || migrate_table.csvcmncols || ' FROM '
+          || g_mig_prefix||migrate_table.tname
+          || g_mig_suffix||' s WHERE NOT EXISTS (SELECT 1 FROM '||migrate_table.tname||' t WHERE '
+          || chr(10)||migrate_table.aliasedwhereaccpk||') )';
+  end if;
+  return l_stm;
+end insert_statement;
+
+procedure compile_invalid
+is
+  l_invalid number;
+begin
+  select count(1)
+  into l_invalid
+  from user_objects
+  where status !='VALID';
+
+  if l_invalid > 0 then
+    logit(3,to_char(l_invalid) || ' invalid objects in ' || user || ' schema ... recompiling');
+    begin
+      dbms_utility.compile_schema(schema => user, compile_all => false );
+    exception when others then
+      logit(1,'Error recompiling invalid objects');
+    end;
+
+    select count(1)
+    into l_invalid
+    from user_objects
+    where status !='VALID';
+
+    logit(3,to_char(l_invalid) || ' invalid objects in ' || user || ' schema after recompilation');
+    if l_invalid > 0 then
+      for i in ( select object_type || ' ' || object_name invalid_object
+                 from user_objects
+                 where status !='VALID')
+      loop
+        logit(3, i.invalid_object || ' is invalid ');
+      end loop;
+    end if;
+  end if;
+end compile_invalid;
+
+
+procedure migrate is
+  l_msg varchar2(8000);
+  l_table conftable;
+  l_lnk_count number := 0;
+  l_seq_count number := 0;
+  l_tab_count number := 0;
+  l_err_count number := 0;
+  l_number number := 0;
+  l_num number := 0;
+  l_continue boolean := true;
+  l_sequences_ok boolean := true;
+  l_stm varchar2(2000) := '';
+  migrate_tables conf_tables := conf_tables();
+  migrate_sequences conf_sequences := conf_sequences();
+begin
+  global_msg_no := 0;
+
+  delete from data_migration_log;
+  commit;
+  logit(3, 'Data Migration starting.');
+
+  begin
+    select upper(dms.user_source)
+    ,      case when dms.address is not null then 'Y' else 'N' end
+    into   g_source_user
+    ,      g_use_dblink
+    from   data_migration_source dms;
+  exception when others then
+    logit(1,'Cant read DATA_MIGRATION_SOURCE');
+	l_continue := false;
+  end;
+
+  if ( g_use_dblink = 'Y' )
+  then
+    g_mig_suffix := '@TEMPDBLINK';
+    create_dblink();
+  else
+    g_mig_prefix := g_source_user || '.' ;
+  end if;
+
+  check_prerequisites(l_lnk_count, l_seq_count, l_tab_count);
+  
+  if (l_lnk_count < 0  and g_use_dblink = 'Y') or l_seq_count < 0 or l_tab_count < 0 then
+    
+    l_continue := false;
+  end if;
+  if l_continue then
+    if l_lnk_count <> 1 and g_use_dblink = 'Y' then
+      logit(1, 'Error: No TEMPDBLINK present.');
+      l_continue := false;
+    end if;
+  end if;
+  if l_continue then
+    if g_use_dblink = 'N' and upper(ltrim(trim(g_source_user))) = user then
+      logit(1, 'Source user is current user and db link not being used');
+      l_continue := false;
+    end if;
+  end if;
+  if l_continue then
+    if l_seq_count < 1 and l_tab_count < 1 then
+      logit(1, 'Error: No Table or Sequence listed for migration.');
+      l_continue := false;
+    end if;
+  end if;
+  if l_continue then
+    if l_tab_count > g_max_tables then
+      logit(2, 'Warning: No more than '||to_char(g_max_tables)||' listed tables allowed.');
+    end if;
+  end if;
+  if l_continue then
+    l_msg := 'Data Migration started. Sequences to process: '||to_char(l_seq_count)
+               ||'. Tables to process: '||to_char(l_tab_count)||'.';
+    logit(3, l_msg);
+
+    g_table_errors := 0;
+
+    
+    for c_rec in ( select dms.sequence_name
+                   from   data_migration_sequence_list dms
+                 ) loop
+      begin
+        begin
+        
+          l_stm := 'SELECT '||c_rec.sequence_name||'.NEXTVAL FROM DUAL';
+          execute immediate l_stm into l_num;
+        exception when others then
+          
+          l_num := -1;
+        end;
+
+        migrate_sequences.extend(1);
+        migrate_sequences(migrate_sequences.count).sname := c_rec.sequence_name;
+        migrate_sequences(migrate_sequences.count).svalue := l_num;
+
+        l_stm := 'DROP SEQUENCE '||c_rec.sequence_name;
+        logit(4, l_stm);
+        execute immediate l_stm;
+      exception when others then
+        logit(1, 'Error: '||l_stm||' failed: '||sqlerrm);
+      end;
+    end loop;
+
+    for c_rec in ( select dml.table_name
+                   ,      dml.migrate_option
+                   from   data_migration_table_list dml
+                   where  rownum <= g_max_tables
+                 ) loop
+      l_table := retrieve_tabinfo(c_rec.table_name, c_rec.migrate_option);
+      if l_table.isok then
+        migrate_tables.extend(1);
+        migrate_tables(migrate_tables.count) := l_table;
+        null;
+      end if;
+    end loop;
+
+    
+    for i in 1..migrate_tables.count loop
+      
+      if switch_trgs(migrate_tables(i).tname, 'DISABLE') then
+        null; 
+      else
+        migrate_tables(i).isok := false;
+      end if;
+      
+      if switch_fks(migrate_tables(i).tname, 'DISABLE') then
+        null; 
+      else
+        migrate_tables(i).isok := false;
+      end if;
+    end loop;
+
+    for i in 1..migrate_tables.count loop
+
+      pre_summarize_table(migrate_tables(i).tname);
+
+      if migrate_tables(i).isok then
+        
+        logit(3, 'Migrating table '||migrate_tables(i).tname||' with option '||migrate_tables(i).toption);
+        l_stm := delete_statement(migrate_tables(i));
+        if l_stm is not null then
+          begin
+            logit(4, l_stm);
+            execute immediate l_stm;
+            l_num := row_count(migrate_tables(i).tname);
+            logit(4, 'Target table: '||migrate_tables(i).tname||' size after delete: '||to_char(l_num)||'.');
+          exception when others then
+            logit(1, 'Error: DELETE FROM '||migrate_tables(i).tname||' failed: '||sqlerrm);
+          end;
+        end if;
+        l_stm := insert_statement(migrate_tables(i));
+        if l_stm is not null then
+          begin
+            logit(4, l_stm);
+            execute immediate l_stm;
+            commit;
+          exception when others then
+            logit(1, 'Error: INSERT INTO '||migrate_tables(i).tname||' failed: '||sqlerrm);
+          end;
+        end if;
+        l_stm := merge_statement(migrate_tables(i));
+        if l_stm is not null then
+          begin
+            logit(4, l_stm);
+            execute immediate l_stm;
+            commit;
+          exception when others then
+            logit(1, 'Error: MERGE INTO '||migrate_tables(i).tname||' failed: '||sqlerrm);
+          end;
+        end if;
+
+        post_summarize_table(migrate_tables(i).tname);
+
+      end if;
+    end loop;
+
+    
+    for i in 1..migrate_tables.count loop
+      
+      l_continue := switch_fks(migrate_tables(i).tname, 'ENABLE');
+      
+      l_continue := switch_trgs(migrate_tables(i).tname, 'ENABLE');
+    end loop;
+
+    l_sequences_ok := true;
+    l_num := 0;
+    
+    for i in 1..migrate_sequences.count loop
+      begin
+        
+        l_stm := 'SELECT '||g_mig_prefix||migrate_sequences(i).sname||'.NEXTVAL'||g_mig_suffix||' FROM DUAL';
+        execute immediate l_stm into l_number;
+      exception when others then
+        logit(1, 'Error: '||l_stm||' failed: '||sqlerrm);
+        l_number := -1;
+        l_sequences_ok := false;
+      end;
+
+      l_msg := 'Sequence '||migrate_sequences(i).sname||', Source value: '||to_char(l_number)||', Target value: '||to_char(migrate_sequences(i).svalue);
+      
+      l_number := greatest(migrate_sequences(i).svalue, l_number);
+      l_msg := l_msg||' -> '||to_char(l_number);
+      logit(4, l_msg);
+
+      if l_number >= 0 then
+        begin
+          l_stm := 'CREATE SEQUENCE '||migrate_sequences(i).sname||' START WITH '||to_char(l_number)
+            ||' MAXVALUE 9999999999999999999999 MINVALUE 1 CYCLE CACHE 1000 ORDER';
+          logit(4, l_stm);
+          execute immediate l_stm;
+        exception when others then
+          logit(1, 'Error: '||l_stm||' failed: '||sqlerrm);
+          l_sequences_ok := false;
+        end;
+      end if;
+    end loop;
+
+    compile_invalid();
+
+    begin
+      select count(*) into l_err_count from data_migration_log where severity = 1;
+    exception when others then
+      logit(1, 'Error determining error count in DATA_MIGRATION_LOG: '||sqlerrm);
+    end;
+    logit(3, 'Data Migration finished with '||to_char(l_err_count)||' errors.');
+  end if;
+end migrate;
+
+end data_migration;
+/

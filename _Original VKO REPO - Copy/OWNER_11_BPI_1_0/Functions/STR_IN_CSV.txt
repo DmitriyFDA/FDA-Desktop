@@ -1,0 +1,18 @@
+function str_in_csv(str in varchar2, csv in varchar2) return varchar2 is
+l_str varchar2(100) := ltrim(rtrim(str));
+l_csv varchar2(16000) := ltrim(rtrim(csv));
+begin
+  if (l_str is null) then return 'N'; end if;
+  if (l_csv is null) then return 'N';  end if;
+  if (l_str = '') then return 'N';  end if;
+  if (l_csv = '') then return 'N';  end if;
+  if (l_str = l_csv) then return 'Y';  end if;
+  l_str := ',' || l_str || ',';
+  l_csv := ',' || l_csv || ',';
+  if (instr(l_csv, l_str) > 0) then
+    return 'Y';
+  else
+    return 'N';
+  end if;
+end;
+/

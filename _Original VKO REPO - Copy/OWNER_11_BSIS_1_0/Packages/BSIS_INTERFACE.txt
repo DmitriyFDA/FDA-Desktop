@@ -1,0 +1,4204 @@
+create or replace PACKAGE bsis_interface
+AUTHID DEFINER
+AS
+   /******************************************************************************
+      NAME:       bsis_interface
+      PURPOSE:
+
+      REVISIONS:
+      Ver        Date        Author           Description
+      ---------  ----------  ---------------  ------------------------------------
+      1.0        26-03-2010  TJ               1. Created this package.
+      2.0        04-05-2010  TJ               2. PT5 Changes
+      43         08-03-2013  nlakoc           lhr#27334
+      44         11-03-2013  nlakoc           lhr#27586
+      45         10-04-2020  nlmv2            vbss-31 removed time zone references
+   ******************************************************************************/
+
+  /*******************************************************************************
+  In order to create a flexible structure Pl/Sql record types are used to pass parameters values
+  between Pl/Sql procedures/functions. Two types are used, i.e. rt_bda_id and msg_id_rectyp.
+
+  # rt_bda_id
+
+  The recordtype bda_id_rectyp contains the identification attributes
+   for the different BaggageData Elements:
+    - BagSourceData  : lpc / lpc_extension + optionally rt_flight_id
+    - BagServiceData : bid / bid_extension
+  The record is used to exchange ID data between procedures/functions.
+
+  # rt_flight_id
+  The recordtype flight_id_rectyp contains the identification attributes
+  for the Flight. i.e. Airline, FlightNumber and Date
+
+  # rt_msg_id
+
+  The recordtype rt_msg_id contains a bda_id_rec and other attributes for processing messages.
+  It is used to process different MessageTypes. The Other attributes are:
+
+   A) to indentify which BaggageData Element(s) will be processed a group of attributes is used
+
+      When more BaggageData Elements are relevant, then an indicator per element is used
+      with values 'Y' or 'N':
+
+        - dat_elt_typ_src
+        - dat_elt_typ_sve
+
+   B) pmd_name: PartyMessageDefinition,The Processing Message
+   C) msg_time: MessageTime in the MessageHeader
+   D) src_pcs_id: Source ProcessID in the MessageHeader
+   E) resync_time: Time from where to resync
+   F) Original message type
+  *******************************************************************************/
+
+   TYPE rt_flight_id IS RECORD (
+     flight       VARCHAR2(150)
+   );
+
+   TYPE rt_bda_id IS RECORD (
+     lpc           VARCHAR2(10)
+   , lpc_extension VARCHAR2(3)
+   , bid           NUMBER
+   , bid_extension VARCHAR2(3)
+   , pid           NUMBER
+   , flight_id_rec rt_flight_id
+   );
+
+   TYPE rt_msg_id IS RECORD (
+     pmd_name        VARCHAR2(50)
+   , msg_time        TIMESTAMP -- vbss-31 (3) WITH TIME ZONE
+   , resync_time     TIMESTAMP -- vbss-31 (3) WITH TIME ZONE
+   , org_msg_type    VARCHAR2(30)
+   , src_pcs_id      VARCHAR2(50)
+   , bda_id_rec      rt_bda_id
+   , dat_elt_typ_src VARCHAR2(1)
+   , dat_elt_typ_sve VARCHAR2(1)
+   , vendor_string   BSIS_BAGGAGE_DATA.VENDOR_STRING%TYPE
+   , baggagesource_ind VARCHAR(1)
+   , lpckey          VARCHAR2(35)
+   , src_data_src    VARCHAR2(1)
+   , has_outflight   BOOLEAN
+   , has_inflight    BOOLEAN
+   , pnr             VARCHAR2(6)
+   , sequencenr      VARCHAR2(3)
+   );
+   --
+   /* tt_iata_id to store IATA tagnames */
+   TYPE it_iata_id IS TABLE OF VARCHAR2(5000) INDEX BY PLS_INTEGER;
+   --
+   /* tt_iata_val to store values for IATA tags */
+   TYPE it_iata_val IS TABLE OF PLS_INTEGER INDEX BY VARCHAR2(100);
+   --
+   FUNCTION r2o_flight_id
+    (i_flight_id_rec IN rt_flight_id)
+     RETURN ot_flight_id;
+   --
+   FUNCTION r2o_bda_id
+    (i_bda_id_rec IN rt_bda_id)
+     RETURN ot_bda_id;
+   --
+   FUNCTION r2o_msg_id
+    (i_msg_id_rec IN rt_msg_id)
+     RETURN ot_msg_id;
+   --
+   FUNCTION check_custom_merge_exists
+    (i_dat_elt_type IN VARCHAR2)
+     RETURN BOOLEAN;
+   --
+   FUNCTION get_iata_exist_tab
+    (i_dat_elt_type IN VARCHAR2)
+     RETURN it_iata_id;
+   --
+   FUNCTION get_element_value
+     (i_xml     IN XMLTYPE
+     ,i_pattern IN VARCHAR2
+     ) RETURN VARCHAR2;
+   --
+   FUNCTION party_healthy
+    (i_pty_id_cust IN  VARCHAR2
+    ) RETURN BOOLEAN;
+   --
+   FUNCTION add_header( i_message           IN XMLTYPE
+                      , i_target_processid  IN CMN_PARTIES.ID_CUST%TYPE
+                      , i_source_processid  IN CMN_PARTIES.ID_CUST%TYPE DEFAULT NULL
+                      , i_source_instanceid IN VARCHAR2 DEFAULT NULL
+                      , i_target_instanceid IN VARCHAR2 DEFAULT NULL
+                      , i_operatorid        IN VARCHAR2 DEFAULT NULL
+                      , o_sequence_number   OUT NUMBER
+                      )
+   RETURN XMLTYPE;
+   --
+   PROCEDURE send_message( i_message             IN XMLTYPE
+                         , i_target_processid    IN CMN_PARTIES.ID_CUST%TYPE
+                         , i_source_processid    IN CMN_PARTIES.ID_CUST%TYPE DEFAULT NULL
+                         , i_source_instanceid   IN VARCHAR2 DEFAULT NULL
+                         , i_target_instanceid   IN VARCHAR2 DEFAULT NULL
+                         , i_operatorid          IN VARCHAR2 DEFAULT NULL
+                         , i_buffer_message      IN BOOLEAN := FALSE
+                         );
+   --
+   FUNCTION send_message_ok
+     (i_message     IN XMLTYPE
+     ,i_target_name IN VARCHAR2
+     ) RETURN BOOLEAN;
+   --
+   PROCEDURE determine_msg_id_rec_values
+    ( i_msg           IN  XMLTYPE
+    , i_bda_id_rec    IN  rt_bda_id
+    , i_org_msg_type  IN  VARCHAR2
+    , o_lpckey        OUT VARCHAR2
+    , o_has_outflight OUT BOOLEAN
+    , o_has_inflight  OUT BOOLEAN
+    , o_src_data_src  OUT CHAR
+    , o_pnr           OUT VARCHAR2
+    , o_sequencenr    OUT VARCHAR2
+    );
+   --
+   FUNCTION get_bda_id
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_bdi_dat_root IN VARCHAR2 := NULL
+    , i_dat_elt_root IN VARCHAR2 := NULL
+    ) RETURN rt_bda_id;
+   --
+   FUNCTION get_msg_time
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+   --
+   FUNCTION get_resync_time
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_bdi_dat_root IN VARCHAR2 := NULL
+    )
+    RETURN VARCHAR2;
+   --
+   FUNCTION get_org_msg_type
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+   --
+   FUNCTION get_src_pcs_id
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+  --
+   FUNCTION get_src_inst_id
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+  --
+  FUNCTION get_target_pcs_id
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+  --
+  FUNCTION get_vendor_string
+    ( i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+  --
+  FUNCTION get_sequence_number
+    ( i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN NUMBER;
+  --
+   FUNCTION get_bda_action
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_bdi_dat_root IN VARCHAR2 := NULL
+    , i_dat_elt_root IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+   --
+   FUNCTION get_flight_id
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_dat_elt_root IN VARCHAR2 := NULL
+    ) RETURN rt_flight_id;
+   --
+   FUNCTION get_messagetype
+    ( i_msg          IN XMLTYPE
+    , i_root_element IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+   --
+   FUNCTION get_pck_id_xml
+    (i_msg_id_rec IN rt_msg_id
+    ) RETURN XMLTYPE;
+   --
+   FUNCTION get_bag_data
+   (i_msg_id_rec IN rt_msg_id
+   ,i_bda_rec    IN bsis_baggage_data%ROWTYPE
+   ,i_msg_src    IN XMLTYPE := NULL
+   ,i_msg_sve    IN XMLTYPE := NULL
+   ) RETURN XMLTYPE;
+   --
+   FUNCTION get_reply_data
+   (i_msg_id_rec        IN rt_msg_id
+   ,i_message_type      IN VARCHAR2  := NULL
+   ,i_last_src_data_upd IN TIMESTAMP := NULL -- vbss-31 WITH TIME ZONE
+   ,i_last_sve_data_upd IN TIMESTAMP := NULL -- vbss-31 WITH TIME ZONE
+   ,i_trigger_src       IN VARCHAR2
+
+   ) RETURN XMLTYPE;
+   --
+   FUNCTION get_bre_msg
+   (i_msg_id_rec   IN rt_msg_id
+   ,i_bag_data     IN XMLTYPE  := NULL
+   ,i_reply_data   IN XMLTYPE  := NULL
+   ) RETURN XMLTYPE;
+   --
+   PROCEDURE get_bda_msg
+    ( i_pmd_name     IN     VARCHAR2
+    , i_msg_pck_id   IN     XMLTYPE := NULL
+    , i_pid_varchar2 IN     VARCHAR2:= NULL
+    , i_msg_src      IN     XMLTYPE := NULL
+    , i_msg_sve      IN     XMLTYPE := NULL
+    , o_bda_msg         OUT XMLTYPE
+    , o_msg_id_rec      OUT rt_msg_id
+    , o_process_info    OUT VARCHAR2
+    );
+   --
+   FUNCTION get_msg_id
+    ( i_pmd_name     IN  VARCHAR2
+    , i_msg          IN  XMLTYPE
+    ) RETURN rt_msg_id;
+   --
+   PROCEDURE add_ack_flag
+    ( io_msg         IN OUT XMLTYPE
+    , i_root_element IN     VARCHAR2 := NULL
+    );
+   --
+   FUNCTION get_iata_id
+    (i_dat_elt_type IN  VARCHAR2
+    ,i_elt_name     IN  VARCHAR2
+    ,o_elt_id       OUT PLS_INTEGER
+    ) RETURN BOOLEAN;
+   --
+   FUNCTION iata_id_elt_exists
+    (i_dat_elt_type IN VARCHAR2
+    ,i_elt_name     IN VARCHAR2
+    ,i_iata_id_tab  IN it_iata_id
+    ) RETURN BOOLEAN;
+   --
+   PROCEDURE get_iata_id_tab
+   (i_dat_elt_type IN  VARCHAR2
+   ,i_iata_xml     IN  XMLTYPE
+   ,o_iata_id_tab  OUT it_iata_id
+   );
+   --
+   PROCEDURE get_iata_exist_tab
+   (i_dat_elt_type IN  VARCHAR2
+   ,i_iata_xml     IN  XMLTYPE
+   ,o_iata_id_tab  OUT it_iata_id
+   );
+   --
+   FUNCTION get_merge_method
+   (i_attribute_id IN  NUMBER, i_dat_elt_type IN  VARCHAR2
+   ) RETURN NUMBER;
+   --
+   PROCEDURE add_vendor_string
+    (io_msg          IN OUT XMLTYPE
+    ,i_vendor_string IN     VARCHAR2 := NULL
+    ,i_root_element  IN     VARCHAR2 := NULL
+    );
+   --
+   PROCEDURE deliver_to_brs
+   (i_msg IN XMLTYPE
+   ,i_buffer_message   IN BOOLEAN := FALSE
+   ,i_target_processid IN cmn_parties.id_cust%TYPE := NULL
+   );
+   --
+   PROCEDURE process_host_ack
+   (
+   i_msg IN XMLTYPE
+   );
+   --
+   PROCEDURE dequeue_brs_message_loop;
+   --
+   PROCEDURE dequeue_dcs_message_loop
+   (i_subscriber_id     IN  NUMBER
+   ,i_subscriber_id_ack IN  NUMBER
+   ,i_pty_id_cust       IN  VARCHAR2);
+    --
+   PROCEDURE deliver_to_host
+   (i_msg IN XMLTYPE
+   ,i_buffer_message   IN BOOLEAN := FALSE
+   ,i_target_processid IN cmn_parties.id_cust%TYPE := NULL
+   ,i_sequence_number  IN NUMBER
+   );
+   --
+   PROCEDURE start_ini_iata_id;
+   --
+   /* References to CMN_SUBSCRIBERS */
+   g_con_dcs_deliv_subscriber    cmn_subscribers.name%TYPE := 'DCS_DELIVERY_SUBSCRIBER';
+   g_con_ack_from_dcs_subscriber cmn_subscribers.name%TYPE := 'ACK_FROM_DCS_SUBSCRIBER';
+   --
+   FUNCTION get_baggage_source_ind
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_dat_elt_root IN VARCHAR2 := NULL
+    ) RETURN VARCHAR2;
+
+   FUNCTION get_baggage_irr_ext
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_dat_elt_root IN VARCHAR2 := NULL
+    ) RETURN BOOLEAN;
+
+   FUNCTION active_mode RETURN BOOLEAN;
+   --
+   PROCEDURE SendWithAcknowledgement
+   (io_sbe_row       IN OUT bsis_subscriber_buffer_msgs%ROWTYPE
+   ,i_pty_id_cust    VARCHAR2
+   ,i_subscriber_id_ack  NUMBER
+   ,i_subscriber_id  NUMBER);
+   --
+   PROCEDURE send_brsp_message
+    ( i_src_pcs_id        IN VARCHAR2
+    , i_src_inst_id       IN VARCHAR2
+    , i_sequence_number   IN NUMBER
+    , i_msg_pck_id        IN XMLTYPE
+    );
+    --
+    PROCEDURE send_pdrsp_message
+    ( i_msg_id_rec         IN bsis_interface.rt_msg_id
+    , i_sequence_number    IN NUMBER
+    );
+   --
+   FUNCTION get_inb_flight_id
+    ( i_pmd_name     IN VARCHAR2
+    , i_msg          IN XMLTYPE
+    , i_dat_elt_root IN VARCHAR2 := NULL
+    ) RETURN rt_flight_id;
+END bsis_interface;
+/
+
+
+
+
+package body bsis_interface
+is
+   
+   g_con_package      constant varchar2(14) := 'bsis_interface';
+   
+   
+   gt_iata_id_idx  pls_integer;
+   gt_iata_id_name varchar2(100);
+   gt_iata_id_val  varchar2(5000);
+   
+   
+   g_iata_val_tab_src             it_iata_val;
+   g_iata_id_tab_src              it_iata_id;
+   g_iata_merge_method_tab_src    it_iata_id;
+   g_iata_exist_tab_src           it_iata_id;
+   g_custom_merge_exists_src      boolean;
+   
+   
+   g_iata_val_tab_sve             it_iata_val;
+   g_iata_id_tab_sve              it_iata_id;
+   g_iata_merge_method_tab_sve    it_iata_id;
+   g_iata_exist_tab_sve           it_iata_id;
+   g_custom_merge_exists_sve      boolean;
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function active_mode
+   return boolean
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name := g_con_package || '.active_mode';
+      l_active_mode        boolean;
+      l_asm_id_cust        acl_aet_statuses_dom.id_cust%type;
+      l_error_description  acl_application_processes.reason_end%type;
+      l_rt_aet             acl_application_elements%rowtype;
+   begin
+      if not acl_aet_tapi_pck.aet_select_row_uk1
+                  (i_aet_name => bsis_constant.g_con_acl_aet_active_mode
+                  ,o_rt_aet =>  l_rt_aet )
+      then
+         
+         
+         l_active_mode := true;
+      else
+         acl_application_control.get_status
+              (i_aet_id_cust => l_rt_aet.id_cust
+              ,o_asm_id_cust => l_asm_id_cust
+              ,o_error_description =>l_error_description
+              );
+         if  l_asm_id_cust = bsis_constant.g_con_acl_asm_started
+         then
+            l_active_mode := true;
+         else
+            l_active_mode := false;
+         end if;
+      end if;
+         
+      return l_active_mode;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name, i_additional_data => sqlerrm);
+   end active_mode;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function r2o_flight_id
+    (i_flight_id_rec in rt_flight_id)
+     return ot_flight_id
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                                  := g_con_package || '.r2o_flight_id';
+   begin
+      return ot_flight_id(i_flight_id_rec.flight);
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end r2o_flight_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function r2o_bda_id
+    (i_bda_id_rec in rt_bda_id)
+     return ot_bda_id
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                                  := g_con_package || '.r2o_bda_id';
+   begin
+      return ot_bda_id(i_bda_id_rec.lpc
+                      ,i_bda_id_rec.lpc_extension
+                      ,i_bda_id_rec.bid
+                      ,i_bda_id_rec.bid_extension
+                      ,i_bda_id_rec.pid
+                      ,r2o_flight_id(i_bda_id_rec.flight_id_rec)
+                      );
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end r2o_bda_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function r2o_msg_id
+    (i_msg_id_rec in rt_msg_id)
+     return ot_msg_id
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                                  := g_con_package || '.r2o_msg_id';
+   begin
+      return ot_msg_id(i_msg_id_rec.pmd_name
+                      ,i_msg_id_rec.msg_time
+                      ,i_msg_id_rec.resync_time
+                      ,i_msg_id_rec.org_msg_type
+                      ,i_msg_id_rec.src_pcs_id
+                      ,r2o_bda_id(i_msg_id_rec.bda_id_rec)
+                      ,i_msg_id_rec.dat_elt_typ_src
+                      ,i_msg_id_rec.dat_elt_typ_sve
+                      ,i_msg_id_rec.vendor_string
+                      );
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end r2o_msg_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function check_custom_merge_exists
+    (i_dat_elt_type in varchar2)
+     return boolean
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                                  := g_con_package || '.check_custom_merge_exists';
+      l_custom_merge_exists boolean;
+   begin
+      if i_dat_elt_type = 'SRC'
+      then
+         l_custom_merge_exists := g_custom_merge_exists_src;
+      elsif i_dat_elt_type = 'SVE'
+      then
+         l_custom_merge_exists := g_custom_merge_exists_sve;
+      else
+         
+         
+         l_custom_merge_exists := false;
+      end if;
+      
+      return l_custom_merge_exists;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end check_custom_merge_exists;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_iata_exist_tab
+    (i_dat_elt_type in varchar2)
+     return it_iata_id
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                                  := g_con_package || '.get_iata_exist_tab';
+      l_iata_exist_tab it_iata_id;
+   begin
+      if i_dat_elt_type = 'SRC'
+      then
+         l_iata_exist_tab := g_iata_exist_tab_src;
+      elsif i_dat_elt_type = 'SVE'
+      then
+         l_iata_exist_tab := g_iata_exist_tab_sve;
+      else
+         null; 
+      end if;
+      
+      return l_iata_exist_tab;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_iata_exist_tab;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function add_namespace
+    ( i_msg          in out xmltype
+    ) return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.add_namespace';
+  l_translated_msg          xmltype;
+      l_xslt xmltype;
+   begin
+      
+      select tln.translation_document
+      into   l_xslt
+      from   bsis_translations tln
+      
+      where  tln.name = bsis_constant.g_con_tln_nme_addvibesnmespace;
+      
+      begin
+      
+      l_translated_msg := i_msg.transform (l_xslt);
+      exception
+            when others
+            then
+               viu_info.raise_info (
+                  i_ifo_nr              => viu_constant.c_ifo_cmninvalidxmlreceived,
+                  i_calling_procedure   => l_con_proc_name,
+                  i_info_arguments      => 'Message: '
+                                          || substr (
+                                                l_translated_msg.getclobval,
+                                                0,
+                                                1000),
+                  i_additional_data     => 'XSLT translation failed');
+                  l_translated_msg := null;
+         end;
+      
+      return l_translated_msg;
+   exception
+      when others
+      then
+         rollback;
+         viu_info.raise_info (i_calling_procedure   => l_con_proc_name,
+                              i_additional_data     => sqlerrm);
+   end add_namespace;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_element_value
+     (i_xml     in xmltype
+     ,i_pattern in varchar2
+     )
+     return varchar2
+   is
+      l_con_proc  constant cmn_constant.st_proc_name := g_con_package || '.get_element_value';
+      l_temp_xml  xmltype;
+      l_return    varchar2(5000);
+   begin
+      if i_xml is not null
+      then
+         l_temp_xml := i_xml.extract(i_pattern);
+         
+         if l_temp_xml is not null
+         then
+            l_return := l_temp_xml.getstringval();
+         else
+            l_return := null; 
+         end if;
+      else
+        l_return := null; 
+      end if;
+      
+      return l_return;
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_element_value;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function party_healthy
+    (i_pty_id_cust in  varchar2
+    )
+     return boolean
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                  := g_con_package || '.party_healthy';
+      l_return        boolean;
+      l_party_status_row bsis_party_status%rowtype;
+   begin
+      
+      l_return := false;
+      
+      begin
+        select pty.id
+        into   l_party_status_row.pty_id
+        from   cmn_parties pty
+        where  pty.id_cust = i_pty_id_cust;
+      exception when others then
+      
+            viu_info.handle_info (i_ifo_nr => viu_constant.c_ifo_cmnpartynotfound,i_calling_procedure => l_con_proc_name, i_additional_data => 'ID_CUST was :' || i_pty_id_cust);
+       
+        l_return := true;
+      end;
+      
+      if bsis_pst_tapi_pck.pst_select_row(i_pst_pty_id => l_party_status_row.pty_id, o_rt_pst => l_party_status_row) then
+        
+        if l_party_status_row.status = 'ONLINE' then
+                l_return := true;
+        end if;
+      else
+        
+        l_return := true;
+      end if;
+      
+      return l_return;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end party_healthy;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_merge_method
+    (i_attribute_id in number,
+    i_dat_elt_type in  varchar2
+    )
+     return number
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                  := g_con_package || '.get_merge_method';
+      l_return        number;
+   begin
+
+      
+      if i_dat_elt_type = 'SRC' then
+          l_return := g_iata_merge_method_tab_src(i_attribute_id);
+      elsif  i_dat_elt_type = 'SVE'
+      then
+          l_return := g_iata_merge_method_tab_sve(i_attribute_id);
+      else
+        null; 
+      end if;
+      
+      return l_return;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_merge_method;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure add_vendor_string
+    ( io_msg          in out xmltype
+    , i_vendor_string in     varchar2 := null
+    , i_root_element  in     varchar2 := null
+    )
+   is
+     l_con_proc_name constant cmn_constant.st_proc_name
+                                      := g_con_package || '.add_vendor_string';
+     l_root_element  varchar2(100) := i_root_element;
+     l_bda_id_rec    rt_bda_id;
+     l_vendor_string varchar2(200);
+     l_bdi_dat_root  varchar2(200);
+     l_sequence      number;
+   begin
+     l_root_element := i_root_element;
+     
+     if i_vendor_string is not null
+     then
+        l_vendor_string := i_vendor_string;
+     else
+        
+        if (i_root_element is null)
+        then
+           l_root_element := cmn_interface.get_message_name (i_message => io_msg);
+        end if;
+        
+        l_bdi_dat_root :=    l_root_element
+                          || '/'
+                          || bsis_constant.g_con_bdi_data
+                          ;
+        
+        l_bda_id_rec := get_bda_id(i_pmd_name     => l_root_element
+                                  ,i_msg          => io_msg
+                                  ,i_bdi_dat_root => l_bdi_dat_root
+                                  );
+        
+        if cmn_common.get_parameter_value(i_prr_name => bsis_constant.g_con_store_duplicate_lpn)
+         = cmn_constant.g_con_yesno_yes
+        then
+           
+           l_bda_id_rec.flight_id_rec := get_flight_id(i_pmd_name => l_root_element
+                                                      ,i_msg      => io_msg
+                                                      );
+        end if;
+        
+        l_vendor_string := substr(bsis_baggage_data_mgr.get_vendor_string(i_bda_id_rec => l_bda_id_rec)
+                                 ,1,200
+                                 );
+     end if;
+     
+     if l_vendor_string is null
+     then
+        
+        l_vendor_string := cmn_common.get_parameter_value (bsis_constant.g_con_default_vendor_string);
+     end if;
+     
+     
+     l_sequence := get_sequence_number(i_msg          => io_msg
+                                      ,i_root_element => l_root_element
+                                       );
+
+     if l_sequence is null then
+       select insertchildxml(io_msg
+                            ,l_root_element || '/' || cmn_constant.g_con_header,'VendorString'
+                            ,xmltype('<VendorString>'||l_vendor_string||'</VendorString>')
+                            )
+       into   io_msg
+       from   dual;
+     else
+       select insertxmlbefore(io_msg
+                             ,l_root_element || '/' || cmn_constant.g_con_header || '/Sequence'
+                             ,xmltype('<VendorString>'||l_vendor_string||'</VendorString>')
+                             )
+       into   io_msg
+       from   dual;
+     end if;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name, i_additional_data => sqlerrm);
+   end add_vendor_string;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function add_header( i_message           in xmltype
+                      , i_target_processid  in cmn_parties.id_cust%type
+                      , i_source_processid  in cmn_parties.id_cust%type default null
+                      , i_source_instanceid in varchar2 default null
+                      , i_target_instanceid in varchar2 default null
+                      , i_operatorid        in varchar2 default null
+					  , o_sequence_number   out number
+                      )
+   return xmltype
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.add_header';
+      l_message      xmltype;
+      l_root_element varchar2(100);
+   begin
+      l_message := cmn_interface.add_header( i_message           => i_message
+                                           , i_source_processid  => i_source_processid
+                                           , i_source_instanceid => i_source_instanceid
+                                           , i_target_processid  => i_target_processid
+                                           , i_target_instanceid => i_target_instanceid
+                                           , i_operatorid        => i_operatorid
+                                           );
+      
+      
+      o_sequence_number := bsis_subscription_mgr.get_next_bagresponse_seq(i_ssr_identifier => i_target_processid);
+      
+      
+      select insertchildxml( l_message
+                           , '//' || cmn_constant.g_con_header
+                           , 'Sequence'
+                           , xmlelement("Sequence", o_sequence_number)
+                           )
+      into   l_message
+      from   dual;
+      
+      return (l_message);
+   exception
+   when others then
+     viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end add_header;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_message(  i_message             in xmltype
+                          , i_target_processid    in cmn_parties.id_cust%type
+                          , i_source_processid    in cmn_parties.id_cust%type default null
+                          , i_source_instanceid   in varchar2 default null
+                          , i_target_instanceid   in varchar2 default null
+                          , i_operatorid          in varchar2 default null
+                          , i_buffer_message      in boolean := false
+                         )
+   is
+     l_con_proc        constant cmn_constant.st_proc_name := g_con_package || '.send_message';
+     l_message         xmltype;
+     l_current_schema  varchar2(40);
+     l_row             bsis_subscriber_buffer_msgs%rowtype;
+     l_deliver_to_host boolean;
+	 l_sequence_number number;
+   begin
+     l_deliver_to_host := false;
+     if active_mode
+     then
+       l_deliver_to_host := true;
+     else
+       
+       l_current_schema := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'SchemaDataconfigType'
+                                                                      ,i_gmd_key  => 'CURRENT_SCHEMA');
+       
+       if  l_current_schema = 'AMD'
+       and i_buffer_message
+       then
+         l_deliver_to_host := true;
+       end if; 
+     end if; 
+     
+     
+
+
+
+
+     if l_deliver_to_host
+     then
+       
+       l_message := add_header(i_message           => i_message
+                              ,i_target_processid  => i_target_processid
+                              ,i_source_processid  => i_source_processid
+                              ,i_source_instanceid => i_source_instanceid
+                              ,i_target_instanceid => i_target_instanceid
+                              ,i_operatorid        => i_operatorid
+                              ,o_sequence_number   => l_sequence_number
+                              );
+       
+       if (i_target_processid = bsis_constant.g_con_host_party)
+       then
+         add_vendor_string(io_msg          => l_message
+                          ,i_root_element  => bsis_constant.g_con_bre_bagresponse
+                          );
+       end if;
+       
+       if (i_target_processid = bsis_constant.g_con_brs_party)
+       then
+         
+           l_row := bsis_subscription_mgr.buffer_message(i_message     => l_message
+                                                        ,i_target_name => i_target_processid
+                                                        );
+         
+           cmn_queue.enqueue_message (bsis_constant.g_con_brs_bags_in_queue_id,
+                                      xmltype ('<reconId>' || l_row.id || '</reconId>'), false);
+           commit;
+       else
+         deliver_to_host(i_msg               => l_message
+                        ,i_buffer_message    => i_buffer_message
+                        ,i_target_processid  => i_target_processid
+                        ,i_sequence_number   => l_sequence_number);
+       end if;
+     end if; 
+   exception
+   when others then
+     viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end send_message;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function send_message_ok
+     (i_message     in xmltype
+     ,i_target_name in varchar2
+     )
+    return boolean
+   is
+      l_con_proc      constant cmn_constant.st_proc_name := g_con_package || '.send_message_ok';
+      l_message_sent  boolean;
+   begin
+      
+      if party_healthy(i_pty_id_cust => i_target_name)
+      then
+         <<send_message_block>>
+         begin
+            
+            send_message(i_message             => i_message
+                        ,i_source_processid    => null
+                        ,i_source_instanceid   => null
+                        ,i_target_processid    => i_target_name
+                        ,i_target_instanceid   => null
+                        ,i_operatorid          => null
+                        );
+            l_message_sent := true;
+         exception
+         when others
+         then
+            l_message_sent := false;
+            
+            viu_info.operator_info
+                      (i_ifo_nr                 => viu_constant.c_ifo_cmnnoconnectiondetected
+                      ,i_calling_procedure      => l_con_proc
+                      ,i_severity               => viu_info.c_severity_notification
+                      );
+         end send_message_block;
+      else
+         l_message_sent := false;
+      end if;
+      
+      return l_message_sent;
+      
+   exception
+   when others then
+     viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end send_message_ok;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_id
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_bdi_dat_root in varchar2 := null
+    , i_dat_elt_root in varchar2 := null
+    )
+    return rt_bda_id
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_id';
+      l_bda_id_rec   rt_bda_id;
+      l_bdi_dat_root varchar2(100);
+      l_dat_elt_root varchar2(100);
+      l_bid_varchar2 varchar2(100);
+   begin
+      
+      if i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+         l_dat_elt_root             := nvl(i_dat_elt_root, 'PackageIdentifier');
+         
+         l_bda_id_rec.lpc           := get_element_value
+                                        (i_msg,
+                                           '/'
+                                         || l_dat_elt_root
+                                         || '/BaggageTag/LPC/text()'
+                                        );
+         l_bda_id_rec.lpc_extension := get_element_value
+                                        (i_msg,
+                                            '/'
+                                         || l_dat_elt_root
+                                         || '/BaggageTag/LPC_Extension/text()'
+                                        );
+         l_bid_varchar2             := get_element_value
+                                        (i_msg,
+                                           '/'
+                                         || l_dat_elt_root
+                                         || '/BaggageIdentifier/BID/text()'
+                                        );
+         l_bda_id_rec.bid           :=  case l_bid_varchar2
+                                           when 'NaN' then null
+                                           else l_bid_varchar2
+                                        end;
+         l_bda_id_rec.bid_extension := get_element_value
+                                        (i_msg,
+                                            '/'
+                                         || l_dat_elt_root
+                                         || '/BaggageIdentifier/BID_Extension/text()'
+                                        );
+      else
+         l_bdi_dat_root             := nvl(i_bdi_dat_root, i_pmd_name);
+         
+         l_bda_id_rec.lpc           := get_element_value
+                                        (i_msg,
+                                           '/'
+                                         || l_bdi_dat_root
+                                         || '/PackageIdentifier/BaggageTag/LPC/text()'
+                                        );
+         l_bda_id_rec.lpc_extension := get_element_value
+                                        (i_msg,
+                                            '/'
+                                         || l_bdi_dat_root
+                                         || '/PackageIdentifier/BaggageTag/LPC_Extension/text()'
+                                        );
+         l_bid_varchar2             := get_element_value
+                                        (i_msg,
+                                           '/'
+                                         || l_bdi_dat_root
+                                         || '/PackageIdentifier/BaggageIdentifier/BID/text()'
+                                        );
+         l_bda_id_rec.bid           :=  case l_bid_varchar2
+                                           when 'NaN' then null
+                                           else l_bid_varchar2
+                                        end;
+         l_bda_id_rec.bid_extension := get_element_value
+                                        (i_msg,
+                                            '/'
+                                         || l_bdi_dat_root
+                                         || '/PackageIdentifier/BaggageIdentifier/BID_Extension/text()'
+                                        );
+      end if;
+      
+      return l_bda_id_rec;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_msg_time
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_root_element in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_msg_time';
+      l_root_element varchar2(100);
+      l_return       varchar2(100);
+   begin
+      l_root_element   := nvl(i_root_element, i_pmd_name);
+      
+      l_return := get_element_value(i_msg,
+                                   '/'
+                                 || l_root_element
+                                 || '/'
+                                 || cmn_constant.g_con_header
+                                 || '/'
+                                 || 'MessageTime'
+                                 || '/text()'
+                                );
+      
+      return (l_return);
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_msg_time;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_resync_time
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_bdi_dat_root in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_resync_time';
+      l_bdi_dat_root varchar2(100);
+      
+      l_resync_time  varchar2(100);
+   begin
+      if i_pmd_name = bsis_constant.g_con_pdi_pd_subscribe
+      then
+         l_bdi_dat_root             := nvl(i_bdi_dat_root, i_pmd_name);
+         
+         l_resync_time              := get_element_value
+                                        (i_msg,
+                                           '/'
+                                         || l_bdi_dat_root
+                                         || '/ResyncStartTime/text()'
+                                        );
+      end if;
+      
+      return l_resync_time;
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_resync_time;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_org_msg_type
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_root_element in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_org_msg_type';
+      l_root_element varchar2(100);
+      l_return       varchar2(100);
+   begin
+      l_root_element   := nvl(i_root_element, i_pmd_name);
+      
+      l_return := get_element_value(i_msg,
+                                   '/'
+                                 || l_root_element
+                                 || '/'
+                                 || bsis_constant.g_con_bdi_data
+                                 || '/OriginalMessageType'
+                                 || '/text()'
+                                );
+      
+      return (l_return);
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_org_msg_type;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_src_pcs_id
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_root_element in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_src_pcs_id';
+      l_root_element varchar2(100);
+      l_return       varchar2(100);
+   begin
+      l_root_element   := nvl(i_root_element, i_pmd_name);
+      
+      l_return := get_element_value(i_msg,
+                                   '/'
+                                 || l_root_element
+                                 || '/'
+                                 || cmn_constant.g_con_header
+                                 || '/'
+                                 || cmn_constant.g_con_source
+                                 || '/'
+                                 || cmn_constant.g_con_processid
+                                 || '/text()'
+                                );
+      
+      return (l_return);
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_src_pcs_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_src_inst_id
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_root_element in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_src_inst_id';
+      l_root_element varchar2(100);
+      l_return       varchar2(100);
+   begin
+      l_root_element   := nvl(i_root_element, i_pmd_name);
+      
+      l_return := get_element_value(i_msg,
+                                   '/'
+                                 || l_root_element
+                                 || '/'
+                                 || cmn_constant.g_con_header
+                                 || '/'
+                                 || cmn_constant.g_con_source
+                                 || '/'
+                                 || cmn_constant.g_con_instanceid
+                                 || '/text()'
+                                );
+      
+      return (l_return);
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_src_inst_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_target_pcs_id
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_root_element in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_target_pcs_id';
+      l_root_element varchar2(100);
+      l_return       varchar2(100);
+   begin
+      l_root_element   := nvl(i_root_element, i_pmd_name);
+      
+      l_return := get_element_value(i_msg,
+                                   '/'
+                                 || l_root_element
+                                 || '/'
+                                 || cmn_constant.g_con_header
+                                 || '/'
+                                 || cmn_constant.g_con_target
+                                 || '/'
+                                 || cmn_constant.g_con_processid
+                                 || '/text()'
+                                );
+      
+      return (l_return);
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_target_pcs_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_action
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_bdi_dat_root in varchar2 := null
+    , i_dat_elt_root in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_bda_action';
+      l_bdi_dat_root varchar2(100);
+      l_dat_elt_root varchar2(100);
+      l_bda_action   varchar2(100);
+   begin
+      if i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+         l_bdi_dat_root   := nvl(i_bdi_dat_root, bsis_constant.g_con_bdi_data);
+         l_dat_elt_root   := nvl(i_dat_elt_root, bsis_constant.g_con_bdi_src_root);
+         
+         if l_dat_elt_root = bsis_constant.g_con_bdi_src_root
+         then
+            l_bda_action     := get_element_value
+                                    (i_msg,
+                                        '/'
+                                     || l_dat_elt_root
+                                     || '/'
+                                     || bsis_constant.g_con_bdi_action
+                                     || '/text()'
+                                    );
+            if l_bda_action is  null
+            then
+               l_bda_action := bsis_constant.g_con_new;
+            end if;
+         end if;
+      else
+         l_bdi_dat_root   := nvl(i_bdi_dat_root, i_pmd_name);
+         l_bda_action     := get_element_value
+                                 (i_msg,
+                                     '/'
+                                  || l_bdi_dat_root
+                                  || '/@'
+                                  || bsis_constant.g_con_bdi_action
+                                 );
+      end if;
+      
+      return l_bda_action;
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_bda_action;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_flight_id
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_dat_elt_root in varchar2 := null
+    )
+    return rt_flight_id
+   is
+      l_con_proc      constant cmn_constant.st_proc_name := g_con_package || '.get_flight_id';
+      l_flight_id_rec rt_flight_id;
+      l_dat_elt_root  varchar2(100);
+      l_airline       varchar(5);
+      l_flight_number varchar(10);
+      l_flight_date   varchar2(100);
+      l_xpath         varchar2 (100);
+   begin
+      
+
+      if i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+        
+
+
+
+         l_dat_elt_root   := nvl(i_dat_elt_root, '*');
+         
+         l_airline := get_element_value
+                               (i_msg,
+                                  '/'
+                               || l_dat_elt_root
+                               || '/'
+                               || bsis_constant.g_con_airline_xpath
+                               );
+
+         if l_airline is not null then
+           l_flight_number := get_element_value
+                               (i_msg,
+                                 '/'
+                               || l_dat_elt_root
+                               || '/'
+                               || bsis_constant.g_con_flightnr_xpath
+                               );
+           l_flight_date := get_element_value
+                                (i_msg,
+                                  '/'
+                                || l_dat_elt_root
+                                || '/'
+                               || bsis_constant.g_con_flightdate_xpath
+                                );
+         else
+           l_xpath :=
+                  '/'
+               || l_dat_elt_root
+               || '/'
+               || bsis_constant.g_con_inb_flightinfo
+               || '/'
+               || bsis_constant.g_con_flight ;
+
+           l_airline := get_element_value
+                               (i_msg,
+                                 l_xpath
+                               || '/'
+                               || bsis_constant.g_con_airline|| '/text()'
+                               );
+
+           l_flight_number := get_element_value
+                               (i_msg,
+                                 l_xpath
+                               || '/'
+                               ||  bsis_constant.g_con_flightnr|| '/text()'
+                               );
+           l_flight_date := get_element_value
+                                (i_msg,
+                                  l_xpath
+                                || '/'
+                                || bsis_constant.g_con_flightdate|| '/text()'
+                                );
+         end if;
+      elsif i_pmd_name = bsis_constant.g_con_bre_bagresponse
+      then
+         
+         l_dat_elt_root := bsis_constant.g_con_bdi_src_root;
+         
+         l_airline :=
+                            get_element_value
+                               (i_msg,
+                                  '//'
+                               || l_dat_elt_root
+                               || '/'
+                               || bsis_constant.g_con_airline_xpath
+                               );
+         if l_airline is not null then
+           l_flight_number :=
+                            get_element_value
+                               (i_msg,
+                                 '//'
+                               || l_dat_elt_root
+                               || '/'
+                               || bsis_constant.g_con_flightnr_xpath
+                               );
+           l_flight_date := get_element_value
+                                (i_msg,
+                                  '//'
+                                || l_dat_elt_root
+                                || '/'
+                               || bsis_constant.g_con_flightdate_xpath
+                                );
+         else
+           l_xpath :=
+                  '/'
+               || l_dat_elt_root
+               || '/'
+               || bsis_constant.g_con_inb_flightinfo
+               || '/'
+               || bsis_constant.g_con_flight ;
+
+           l_airline := get_element_value
+                               (i_msg,
+                                 l_xpath
+                               || '/'
+                               || bsis_constant.g_con_airline|| '/text()'
+                               );
+           l_flight_number := get_element_value
+                               (i_msg,
+                                 l_xpath
+                               || '/'
+                               ||  bsis_constant.g_con_flightnr|| '/text()'
+                               );
+           l_flight_date := get_element_value
+                                (i_msg,
+                                  l_xpath
+                                || '/'
+                                || bsis_constant.g_con_flightdate|| '/text()'
+                                );
+         end if;
+      else
+        
+        viu_info.raise_info(i_calling_procedure => l_con_proc, i_info_arguments => 'No message handler defined for message type' || i_pmd_name);
+      end if;
+      
+      if l_airline is not null then
+        l_flight_id_rec.flight := l_airline || l_flight_number || '_' || l_flight_date;
+      else
+        l_flight_id_rec.flight := null;
+      end if;
+
+      return l_flight_id_rec;
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_flight_id;
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_messagetype
+    ( i_msg          in xmltype
+    , i_root_element in varchar2 := null
+    ) return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_messagetype';
+      l_messagetype  varchar2(100);
+      l_root_element varchar2(100) := i_root_element;
+   begin
+      if i_msg is not null
+      then
+          
+          if (i_root_element is null) then
+              l_root_element := cmn_interface.get_message_name (i_message => i_msg);
+          end if;
+          
+          l_messagetype := get_element_value(i_msg, l_root_element || '/AMDExtensionOut/TriggerMessageType/text()');
+      end if;
+      
+      return l_messagetype;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name, i_additional_data => sqlerrm);
+   end get_messagetype;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_pck_id_xml
+    (i_msg_id_rec in rt_msg_id
+    )
+    return xmltype
+   is
+      l_con_proc   constant cmn_constant.st_proc_name := g_con_package || '.get_pck_id_xml';
+      l_id_tag     varchar2(300);
+      l_msg_id_rec rt_msg_id;
+      l_pck_id_xml xmltype;
+   begin
+      
+      l_msg_id_rec := i_msg_id_rec;
+      
+      l_id_tag := '<PackageIdentifier>';
+      
+      
+      if l_msg_id_rec.bda_id_rec.lpc is not null
+      then
+         l_id_tag := l_id_tag
+                       ||'<BaggageTag>'
+                       ||'<LPC>'||l_msg_id_rec.bda_id_rec.lpc||'</LPC>'
+                       ;
+         if l_msg_id_rec.bda_id_rec.lpc_extension is not null
+         then
+            l_id_tag := l_id_tag ||
+                '<LPC_Extension>'||l_msg_id_rec.bda_id_rec.lpc_extension||'</LPC_Extension>';
+         end if;
+         
+         l_id_tag := l_id_tag || '</BaggageTag>';
+         
+      end if;
+      
+      
+      if l_msg_id_rec.bda_id_rec.bid is not null
+      then
+         l_id_tag := l_id_tag||'<BaggageIdentifier>'
+                             ||'<BID>'||to_char(l_msg_id_rec.bda_id_rec.bid)||'</BID>'
+                     ;
+         if l_msg_id_rec.bda_id_rec.bid_extension is not null
+         then
+            l_id_tag := l_id_tag ||
+                '<BID_Extension>'||l_msg_id_rec.bda_id_rec.bid_extension||'</BID_Extension>';
+         end if;
+         
+         l_id_tag := l_id_tag || '</BaggageIdentifier>';
+         
+      end if;
+      
+      l_id_tag := l_id_tag || '</PackageIdentifier>';
+      
+      l_pck_id_xml := xmltype(l_id_tag);
+      
+      return l_pck_id_xml;
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_pck_id_xml;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bag_data
+   (i_msg_id_rec in rt_msg_id
+   ,i_bda_rec    in bsis_baggage_data%rowtype
+   ,i_msg_src    in xmltype := null
+   ,i_msg_sve    in xmltype := null
+   )
+     return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_bag_data';
+      l_return          xmltype;
+      l_msg_id_rec      rt_msg_id;
+      l_bre_status      varchar2(50);
+      l_pck_id_xml      xmltype;
+      l_bda_action      varchar2(100);
+   begin
+      l_msg_id_rec := i_msg_id_rec;
+      
+      if i_msg_src is not null
+      then
+         
+         l_bda_action := get_bda_action
+                            (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                            ,i_msg      => i_msg_src
+                            );
+         if l_bda_action = bsis_constant.g_con_delete
+         then
+            l_bre_status := bsis_constant.g_con_bre_status_deleted;
+         else
+            l_bre_status := bsis_constant.g_con_bre_status_received;
+         end if;
+      elsif i_msg_sve is not null
+      then
+         l_bre_status := bsis_constant.g_con_bre_status_received;
+      else
+         l_bre_status := bsis_constant.g_con_bre_status_unknown;
+      end if;
+      
+      l_pck_id_xml := get_pck_id_xml(i_msg_id_rec => l_msg_id_rec);
+      
+      select xmlelement("BagData",l_pck_id_xml
+                                 ,case when l_msg_id_rec.bda_id_rec.pid is not null
+                                       then xmlelement("PID",l_msg_id_rec.bda_id_rec.pid)
+                                       else null
+                                  end
+                                 ,xmlelement("Status"
+                                            ,l_bre_status
+                                            )
+                                 ,xmlelement("UpdatedIndicator"
+                                            ,case when i_bda_rec.id is null
+                                                  then 'FALSE'
+                                                  else 'TRUE'
+                                              end
+                                             )
+                                 ,i_msg_src
+                                 ,i_msg_sve
+                       )
+      into   l_return
+      from   dual;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_bag_data;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_reply_data
+   (i_msg_id_rec        in rt_msg_id
+   ,i_message_type      in varchar2  := null
+   ,i_last_src_data_upd in timestamp := null
+   ,i_last_sve_data_upd in timestamp := null
+   ,i_trigger_src       in varchar2
+   )
+     return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_reply_msg';
+      l_return          xmltype;
+      l_msg_id_rec      rt_msg_id;
+      l_message_type    varchar2(50);
+      l_event_time_char varchar2(50);
+      l_event_time      bsis_baggage_data.last_src_data_upd%type;
+      l_org_msg_src     varchar2(1);
+      l_org_msg_sve     varchar2(1);
+   begin
+      l_msg_id_rec   := i_msg_id_rec;
+      l_message_type := nvl(i_message_type,'PACKAGEDATA');
+      l_org_msg_src  := i_msg_id_rec.dat_elt_typ_src;
+      l_org_msg_sve  := i_msg_id_rec.dat_elt_typ_sve;
+      
+      if  i_last_src_data_upd is not null
+      and i_last_sve_data_upd is not null
+      then
+         l_event_time := case
+                           when l_org_msg_src = cmn_constant.g_con_yesno_yes
+                             then i_last_src_data_upd
+                           when l_org_msg_sve = cmn_constant.g_con_yesno_yes
+                             then i_last_sve_data_upd
+                           else
+                             null
+                         end;
+      elsif i_last_src_data_upd is null
+      and   i_last_sve_data_upd is null
+      then
+         l_event_time   := cmn_common.default_timestamp;
+      else
+         l_event_time   := nvl(i_last_src_data_upd, i_last_sve_data_upd);
+      end if;
+      
+      l_event_time_char := cmn_common.timestamp_to_varchar(i_timestamp => l_event_time);
+      
+      select xmlelement("ReplyData"
+                       ,xmlelement("MessageType"
+                                  ,l_message_type
+                                  )
+                       ,xmlelement("EventTime"
+                                  ,l_event_time_char
+                                  )
+                       ,xmlelement("TriggerType"
+                                  ,i_trigger_src
+                                  )
+                       )
+      into   l_return
+      from   dual;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_reply_data;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bre_msg
+   (i_msg_id_rec   in rt_msg_id
+   ,i_bag_data     in xmltype  := null
+   ,i_reply_data   in xmltype  := null
+   )
+     return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_bre_msg';
+      l_return          xmltype;
+      l_msg_id_rec      rt_msg_id;
+   begin
+      l_msg_id_rec := i_msg_id_rec;
+      
+      select xmlelement("BagResponse"
+                       ,i_reply_data
+                       ,i_bag_data
+                       )
+      into   l_return
+      from   dual;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_bre_msg;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure determine_msg_id_rec_values
+    ( i_msg           in  xmltype
+    , i_bda_id_rec    in  rt_bda_id
+    , i_org_msg_type  in  varchar2
+    , o_lpckey        out varchar2
+    , o_has_outflight out boolean
+    , o_has_inflight  out boolean
+    , o_src_data_src  out char
+    , o_pnr           out varchar2
+    , o_sequencenr    out varchar2
+    )
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.determine_msg_id_rec_values';
+      l_flight_airline varchar2(3);
+      l_flight_number  varchar2(5);
+      l_flight_date    varchar2(30);
+   begin
+      
+      l_flight_airline           := get_element_value
+                                     (i_msg,
+                                      '/*/OperationalOutboundFlightInformation/Flight/Airline/text()'
+                                     );
+      o_has_outflight := false;
+      o_has_inflight := false;
+
+      if l_flight_airline is not null
+      then
+         o_has_outflight := true;
+         l_flight_number            := get_element_value
+                                        (i_msg,
+                                         '/*/OperationalOutboundFlightInformation/Flight/FlightNumber/text()'
+                                        );
+         l_flight_date              := get_element_value
+                                        (i_msg,
+                                         '/*/OperationalOutboundFlightInformation/Flight/Date/text()'
+                                        );
+      else
+         l_flight_airline           := get_element_value
+                                        (i_msg,
+                                         '/*/InboundFlightInformation/Flight/Airline/text()'
+                                        );
+         if l_flight_airline is not null
+         then
+            o_has_inflight := true;
+            l_flight_number            := get_element_value
+                                           (i_msg,
+                                            '/*/InboundFlightInformation/Flight/FlightNumber/text()'
+                                           );
+            l_flight_date              := get_element_value
+                                           (i_msg,
+                                            '/*/InboundFlightInformation/Flight/Date/text()'
+                                           );
+         end if;
+      end if;
+      if l_flight_date is not null
+      then
+         
+         l_flight_date := substr(l_flight_date, 0, 10);
+      end if;
+
+      
+      o_lpckey := bsis_public.determine_lpckey(i_lpc           => i_bda_id_rec.lpc
+                                              ,i_lpc_ext       => i_bda_id_rec.lpc_extension
+                                              ,i_flight        => l_flight_airline || l_flight_number || '_' || l_flight_date
+                                              ,i_has_outflight => o_has_outflight
+                                              ,i_has_inflight  => o_has_inflight);
+
+      
+      if i_org_msg_type in (bsis_constant.g_con_msg_type_bsm,
+                            bsis_constant.g_con_msg_type_bum)
+      then
+         
+         o_src_data_src := bsis_constant.g_con_src_data_src_bsm;
+      elsif i_org_msg_type = bsis_constant.g_con_msg_type_bpm
+      then
+         
+         o_src_data_src := bsis_constant.g_con_src_data_src_bpm;
+      else
+         
+         o_src_data_src := null;
+      end if;
+
+      
+      o_pnr := get_element_value(i_msg
+                                ,'/*/AutomatedPNRAddress/text()'
+                                );
+
+      
+      o_sequencenr := get_element_value(i_msg
+                                       ,'/*/BaggageReconciliationData/SequenceNumber/text()'
+                                       );
+
+   end;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_bda_msg
+    ( i_pmd_name     in     varchar2
+    , i_msg_pck_id   in     xmltype := null
+    , i_pid_varchar2 in     varchar2:= null
+    , i_msg_src      in     xmltype := null
+    , i_msg_sve      in     xmltype := null
+    , o_bda_msg         out xmltype
+    , o_msg_id_rec      out rt_msg_id
+    , o_process_info    out varchar2
+    )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_bda_msg';
+      l_msg_id_rec    rt_msg_id;
+   begin
+      if i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+         if i_msg_src is not null and (i_msg_src.existsnode(bsis_constant.g_con_bdi_src_root ||'/*') = 1)
+         then
+            
+            l_msg_id_rec.bda_id_rec := get_bda_id(i_pmd_name     => i_pmd_name
+                                                 ,i_msg          => i_msg_pck_id
+                                                 );
+            if l_msg_id_rec.bda_id_rec.lpc is not null
+            then
+               o_bda_msg                             := i_msg_src;
+               l_msg_id_rec.dat_elt_typ_src          := cmn_constant.g_con_yesno_yes;
+               l_msg_id_rec.bda_id_rec.flight_id_rec := bsis_interface.get_flight_id
+                                                         (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                                         ,i_msg      => i_msg_src
+                                                         );
+               l_msg_id_rec.baggagesource_ind        := bsis_interface.get_baggage_source_ind
+                                                         (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                                         ,i_msg      => i_msg_src
+                                                         );
+
+            else
+               o_process_info := 'No LPC available.';
+            end if;
+         elsif i_msg_sve is not null and (i_msg_sve.existsnode(bsis_constant.g_con_bdi_sve_root ||'/*') = 1)
+         then
+            
+            l_msg_id_rec.bda_id_rec  := get_bda_id(i_pmd_name     => i_pmd_name
+                                                  ,i_msg          => i_msg_pck_id
+                                                  );
+            if l_msg_id_rec.bda_id_rec.bid is not null
+            or i_pid_varchar2              is not null
+            then
+               o_bda_msg                             := i_msg_sve;
+               l_msg_id_rec.dat_elt_typ_sve          := cmn_constant.g_con_yesno_yes;
+               l_msg_id_rec.bda_id_rec.flight_id_rec := bsis_interface.get_flight_id
+                                                         (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                                         ,i_msg      => i_msg_sve
+                                                         );
+            else
+               o_process_info := 'No BID and No PID available.';
+            end if;
+         else o_process_info := 'Received bags with empty source and empty service element.';
+         end if;
+      end if;
+      
+      l_msg_id_rec.bda_id_rec.pid := to_number(i_pid_varchar2);
+      
+      o_msg_id_rec := l_msg_id_rec;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_bda_msg;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_msg_id
+    ( i_pmd_name     in  varchar2
+    , i_msg          in  xmltype
+    )
+    return rt_msg_id
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_msg_id';
+      l_msg_id_rec    rt_msg_id;
+   begin
+      l_msg_id_rec.dat_elt_typ_src := 'N';
+      l_msg_id_rec.dat_elt_typ_sve := 'N';
+      
+      
+      l_msg_id_rec.pmd_name := i_pmd_name;
+      
+      
+      l_msg_id_rec.msg_time :=
+           
+           
+           cmn_common.varchar_to_timestamp
+                (i_timestamp => get_msg_time( i_pmd_name => i_pmd_name
+                                            , i_msg      => i_msg
+                                            )
+                );
+      
+      
+      l_msg_id_rec.src_pcs_id := get_src_pcs_id( i_pmd_name => i_pmd_name
+                                               , i_msg      => i_msg
+                                               );
+      
+      l_msg_id_rec.bda_id_rec := get_bda_id( i_pmd_name => i_pmd_name
+                                           , i_msg      => i_msg
+                                           );
+      
+      if i_pmd_name = bsis_constant.g_con_pdi_pd_subscribe
+      then
+         
+         
+         l_msg_id_rec.resync_time :=
+              cmn_common.varchar_to_timestamp
+                   (i_timestamp => get_resync_time( i_pmd_name => i_pmd_name
+                                                  , i_msg      => i_msg
+                                                  )
+                   );
+      elsif i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+         
+         l_msg_id_rec.org_msg_type := get_org_msg_type( i_pmd_name => i_pmd_name
+                                                      , i_msg      => i_msg
+                                                      );
+      end if;
+      
+      return l_msg_id_rec;
+      
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_msg_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_iata_id
+    (i_dat_elt_type in  varchar2
+    ,i_elt_name     in  varchar2
+    ,o_elt_id       out pls_integer
+    )
+     return boolean
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                  := g_con_package || '.get_iata_id';
+      l_return        boolean;
+   begin
+      l_return := false;
+      
+      <<get_id>>
+      declare
+         l_elt_id  gt_iata_id_idx%type;
+      begin
+         if i_dat_elt_type = 'SRC'
+         then
+            
+            l_elt_id := g_iata_val_tab_src(i_elt_name);
+            
+            l_return := true;
+         elsif i_dat_elt_type = 'SVE'
+         then
+            
+            l_elt_id := g_iata_val_tab_sve(i_elt_name);
+            
+            l_return := true;
+         else
+            l_return := false; 
+         end if;
+         
+         if l_return
+         then
+           o_elt_id := l_elt_id;
+         end if;
+         
+      exception
+      when no_data_found then l_return := false;
+      end get_id;
+      
+      return l_return;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_iata_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function iata_id_elt_exists
+    (i_dat_elt_type in varchar2
+    ,i_elt_name     in varchar2
+    ,i_iata_id_tab  in it_iata_id
+    )
+     return boolean
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                  := g_con_package || '.iata_id_elt_exists';
+      l_return        boolean;
+      l_elt_id        gt_iata_id_idx%type;
+   begin
+      l_return := false;
+      
+      
+      if get_iata_id(i_dat_elt_type => i_dat_elt_type
+                    ,i_elt_name     => i_elt_name
+                    ,o_elt_id       => l_elt_id
+                    )
+      then
+         <<get_element_value>>
+         declare
+            l_elt_val gt_iata_id_val%type;
+         begin
+            
+            l_elt_val := i_iata_id_tab(l_elt_id);
+            l_return  := true;
+         exception
+         when no_data_found then l_return := false;
+         end get_element_value;
+      else
+         l_return := false;
+      end if;
+      
+      return l_return;
+      
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end iata_id_elt_exists;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure ini_iata_id
+   (i_dat_elt_type        in  varchar2
+   ,o_iata_val_tab        out it_iata_val
+   ,o_iata_id_tab         out it_iata_id
+   ,o_iata_merge_tab      out it_iata_id
+   ,o_iata_exist_tab      out it_iata_id
+   ,o_custom_merge_exists out boolean
+   )
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                                  := g_con_package || '.ini_iata_id';
+      
+      l_iata_id_tab         it_iata_id;
+      l_iata_val_tab        it_iata_val;
+      l_iata_merge_tab      it_iata_id;
+      l_iata_exist_tab      it_iata_id;
+      l_custom_merge_exists boolean   := false;
+      
+      cursor c_extract_attributes(i_data_element in bsis_attributes.element%type) is
+      select * from bsis_attributes att where att.element = i_data_element order by att.id asc;
+   begin
+      if i_dat_elt_type = 'SRC' or i_dat_elt_type = 'SVE'
+      then
+        for r_attribute in c_extract_attributes(i_data_element => i_dat_elt_type)
+        loop
+           l_iata_val_tab(r_attribute.attribute_name) := r_attribute.id;
+           l_iata_id_tab(r_attribute.id)              := null;
+           
+           l_iata_exist_tab(r_attribute.id)           := 'Y';
+           l_iata_merge_tab(r_attribute.id)           := r_attribute.merge_strategy;
+           
+           if r_attribute.merge_strategy = bsis_constant.g_con_merge_custom
+           then
+              l_custom_merge_exists := true;
+           end if;
+        end loop;
+      else
+         null; 
+      end if;
+      
+      o_iata_val_tab        := l_iata_val_tab;
+      o_iata_id_tab         := l_iata_id_tab;
+      o_iata_exist_tab      := l_iata_exist_tab;
+      o_iata_merge_tab      := l_iata_merge_tab;
+      o_custom_merge_exists := l_custom_merge_exists;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end ini_iata_id;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_iata_id_tab
+   (i_dat_elt_type in  varchar2
+   ,i_iata_xml     in  xmltype
+   ,o_iata_id_tab  out it_iata_id
+   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                  := g_con_package || '.get_iata_id_tab';
+      
+      l_dat_elt_type  varchar2(50);
+      l_iata_id_tab   it_iata_id;
+      
+      l_elt_id        gt_iata_id_idx%type;
+      l_elt_name      gt_iata_id_name%type;
+      l_elt_value     gt_iata_id_val%type;
+      l_elt_root      varchar2(100);
+      
+      l_domdoc        dbms_xmldom.domdocument;
+      l_nodelist      dbms_xmldom.domnodelist;
+      l_node          dbms_xmldom.domnode;
+   begin
+
+      
+      l_dat_elt_type := i_dat_elt_type;
+      
+      if l_dat_elt_type = 'SRC'
+      then
+         l_iata_id_tab := g_iata_id_tab_src;
+         l_elt_root    := '/BSISBagSource/*';
+      elsif l_dat_elt_type = 'SVE'
+      then
+         l_iata_id_tab := g_iata_id_tab_sve;
+         l_elt_root    := '/BSISBagService/*';
+      else
+         null; 
+      end if;
+      
+      if  i_iata_xml is not null
+      and l_elt_root is not null
+      then
+         l_domdoc   := dbms_xmldom.newdomdocument(i_iata_xml);
+         l_nodelist := dbms_xslprocessor.selectnodes(dbms_xmldom.makenode(l_domdoc),l_elt_root);
+         
+         <<loop_nodes>>
+         for i in 0 .. dbms_xmldom.getlength(l_nodelist) - 1
+         loop
+            l_node     := dbms_xmldom.item(l_nodelist, i);
+            l_elt_name := dbms_xmldom.getnodename(l_node);
+            
+            dbms_xmldom.writetobuffer(l_node, l_elt_value);
+            
+            
+            if get_iata_id(i_dat_elt_type => l_dat_elt_type
+                          ,i_elt_name     => l_elt_name
+                          ,o_elt_id       => l_elt_id
+                          )
+            then
+               l_iata_id_tab(l_elt_id) := l_iata_id_tab(l_elt_id) || l_elt_value;
+            else
+              null; 
+            end if;
+            
+         end loop loop_nodes;
+         
+         dbms_xmldom.freedocument(l_domdoc);
+         
+      end if;
+      
+      o_iata_id_tab := l_iata_id_tab;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_iata_id_tab;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_iata_exist_tab
+   (i_dat_elt_type in  varchar2
+   ,i_iata_xml     in  xmltype
+   ,o_iata_id_tab  out it_iata_id
+   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                  := g_con_package || '.get_iata_exist_tab';
+      
+      l_dat_elt_type  varchar2(50);
+      l_iata_id_tab   it_iata_id;
+      
+      l_elt_id        gt_iata_id_idx%type;
+      l_elt_name      gt_iata_id_name%type;
+      l_elt_root      varchar2(100);
+      
+      l_domdoc        dbms_xmldom.domdocument;
+      l_nodelist      dbms_xmldom.domnodelist;
+      l_node          dbms_xmldom.domnode;
+   begin
+      l_dat_elt_type := i_dat_elt_type;
+      
+      if l_dat_elt_type = 'SRC'
+      then
+         l_elt_root    := '/BSISBagSource/*';
+      elsif l_dat_elt_type = 'SVE'
+      then
+         l_elt_root    := '/BSISBagService/*';
+      else
+         null; 
+      end if;
+      
+      if  i_iata_xml is not null
+      and l_elt_root is not null
+      then
+         l_domdoc   := dbms_xmldom.newdomdocument(i_iata_xml);
+         l_nodelist := dbms_xslprocessor.selectnodes(dbms_xmldom.makenode(l_domdoc),l_elt_root);
+         
+         <<loop_nodes>>
+         for i in 0 .. dbms_xmldom.getlength(l_nodelist) - 1
+         loop
+            l_node     := dbms_xmldom.item(l_nodelist, i);
+            l_elt_name := dbms_xmldom.getnodename(l_node);
+            
+            
+            if get_iata_id(i_dat_elt_type => l_dat_elt_type
+                          ,i_elt_name     => l_elt_name
+                          ,o_elt_id       => l_elt_id
+                          )
+            then
+               l_iata_id_tab(l_elt_id) := 'Y';
+            else
+              null; 
+            end if;
+            
+         end loop loop_nodes;
+         
+         dbms_xmldom.freedocument(l_domdoc);
+         
+      end if;
+      
+      o_iata_id_tab := l_iata_id_tab;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_iata_exist_tab;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function ack_is_required (i_subscriber_id in bsis_subscribers.identifier%type)
+      return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.ack_is_required' ;
+      l_rt_ssr          bsis_subscribers%rowtype;
+   begin
+      
+      if bsis_ssr_tapi_pck.ssr_select_row_uk1 ( i_ssr_identifier  => i_subscriber_id
+                                              , o_rt_ssr          => l_rt_ssr
+                                              )
+      then
+         if (l_rt_ssr.ack = cmn_constant.g_con_yesno_yes)
+         then
+            
+            return true;
+         else
+            
+            return false;
+         end if;
+      else
+         
+         viu_info.handle_info (
+            i_ifo_nr              => viu_constant.c_ifo_recordnotfound,
+            i_calling_procedure   => l_con_proc_name,
+            i_additional_data     => 'No record bsis subscribers table for subscriber id '|| i_subscriber_id);
+
+         
+         return false;
+      end if;
+   exception
+      when others
+      then
+         rollback;
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end ack_is_required;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure deliver_to_brs
+    (i_msg              in xmltype
+    ,i_buffer_message   in boolean := false
+    ,i_target_processid in cmn_parties.id_cust%type := null
+    )
+   is
+     l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.deliver_to_brs';
+     l_rt_ssr         bsis_subscribers%rowtype;
+     l_row            bsis_subscriber_buffer_msgs%rowtype;
+   begin
+     if active_mode
+     then
+       if bsis_ssr_tapi_pck.ssr_select_row_uk1
+         ( i_ssr_identifier => bsis_constant.g_con_brs_party
+         , o_rt_ssr         => l_rt_ssr
+         )
+       then
+         if ack_is_required(i_subscriber_id => l_rt_ssr.identifier) or i_buffer_message then
+         
+           l_row := bsis_subscription_mgr.buffer_message(i_message     => i_msg
+                                                        ,i_target_name => bsis_constant.g_con_brs_party
+                                                        );
+         
+           cmn_queue.enqueue_message (bsis_constant.g_con_brs_deliv_queue_id,
+                                      xmltype ('<reconId>' || l_row.id || '</reconId>'), false);
+           commit;
+         else
+         
+           cmn_interface.send_message(i_message => i_msg, i_pty_id_cust => bsis_constant.g_con_brs_deliv_party);
+         end if;
+       end if;
+     end if;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end deliver_to_brs;
+    
+
+
+
+
+
+
+
+
+
+
+
+
+   function update_guaranteed_delivery
+    (l_updated_row  in out bsis_subscriber_buffer_msgs%rowtype
+    ) return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.update_guaranteed_delivery';
+      l_sel_update_row bsis_subscriber_buffer_msgs%rowtype;
+   begin
+      
+      if bsis_sbe_tapi_pck.sbe_select_row_upd(i_sbe_id   => l_updated_row.id
+                                             ,o_rt_sbe   => l_sel_update_row) then
+      l_sel_update_row.status            := l_updated_row.status;
+      l_sel_update_row.send_attempts     := l_updated_row.send_attempts;
+      l_sel_update_row.last_send_attempt := l_updated_row.last_send_attempt;
+      
+      l_updated_row := l_sel_update_row;
+
+      return (1 = bsis_sbe_tapi_pck.sbe_update_row (i_sbe_id    => l_sel_update_row.id,
+                                                    io_rt_sbe   => l_sel_update_row)
+             );
+      else
+        return false;
+      end if;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end update_guaranteed_delivery;
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function analyze_ack (i_ack_msg            in xmltype,
+                         i_expected_ack_seq   in bsis_subscriber_buffer_msgs.id%type)
+      return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                    := g_con_package || '.analyze_ack' ;
+      l_retval                   boolean := false;
+      l_ack_id                   number;
+   begin
+      
+      l_ack_id := get_sequence_number(i_msg => i_ack_msg, i_root_element => 'Acknowledge');
+
+      if (l_ack_id is null or l_ack_id = 0)
+      then
+        if (i_ack_msg is null) then
+            viu_info.handle_info ( i_ifo_nr              => viu_constant.c_ifo_incorrectack
+                                 , i_calling_procedure   => l_con_proc_name
+                                 , i_additional_data     => 'ACK message is null'
+                                 );
+        else
+         
+         viu_info.handle_info ( i_ifo_nr              => viu_constant.c_ifo_incorrectack
+                              , i_calling_procedure   => l_con_proc_name
+                              , i_additional_data     => 'Not possible to retrieve sequence number from this ACK message: '
+                                                      || i_ack_msg.getclobval ()
+                              );
+        end if;
+        l_retval := false;
+      else
+         
+         if (l_ack_id = i_expected_ack_seq)
+         then
+            
+            l_retval := true;
+         else
+            
+            viu_info.handle_info ( i_ifo_nr              => viu_constant.c_ifo_incorrectack
+                                 , i_calling_procedure   => l_con_proc_name
+                                 , i_additional_data     =>   'Received ack for messageId '
+                                                         || l_ack_id
+                                                         || ', but was expecting messageId '
+                                                         || i_expected_ack_seq
+                                 );
+            l_retval := false;
+         end if;
+      end if;
+      
+      return l_retval;
+      
+   end analyze_ack;
+    
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function select_dlv_to_host_subscriber
+	 (i_sequence_number  in number
+	,i_is_ack		    in boolean
+    ) return number
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.select_dlv_to_host_subscriber';
+      type type_multiple_subscribers is table of number;
+      l_multiple_subscribers type_multiple_subscribers;
+	  l_subscriber_pattern varchar(50);
+   begin
+      if i_is_ack = true
+	  then
+	    l_subscriber_pattern := g_con_ack_from_dcs_subscriber || '%';
+	  else
+	    l_subscriber_pattern := g_con_dcs_deliv_subscriber || '%';
+	  end if;
+
+      select ssr.id
+      bulk collect into l_multiple_subscribers
+      from   cmn_subscribers ssr
+	    where  ssr.name like l_subscriber_pattern
+	    order by ssr.id;
+
+    
+	  return l_multiple_subscribers(mod(i_sequence_number, l_multiple_subscribers.count) + 1);
+   exception
+      when others
+      then
+         rollback;
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name,
+                              i_additional_data    => sqlerrm);
+   end select_dlv_to_host_subscriber;
+
+
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure dequeue_dcs_message_loop(i_subscriber_id     in  number
+                                     ,i_subscriber_id_ack in  number
+                                     ,i_pty_id_cust       in  varchar2)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+         := g_con_package || '.dequeue_dcs_message_loop' ;
+      l_row                      bsis_subscriber_buffer_msgs%rowtype;
+      l_ssr_row                  bsis_subscribers%rowtype;
+      l_xml_id                   xmltype;
+      l_row_id                   bsis_subscriber_buffer_msgs.id%type;
+      l_xml_ack                  xmltype;
+      l_expected_ack_id          number;
+      l_received_ack_id          number;
+
+   begin
+       if active_mode
+       then
+         while (true)
+         loop
+           acl_application_control.check_halt_signal;
+           
+           l_xml_id := cmn_queue.dequeue_message (i_subscriber_id    =>i_subscriber_id
+                                                 ,i_immediate_commit => false
+                                                 ,i_navigation       => dbms_aq.first_message
+                                                 ,i_wait_period => 5);
+           rollback;
+           if not active_mode then
+             rollback;
+             exit;
+           end if;
+
+		   
+		   
+		   if l_xml_id is null
+		   then
+		     continue;
+		   end if;
+           l_row_id := to_number (get_element_value (l_xml_id, '/reconId/text()'));
+           
+           if (bsis_sbe_tapi_pck.sbe_select_row (i_sbe_id   => l_row_id,
+                                                 o_rt_sbe   => l_row))
+           then
+             
+               if (bsis_ssr_tapi_pck.ssr_select_row_uk1 (i_ssr_identifier   => i_pty_id_cust,
+                                                       o_rt_ssr           => l_ssr_row))
+             then
+               if l_row.created_on < (cmn_common.default_timestamp - numtodsinterval(l_ssr_row.redelivery_period, 'minute'))
+               then
+                 
+                 l_row.status := 'TIMED_OUT';
+                 viu_info.handle_info (i_ifo_nr              => viu_constant.c_ifo_messagetimedout,
+                                       i_calling_procedure   => l_con_proc_name,
+                                       i_info_arguments      => 'ID:' || l_row.id,
+                                       i_additional_data     => 'Message too long in buffer');
+
+                 l_xml_id := cmn_queue.dequeue_message (i_subscriber_id    =>i_subscriber_id
+                                                       ,i_immediate_commit => false
+                                                       ,i_navigation       => dbms_aq.first_message
+                                                       ,i_wait_period => 5);
+                 commit;
+
+                 if not update_guaranteed_delivery(l_row)
+                 then
+                   
+                   viu_info.handle_info (i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+                                         i_calling_procedure   => l_con_proc_name,
+                                         i_info_arguments      =>   'ID:'
+                                                                 || l_row.id
+                                                                 || ';STATUS:'
+                                                                 || l_row.status,
+                                         i_additional_data     => 'Update failed in bsis_subscriber_buffer_msgs table');
+                 end if;
+
+                 commit;
+                 continue;
+               end if;
+               
+               if not party_healthy(i_pty_id_cust => i_pty_id_cust)
+               then
+                 rollback;
+                 
+                 acl_common.sleep(cmn_common.get_parameter_value ('WAIT_FOR_PARTY_HEALTHY')/ 1000);
+                 continue;
+               end if;
+             else
+               
+               viu_info.handle_info (i_ifo_nr              => viu_constant.c_ifo_recordnotfound,
+                                     i_calling_procedure   => l_con_proc_name,
+                                     i_info_arguments      => 'ID:' || l_row_id,
+                                     i_additional_data     =>   'Cant find party '
+                                                             || i_pty_id_cust
+                                                             || ' in bsis_subscriber table');
+
+               l_xml_id := cmn_queue.dequeue_message (i_subscriber_id    =>i_subscriber_id
+                                                     ,i_immediate_commit => false
+                                                     ,i_navigation       => dbms_aq.first_message
+                                                     ,i_wait_period => 5);
+              commit;
+             end if;
+             
+             
+             if ack_is_required (i_subscriber_id => i_pty_id_cust)
+             then
+               sendwithacknowledgement(l_row
+                                      ,i_pty_id_cust
+                                      ,i_subscriber_id_ack
+                                      ,i_subscriber_id);
+             else
+               cmn_interface.send_message (i_message       => l_row.message,
+                                           i_pty_id_cust   => i_pty_id_cust);
+
+               l_row.status := 'DELIVERED';
+               l_xml_id := cmn_queue.dequeue_message (i_subscriber_id    =>i_subscriber_id
+                                                     ,i_immediate_commit => false
+                                                     ,i_navigation       => dbms_aq.first_message
+                                                     ,i_wait_period => 5);
+               commit;
+             end if;
+             
+             if not update_guaranteed_delivery(l_row)
+             then
+               
+               viu_info.handle_info (i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+                                     i_calling_procedure   => l_con_proc_name,
+                                     i_info_arguments      =>   'ID:'
+                                                             || l_row.id
+                                                             || ';STATUS:'
+                                                             || l_row.status,
+                                     i_additional_data     => 'Update failed in bsis_subscriber_buffer_msgs table');
+             end if;
+           else
+              
+              viu_info.handle_info (i_ifo_nr              => viu_constant.c_ifo_recordnotfound,
+                                    i_calling_procedure   => l_con_proc_name,
+                                    i_info_arguments      => 'ID:' || l_row_id,
+                                    i_additional_data     =>   'Cant find message with id '
+                                                            || l_row_id
+                                                            || 'from message '
+                                                            || l_xml_id.getclobval ()
+                                                            || ' in bsis_subscriber_buffer_msgs table');
+
+              l_xml_id := cmn_queue.dequeue_message (i_subscriber_id    =>i_subscriber_id
+                                                    ,i_immediate_commit => false
+                                                    ,i_navigation       => dbms_aq.first_message
+                                                    ,i_wait_period => 5);
+              commit;
+
+           end if;
+
+           commit;
+           
+           exit when not active_mode;
+         end loop;
+       end if;
+   exception
+      when others
+      then
+         rollback;
+         viu_info.handle_info (i_calling_procedure   => l_con_proc_name,
+                              i_additional_data     => sqlerrm);
+   end dequeue_dcs_message_loop;
+   
+
+  
+
+
+   procedure process_host_ack(i_msg in xmltype)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                    := g_con_package || '.process_host_ack' ;
+	  l_sequence_number number;
+   begin
+      l_sequence_number := get_sequence_number(i_msg => i_msg, i_root_element => 'Acknowledge');
+      cmn_queue.enqueue_message(select_dlv_to_host_subscriber(i_sequence_number  => l_sequence_number
+														     ,i_is_ack           => true)
+							   ,i_msg
+							   );
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end process_host_ack;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure dequeue_brs_message_loop
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+         := g_con_package || '.dequeue_brs_message_loop' ;
+      l_row                      bsis_subscriber_buffer_msgs%rowtype;
+      l_xml_id                   xmltype;
+      l_row_id                   bsis_subscriber_buffer_msgs.id%type;
+   begin
+      if active_mode
+      then
+          while (true)
+          loop
+               
+             l_xml_id := cmn_queue.dequeue_message (bsis_constant.g_con_brs_deliv_queue_id);
+             l_row_id :=
+                to_number (
+                   get_element_value (l_xml_id, '/reconId/text()'));
+
+             
+             if (bsis_sbe_tapi_pck.sbe_select_row (i_sbe_id   => l_row_id,
+                                                   o_rt_sbe   => l_row))
+             then
+                
+                while (l_row.send_attempts <
+                          cmn_common.get_parameter_value ('MAX_SEND_ATTEMPTS'))
+                loop
+                   l_row.send_attempts := l_row.send_attempts + 1;
+
+                   begin
+                      
+                      l_row.last_send_attempt := cmn_common.default_timestamp;
+                      
+                      l_row.message := add_namespace(l_row.message);
+                      
+                      cmn_interface.send_message (i_message       => l_row.message,
+                                                  i_pty_id_cust   => bsis_constant.g_con_brs_deliv_party);
+                      l_row.status := 'DELIVERED';
+                      exit;
+                   exception
+                      when others
+                      then
+                         viu_info.handle_info (
+                            i_ifo_nr              => viu_constant.c_ifo_cmncmnotavailable,
+                            i_calling_procedure   => l_con_proc_name,
+                            i_additional_data     => sqlerrm);
+                         
+                         acl_common.sleep (
+                            (cmn_common.get_parameter_value ('WAIT_FOR_RESEND')
+                             / 1000));
+                   end;
+                end loop;
+
+                if (l_row.send_attempts >=
+                       cmn_common.get_parameter_value ('MAX_SEND_ATTEMPTS'))
+                then
+                   
+                   l_row.status := 'FAILED_TO_DELIVER';
+                   viu_info.handle_info (
+                      i_ifo_nr              => viu_constant.c_ifo_maxsendattemptsreached,
+                      i_calling_procedure   => l_con_proc_name,
+                      i_info_arguments      => 'ID:' || l_row.id,
+                      i_additional_data     => 'Maximum number of send attempts reached');
+                end if;
+
+                if not update_guaranteed_delivery(l_row)
+                then
+                   
+                   viu_info.handle_info (
+                      i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+                      i_calling_procedure   => l_con_proc_name,
+                      i_info_arguments      =>   'ID:'
+                                              || l_row.id
+                                              || ';STATUS:'
+                                              || l_row.status,
+                      i_additional_data     => 'Update failed in bsis_subscriber_buffer_msgs table');
+                end if;
+             else
+                
+                viu_info.handle_info (
+                   i_ifo_nr              => viu_constant.c_ifo_recordnotfound,
+                   i_calling_procedure   => l_con_proc_name,
+                   i_info_arguments      => 'ID:' || l_row_id,
+                   i_additional_data     =>   'Cant find message with id '
+                                           || l_row_id
+                                           || 'from message '
+                                           || l_xml_id.getclobval ()
+                                           || ' in bsis_subscriber_buffer_msgs table');
+             end if;
+             
+             commit;
+          end loop;
+      end if;
+   exception
+      when others
+      then
+         rollback;
+         viu_info.handle_info (i_calling_procedure   => l_con_proc_name,
+                              i_additional_data     => sqlerrm);
+   end dequeue_brs_message_loop;
+   
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure deliver_to_host
+    (i_msg              in xmltype
+    ,i_buffer_message   in boolean := false
+    ,i_target_processid in cmn_parties.id_cust%type := null
+	,i_sequence_number  in number
+    )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.deliver_to_host';
+      l_current_schema varchar2(40);
+      l_row            bsis_subscriber_buffer_msgs%rowtype;
+      l_rt_ssr         bsis_subscribers%rowtype;
+   begin
+     if active_mode
+     then
+       
+       
+       
+       if bsis_ssr_tapi_pck.ssr_select_row_uk1
+         ( i_ssr_identifier => i_target_processid
+         , o_rt_ssr         => l_rt_ssr
+         )
+       then
+          if ack_is_required(i_subscriber_id => l_rt_ssr.identifier) or i_buffer_message then
+            
+            l_row := bsis_subscription_mgr.buffer_message(i_message     => i_msg
+                                                         ,i_target_name => i_target_processid
+                                                         );
+            
+		    cmn_queue.enqueue_message(select_dlv_to_host_subscriber(i_sequence_number  => i_sequence_number
+																   ,i_is_ack           => false)
+								     ,xmltype('<reconId>' || l_row.id || '</reconId>')
+									 ,false
+									 );
+            commit;
+          else
+            
+            cmn_interface.send_message(i_message => i_msg, i_pty_id_cust => i_target_processid);
+           
+           bsis_lifesign.update_last_msg_sent(i_pty_id_cust => bsis_constant.g_con_host_party);
+         end if;
+       else
+         
+         viu_info.handle_info (
+            i_ifo_nr              => viu_constant.c_ifo_recordnotfound,
+            i_calling_procedure   => l_con_proc_name,
+            i_additional_data     => 'No record bsis subscribers table for Identifier '|| i_target_processid);
+       end if;
+     else 
+       
+       l_current_schema := bsis_custom_handlers.get_node_value_derived(i_gmd_type => 'SchemaDataconfigType'
+                                                                      ,i_gmd_key  => 'CURRENT_SCHEMA');
+       
+       if  l_current_schema = 'AMD'
+       and i_buffer_message
+       then
+         
+         l_row := bsis_subscription_mgr.buffer_message(i_message     => i_msg
+                                                      ,i_target_name => i_target_processid
+                                                      );
+
+         
+		 cmn_queue.enqueue_message(select_dlv_to_host_subscriber(i_sequence_number  => i_sequence_number
+													            ,i_is_ack           => false)
+								   ,xmltype('<reconId>' || l_row.id || '</reconId>')
+								   ,false
+								   );
+         commit;
+       end if;   
+     end if; 
+     
+   exception
+   when others then
+     viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end deliver_to_host;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_vendor_string
+    ( i_msg          in xmltype
+    , i_root_element in varchar2 := null
+    ) return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_vendor_string';
+      l_vendor_string varchar2(100);
+      l_root_element varchar2(100) := i_root_element;
+   begin
+      
+      if (i_root_element is null) then
+          l_root_element := cmn_interface.get_message_name (i_message => i_msg);
+      end if;
+      
+      l_vendor_string := get_element_value(i_msg, l_root_element || '/Header/VendorString/text()');
+      
+      return l_vendor_string;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name, i_additional_data => sqlerrm);
+   end get_vendor_string;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_sequence_number
+    (i_msg          in xmltype
+    , i_root_element in varchar2 := null    ) return number
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.get_sequence_number';
+      l_sequence_number number;
+      l_root_element    varchar2(100) := i_root_element;
+   begin
+      if (i_msg is null) then
+        return null;
+      end if;
+      
+      
+      if (i_root_element is null) then
+          l_root_element := cmn_interface.get_message_name (i_message => i_msg);
+      end if;
+      
+      l_sequence_number := get_element_value(i_msg, l_root_element || '/Header/Sequence/text()');
+      
+      return l_sequence_number;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_sequence_number;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure add_ack_flag
+    ( io_msg         in out xmltype
+    , i_root_element in     varchar2 := null
+    )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                      := g_con_package || '.add_ack_flag';
+      l_root_element varchar2(100) := i_root_element;
+   begin
+      
+      if (i_root_element is null)
+      then
+         l_root_element := cmn_interface.get_message_name (i_message => io_msg);
+      end if;
+      
+      
+      select insertchildxml(io_msg
+                           ,l_root_element || '/' || cmn_constant.g_con_header
+                           ,'Acknowledge'
+                           ,xmltype('<Acknowledge>true</Acknowledge>')
+                           )
+      into   io_msg
+      from   dual
+      ;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name, i_additional_data => sqlerrm);
+   end add_ack_flag;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+   procedure start_ini_iata_id
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                                  := g_con_package || '.start_ini_iata_id';
+   begin
+     ini_iata_id(i_dat_elt_type        => 'SRC'
+                ,o_iata_val_tab        => g_iata_val_tab_src
+                ,o_iata_id_tab         => g_iata_id_tab_src
+                ,o_iata_merge_tab      => g_iata_merge_method_tab_src
+                ,o_iata_exist_tab      => g_iata_exist_tab_src
+                ,o_custom_merge_exists => g_custom_merge_exists_src
+                );
+     ini_iata_id(i_dat_elt_type        => 'SVE'
+                ,o_iata_val_tab        => g_iata_val_tab_sve
+                ,o_iata_id_tab         => g_iata_id_tab_sve
+                ,o_iata_merge_tab      => g_iata_merge_method_tab_sve
+                ,o_iata_exist_tab      => g_iata_exist_tab_sve
+                ,o_custom_merge_exists => g_custom_merge_exists_sve
+                );
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end start_ini_iata_id;
+   
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_baggage_source_ind
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_dat_elt_root in varchar2 := null
+    )
+    return varchar2
+   is
+      l_con_proc      constant cmn_constant.st_proc_name := g_con_package || '.get_baggage_source_ind';
+      l_bse_ind       char(1);
+      l_dat_elt_root  varchar2(100);
+   begin
+      
+      if i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+        
+
+
+         l_dat_elt_root   := nvl(i_dat_elt_root, '*');
+         
+         l_bse_ind  := get_element_value(i_msg
+                                   ,'/' || l_dat_elt_root || '/VersionAndSupplementaryData/BaggageSourceIndicator/text()');
+
+      else
+        
+        viu_info.raise_info(i_calling_procedure => l_con_proc, i_info_arguments => 'No message handler defined for message type' || i_pmd_name);
+      end if;
+      
+      return l_bse_ind;
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_baggage_source_ind;
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_baggage_irr_ext
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_dat_elt_root in varchar2 := null
+    )
+    return boolean
+   is
+      l_con_proc      constant cmn_constant.st_proc_name := g_con_package || '.get_baggage_irr_ext';
+      l_bse_ind       boolean;
+      l_dat_elt_root  varchar2(100);
+      l_result        varchar2(100);
+   begin
+      
+      if i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+         l_dat_elt_root   := nvl(i_dat_elt_root, '*');
+         
+         l_result := get_element_value(i_msg
+                                      ,bsis_constant.g_con_bdi_src_root
+           || '/BaggageIrregularitiesExtension/InstructionToUnload/text()');
+
+         if l_result = 'true'
+         then l_bse_ind := true;
+         elsif l_result = 'false'
+         then l_bse_ind := false;
+         else l_bse_ind := null;
+         end if;
+
+      else
+        
+        viu_info.raise_info(i_calling_procedure => l_con_proc, i_info_arguments => 'No message handler defined for message type' || i_pmd_name);
+      end if;
+      
+      return l_bse_ind;
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_baggage_irr_ext;
+
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure sendwithacknowledgement(io_sbe_row       in out bsis_subscriber_buffer_msgs%rowtype
+                                    ,i_pty_id_cust    varchar2
+                                    ,i_subscriber_id_ack  number
+                                    ,i_subscriber_id  number)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+         := g_con_package || '.SendWithAcknowledgement' ;
+      l_row                      bsis_subscriber_buffer_msgs%rowtype;
+      l_xml_ack                  xmltype;
+      l_expected_ack_id          number;
+      l_xml_id                   xmltype;
+
+   begin
+     
+     l_row := io_sbe_row;
+     l_expected_ack_id := get_sequence_number(i_msg          => l_row.message
+                                             ,i_root_element => l_row.type
+                                             );
+
+     
+     add_ack_flag(io_msg         => l_row.message
+                 ,i_root_element => l_row.type
+                 );
+     
+     
+     while (l_row.send_attempts < cmn_common.get_parameter_value ('MAX_SEND_ATTEMPTS'))
+     loop
+       if not party_healthy(i_pty_id_cust => i_pty_id_cust) then
+         rollback;
+         cmn_queue.purge_queue_table(i_subscriber_id => i_subscriber_id_ack);
+         exit;
+       end if;
+
+       l_row.send_attempts := l_row.send_attempts + 1;
+       begin
+         
+         l_row.last_send_attempt := cmn_common.default_timestamp;
+         
+         begin
+         cmn_interface.send_message (i_message       => l_row.message,
+                                     i_pty_id_cust   => i_pty_id_cust);
+         exception
+         when others then
+           viu_info.handle_info (i_ifo_nr            => viu_constant.c_ifo_cmncmnotavailable
+                                ,i_calling_procedure => l_con_proc_name
+                                ,i_additional_data   => sqlerrm
+                                );
+         end;
+         
+         l_xml_ack := cmn_queue.dequeue_message (i_subscriber_id => i_subscriber_id_ack
+                                                ,i_wait_period   => (cmn_common.get_parameter_value ('WAIT_FOR_ACK')/ 1000)
+                                                );
+
+         if analyze_ack (l_xml_ack
+                        ,l_expected_ack_id)
+         then
+           
+           l_row.status := 'DELIVERED';
+
+
+           l_xml_id := cmn_queue.dequeue_message (i_subscriber_id    =>i_subscriber_id
+                                                 ,i_immediate_commit => false
+                                                 ,i_navigation       => dbms_aq.first_message
+                                                 ,i_wait_period => 5);
+           commit;
+           
+           bsis_lifesign.update_last_msg_sent(i_pty_id_cust => i_pty_id_cust);
+           exit;
+         else
+           
+           acl_common.sleep(cmn_common.get_parameter_value ('WAIT_FOR_RESEND')/ 1000);
+           
+           cmn_queue.purge_queue_table(i_subscriber_id => i_subscriber_id_ack);
+         end if;
+       exception
+       when others then
+         viu_info.handle_info (i_ifo_nr            => viu_constant.c_ifo_cmncmnotavailable
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_additional_data   => sqlerrm
+                              );
+         
+         acl_common.sleep (cmn_common.get_parameter_value ('WAIT_FOR_RESEND')/ 1000);
+       end;
+     end loop;
+
+     if (l_row.send_attempts >=  cmn_common.get_parameter_value ('MAX_SEND_ATTEMPTS'))
+     then
+       
+       l_row.status := 'FAILED_TO_DELIVER';
+
+       l_xml_id := cmn_queue.dequeue_message (i_subscriber_id    =>i_subscriber_id
+                                             ,i_immediate_commit => false
+                                             ,i_navigation       => dbms_aq.first_message
+                                             ,i_wait_period => 5);
+       commit;
+
+       viu_info.handle_info (i_ifo_nr              => viu_constant.c_ifo_maxsendattemptsreached,
+                             i_calling_procedure   => l_con_proc_name,
+                             i_info_arguments      => 'ID:' || l_row.id,
+                             i_additional_data     => 'Maximum number of send attempts reached');
+     end if;
+
+     commit;
+     io_sbe_row := l_row;
+
+   exception
+      when others
+      then
+         rollback;
+         viu_info.handle_info (i_calling_procedure   => l_con_proc_name,
+                              i_additional_data     => sqlerrm);
+   end sendwithacknowledgement;
+   
+   function get_source_process_id
+     return cmn_constant.st_processid
+   is
+      l_con_proc_name       constant cmn_constant.st_proc_name       := g_con_package || '.get_source_process_id';
+      l_pty_type                     cmn_parties.type%type;
+      l_return                       cmn_constant.st_processid;
+   begin
+
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      l_pty_type := cmn_common.get_parameter_value( i_prr_name      => cmn_constant.g_con_pve_cmn_party_ident );
+
+      select pty.id_cust
+      into   l_return
+      from   cmn_parties   pty
+      where  pty.type = l_pty_type;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+      return l_return;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_source_process_id;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function message_header (
+         i_target_process_id  in varchar2
+       , i_target_instance_id in varchar2 default null
+       , i_sequence_number    in number)
+      return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                       := g_con_package || '.message_header()';
+      l_current_time             varchar2 (30);
+      l_source_processid         cmn_constant.st_processid;
+      l_header                   xmltype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+      l_current_time :=
+               cmn_common.timestamp_to_varchar (cmn_common.default_timestamp);
+      l_source_processid := get_source_process_id;
+
+      if l_source_processid is not null
+      then
+        if i_target_instance_id is not null
+        then
+          select xmlelement ("Header",
+                             xmlelement ("MessageTime", l_current_time),
+                             xmlelement ("Source",
+                                         xmlelement ("ProcessID",
+                                                     l_source_processid
+                                                    )
+                                        ),
+                             xmlelement ("Target",
+                                         xmlelement ("ProcessID",
+                                                     i_target_process_id
+                                                    ),
+                                         xmlelement ("InstanceID",
+                                                     i_target_instance_id
+                                                    )
+                                        ),
+                             xmlelement ("Sequence", i_sequence_number)
+                            )
+          into l_header
+          from dual;
+        else
+          select xmlelement ("Header",
+                             xmlelement ("MessageTime", l_current_time),
+                             xmlelement ("Source",
+                                         xmlelement ("ProcessID",
+                                                     l_source_processid
+                                                    )
+                                        ),
+                             xmlelement ("Target",
+                                         xmlelement ("ProcessID",
+                                                     i_target_process_id
+                                                    )
+                                        ),
+                             xmlelement ("Sequence", i_sequence_number)
+                            )
+          into l_header
+          from dual;
+        end if;
+      else
+         viu_info.raise_info (i_ifo_nr                 => viu_constant.c_ifo_cmnpartynotfound,
+                              i_calling_procedure      => l_con_proc_name,
+                              i_severity               => viu_info.c_severity_error,
+                              i_info_arguments         => null,
+                              i_additional_data        => null
+                             );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_header;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => 'exception'
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end message_header;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_brsp_message
+    ( i_src_pcs_id         in varchar2
+    , i_src_inst_id        in varchar2
+    , i_sequence_number    in number
+    , i_msg_pck_id         in xmltype
+    )
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                    := g_con_package || '.send_brsp_message';
+      l_response_data      xmltype;
+      l_response_header    xmltype;
+      l_baggage_identifier xmltype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+      
+      
+      l_response_header := message_header( i_src_pcs_id, i_src_inst_id, i_sequence_number);
+
+      
+      if active_mode
+      then
+        
+        select xmlelement("BagLoadResponse", l_response_header)
+        into   l_response_data
+        from   dual;
+        
+        
+        l_baggage_identifier := cmn_xml_util.extract_element(i_msg_pck_id, '//PackageIdentifier/BaggageIdentifier');
+        select insertchildxml( l_response_data
+                             , '//BagLoadResponse'
+                             , 'BaggageIdentifier'
+                             , l_baggage_identifier
+                             )
+        into   l_response_data
+        from   dual;
+        
+        cmn_interface.send_message( i_message     => l_response_data
+                                  , i_pty_id_cust => i_src_pcs_id
+                                  , i_pty_instance_id_cust => i_src_inst_id);
+        end if;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => 'Unable to send BagResponse message'
+                                 );
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+   end send_brsp_message;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_pdrsp_message
+    ( i_msg_id_rec         in bsis_interface.rt_msg_id
+    , i_sequence_number    in number
+    )
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                    := g_con_package || '.send_pdrsp_message';
+      l_response_data      xmltype;
+      l_response_header    xmltype;
+      l_baggage_identifier xmltype;
+      l_msg_id_rec         bsis_interface.rt_msg_id;
+   begin
+      l_msg_id_rec := i_msg_id_rec;
+      
+      viu_module.enter_module (i_module => l_con_proc_name);
+      
+      
+      l_response_header := message_header( l_msg_id_rec.src_pcs_id, null, i_sequence_number);
+      
+      
+      select xmlelement("PackageDataSubscribeResponse", l_response_header)
+      into   l_response_data
+      from   dual;
+      
+      cmn_interface.send_message( i_message     => l_response_data
+                                , i_pty_id_cust => l_msg_id_rec.src_pcs_id);
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => 'Unable to send PackageDataResponse message'
+                                 );
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+   end send_pdrsp_message;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_inb_flight_id
+    ( i_pmd_name     in varchar2
+    , i_msg          in xmltype
+    , i_dat_elt_root in varchar2 := null
+    )
+   return rt_flight_id
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.get_inb_flight_id';
+      l_flight_id_rec rt_flight_id;
+      l_airline       varchar2(5);
+      l_flight_number varchar2(10);
+      l_flight_date   varchar2(100);
+      l_dat_elt_root  varchar2(100);
+   begin
+      if i_pmd_name = bsis_constant.g_con_bdi_msg_root
+      then
+         l_dat_elt_root   := nvl(i_dat_elt_root, '*');
+         
+         if l_dat_elt_root = bsis_constant.g_con_bdi_src_root
+         then
+            l_airline := get_element_value
+                                    (i_msg,
+                                        '/'
+                                     || l_dat_elt_root
+                                     || '/'
+                                     || bsis_constant.g_con_inb_flightinfo
+                                     || '/'
+                                     || bsis_constant.g_con_flight
+                                     || '/'
+                                     || bsis_constant.g_con_airline
+                                     || '/text()'
+                                    );
+            l_flight_number := get_element_value
+                                             (i_msg,
+                                                 '/'
+                                              || l_dat_elt_root
+                                              || '/'
+                                              || bsis_constant.g_con_inb_flightinfo
+                                              || '/'
+                                              || bsis_constant.g_con_flight
+                                              || '/'
+                                              || bsis_constant.g_con_flightnr
+                                              || '/text()'
+                                              );
+            l_flight_date := get_element_value
+                             (i_msg,
+                                 '/'
+                              || l_dat_elt_root
+                              || '/'
+                              || bsis_constant.g_con_inb_flightinfo
+                              || '/'
+                              || bsis_constant.g_con_flight
+                              || '/'
+                              || bsis_constant.g_con_flightdate
+                              || '/text()'
+                             );
+            l_flight_date := cmn_common.varchar_iso8601_to_date
+                                               (i_date => l_flight_date);
+         end if;
+
+      end if;
+      
+      if l_airline is not null then
+        l_flight_id_rec.flight := l_airline || l_flight_number || '_' || l_flight_date;
+      else
+        l_flight_id_rec.flight := null;
+      end if;
+
+      return l_flight_id_rec;
+      
+   exception
+   when others then
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_inb_flight_id;
+   
+begin
+  start_ini_iata_id;
+end bsis_interface;
+/

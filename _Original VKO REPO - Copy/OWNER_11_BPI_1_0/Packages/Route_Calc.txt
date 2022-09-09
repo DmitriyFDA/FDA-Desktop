@@ -1,0 +1,731 @@
+create or replace PACKAGE Route_Calc IS
+
+  G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'Route_Calc';
+  type series_varr is varray(2000) of DIM_TR_SERIES%rowtype;
+  type parallel_varr is varray(2000) of DIM_TR_PARALLELS%rowtype;
+
+  type tr_segment_rec is record (STATUS_SEGMENT_ID number, REGISTERED_SEGMENT_CAPACITY number
+  , OPERATIONAL_SEGMENT_CAPACITY number, TECHNICAL_SEGMENT_CAPACITY number, SAFETY_SEGMENT_CAPACITY number
+  , PAR_SER_STRING varchar2(4000), SUM_PATH_CAPACITIES number);
+  type tr_segments_varr is varray(2000) of tr_segment_rec;
+  g_tr_segments_varr tr_segments_varr;
+
+  type par_ser_cap_rec is record (PAR_SER varchar2(20), PATH_CAPACITY number);
+  type par_ser_cap_varr is varray(2000) of par_ser_cap_rec;
+  g_par_ser_cap_varr par_ser_cap_varr;
+
+  g_tr_rec dim_transport_routes%rowtype;
+  
+  TYPE tab_tr_series IS TABLE OF DIM_TR_SERIES%rowtype;
+  g_tab_series tab_tr_series;
+
+  TYPE tab_tr_parallels IS TABLE OF DIM_TR_PARALLELS%rowtype;
+  g_tab_parallels tab_tr_parallels;
+
+  function series_paths(p_paths path_varr, p_id number) return path_varr;
+  function parallel_paths(p_paths path_varr, p_id number) return path_varr;
+
+  function add_to_paths(p_paths path_varr, p_id number) return path_varr;
+  function add_to_paths(p_paths path_varr, p_paths_to_add path_varr) return path_varr;
+  function bigstring_of_paths(p_paths path_varr) return varchar2 ;
+
+  function tr_capacity(p_tr_id number, p_eventseconds number, p_point_of_view varchar2) return number;
+
+  function get_tr_segments_record(i_status_segment_id in number) return tr_segment_rec;
+  function par_ser_capacity(p_par_ser varchar2) return number;
+  
+  function series_calc(p_id number, adjust_by_ratio boolean) return number;
+  function parallel_calc(p_id number, adjust_by_ratio boolean) return number;
+  function series_path_capacity(p_series_id number) return number;
+  function parallel_path_capacity(p_parallel_id number) return number;
+  function series_ancestor_capacity(p_series_id number) return number;
+
+  procedure get_series_calc(p_id number, adjust_by_ratio boolean
+  , o_operational_capacity out number, o_technical_capacity out number, o_safety_capacity out number);
+  procedure get_parallel_calc(p_id number, adjust_by_ratio boolean
+  , o_operational_capacity out number, o_technical_capacity out number, o_safety_capacity out number);
+
+  procedure initialize_globals(p_tr_id number, p_eventseconds number);
+
+  procedure segment_capacity_all_views(p_status_segment_id number, p_eventseconds number, p_default_capacity number
+, o_operational_capacity in out number, o_technical_capacity in out number, o_safety_capacity in out number);
+
+  procedure tr_capacity_all_views(p_tr_id number, p_eventseconds number
+  , o_operational_capacity in out number, o_technical_capacity in out number, o_safety_capacity in out number);
+
+END Route_Calc;
+/
+
+
+
+
+package body route_calc is
+
+
+
+
+
+
+function add_to_paths(p_paths path_varr, p_id number) return path_varr is
+l_paths path_varr := path_varr();
+begin
+  if p_paths is null then
+    l_paths := path_varr();
+    l_paths.extend(1);
+    l_paths(1) := '';
+  else
+    l_paths := p_paths;
+  end if;
+  for i in 1..l_paths.count loop
+    l_paths(i) := l_paths(i)||to_char(p_id)||',';
+  end loop;
+  return l_paths;
+end;
+
+
+function add_to_paths(p_paths path_varr, p_paths_to_add path_varr) return path_varr is
+l_paths path_varr := path_varr();
+begin
+   if p_paths is null and p_paths_to_add is null then
+     return null;
+   end if;
+   if p_paths is null then
+     l_paths := p_paths_to_add;
+   else
+    if p_paths_to_add is null then
+      l_paths := p_paths;
+    else
+      l_paths := path_varr();
+      for i in 1..p_paths.count loop
+        for j in 1..p_paths_to_add.count loop
+         l_paths.extend(1);
+         l_paths(l_paths.count) := p_paths(i)||p_paths_to_add(j);
+       end loop;
+      end loop;
+    end if;
+  end if;
+  return l_paths;
+end;
+
+
+function series_paths(p_paths path_varr, p_id number) return path_varr is
+l_paths path_varr := path_varr();
+l_ser_path path_varr := path_varr();
+l_varr series_varr := series_varr();
+begin
+  l_paths := p_paths;
+  
+  for c_rec in (select * from dim_tr_series where id = p_id order by item_sequence) loop
+    l_varr.extend(1);
+    l_varr(l_varr.count) := c_rec;
+  end loop;
+  l_ser_path.extend(1);
+  l_ser_path(1) := 'S'||to_char(p_id)||',';
+  l_paths := add_to_paths(l_paths, l_ser_path);
+  for i in 1..l_varr.count loop
+    if l_varr(i).status_segment_id is not null then
+      l_paths := add_to_paths(l_paths, l_varr(i).status_segment_id);
+      
+    elsif l_varr(i).series_id is not null then
+      l_paths := add_to_paths(l_paths, series_paths(null, l_varr(i).series_id));
+    elsif l_varr(i).parallel_id is not null then
+      l_paths := add_to_paths(l_paths, parallel_paths(null, l_varr(i).parallel_id));
+    end if;
+  end loop;
+  
+  return l_paths;
+end;
+
+
+
+
+function parallel_paths(p_paths path_varr, p_id number) return path_varr is
+l_paths path_varr := path_varr();
+l_ser_paths path_varr := path_varr();
+l_varr parallel_varr := parallel_varr();
+begin
+  l_paths := path_varr();
+  l_ser_paths := path_varr();
+   
+  for c_rec in (select * from dim_tr_parallels where id = p_id order by item_sequence) loop
+    l_varr.extend(1);
+    l_varr(l_varr.count) := c_rec;
+  end loop;
+  for i in 1..l_varr.count loop
+    if l_varr(i).status_segment_id is not null then
+      l_paths.extend(1);
+      l_paths(l_paths.count) := 'P'||to_char(p_id)||','||to_char(l_varr(i).status_segment_id)||',';
+    elsif l_varr(i).series_id is not null then
+      l_ser_paths := add_to_paths(null, series_paths(null, l_varr(i).series_id));
+      for j in 1..l_ser_paths.count loop
+        l_paths.extend(1);
+        l_paths(l_paths.count) := 'P'||to_char(p_id)||','||l_ser_paths(j);
+      end loop;
+      
+    elsif l_varr(i).parallel_id is not null then
+      l_paths := add_to_paths(null, parallel_paths(null, l_varr(i).parallel_id));
+    end if;
+  end loop;
+  
+  l_paths := add_to_paths(p_paths, l_paths);
+  
+  return l_paths;
+end;
+
+
+
+
+function bigstring_of_paths(p_paths path_varr) return varchar2 is
+bigstring varchar2(32000) := '';
+begin
+  if p_paths is null then
+    return '0:';
+  end if;
+  for i in 1..p_paths.count loop
+    bigstring :=  bigstring||to_char(i)||': '||p_paths(i)||chr(10);
+  end loop;
+  return bigstring;
+end;
+
+
+
+function tr_capacity(p_tr_id number, p_eventseconds number, p_point_of_view varchar2) return number is
+v_point_of_view varchar2(50) := upper(trim(p_point_of_view)); 
+v_operational_capacity number := 0;
+v_technical_capacity number := 0;
+v_safety_capacity number := 0;
+v_capacity number := 0;
+v_sum_capacity number := 0;
+begin
+  tr_capacity_all_views(p_tr_id, p_eventseconds, v_operational_capacity, v_technical_capacity, v_safety_capacity);
+  v_capacity := v_operational_capacity; 
+  if v_point_of_view = 'TECHNICAL' then
+    v_capacity := v_technical_capacity;
+  elsif v_point_of_view = 'SAFETY' then
+    v_capacity := v_safety_capacity;
+  end if;
+  return v_capacity;
+end;
+
+
+
+
+
+
+
+
+
+procedure print_tr_segs is
+v_msg varchar2(4000) := '';
+begin
+  for i in 1..g_tr_segments_varr.count loop
+    v_msg := 'STATUS_SEGMENT_ID:'||to_char(g_tr_segments_varr(i).status_segment_id)
+           ||', REGISTERED_SEGMENT_CAPACITY:'||to_char(g_tr_segments_varr(i).registered_segment_capacity)
+           ||', OPERATIONAL_SEGMENT_CAPACITY:'||to_char(g_tr_segments_varr(i).operational_segment_capacity)
+           ||', TECHNICAL_SEGMENT_CAPACITY:'||to_char(g_tr_segments_varr(i).technical_segment_capacity)
+           ||', SAFETY_SEGMENT_CAPACITY:'||to_char(g_tr_segments_varr(i).safety_segment_capacity)
+           ||', PAR_SER_STRING:'||g_tr_segments_varr(i).par_ser_string
+           ||', SUM_PATH_CAPACITIES:'||to_char(g_tr_segments_varr(i).sum_path_capacities);
+    dbms_output.put_line(v_msg);
+  end loop;
+end;
+
+
+
+procedure print_par_ser_caps is
+v_msg varchar2(2000) := '';
+begin
+  for i in 1..g_par_ser_cap_varr.count loop
+    v_msg := 'PAR_SER:'||g_par_ser_cap_varr(i).par_ser
+           ||', PATH_CAPACITY:'||to_char(g_par_ser_cap_varr(i).path_capacity);
+     dbms_output.put_line(v_msg);
+  end loop;
+end;
+
+
+
+function series_calc(p_id number, adjust_by_ratio boolean) return number is
+
+l_calc number := 32767000;
+l_capacity number := 0;
+l_path_cap number := 0;
+l_sum_caps number := 0;
+l_count number := 0;
+l_tr_segment_record tr_segment_rec;
+begin
+  for i in 1..g_tab_series.count loop
+    if g_tab_series(i).id = p_id then
+      l_count := l_count + 1;
+      if g_tab_series(i).status_segment_id is not null then
+        l_tr_segment_record := get_tr_segments_record(g_tab_series(i).status_segment_id);
+        if l_tr_segment_record.status_segment_id is not null then
+          l_capacity := l_tr_segment_record.registered_segment_capacity;
+          l_sum_caps := l_tr_segment_record.sum_path_capacities;
+        end if;
+        if adjust_by_ratio then
+          if l_sum_caps = 0 then
+            l_capacity := 0;
+          else
+            l_path_cap := series_path_capacity(p_id);
+            l_capacity := l_capacity * l_path_cap / l_sum_caps;
+          end if;
+        end if;
+        l_calc := least(l_calc, l_capacity);
+        
+      elsif g_tab_series(i).series_id is not null then
+        l_calc := least(l_calc, series_calc(g_tab_series(i).series_id, adjust_by_ratio));
+      elsif g_tab_series(i).parallel_id is not null then
+        l_calc := least(l_calc, parallel_calc(g_tab_series(i).parallel_id, adjust_by_ratio));
+      end if;
+    end if;
+  end loop;
+  if l_count < 1 then
+    l_calc := -1;
+  end if;
+  return l_calc;
+end;
+
+
+function parallel_calc(p_id number, adjust_by_ratio boolean) return number is
+
+l_calc number := 0;
+l_capacity number := 0;
+l_path_cap number := 0;
+l_sum_caps number := 0;
+l_count number := 0;
+l_tr_segment_record tr_segment_rec;
+begin
+  for i in 1..g_tab_parallels.count loop
+    if g_tab_parallels(i).id = p_id then
+      l_count := l_count + 1;
+      if g_tab_parallels(i).status_segment_id is not null then
+        l_tr_segment_record := get_tr_segments_record(g_tab_parallels(i).status_segment_id);
+        if l_tr_segment_record.status_segment_id is not null then
+          l_capacity := l_tr_segment_record.registered_segment_capacity;
+          l_sum_caps := l_tr_segment_record.sum_path_capacities;
+        end if;
+        if adjust_by_ratio then
+          if l_sum_caps = 0 then
+            l_capacity := 0;
+          else
+            l_path_cap := parallel_path_capacity(p_id);
+            l_capacity := l_capacity * l_path_cap / l_sum_caps;
+          end if;
+        end if;
+        l_calc := l_calc + l_capacity;
+      
+      elsif g_tab_parallels(i).series_id is not null then
+        l_calc := l_calc + series_calc(g_tab_parallels(i).series_id, adjust_by_ratio);
+      elsif g_tab_parallels(i).parallel_id is not null then
+        l_calc := l_calc + parallel_calc(g_tab_parallels(i).parallel_id, adjust_by_ratio);
+      end if;
+    end if;
+  end loop;
+  if l_count < 1 then
+    l_calc := -1;
+  end if;
+  return l_calc;
+end;
+
+
+procedure get_series_calc(p_id number, adjust_by_ratio boolean
+, o_operational_capacity out number, o_technical_capacity out number, o_safety_capacity out number) is
+
+l_operational_capacity number := 0;
+l_technical_capacity number := 0;
+l_safety_capacity number := 0;
+l_tr_segment_record tr_segment_rec;
+l_path_cap number := 0;
+l_sum_caps number := 0;
+l_count number := 0;
+begin
+  o_operational_capacity := 32767000;
+  o_technical_capacity := 32767000;
+  o_safety_capacity := 32767000;
+  for i in 1..g_tab_series.count loop
+    if g_tab_series(i).id = p_id then
+      l_count := l_count + 1;
+      if g_tab_series(i).status_segment_id is not null then
+
+        l_tr_segment_record := get_tr_segments_record(g_tab_series(i).status_segment_id);
+        if l_tr_segment_record.status_segment_id is not null then
+          l_operational_capacity := l_tr_segment_record.operational_segment_capacity;
+          l_technical_capacity := l_tr_segment_record.technical_segment_capacity;
+          l_safety_capacity := l_tr_segment_record.safety_segment_capacity;
+          l_sum_caps := l_tr_segment_record.sum_path_capacities;
+        end if;
+
+        if adjust_by_ratio then
+          if l_sum_caps = 0 then
+            l_operational_capacity := 0;
+            l_technical_capacity := 0;
+            l_safety_capacity := 0;
+          else
+            l_path_cap := series_path_capacity(p_id);
+            l_operational_capacity := l_operational_capacity * l_path_cap / l_sum_caps;
+            l_technical_capacity := l_technical_capacity * l_path_cap / l_sum_caps;
+            l_safety_capacity := l_safety_capacity * l_path_cap / l_sum_caps;
+          end if;
+        end if;
+        
+        
+
+      elsif g_tab_series(i).series_id is not null then
+        get_series_calc(g_tab_series(i).series_id, adjust_by_ratio, l_operational_capacity, l_technical_capacity, l_safety_capacity);
+      elsif g_tab_series(i).parallel_id is not null then
+        get_parallel_calc(g_tab_series(i).parallel_id, adjust_by_ratio, l_operational_capacity, l_technical_capacity, l_safety_capacity);
+      end if;
+      o_operational_capacity := least(o_operational_capacity, l_operational_capacity);
+      o_technical_capacity := least(o_technical_capacity, l_technical_capacity);
+      o_safety_capacity := least(o_safety_capacity, l_safety_capacity);
+      
+    end if;
+  end loop;
+  if l_count < 1 then
+    o_operational_capacity := -1;
+    o_technical_capacity := -1;
+    o_safety_capacity := -1;
+  end if;
+end;
+
+
+procedure get_parallel_calc(p_id number, adjust_by_ratio boolean
+, o_operational_capacity out number, o_technical_capacity out number, o_safety_capacity out number) is
+
+l_operational_capacity number := 0;
+l_technical_capacity number := 0;
+l_safety_capacity number := 0;
+l_path_cap number := 0;
+l_sum_caps number := 0;
+l_count number := 0;
+l_tr_segment_record tr_segment_rec;
+begin
+  o_operational_capacity := 0;
+  o_technical_capacity := 0;
+  o_safety_capacity := 0;
+  for i in 1..g_tab_parallels.count loop
+    if g_tab_parallels(i).id = p_id then
+      l_count := l_count + 1;
+
+      if g_tab_parallels(i).status_segment_id is not null then
+        l_tr_segment_record := get_tr_segments_record(g_tab_parallels(i).status_segment_id);
+        if l_tr_segment_record.status_segment_id is not null then
+          l_operational_capacity := l_tr_segment_record.operational_segment_capacity;
+          l_technical_capacity := l_tr_segment_record.technical_segment_capacity;
+          l_safety_capacity := l_tr_segment_record.safety_segment_capacity;
+          l_sum_caps := l_tr_segment_record.sum_path_capacities;
+        end if;
+
+        if adjust_by_ratio then
+          if l_sum_caps = 0 then
+            l_operational_capacity := 0;
+            l_technical_capacity := 0;
+            l_safety_capacity := 0;
+          else
+            l_path_cap := parallel_path_capacity(p_id);
+            l_operational_capacity := l_operational_capacity * l_path_cap / l_sum_caps;
+            l_technical_capacity := l_technical_capacity * l_path_cap / l_sum_caps;
+            l_safety_capacity := l_safety_capacity * l_path_cap / l_sum_caps;
+          end if;
+        end if;
+        
+      elsif g_tab_parallels(i).series_id is not null then
+        get_series_calc(g_tab_parallels(i).series_id, adjust_by_ratio, l_operational_capacity, l_technical_capacity, l_safety_capacity);
+      elsif g_tab_parallels(i).parallel_id is not null then
+        get_parallel_calc(g_tab_parallels(i).parallel_id, adjust_by_ratio, l_operational_capacity, l_technical_capacity, l_safety_capacity);
+      end if;
+      o_operational_capacity := o_operational_capacity + l_operational_capacity;
+      o_technical_capacity := o_technical_capacity + l_technical_capacity;
+      o_safety_capacity := o_safety_capacity + l_safety_capacity;
+      
+    end if;
+  end loop;
+  if l_count < 1 then
+    o_operational_capacity := -1;
+    o_technical_capacity := -1;
+    o_safety_capacity := -1;
+  end if;
+end;
+
+
+function get_tr_segments_record(i_status_segment_id in number) return tr_segment_rec is
+
+l_tr_segment_record tr_segment_rec := null;
+begin
+  if g_tr_segments_varr is not null then
+    <<loopy>>for i in 1..g_tr_segments_varr.count loop
+      if g_tr_segments_varr(i).status_segment_id = i_status_segment_id then
+        l_tr_segment_record := g_tr_segments_varr(i);
+        exit loopy;
+      end if;
+    end loop;
+  end if;
+  return l_tr_segment_record;
+end;
+
+
+function par_ser_capacity(p_par_ser varchar2) return number is
+
+v_capacity number := 0;
+begin
+  if g_par_ser_cap_varr is not null then
+    <<loopy>>for i in 1..g_par_ser_cap_varr.count loop
+      if g_par_ser_cap_varr(i).par_ser = p_par_ser then
+        v_capacity := g_par_ser_cap_varr(i).path_capacity;
+        exit loopy;
+      end if;
+    end loop;
+  end if;
+  return v_capacity;
+end;
+
+
+function series_path_capacity(p_series_id number) return number is
+
+l_calc number := 32767000;
+l_capacity number := 0;
+l_count number := 0;
+l_tr_segment_record tr_segment_rec;
+begin
+  for i in 1..g_tab_series.count loop
+    if g_tab_series(i).id = p_series_id then
+      l_count := l_count + 1;
+      if g_tab_series(i).status_segment_id is not null then
+        
+        
+        l_tr_segment_record := get_tr_segments_record(g_tab_series(i).status_segment_id);
+        if l_tr_segment_record.status_segment_id is not null then
+          l_capacity := l_tr_segment_record.registered_segment_capacity;
+        end if;
+        
+        l_calc := least(l_calc, l_capacity);
+      elsif g_tab_series(i).series_id is not null then
+        l_calc := least(l_calc, series_calc(g_tab_series(i).series_id, false));
+      elsif g_tab_series(i).parallel_id is not null then
+        l_calc := least(l_calc, parallel_calc(g_tab_series(i).parallel_id, false));
+      end if;
+    end if;
+  end loop;
+  
+  if l_count < 1 then
+    l_calc := -1;
+  else
+    
+    l_calc := least (l_calc, series_ancestor_capacity(p_series_id));
+  end if;
+  return l_calc;
+end;
+
+
+function parallel_path_capacity(p_parallel_id number) return number is
+
+l_calc number := 32767000;
+l_varr series_varr := series_varr();
+l_series_ancestor number := -1;
+begin
+  
+  for i in 1..g_tab_series.count loop
+    if g_tab_series(i).parallel_id = p_parallel_id then
+      l_series_ancestor := g_tab_series(i).id;
+      exit;
+    end if;
+  end loop;
+
+  if l_series_ancestor > 0 then
+    l_calc := series_path_capacity(l_series_ancestor);
+  else
+    l_calc := parallel_calc(p_parallel_id, false);
+  end if;
+  return l_calc;
+end;
+
+
+function series_ancestor_capacity(p_series_id number) return number is
+
+l_calc number := 32767000;
+l_id number := 0;
+l_parallel_ancestor number := -1;
+l_series_ancestor number := -1;
+l_capacity number := 0;
+l_count number := 0;
+l_tr_segment_record tr_segment_rec;
+begin
+  
+  for i in 1..g_tab_parallels.count loop
+    if g_tab_parallels(i).series_id = p_series_id then
+      l_parallel_ancestor := g_tab_parallels(i).id;
+      exit;
+    end if;
+  end loop;
+
+  if l_parallel_ancestor > 0 then
+    
+    for i in 1..g_tab_series.count loop
+      if g_tab_series(i).parallel_id = l_parallel_ancestor then
+        l_series_ancestor := g_tab_series(i).id;
+        exit;
+      end if;
+    end loop;
+  end if;
+  if l_series_ancestor > 0 then
+    
+    for i in 1..g_tab_series.count loop
+      if g_tab_series(i).id = l_series_ancestor then
+        l_count := l_count + 1;
+        if g_tab_series(i).status_segment_id is not null then
+          l_tr_segment_record := get_tr_segments_record(g_tab_series(i).status_segment_id);
+          if l_tr_segment_record.status_segment_id is not null then
+            l_capacity := l_tr_segment_record.registered_segment_capacity;
+          end if;
+          l_calc := least(l_calc, l_capacity);
+        end if;
+      end if;
+    end loop;
+    if l_count < 1 then
+      l_calc := -1;
+    else
+      
+      l_calc := least (l_calc, series_ancestor_capacity(l_series_ancestor));
+    end if;
+  end if;
+  return l_calc;
+end;
+
+
+
+
+
+
+
+
+
+procedure initialize_globals(p_tr_id number, p_eventseconds number) is
+v_operational_capacity number := 0;
+v_technical_capacity number := 0;
+v_safety_capacity number := 0;
+v_capacity number := 0;
+v_id number := 0;
+v_p_or_s varchar2(1) := '';
+v_csv varchar2(4000) := '';
+begin
+  
+  begin
+    select * into g_tr_rec from dim_transport_routes where id = p_tr_id;
+  exception when others then
+    g_tr_rec.id := null;
+  end;
+
+  
+  select * bulk collect into g_tab_series
+  from dim_tr_series where tr_id = g_tr_rec.id order by id,item_sequence;
+
+  
+  select * bulk collect into g_tab_parallels
+  from dim_tr_parallels where tr_id = g_tr_rec.id order by id,item_sequence;
+
+  
+  g_tr_segments_varr := tr_segments_varr();
+  for c_rec in (select * from dim_tr_status_segments where transport_route_id = g_tr_rec.id order by status_segment_id) loop
+    segment_capacity_all_views( c_rec.status_segment_id, p_eventseconds, c_rec.segment_capacity
+                              , v_operational_capacity, v_technical_capacity, v_safety_capacity );
+    g_tr_segments_varr.extend(1);
+    g_tr_segments_varr(g_tr_segments_varr.count).status_segment_id := c_rec.status_segment_id;
+    g_tr_segments_varr(g_tr_segments_varr.count).registered_segment_capacity := c_rec.segment_capacity;
+    g_tr_segments_varr(g_tr_segments_varr.count).operational_segment_capacity := v_operational_capacity;
+    g_tr_segments_varr(g_tr_segments_varr.count).technical_segment_capacity := v_technical_capacity;
+    g_tr_segments_varr(g_tr_segments_varr.count).safety_segment_capacity := v_safety_capacity;
+    g_tr_segments_varr(g_tr_segments_varr.count).par_ser_string := c_rec.par_ser_string;
+  end loop;
+
+  
+  g_par_ser_cap_varr := par_ser_cap_varr();
+  for ps_rec in (select distinct par_ser from dim_tr_paths_segments where transport_route_id = g_tr_rec.id) loop
+    g_par_ser_cap_varr.extend(1);
+    g_par_ser_cap_varr(g_par_ser_cap_varr.count).par_ser := ps_rec.par_ser;
+    v_p_or_s := substr(ps_rec.par_ser, 1, 1);
+    if v_p_or_s = 'P' then
+      v_id := to_number(substr(ps_rec.par_ser, 2));
+      v_capacity := parallel_path_capacity(v_id);
+    elsif v_p_or_s = 'S' then
+      v_id := to_number(substr(ps_rec.par_ser, 2));
+      v_capacity := series_path_capacity(v_id);
+    end if;
+    g_par_ser_cap_varr(g_par_ser_cap_varr.count).path_capacity := v_capacity;
+    
+  end loop;
+
+  
+  for i in 1..g_tr_segments_varr.count loop
+    v_csv := g_tr_segments_varr(i).par_ser_string;
+    v_capacity := 0;
+    for csv_rec in (select val from table(csv.vals(v_csv))) loop
+      v_capacity := v_capacity + par_ser_capacity(csv_rec.val);
+    end loop;
+    g_tr_segments_varr(i).sum_path_capacities := v_capacity;
+  end loop;
+
+  
+  
+  
+end;
+
+
+procedure segment_capacity_all_views(p_status_segment_id number, p_eventseconds number, p_default_capacity number
+, o_operational_capacity in out number, o_technical_capacity in out number, o_safety_capacity in out number) is
+v_capacity number := 0;
+v_fact_rec fact_segment_states%rowtype;
+
+begin
+  o_operational_capacity := p_default_capacity;
+  o_technical_capacity := p_default_capacity;
+  o_safety_capacity := p_default_capacity;
+  
+  if p_default_capacity >= 0 then
+    begin
+      select * into v_fact_rec from fact_segment_states
+      where segmentid = p_status_segment_id
+      and eventseconds = (select max(eventseconds) from fact_segment_states
+                     where segmentid = p_status_segment_id
+                     and eventseconds <= p_eventseconds);
+    exception when others then
+      v_fact_rec.ind_operational_availability := 1;
+      v_fact_rec.ind_technical_availability := 1;
+      v_fact_rec.ind_safety_availability := 1;
+    end;
+    o_operational_capacity := o_operational_capacity * v_fact_rec.ind_operational_availability;
+    o_technical_capacity := o_technical_capacity * v_fact_rec.ind_technical_availability;
+    o_safety_capacity := o_safety_capacity * v_fact_rec.ind_safety_availability;
+  end if;
+end;
+
+
+procedure tr_capacity_all_views(p_tr_id number, p_eventseconds number
+, o_operational_capacity in out number, o_technical_capacity in out number, o_safety_capacity in out number) is
+v_capacity number := 0;
+v_sum_capacity number := 0;
+l_tr_segment_record tr_segment_rec;
+begin
+  initialize_globals(p_tr_id, p_eventseconds);
+  if g_tr_rec.series_id is not null then
+    get_series_calc(g_tr_rec.series_id, true, o_operational_capacity, o_technical_capacity, o_safety_capacity);
+    
+    
+  elsif g_tr_rec.parallel_id is not null then
+    get_parallel_calc(g_tr_rec.parallel_id, true, o_operational_capacity, o_technical_capacity, o_safety_capacity);
+    
+    
+  else
+    l_tr_segment_record := get_tr_segments_record(g_tr_rec.series_id);
+    if l_tr_segment_record.status_segment_id is not null then
+      o_operational_capacity := l_tr_segment_record.operational_segment_capacity;
+      o_technical_capacity := l_tr_segment_record.technical_segment_capacity;
+      o_safety_capacity := l_tr_segment_record.safety_segment_capacity;
+    end if;
+    
+    
+  end if;
+end;
+
+
+end route_calc;
+/

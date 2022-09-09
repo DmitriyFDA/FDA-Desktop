@@ -1,0 +1,19 @@
+ALTER SYSTEM KILL SESSION '590,6943' immediate;
+------------
+
+SELECT s.inst_id,
+       s.sid,
+       s.serial#,
+       --s.sql_id,
+       p.spid,
+       s.username,
+       s.program
+FROM   gv$session s
+       JOIN gv$process p ON p.addr = s.paddr AND p.inst_id = s.inst_id
+WHERE  s.type != 'BACKGROUND';
+
+------------
+
+select * from dba_ddl_locks
+where OWNER = 'OWNER_11_LM_1_0'
+AND NAME = 'ACL_AET_TAPI_PCK';

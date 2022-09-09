@@ -1,0 +1,52 @@
+procedure report_bag_trace1(p_input in varchar2 default ' '
+					    , p_sortby in varchar2 default ' '
+					    , p_radio in varchar2 default 'Transport') is
+v_msg      varchar2(32767);
+v_title    varchar2(200) := 'Report Bag Trace '||p_input||', dd '||ts2str(sysdate);
+v_id       varchar2(50);
+v_cond     varchar2(50);
+v_lpcpid   varchar2(50);
+v_view     varchar2(50);
+begin
+  begin
+    v_lpcpid := substr(p_input,1,3);
+    v_id := trim(substr(p_input,5));
+    if v_lpcpid = 'PID' then
+      if v_id is null then
+        v_cond := 'XPID is null';
+      else
+        v_cond := 'XPID = '||v_id;
+      end if;
+    elsif v_lpcpid = 'BID' then
+      if v_id is null then
+        v_cond := 'XBID is null';
+      else
+        v_cond := 'XBID = '''||v_id||'''';
+      end if;
+    else
+      if v_id is null then
+        v_cond := 'XLPC is null';
+      else
+        v_cond := 'XLPC = '||v_id;
+      end if;
+    end if;
+
+    if p_radio = 'TRANSPORT' then
+    	v_view := 'FACT_BAGTRACE_V';
+    else
+    	v_view := 'FACT_BAGTRACE_FULL_V';
+    end if;
+    
+    inspect_table (v_title, v_view, 1000, v_cond, p_sortby);
+
+  exception when others then
+    htp.print(ui_menu.head_from_link('REP_BAG_TRACE'));
+    v_msg := v_msg||sqlerrm;
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

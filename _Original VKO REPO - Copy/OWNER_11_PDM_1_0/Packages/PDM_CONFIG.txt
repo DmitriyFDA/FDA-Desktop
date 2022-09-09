@@ -1,0 +1,527 @@
+create or replace PACKAGE pdm_config
+IS
+   PROCEDURE fill_ads;
+   PROCEDURE hdl_pd (i_message IN XMLTYPE);
+   PROCEDURE hdl_domainconfig (i_message IN XMLTYPE);
+   
+END pdm_config;
+/
+
+
+
+
+package body pdm_config
+is
+   
+
+
+
+
+   g_con_package                  constant varchar2(20)   := 'pdm_config';
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure fill_ads
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.fill_ads';
+      
+      type rt_ads is record
+       (aet_id      acl_aet_detailed_states.aet_id%type
+       ,dsd_id      acl_aet_detailed_states.dsd_id%type
+       );
+      type tt_ads is table of rt_ads index by pls_integer;
+      
+      l_bulk_collect_limit constant integer := 200000;
+      l_tt_ads tt_ads;
+      
+      
+      cursor c_ads
+      is
+      select aet.id as aet_id
+      ,      dsd.id as dsd_id
+      from   acl_application_elements aet
+      ,      acl_detailed_state_definitions dsd
+      order by aet.id, dsd.id
+      ;
+   
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+   
+      
+      open c_ads;
+      loop
+         fetch c_ads bulk collect
+         into  l_tt_ads limit l_bulk_collect_limit;
+   
+         forall indx in 1 .. l_tt_ads.count
+            insert /*+ APPEND */
+            into   acl_aet_detailed_states
+            (      dsd_id
+            ,      aet_id
+            ,      ind_status
+            )
+            values
+            (      l_tt_ads(indx).dsd_id
+            ,      l_tt_ads(indx).aet_id
+            ,      cmn_constant.g_con_yesno_no
+            )
+            ;
+         exit when l_tt_ads.count < l_bulk_collect_limit;
+      end loop;
+   
+      close c_ads;
+      
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+   exception
+      when others
+      then
+         if c_ads%isopen
+         then
+            close c_ads;
+         end if;
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_ads;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure load_station_data  ( i_xml  in  xmltype )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.load_station_data';
+   
+      
+      cursor c_stn
+      is
+         select stn.id
+         ,      stn.type
+         from   xmltable ( '/project_definition/stations/station'
+                           passing i_xml
+                           columns id   number        path '@id'
+                           ,       type varchar2(100) path '@type'
+                         ) stn
+         ;
+   
+      l_rt_stn pdm_stations%rowtype;
+      
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+   
+      
+      for l_rec_stn in c_stn
+      loop
+         l_rt_stn.id      := l_rec_stn.id;
+         l_rt_stn.id_cust := l_rec_stn.id;
+         l_rt_stn.type    := l_rec_stn.type;
+         pdm_stn_tapi_pck.stn_insert_row( io_rt_stn => l_rt_stn );
+      end loop;
+   
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end load_station_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure update_station_data ( i_xml  in  xmltype )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.update_station_data';
+   
+      
+      cursor c_pty( b_type in cmn_parties.type%type )
+      is
+      select *
+      from   cmn_parties pty
+      where  pty.type = b_type
+      ;
+   
+      l_rt_stn                  pdm_stations%rowtype;
+      l_rt_pty                  cmn_parties%rowtype;
+      l_rt_imd                  cmn_ifc_msg_definitions%rowtype;
+      l_rt_pmd                  cmn_party_msg_definitions%rowtype;
+      l_rt_smd                  pdm_stn_msg_definitions%rowtype;
+      l_nt_id                   pdm_nt_id:= pdm_nt_id();
+      l_result                  number;
+      l_found                   boolean;
+      l_dummy                   boolean;
+      l_index_station           number  := 1;
+      l_last_station            boolean := false;
+      l_id                      integer;
+      l_partypackageinforequest varchar2(240);
+      l_resumetrackingtimeout   integer;
+      l_forcetaskinstruction     xmltype;
+      l_registrationlpc         xmltype;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+   
+      
+      while (not l_last_station)
+      loop
+
+         
+         l_id                      := cmn_xml_util.extract_value( i_xml   => i_xml
+                                                                , i_xpath => '//ProcessDomainConfig/Body/Stations/Station['||l_index_station||']/StationID'
+                                                                );
+         l_partypackageinforequest := cmn_xml_util.extract_value( i_xml   => i_xml
+                                                                , i_xpath => '//ProcessDomainConfig/Body/Stations/Station['||l_index_station||']/PartyPackageInfoRequest'
+                                                                );
+         l_resumetrackingtimeout   := cmn_xml_util.extract_value( i_xml   => i_xml
+                                                                , i_xpath => '//ProcessDomainConfig/Body/Stations/Station['||l_index_station||']/ResumeTrackingTimeout'
+                                                                );
+         l_forcetaskinstruction     := cmn_xml_util.extract_element( i_xml   => i_xml
+                                                                  , i_xpath => '//ProcessDomainConfig/Body/Stations/Station['||l_index_station||']/ForceTaskInstruction'
+                                                                  );
+         l_registrationlpc         := cmn_xml_util.extract_element( i_xml   => i_xml
+                                                                  , i_xpath => '//ProcessDomainConfig/Body/Stations/Station['||l_index_station||']/RegistrationLPC'
+                                                                  );
+
+         
+         if (l_id is null)
+         then
+            l_last_station := true;
+         else
+
+            
+            if not pdm_stn_tapi_pck.stn_select_row( i_stn_id => l_id
+                                                  , o_rt_stn => l_rt_stn
+                                                  )
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_configurationinvalid
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.severity_error
+                                  , i_additional_data   => 'entry not found in pdm_stations for id_cust=' || l_id
+                                  );
+            end if;
+      
+            
+            if l_id member of l_nt_id
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_configurationinvalid
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.severity_error
+                                  , i_additional_data   => 'More than 1 definition for station ' || l_id
+                                  );
+            else
+   
+               
+               l_nt_id.extend();
+               l_nt_id(l_nt_id.count) := l_id;
+            end if;
+    
+            
+            if l_registrationlpc is not null
+            then
+               l_rt_stn.ind_registration_lpc := cmn_constant.g_con_yesno_yes;
+            end if;
+      
+            
+            l_rt_stn.tracking_timeout_pull := l_resumetrackingtimeout;
+      
+            
+            l_result := pdm_stn_tapi_pck.stn_update_row( i_stn_id  => l_rt_stn.id
+                                                       , io_rt_stn => l_rt_stn
+                                                       );
+      
+            
+            if l_partypackageinforequest is not null
+            then
+      
+               
+               if not cmn_common_msg.pty_select_row_uk( i_pty_id_cust          => l_partypackageinforequest
+                                                      , i_pty_instance_id_cust => null
+                                                      , o_rt_pty               => l_rt_pty
+                                                      )
+               then
+                  viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_configurationinvalid
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.severity_error
+                                     , i_additional_data   =>    'entry not found in cmn_parties for id_cust='
+                                                              || l_partypackageinforequest
+                                     );
+               end if;
+       
+               
+               l_dummy := cmn_imd_tapi_pck.imd_select_row_uk ( i_imd_name => pdm_constant.g_con_packageinforequest
+                                                             , o_rt_imd   => l_rt_imd
+                                                             );
+       
+               
+               if not cmn_pmd_tapi_pck.pmd_select_row_uk( i_pmd_imd_id    => l_rt_imd.id
+                                                        , i_pmd_pty_id    => l_rt_pty.id
+                                                        , i_pmd_direction => pdm_constant.g_con_direction_outgoing
+                                                        , o_rt_pmd        => l_rt_pmd
+                                                        )
+               then
+                  viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_configurationinvalid
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.severity_error
+                                     , i_additional_data   =>    'entry not found in cmn_party_msg_definitions for message='
+                                                              || pdm_constant.g_con_packageinforequest
+                                                              || ' and party='
+                                                              || l_partypackageinforequest
+                                     );
+               end if;
+       
+               
+               l_rt_smd.id     := l_rt_stn.id;
+               l_rt_smd.stn_id := l_rt_stn.id;
+               l_rt_smd.pmd_id := l_rt_pmd.id;
+               pdm_smd_tapi_pck.smd_insert_row( io_rt_smd => l_rt_smd );
+      
+            end if; 
+      
+            
+            l_dummy := cmn_imd_tapi_pck.imd_select_row_uk ( i_imd_name => pdm_constant.g_con_taskinstruction
+                                                          , o_rt_imd   => l_rt_imd
+                                                          );
+      
+            
+            if l_forcetaskinstruction is not null
+            then
+      
+               
+               open  c_pty( b_type => pdm_constant.g_con_lm_party_type );
+               fetch c_pty into l_rt_pty;
+               l_found := c_pty%found;
+               close c_pty;
+       
+               if cmn_pmd_tapi_pck.pmd_select_row_uk( i_pmd_imd_id    => l_rt_imd.id
+                                                    , i_pmd_pty_id    => l_rt_pty.id
+                                                    , i_pmd_direction => pdm_constant.g_con_direction_outgoing
+                                                    , o_rt_pmd        => l_rt_pmd
+                                                    )
+               then
+       
+                  
+                  l_rt_smd.id     := 1000 + l_rt_stn.id;
+                  l_rt_smd.stn_id := l_rt_stn.id;
+                  l_rt_smd.pmd_id := l_rt_pmd.id;
+                  pdm_smd_tapi_pck.smd_insert_row( io_rt_smd => l_rt_smd );
+               end if;
+      
+      
+               
+               open  c_pty( b_type => pdm_constant.g_con_bcm_party_type );
+               fetch c_pty into l_rt_pty;
+               l_found := c_pty%found;
+               close c_pty;
+       
+               if l_found
+               then
+      
+                  if cmn_pmd_tapi_pck.pmd_select_row_uk( i_pmd_imd_id    => l_rt_imd.id
+                                                       , i_pmd_pty_id    => l_rt_pty.id
+                                                       , i_pmd_direction => pdm_constant.g_con_direction_outgoing
+                                                       , o_rt_pmd        => l_rt_pmd
+                                                       )
+                  then
+      
+                     
+                     l_rt_smd.id     := 2000 + l_rt_stn.id;
+                     l_rt_smd.stn_id := l_rt_stn.id;
+                     l_rt_smd.pmd_id := l_rt_pmd.id;
+                     pdm_smd_tapi_pck.smd_insert_row( io_rt_smd => l_rt_smd );
+                  end if;
+               end if;
+      
+            end if; 
+
+            
+            l_index_station := l_index_station + 1;
+         end if; 
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_pty%isopen
+         then
+            close c_pty;
+         end if;
+   
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end update_station_data;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_pd (i_message in xmltype)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.hdl_pd';
+   
+   
+   cursor c_version
+   is
+      select version.pd3_version
+      from   xmltable ( '/project_definition'
+                        passing i_message
+                        columns pd3_version varchar2(255) path '@pd3_version'
+                      ) version
+      ;
+   
+   l_rec_version c_version%rowtype;
+   
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+   
+      
+      delete pdm_pending_tasks;
+      delete pdm_stn_msg_definitions;
+      delete pdm_stations;
+   
+      
+      load_station_data ( i_xml => i_message);
+      
+      
+      open c_version;
+      fetch c_version into l_rec_version;
+      close c_version;
+      update acl_registry rgy
+      set    rgy.version        = l_rec_version.pd3_version
+      ,      rgy.status         = 'VALID'
+      ,      rgy.date_installed = cmn_common.default_timestamp
+      where  rgy.comp_id        = 'PD'
+      ;
+   
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_version%isopen
+         then
+            close c_version;
+         end if;
+   
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+   
+         
+         
+         viu_info.handle_info;
+   
+         
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end hdl_pd;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_domainconfig (i_message in xmltype)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.hdl_domainconfig';
+   
+   
+   cursor c_version
+   is
+      select version.version
+      from   xmltable ( '/ProcessDomainConfig/Header'
+                        passing i_message
+                        columns version varchar2(255) path 'Version/text()'
+                      ) version
+      ;
+   
+   l_rec_version c_version%rowtype;
+   
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name );
+   
+      
+      update_station_data ( i_xml => i_message);
+      
+      
+      open c_version;
+      fetch c_version into l_rec_version;
+      close c_version;
+      update acl_registry rgy
+      set    rgy.version        = l_rec_version.version
+      ,      rgy.status         = 'VALID'
+      ,      rgy.date_installed = cmn_common.default_timestamp
+      where  rgy.comp_id        = 'ProcessDomainConfig'
+      ;
+   
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_version%isopen
+         then
+            close c_version;
+         end if;
+   
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+   
+         
+         
+         viu_info.handle_info;
+   
+         
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end hdl_domainconfig;
+
+end pdm_config;
+/

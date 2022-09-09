@@ -1,0 +1,66 @@
+procedure showawr(p_snaps in varchar2 default ' ') is
+cursor c_out (c_dbid number, c_instance_number number, c_sn1 number, c_sn2 number) is
+select output from table(dbms_workload_repository.awr_report_html(c_dbid, c_instance_number, c_sn1, c_sn2, 8));
+v_dbid number;
+v_instance_number number;
+v_sn1 number;
+v_sn2 number;
+v_sn number;
+v_msg varchar2(32767);
+v_pos integer;
+v_ex exception;
+begin
+  begin
+    v_msg := 'Determining snapshot IDs.';
+
+    v_pos := instr(p_snaps,'-');
+    if v_pos > 0 then
+      v_sn1 := to_number(substr(p_snaps, 1, v_pos-1));
+      v_sn2 := to_number(substr(p_snaps, v_pos+1));
+
+      if v_sn1 > v_sn2 then
+        v_sn := v_sn1;
+        v_sn1 := v_sn2;
+        v_sn2 := v_sn;
+      end if;
+
+      if v_sn1 = v_sn2 then
+        v_msg := v_msg||' Invalid snapshot range specified: '||p_snaps;
+        raise v_ex;
+      else
+        v_msg := 'Testing snapshot IDs and determining DBID and Instance Number.';
+
+        select d.dbid into v_dbid
+        from dba_hist_snapshot s, v$database d, v$instance i
+        where s.dbid = d.dbid
+        and s.instance_number = i.instance_number
+        and s.snap_id = v_sn1
+        group by d.dbid, i.instance_number;
+
+        select i.instance_number into v_instance_number
+        from dba_hist_snapshot s, v$database d, v$instance i
+        where s.dbid = d.dbid
+        and s.instance_number = i.instance_number
+        and s.snap_id = v_sn2
+        group by d.dbid, i.instance_number;
+
+        v_msg := 'Generating report.';
+
+        for c_rec in c_out(v_dbid, v_instance_number, v_sn1, v_sn2) loop
+          htp.print(c_rec.output);
+        end loop;
+      end if;
+    else
+      v_msg := v_msg||' Invalid snapshot range specified: '||p_snaps;
+      raise v_ex;
+    end if;
+  exception when others then
+    htp.print(v_msg||'<br>');
+    htp.print('SN1: '||to_char(v_sn1)||'<br>');
+    htp.print('SN2: '||to_char(v_sn2)||'<br>');
+    htp.print('V_DBID: '||to_char(v_dbid)||'<br>');
+    htp.print('V_INSTANCE_NUMBER: '||to_char(v_instance_number)||'<br>');
+    htp.print(sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace,chr(10),'<br>'));
+  end;
+end;
+/

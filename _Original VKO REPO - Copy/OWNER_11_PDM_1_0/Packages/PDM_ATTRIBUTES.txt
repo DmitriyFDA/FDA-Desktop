@@ -1,0 +1,2371 @@
+create or replace PACKAGE pdm_attributes
+IS
+   TYPE station_coll IS TABLE OF pdm_stations.type%TYPE INDEX BY pdm_stations.id_cust%TYPE;
+   g_station_coll station_coll;
+
+   SUBTYPE st_package_attribute_value IS pdm_package_attributes.value%TYPE;
+
+   TYPE package_attribute_value_coll IS TABLE OF st_package_attribute_value
+                                        INDEX BY PLS_INTEGER;
+
+   TYPE attribute_rec IS RECORD( adn_id     pdm_attribute_definitions.id%TYPE
+                               , adn_type   pdm_attribute_definitions.type%TYPE
+                               , value      package_attribute_value_coll
+                               , event_time pdm_package_attributes.event_time%TYPE
+                               , ind_force  VARCHAR2(1)
+                               );
+
+   TYPE attribute_coll IS TABLE OF attribute_rec INDEX BY VARCHAR2(1000);
+
+   -- Associative array type to link MESSAGE ATTRIBUTE.NAME to all values
+   TYPE mae_name_values_rec IS RECORD ( pbe_values PDM_NT_PBE_VALUES);
+
+   TYPE it_mae_name_values IS TABLE OF mae_name_values_rec INDEX BY pdm_message_attributes.name%TYPE;
+
+   -- Procedure to determine and store derived attributes
+   PROCEDURE store_derived_attributes( i_pae_id    IN     pdm_packages.id%TYPE
+                                     , i_pet_id    IN     pdm_package_events.id%TYPE
+                                     );
+
+   PROCEDURE store_concat_attributes ( i_pae_id        IN  pdm_packages.id%TYPE
+                                     , i_pet_id        IN  pdm_package_events.id%TYPE
+                                     , o_it_attributes OUT pdm_attributes.attribute_coll
+                                     );
+
+   -- Procedure to extract all attributes contained in a list, from given message
+   PROCEDURE extract_attributedata( i_message       IN  XMLTYPE
+                                  , i_imd_id        IN  cmn_ifc_msg_definitions.id%TYPE
+                                  , o_it_attributes OUT pdm_attributes.attribute_coll
+                                  );
+
+   -- Procedure to store package attribute values
+   PROCEDURE store_attributes( i_pae_id                     IN pdm_packages.id%TYPE
+                             , i_it_attributes              IN pdm_attributes.attribute_coll
+                             , i_pet_id                     IN pdm_package_events.id%TYPE
+                             , i_event_time                 IN cmn_constant.st_timestamp
+                             , i_ind_use_attribs_event_time IN BOOLEAN
+                             );
+
+   -- Procedure that removes non persistent attributes of a source type from a given package.
+   PROCEDURE delete_temporary_attributes( i_pae_id     IN  pdm_package_attributes.pae_id%TYPE
+                                        , i_imd_id     IN  cmn_ifc_msg_definitions.id%TYPE
+                                        , i_pet_id     IN  pdm_package_events.id%TYPE
+                                        , i_tte_id     IN  pdm_task_types.id%TYPE
+                                        , i_pd_status  IN  pdm_message_subtypes.pd_status%TYPE
+                                        , i_event_time IN  pdm_package_attributes.event_time%TYPE
+                                        );
+
+   -- Function to retrieve a list of attribute values for a given package and message attribute
+   FUNCTION get_package_attribute_values( i_pae_id   IN pdm_packages.id%TYPE
+                                        , i_imd_id   IN cmn_ifc_msg_definitions.id%TYPE
+                                        , i_mae_name IN pdm_message_attributes.name%TYPE
+                                        )
+      RETURN package_attribute_value_coll;
+
+   -- Function to retrieve a list of attribute values for a given outgoing message
+   FUNCTION get_package_attribute_values ( i_pae_id                IN pdm_packages.id%TYPE
+                                         , i_imd_name              IN cmn_ifc_msg_definitions.name%TYPE
+                                         , i_it_attributes_current IN pdm_attributes.attribute_coll
+                                         )
+      RETURN it_mae_name_values;
+
+   -- Procedure to delete a specific package attribute
+   PROCEDURE delete_package_attribute( i_pae_id     IN     pdm_package_attributes.pae_id%TYPE
+                                     , i_adn_id     IN     pdm_attribute_definitions.id%TYPE
+                                     , i_pet_id     IN     pdm_package_events.id%TYPE
+                                     , i_event_time IN     cmn_constant.st_timestamp
+                                     );
+
+   -- Function to check whether a list of attribute definitions is of interest to a message
+   FUNCTION message_attributes_exist( i_pet_id          IN pdm_package_events.id%TYPE
+                                    , i_pae_id          IN pdm_packages.id%TYPE
+                                    , i_imd_id          IN cmn_ifc_msg_definitions.id%TYPE
+                                    , i_imd_id_excluded IN cmn_ifc_msg_definitions.id%TYPE
+                                    )
+      RETURN BOOLEAN;
+
+   -- Procedure to determine and store functional source package attribute values
+   PROCEDURE store_functional_src_attribs( i_pae_id_orig        IN pdm_packages.id%TYPE
+                                         , i_pet_id_orig        IN pdm_package_events.id%TYPE
+                                         , i_pet_id_curr        IN pdm_package_events.id%TYPE
+                                         , i_rt_plk_active      IN pdm_package_links%ROWTYPE
+                                         , i_rt_plk_deactivated IN pdm_package_links%ROWTYPE
+                                         , i_ind_pae_reopened   IN BOOLEAN := FALSE
+                                         );
+
+   -- Procedure that copies resume tracking attributes
+   PROCEDURE copy_resume_tracking_attribs( i_origin_pae_id IN pdm_packages.id%TYPE
+                                         , i_target_pae_id IN pdm_packages.id%TYPE
+                                         , i_target_pet_id IN pdm_package_events.id%TYPE
+                                         , i_stn_id_cust   IN pdm_stations.id_cust%TYPE
+                                         , i_event_time    IN cmn_constant.st_timestamp
+                                         , i_schema_prefix IN VARCHAR2
+                                         );
+
+   -- Procedure to add default values to attributes
+   PROCEDURE initialize_package_attributes( io_it_attributes  IN OUT  pdm_attributes.attribute_coll );
+
+   PROCEDURE add_attribute ( i_adn_path        IN      pdm_attribute_definitions.path%TYPE
+                           , io_it_attributes  IN OUT  pdm_attributes.attribute_coll
+                           );
+
+   PROCEDURE add_attribute_null ( i_adn_path        IN      pdm_attribute_definitions.path%TYPE
+                                , io_it_attributes  IN OUT  pdm_attributes.attribute_coll
+                                );
+
+   PROCEDURE add_attribute_value ( i_adn_path        IN      pdm_attribute_definitions.path%TYPE
+                                 , i_value           IN      pdm_package_attributes.value%TYPE
+                                 , io_it_attributes  IN OUT  pdm_attributes.attribute_coll
+                                 );
+
+   FUNCTION get_attr_list_value( i_it_attributes IN pdm_attributes.attribute_coll
+                               , i_adn_path      IN pdm_attribute_definitions.path%TYPE
+                               )
+      RETURN pdm_package_attributes.value%TYPE;
+END pdm_attributes;
+/
+
+
+
+
+package body pdm_attributes
+is
+
+   
+
+
+
+
+   g_con_package   constant varchar2( 20 ) := 'pdm_attributes';
+
+   
+
+
+
+
+
+
+
+
+   
+   
+   type t_condition is record( condition  varchar2(240)
+                             , mae_id     pdm_message_attributes.id%type
+                             );
+                             
+   type t_conditions is table of t_condition;
+   
+   
+   type t_element is record( conditions t_conditions
+                           , mae_id     pdm_message_attributes.id%type
+                           );
+
+   type t_elements is table of t_element index by pdm_message_attributes.name%type;
+   
+   
+   type t_mae_node is record( elements   t_elements
+                            , adn_id     pdm_attribute_definitions.id%type
+                            , adn_name   pdm_attribute_definitions.name%type
+                            , adn_type   pdm_attribute_definitions.type%type
+                            );
+   
+   type t_mae_nodes is table of t_mae_node index by pls_integer;
+   
+   
+   type t_mae_ids   is table of pdm_message_attributes.id%type index by pls_integer;
+   
+   
+   g_initialized            boolean := false;
+
+   
+   g_nodes                  t_mae_nodes;
+
+   
+   g_mae_ids                t_mae_ids;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure init
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.init';
+
+      
+      cursor c_met
+      is
+      with pdm_mae_v
+      as ( select mae.id
+           ,      case
+                     when mae.name = imd.name
+                     then mae.name
+                     else imd.name||'/'||mae.name
+                  end   path
+           ,      adn_id
+           from   pdm_message_attributes  mae
+           ,      cmn_ifc_msg_definitions imd
+           where  imd.id        = mae.imd_id
+           and    mae.direction = pdm_constant.g_con_direction_incoming
+         )
+      select mae.id     mae_id
+      ,      ( select max( id ) keep ( dense_rank last order by mae2.path )
+               from   pdm_mae_v mae2
+               where  mae.path like mae2.path||'/%'
+             ) mae_id_parent
+      ,      mae.path   mae_path
+      ,      regexp_replace( mae.path
+                           , '^(([^[/]+)(\[.*?\])?/*)*$'  
+                           , '\2'
+                           , 1, 0
+                           ) element_name                 
+      ,      regexp_replace( mae.path
+                           , '^.*?(\[\D[^[]*\]\z)*$'      
+                           , '\1'
+                           , 1, 0
+                           ) condition                    
+      ,      regexp_replace( mae.path
+                           , '^.*?(\[\d+\]\z)*$'          
+                           , '\1'
+                           , 1, 0
+                           ) idx                          
+      ,      regexp_replace( mae.path
+                           , '^.*?(\[\]\z)*$'             
+                           , '\1'
+                           , 1, 0
+                           ) ind_multi                    
+      ,      adn.id     adn_id
+      ,      adn.name   adn_name
+      ,      adn.type   adn_type
+      from   pdm_attribute_definitions adn
+      ,      pdm_mae_v    mae
+      where  mae.adn_id = adn.id
+      order by 3;
+
+      
+      cursor c_imd_mae
+      is
+      select imd.id     imd_id
+      ,      mae.id     mae_id
+      from   pdm_message_attributes  mae
+      ,      cmn_ifc_msg_definitions imd
+      where  mae.name   = imd.name
+      and    mae.direction = pdm_constant.g_con_direction_incoming;
+
+      l_mae_name                 pdm_message_attributes.name%type;
+      l_parent                   pdm_message_attributes.id%type;
+      l_index                    integer;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name);
+
+      
+      for l_rt_met in c_met
+      loop
+         
+         g_nodes(l_rt_met.mae_id).adn_id   := l_rt_met.adn_id;
+         g_nodes(l_rt_met.mae_id).adn_name := l_rt_met.adn_name;
+         g_nodes(l_rt_met.mae_id).adn_type := l_rt_met.adn_type;
+
+         
+         if l_rt_met.mae_id_parent is not null
+         then
+            l_parent := l_rt_met.mae_id_parent;
+            
+            
+            if  l_rt_met.ind_multi is not null
+            then
+               l_mae_name := l_rt_met.element_name;
+            
+            
+            elsif l_rt_met.idx is not null
+            then
+               l_mae_name := l_rt_met.element_name || l_rt_met.idx;
+            
+            
+            else
+               l_mae_name := l_rt_met.element_name || '[1]';
+            end if;
+
+            
+            if not g_nodes(l_parent).elements.exists(l_mae_name)
+            then
+               g_nodes(l_parent).elements(l_mae_name).conditions := t_conditions();
+            end if;
+
+            
+            if l_rt_met.condition is not null
+            then
+
+               
+               g_nodes(l_parent).elements(l_mae_name).conditions.extend();
+               l_index := g_nodes(l_parent).elements(l_mae_name).conditions.count;
+               g_nodes(l_parent).elements(l_mae_name).conditions(l_index).condition := l_rt_met.element_name||l_rt_met.condition;
+               g_nodes(l_parent).elements(l_mae_name).conditions(l_index).mae_id    := l_rt_met.mae_id;
+
+            else
+
+               
+               g_nodes(l_parent).elements(l_mae_name).mae_id := l_rt_met.mae_id;
+            end if;
+
+         end if; 
+      end loop;
+      
+      
+      for l_rt_imd_mae in c_imd_mae
+      loop
+         g_mae_ids(l_rt_imd_mae.imd_id) := l_rt_imd_mae.mae_id;
+      end loop;
+
+      viu_module.leave_module( i_module     => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end init;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure store_derived_attributes( i_pae_id    in     pdm_packages.id%type
+                                     , i_pet_id    in     pdm_package_events.id%type
+                                     )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.store_derived_attributes';
+
+      
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      pdm_store_derived_attributes( i_pae_id    => i_pae_id
+                                  , i_pet_id    => i_pet_id
+                                  );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end store_derived_attributes;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure store_concat_attributes ( i_pae_id        in  pdm_packages.id%type
+                                     , i_pet_id        in  pdm_package_events.id%type
+                                     , o_it_attributes out pdm_attributes.attribute_coll
+                                     )
+
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.store_concat_attributes';
+      
+      
+      cursor c_adn
+      is
+         select *
+         from   pdm_attribute_definitions adn
+         where  adn.agp_id is not null
+         ;
+
+      
+      
+      cursor c_pbe
+      ( b_pae_id pdm_packages.id%type
+      , b_pet_id pdm_package_events.id%type
+      , b_agp_id pdm_attribute_groups.id%type
+      )
+      is
+         select 1
+         from   pdm_package_attributes      pbe
+         ,      pdm_attribute_group_members agr
+         where  pbe.pae_id = b_pae_id
+         and    agr.agp_id = b_agp_id
+         and    pbe.adn_id = agr.adn_id
+         and    pbe.pet_id = b_pet_id
+         and    rownum = 1
+         ;
+
+      type rct_evaluate is ref cursor;
+      r_pbe             c_pbe%rowtype;
+      c_evaluate        rct_evaluate;
+      l_connect_value   pdm_package_attributes.value%type;
+      l_index           integer;
+      l_found           boolean;
+
+
+      
+      
+      
+      
+      l_query varchar2(4000) :=
+              ' SELECT /*+ ORDERED */ connect_value'
+            ||' FROM   ('
+            ||'        SELECT agr.agp_id'
+            ||'        ,      agr.sequence'
+            ||'        ,      agr.adn_id'
+            ||'        ,      x.value'
+            ||'        ,      level         lvl'
+            ||'        ,      SUBSTR( SYS_CONNECT_BY_PATH(x.value, ''' || pdm_constant.g_con_adn_concat_separator || ''')'
+            ||'                     , 1 + LENGTH('''                   || pdm_constant.g_con_adn_concat_separator || ''')'
+            ||'                     ) connect_value'
+            ||'        FROM   pdm_attribute_group_members  agr'
+            ||'        ,      ('
+            ||'                  SELECT pbe.value'
+            ||'                  ,      pbe.adn_id'
+            ||'                  ,      pbe.pae_id'
+            ||'                  FROM   pdm_v_pbe_active       pbe'
+            ||'                  ,      pdm_attribute_group_members  agr'
+            ||'                  WHERE  pbe.adn_id = agr.adn_id'
+            ||'                  AND    pbe.pae_id = :pae_id'
+            ||'                  AND    agr.agp_id = :agp_id'
+            ||'                  AND    agr.ote_id = :ote_id'
+            ||'               ) x'
+            ||'        WHERE  agr.adn_id = x.adn_id'
+            ||'        AND    agr.agp_id = :agp_id'
+            ||'        AND    x.pae_id   = :pae_id'
+            ||'        START  WITH agr.sequence = 1'
+            ||'        CONNECT BY  agr.sequence = PRIOR agr.sequence + 1 AND agr.agp_id = PRIOR agr.agp_id'
+            ||'        )'
+            ||'        WHERE  lvl = ( SELECT max(sequence)'
+            ||'                       FROM   pdm_attribute_group_members  agr'
+            ||'                       WHERE  agr.agp_id = :agp_id'
+            ||'                       AND    agr.ote_id = :ote_id'
+            ||'                     )'
+            ;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      for r_adn in c_adn
+      loop
+
+         
+         
+         open  c_pbe( b_pae_id => i_pae_id
+                    , b_pet_id => i_pet_id
+                    , b_agp_id => r_adn.agp_id
+                    );
+         fetch c_pbe into r_pbe;
+         l_found := c_pbe%found;
+         close c_pbe;
+         
+         if l_found
+         then
+
+            
+            o_it_attributes(r_adn.path).adn_id   := r_adn.id;
+            o_it_attributes(r_adn.path).adn_type := r_adn.type;
+            o_it_attributes(r_adn.path).value(1) := null;
+   
+            
+            
+            
+            
+            open  c_evaluate for l_query using i_pae_id
+                                              ,r_adn.agp_id
+                                              ,pdm_constant.g_con_ote_id_stringmatch
+                                              ,r_adn.agp_id
+                                              ,i_pae_id
+                                              ,r_adn.agp_id
+                                              ,pdm_constant.g_con_ote_id_stringmatch
+            ;
+            
+            
+            fetch c_evaluate into l_connect_value;
+   
+            
+            l_index := 0;
+            while c_evaluate%found
+            loop
+   
+               
+               l_index := l_index + 1;
+               o_it_attributes(r_adn.path).value(l_index) := l_connect_value;
+   
+               
+               fetch c_evaluate into l_connect_value;
+            end loop;
+            
+            close c_evaluate;
+
+         end if;
+      end loop;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_pbe%isopen
+         then
+            close c_pbe;
+         end if;
+
+         if c_evaluate%isopen
+         then
+            close c_evaluate;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end store_concat_attributes;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure extract_attributedata( i_message       in  xmltype
+                                  , i_imd_id        in  cmn_ifc_msg_definitions.id%type
+                                  , o_it_attributes out pdm_attributes.attribute_coll
+                                  )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.extract_attributedata';
+
+      
+      l_dom_doc          dbms_xmldom.domdocument;
+      l_dom_node         dbms_xmldom.domnode;
+      l_root_node        dbms_xmldom.domnode;
+      
+      
+      l_mae_id           pdm_message_attributes.id%type;
+      
+      
+      l_value_index      integer  := 1;
+
+      procedure extract_node( i_mae_id    in pdm_message_attributes.id%type
+                            , i_dom_node  in dbms_xmldom.domnode
+                            )
+      is
+         l_con_subproc_name constant cmn_constant.st_proc_name := g_con_package || '.extract_node';
+         
+         
+         l_node_name                 pdm_message_attributes.name%type;
+         l_repeating_node_name       pdm_message_attributes.name%type;
+         l_previous_node_name        pdm_message_attributes.name%type;
+         l_node_value                varchar2(32767);
+         l_child_nodes               dbms_xmldom.domnodelist;
+         l_child_node                dbms_xmldom.domnode;
+         l_child_node_count          integer;
+         l_enum_index                integer       := 1;
+         l_conditional_nodes         dbms_xmldom.domnodelist;
+         
+         
+         l_element_name              pdm_message_attributes.name%type;
+
+         
+         l_adn_name                  pdm_attribute_definitions.name%type;
+      begin
+         viu_module.enter_module( i_module => l_con_subproc_name);
+         
+         
+         l_child_nodes := dbms_xmldom.getchildnodes( n => i_dom_node );
+
+         
+         if not dbms_xmldom.isnull( nl => l_child_nodes )
+         then
+            
+            l_child_node_count := dbms_xmldom.getlength( nl => l_child_nodes );
+
+            
+            for i in 1 .. l_child_node_count
+            loop
+               
+               l_child_node := dbms_xmldom.item( nl  => l_child_nodes
+                                                , idx => i - 1
+                                                );
+
+               
+               if not dbms_xmldom.isnull( n => l_child_node )
+               then
+                  if dbms_xmldom.getnodetype( l_child_node ) = dbms_xmldom.text_node
+                  then
+                     
+                     l_node_value := dbms_xmldom.getnodevalue( n  => l_child_node );
+            
+                     if l_node_value is not null
+                     then
+                        l_adn_name := g_nodes(i_mae_id).adn_name;
+                        o_it_attributes(l_adn_name).value(l_value_index) := l_node_value;
+                        o_it_attributes(l_adn_name).adn_id   := g_nodes(i_mae_id).adn_id;
+                        o_it_attributes(l_adn_name).adn_type := g_nodes(i_mae_id).adn_type;
+                     end if;
+                  else
+                     
+                     l_node_name := dbms_xmldom.getnodename( n => l_child_node );
+
+                     if l_node_name = l_previous_node_name
+                     then
+                        
+                        l_enum_index := l_enum_index + 1;
+                     else
+                        
+                        l_previous_node_name := l_node_name;
+
+                        
+                        l_enum_index := 1;
+                     end if;
+    
+                     
+                     
+                     l_element_name := null;
+                     if g_nodes(i_mae_id).elements.exists(l_node_name||'['||l_enum_index||']')
+                     then
+                        
+                        l_element_name := l_node_name||'['||l_enum_index||']';
+
+                        if l_repeating_node_name is not null
+                        then
+                           
+                           
+                           l_value_index := 1;
+                           l_repeating_node_name := null;
+                        end if;
+                     elsif g_nodes(i_mae_id).elements.exists(l_node_name)
+                     then
+                        
+                        l_element_name := l_node_name;
+
+                        if l_repeating_node_name = l_element_name
+                        then
+                           
+                           l_value_index := l_value_index + 1;
+                        else
+                           
+                           l_value_index := 1;
+                           l_repeating_node_name := l_element_name;
+                        end if;
+                     end if;
+
+                     
+                     if l_element_name is not null
+                     then
+                        
+                        
+                        
+                        
+                        
+                        
+                        if g_nodes(i_mae_id).elements(l_element_name).conditions.count > 0
+                        then
+                           
+                           for j in 1..g_nodes(i_mae_id).elements(l_element_name).conditions.count
+                           loop
+                              
+                              l_conditional_nodes := dbms_xslprocessor.selectnodes
+                                                       ( i_dom_node
+                                                       , g_nodes(i_mae_id).elements(l_element_name).conditions(j).condition
+                                                       );
+                              
+                              if dbms_xmldom.getlength( nl => l_conditional_nodes ) > 0
+                              then
+                                 extract_node( i_mae_id   => g_nodes(i_mae_id).elements(l_element_name).conditions(j).mae_id
+                                             , i_dom_node => dbms_xmldom.item( l_conditional_nodes, 0 )
+                                             );
+                              end if;
+                           end loop;
+                        else
+                           
+                           extract_node( i_mae_id    => g_nodes(i_mae_id).elements(l_element_name).mae_id
+                                       , i_dom_node  => l_child_node
+                                       );
+                        end if;
+                     end if;
+                  end if;
+               end if;
+            end loop;
+
+            
+            if l_repeating_node_name is not null
+            then
+               l_value_index := 1;
+            end if;
+         end if;
+
+         viu_module.leave_module( i_module => l_con_subproc_name);
+      exception
+         when others
+         then
+            viu_module.leave_module( i_module     => l_con_subproc_name
+                                   , i_debug_info => sqlerrm
+                                   );
+
+            viu_info.raise_info( i_calling_procedure => l_con_subproc_name );
+      end extract_node;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name
+                             , i_debug_info => 'i_imd_id: ' || nvl(to_char(i_imd_id), 'NULL')
+                             );
+
+      
+      if not g_initialized
+      then
+         init;
+         g_initialized := true;
+      end if;
+
+      
+      l_dom_doc     := dbms_xmldom.newdomdocument( xmldoc => i_message );
+      l_dom_node    := dbms_xmldom.makenode( doc => l_dom_doc );
+      l_root_node   := dbms_xmldom.getfirstchild( n => l_dom_node );
+
+      
+      extract_node( i_mae_id   => g_mae_ids( i_imd_id)
+                  , i_dom_node => l_root_node
+                  );
+                  
+      
+      dbms_xmldom.freedocument( doc => l_dom_doc );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         dbms_xmldom.freedocument( doc => l_dom_doc );
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end extract_attributedata;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure store_attributes( i_pae_id                     in pdm_packages.id%type
+                             , i_it_attributes              in pdm_attributes.attribute_coll
+                             , i_pet_id                     in pdm_package_events.id%type
+                             , i_event_time                 in cmn_constant.st_timestamp
+                             , i_ind_use_attribs_event_time in boolean
+                             )
+   is
+      l_con_proc_name     constant cmn_constant.st_proc_name := g_con_package || '.store_attributes';
+
+      l_ind_use_attribs_event_time varchar2(1);
+      l_index                      pdm_attribute_definitions.path%type;
+      l_nt_pbe                     pdm_nt_pbe;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_ind_use_attribs_event_time :=
+         case
+            when i_ind_use_attribs_event_time
+            then
+               cmn_constant.g_con_yesno_yes
+            else
+               cmn_constant.g_con_yesno_no
+         end;
+
+      if i_it_attributes.count > 0
+      then
+         
+         l_nt_pbe := pdm_nt_pbe();
+
+         
+         l_index  := i_it_attributes.first;
+
+         while l_index is not null
+         loop
+            for i in 1 .. i_it_attributes( l_index ).value.count
+            loop
+               l_nt_pbe.extend(1);
+               l_nt_pbe( l_nt_pbe.last ) := pdm_ot_pbe( i_it_attributes( l_index ).adn_id
+                                                      , i_it_attributes( l_index ).value( i )
+                                                      , i
+                                                      , case
+                                                           when i_ind_use_attribs_event_time
+                                                           then
+                                                              i_it_attributes( l_index ).event_time
+                                                           else
+                                                              i_event_time
+                                                        end
+                                                      , i_it_attributes( l_index ).ind_force
+                                                      );
+            end loop;
+
+            l_index := i_it_attributes.next( l_index );
+         end loop;
+
+         merge into pdm_v_pbe_active pbe
+         using      ( 
+                      select adn_id
+                      ,      value
+                      ,      value_nr
+                      ,      event_time
+                      ,      case
+                                when value is null
+                                then
+                                   0
+                                else
+                                   max( value_nr ) over (partition by adn_id)
+                             end nof_new_values
+                      ,      ind_force
+                      from   table( l_nt_pbe )
+                    ) value_list
+         on         (
+                      
+
+
+
+                          pbe.pae_id = i_pae_id
+                      and pbe.adn_id = value_list.adn_id
+                      and (
+                            
+                            pbe.value_nr = value_list.value_nr
+
+                            or
+                            
+                            (
+                               pbe.value_nr > value_list.nof_new_values
+                               and
+                               value_list.value_nr = 1                      
+                            )
+                          )
+                    )
+         when matched
+         then
+            update
+            set    modified_by_pet_id = ( case
+                                             when pbe.value_nr <= value_list.nof_new_values 
+                                             then
+                                                
+                                                i_pet_id
+
+                                             else
+                                                
+                                                pbe.modified_by_pet_id
+
+                                          end
+                                        )
+            ,      deleted_by_pet_id  = ( case
+                                             when pbe.value_nr > value_list.nof_new_values
+                                             then
+                                                
+                                                
+                                                i_pet_id
+
+                                             else
+                                                
+                                                
+                                                pbe.deleted_by_pet_id
+
+                                          end
+                                        )
+            ,      pet_id             = i_pet_id
+            ,      event_time         = value_list.event_time
+            ,      value              = ( case
+                                             when pbe.value_nr <= value_list.nof_new_values
+                                             then
+                                                
+                                                value_list.value
+
+                                             else
+                                                
+                                                pbe.value
+
+                                          end
+                                        )
+            where  ( pbe.value_nr > value_list.nof_new_values    
+                     or
+                     pbe.value <> value_list.value             
+                   )
+            and    ( l_ind_use_attribs_event_time = cmn_constant.g_con_yesno_yes
+                     or
+                     value_list.ind_force = cmn_constant.g_con_yesno_yes
+                     or
+                     pbe.event_time is null
+                     or
+                     value_list.event_time is null
+                     or
+                     value_list.event_time >= pbe.event_time
+                   )
+         when not matched
+         then
+            
+            
+            insert ( adn_id
+                   , pae_id
+                   , event_time
+                   , value
+                   , pet_id
+                   , created_by_pet_id
+                   , value_nr
+                   , id                   
+                   )
+            values ( value_list.adn_id
+                   , i_pae_id
+                   , value_list.event_time
+                   , value_list.value
+                   , i_pet_id
+                   , i_pet_id
+                   , value_list.value_nr
+                   , pdm_pbe_seq1.nextval 
+                   )
+            where  value_list.value_nr <= value_list.nof_new_values;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end store_attributes;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure delete_temporary_attributes( i_pae_id     in     pdm_package_attributes.pae_id%type
+                                        , i_imd_id     in     cmn_ifc_msg_definitions.id%type
+                                        , i_pet_id     in     pdm_package_events.id%type
+                                        , i_tte_id     in     pdm_task_types.id%type
+                                        , i_pd_status  in     pdm_message_subtypes.pd_status%type
+                                        , i_event_time in     pdm_package_attributes.event_time%type
+                                        )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                := g_con_package || '.' || 'delete_temporary_attributes';
+
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name
+                             , i_debug_info  => 'i_pae_id: '   || nvl(to_char(i_pae_id), 'NULL') ||
+                                                ', i_imd_id: ' || nvl(to_char(i_imd_id), 'NULL')
+                             );
+
+      update pdm_package_attributes pbe
+      set    pbe.deleted_by_pet_id = i_pet_id
+      ,      pbe.pet_id            = i_pet_id
+      ,      pbe.event_time        = i_event_time
+      where  pbe.id in ( select vpa.id
+                         from   pdm_v_pbe_active           vpa
+                                join  pdm_attribute_volatilities avy on (    vpa.adn_id = avy.adn_id
+                                                                         and avy.imd_id = i_imd_id
+                                                                        )
+                                      left join pdm_message_subtypes mse on (    avy.mse_id = mse.id
+                                                                             and mse.imd_id = i_imd_id
+                                                                            )
+                         where  vpa.pae_id         = i_pae_id
+                         and   (   vpa.event_time is null
+                                or i_event_time   is null
+                                or vpa.event_time <= i_event_time
+                               )
+                         and   (   avy.mse_id     is null
+                                or mse.tte_id      = i_tte_id
+                                or mse.pd_status   = i_pd_status
+                               )
+                     );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end delete_temporary_attributes;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure copy_resume_tracking_attribs( i_origin_pae_id in pdm_packages.id%type
+                                         , i_target_pae_id in pdm_packages.id%type
+                                         , i_target_pet_id in pdm_package_events.id%type
+                                         , i_stn_id_cust   in pdm_stations.id_cust%type
+                                         , i_event_time    in cmn_constant.st_timestamp
+                                         , i_schema_prefix in varchar2
+                                         )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.copy_resume_tracking_attribs';
+
+      
+      
+      
+      
+      
+      cursor c_package_attributes( b_pae_id in pdm_packages.id%type)
+      is
+         select   adn.id   adn_id
+         ,        adn.path adn_path
+         ,        adn.type adn_type
+         ,        pbe.value
+         ,        pbe.event_time
+         from     pdm_attribute_definitions adn
+         ,        pdm_v_pbe_active          pbe
+         where    adn.adn_id_resume = pbe.adn_id
+         and      pbe.pae_id        = b_pae_id
+         and      (  exists ( select 1
+                              from   pdm_attribute_priorities apy
+                              where  apy.adn_id_source = adn.id
+                            )
+                  or exists ( select 1
+                              from   pdm_attribute_dependencies ady
+                              where  ady.adn_id_child = adn.id
+                            )
+                  or adn.fen_id is not null
+                  )
+         order by adn.id
+         ,        pbe.value_nr;
+
+      type t_package_attributes   is record( adn_id     pdm_attribute_definitions.id%type
+                                           , adn_path   pdm_attribute_definitions.path%type
+                                           , adn_type   pdm_attribute_definitions.type%type
+                                           , value      pdm_package_attributes.value%type
+                                           , event_time pdm_package_attributes.event_time%type
+                                           );
+      type nt_package_attributes  is table of t_package_attributes;
+      type rct_package_attributes is ref cursor;
+
+      c_pbe_previous_schema rct_package_attributes;
+      l_nt_attributes       nt_package_attributes := nt_package_attributes();
+      l_it_attributes       pdm_attributes.attribute_coll;
+      l_value_index         pls_integer;
+      l_rt_adn              pdm_attribute_definitions%rowtype;
+      l_pbe_value           pdm_package_attributes.value%type;
+      l_query               varchar2(4000);
+      l_dummy               boolean;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if i_schema_prefix is null
+      then
+
+         
+         
+         
+         
+         
+         open  c_package_attributes( b_pae_id => i_origin_pae_id);
+         fetch c_package_attributes
+         bulk  collect into l_nt_attributes;
+         close c_package_attributes;
+
+      else
+         begin
+         
+            
+            
+            
+            
+            
+            
+            
+            l_query :=
+               ' SELECT   adn_target.id   adn_id                                    '
+            || ' ,        adn_target.path adn_path                                  '
+            || ' ,        adn_target.type adn_type                                  '
+            || ' ,        pbe.value                                                 '
+            || ' ,        pbe.event_time                                            '
+            || ' FROM                          pdm_attribute_definitions adn_target '
+            || ' ,        '||i_schema_prefix||'pdm_attribute_definitions adn_origin '
+            || ' ,        '||i_schema_prefix||'pdm_v_pbe_active          pbe        '
+            || ' WHERE    adn_target.path          = adn_origin.path                '
+            || ' AND      adn_origin.adn_id_resume = pbe.adn_id                     '
+            || ' AND      pbe.pae_id               = :pae_id                        '
+            || ' AND      (  EXISTS ( SELECT 1                                      '
+            || '                      FROM   pdm_attribute_priorities apy           '
+            || '                      WHERE  apy.adn_id_source = adn_target.id      '
+            || '                    )                                               '
+            || '          OR EXISTS ( SELECT 1                                      '
+            || '                      FROM   pdm_attribute_dependencies ady         '
+            || '                      WHERE  ady.adn_id_child = adn_target.id       '
+            || '                    )                                               '
+            || '          OR adn_target.fen_id IS NOT NULL                          '
+            || '          )                                                         '
+            || ' ORDER BY adn_target.id                                             '
+            || ' ,        pbe.value_nr                                              '
+            ;
+         
+            open  c_pbe_previous_schema for l_query using i_origin_pae_id;
+            fetch c_pbe_previous_schema bulk  collect into l_nt_attributes;
+            close c_pbe_previous_schema;
+         
+         exception
+            when others
+            then
+         
+               
+               viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_prevschemanotaccessible
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.severity_warning
+                                     , i_additional_data   =>      'schema_prefix=' || i_schema_prefix
+                                                              || ', pae.id='        || i_origin_pae_id
+                                     );
+         
+               
+               
+               
+               
+               viu_info.reset_package_variables;
+            
+         end;
+      end if;
+      
+      
+      if l_nt_attributes.count > 0
+      then
+         for i in l_nt_attributes.first .. l_nt_attributes.count
+         loop
+            if l_it_attributes.exists(l_nt_attributes(i).adn_path)
+            then
+               
+               l_value_index := l_it_attributes(l_nt_attributes(i).adn_path).value.count + 1;
+
+               l_it_attributes(l_nt_attributes(i).adn_path).value(l_value_index) := l_nt_attributes(i).value;
+            else
+               
+               l_value_index := 1;
+
+               l_it_attributes(l_nt_attributes(i).adn_path).adn_id               := l_nt_attributes(i).adn_id;
+               l_it_attributes(l_nt_attributes(i).adn_path).adn_type             := l_nt_attributes(i).adn_type;
+               l_it_attributes(l_nt_attributes(i).adn_path).value(l_value_index) := l_nt_attributes(i).value;
+               l_it_attributes(l_nt_attributes(i).adn_path).event_time           := l_nt_attributes(i).event_time;
+            end if;
+         end loop;
+
+         
+         if i_stn_id_cust is not null
+         then
+            l_dummy := pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => pdm_constant.g_con_resume_stationid_attr
+                                                          , o_rt_adn   => l_rt_adn
+                                                          );
+
+            l_it_attributes(pdm_constant.g_con_resume_stationid_attr).adn_id     := l_rt_adn.id;
+            l_it_attributes(pdm_constant.g_con_resume_stationid_attr).adn_type   := l_rt_adn.type;
+            l_it_attributes(pdm_constant.g_con_resume_stationid_attr).value(1)   := i_stn_id_cust;
+            l_it_attributes(pdm_constant.g_con_resume_stationid_attr).event_time := i_event_time;
+         end if;
+
+         
+         l_pbe_value := pdm_common.pbe_select_value( i_pae_id   => i_origin_pae_id
+                                                   , i_adn_path => pdm_constant.g_con_segr_pcsplanidname_attr
+                                                   );
+         if l_pbe_value is not null
+         then
+            l_dummy := pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => pdm_constant.g_con_segr_pcsplanidname_attr
+                                                          , o_rt_adn   => l_rt_adn
+                                                          );
+            l_it_attributes(l_rt_adn.path).adn_id     := l_rt_adn.id;
+            l_it_attributes(l_rt_adn.path).adn_type   := l_rt_adn.type;
+            l_it_attributes(l_rt_adn.path).value(1)   := l_pbe_value;
+            l_it_attributes(l_rt_adn.path).event_time := i_event_time;
+         end if;
+
+         
+         l_pbe_value := pdm_common.pbe_select_value( i_pae_id   => i_origin_pae_id
+                                                   , i_adn_path => pdm_constant.g_con_segr_pcsdefname_attr
+                                                   );
+         if l_pbe_value is not null
+         then
+            l_dummy := pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => pdm_constant.g_con_segr_pcsdefname_attr
+                                                          , o_rt_adn   => l_rt_adn
+                                                          );
+            l_it_attributes(l_rt_adn.path).adn_id     := l_rt_adn.id;
+            l_it_attributes(l_rt_adn.path).adn_type   := l_rt_adn.type;
+            l_it_attributes(l_rt_adn.path).value(1)   := l_pbe_value;
+            l_it_attributes(l_rt_adn.path).event_time := i_event_time;
+         end if;
+
+         
+         l_pbe_value := pdm_common.pbe_select_value( i_pae_id   => i_origin_pae_id
+                                                   , i_adn_path => pdm_constant.g_con_segr_productname_attr
+                                                   );
+         if l_pbe_value is not null
+         then
+            l_dummy := pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => pdm_constant.g_con_segr_productname_attr
+                                                          , o_rt_adn   => l_rt_adn
+                                                          );
+            l_it_attributes(l_rt_adn.path).adn_id     := l_rt_adn.id;
+            l_it_attributes(l_rt_adn.path).adn_type   := l_rt_adn.type;
+            l_it_attributes(l_rt_adn.path).value(1)   := l_pbe_value;
+            l_it_attributes(l_rt_adn.path).event_time := i_event_time;
+         end if;
+
+         
+         pdm_attributes.store_attributes( i_pae_id                     => i_target_pae_id
+                                        , i_it_attributes              => l_it_attributes
+                                        , i_pet_id                     => i_target_pet_id
+                                        , i_event_time                 => null
+                                        , i_ind_use_attribs_event_time => true
+                                        );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_package_attributes%isopen
+         then
+            close c_package_attributes;
+         end if;
+         if c_pbe_previous_schema%isopen
+         then
+            close c_pbe_previous_schema;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end copy_resume_tracking_attribs;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_package_attribute_values( i_pae_id   in pdm_packages.id%type
+                                        , i_imd_id   in cmn_ifc_msg_definitions.id%type
+                                        , i_mae_name in pdm_message_attributes.name%type
+                                        )
+      return package_attribute_value_coll
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_package_attribute_values';
+
+      l_it_pbe_values            package_attribute_value_coll;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      select pbe.value
+      bulk   collect into l_it_pbe_values
+      from   pdm_v_pbe_active       pbe
+      ,      pdm_message_attributes mae
+      where  pbe.adn_id    = mae.adn_id
+      and    mae.direction = pdm_constant.g_con_direction_outgoing
+      and    pbe.pae_id    = i_pae_id
+      and    mae.name      = i_mae_name
+      and    mae.imd_id    = i_imd_id
+      order  by pbe.value_nr;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_it_pbe_values;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_package_attribute_values;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_package_attribute_values( i_pae_id                in pdm_packages.id%type
+                                        , i_imd_name              in cmn_ifc_msg_definitions.name%type
+                                        , i_it_attributes_current in pdm_attributes.attribute_coll
+                                        )
+      return it_mae_name_values
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_package_attribute_values' ;
+
+      
+      cursor c_pbe( b_pae_id   in pdm_packages.id%type
+                  , b_imd_name in cmn_ifc_msg_definitions.name%type
+                  )
+      is
+           select mae.name mae_name
+           ,      mae.ind_current_event
+           ,      vpbe.adn_source_path
+           ,      cast(collect( vpbe.pbe_value
+                                order by vpbe.pbe_value_nr 
+                              ) as pdm_nt_pbe_values
+                      ) as pbe_values
+           from   pdm_message_attributes mae
+                  right join ( select pbe.value pbe_value
+                               ,      pbe.value_nr pbe_value_nr
+                               ,      pbe.adn_id pbe_adn_id
+                               ,      adn.path adn_source_path
+                               from   pdm_v_pbe_active pbe
+                                      left join pdm_attribute_definitions adn
+                                      on pbe.adn_id_source = adn.id
+                               where  pbe.pae_id = b_pae_id
+                             ) vpbe
+                  on vpbe.pbe_adn_id = mae.adn_id
+           ,      cmn_ifc_msg_definitions imd
+           where  mae.imd_id    = imd.id
+           and    imd.name      = b_imd_name
+           and    mae.direction = pdm_constant.g_con_direction_outgoing
+           group  by mae.name
+           ,      mae.ind_current_event
+           ,      vpbe.adn_source_path;
+
+      
+      type it_pbe is table of c_pbe%rowtype index by pls_integer;
+
+      
+      l_it_cursor_pbe            it_pbe;
+
+      l_it_adn_pbe               pdm_attributes.it_mae_name_values;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      open c_pbe( b_pae_id   => i_pae_id
+                , b_imd_name => i_imd_name
+                );
+
+      fetch c_pbe
+      bulk  collect
+      into l_it_cursor_pbe;
+
+      close c_pbe;
+
+      
+      for i in 1 .. l_it_cursor_pbe.count
+      loop
+         if l_it_cursor_pbe(i).ind_current_event = cmn_constant.g_con_yesno_no
+         or i_it_attributes_current.exists(l_it_cursor_pbe(i).adn_source_path)
+         then
+            l_it_adn_pbe(l_it_cursor_pbe(i).mae_name).pbe_values :=
+               l_it_cursor_pbe(i).pbe_values;
+         end if;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_it_adn_pbe;
+
+   exception
+      when others
+      then
+         if c_pbe%isopen
+         then
+            close c_pbe;
+         end if;
+
+         viu_module.leave_module( i_module       => l_con_proc_name
+                                , i_debug_info   => 'exception'
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_package_attribute_values;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure delete_package_attribute( i_pae_id     in     pdm_package_attributes.pae_id%type
+                                     , i_adn_id     in     pdm_attribute_definitions.id%type
+                                     , i_pet_id     in     pdm_package_events.id%type
+                                     , i_event_time in     cmn_constant.st_timestamp
+                                     )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                := g_con_package || '.' || 'delete_package_attribute';
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name
+                             , i_debug_info  => 'i_pae_id: '   || nvl(to_char(i_pae_id), 'NULL') ||
+                                                ', i_adn_id: ' || nvl(to_char(i_adn_id), 'NULL') ||
+                                                ', i_pet_id: ' || nvl(to_char(i_pet_id), 'NULL')
+                             );
+
+      
+      update pdm_v_pbe_active pbe
+      set    deleted_by_pet_id = i_pet_id
+      ,      pet_id            = i_pet_id
+      ,      event_time        = i_event_time
+      where  pae_id            = i_pae_id
+      and    adn_id            = i_adn_id;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end delete_package_attribute;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function message_attributes_exist( i_pet_id          in pdm_package_events.id%type
+                                    , i_pae_id          in pdm_packages.id%type
+                                    , i_imd_id          in cmn_ifc_msg_definitions.id%type
+                                    , i_imd_id_excluded in cmn_ifc_msg_definitions.id%type
+                                    )
+      return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.message_attributes_exist';
+
+      l_result                   boolean := false;
+
+      
+      
+      cursor c_attributes( b_pet_id in pdm_package_events.id%type
+                         , b_pae_id in pdm_packages.id%type
+                         , b_imd_id in cmn_ifc_msg_definitions.id%type
+                         )
+      is
+      select pbe.id pbe_id
+      from   pdm_package_attributes pbe
+      ,      pdm_message_attributes mae
+      ,      pdm_package_events     pet1
+      ,      pdm_package_events     pet2
+      where  pbe.adn_id    = mae.adn_id
+      and    pbe.pae_id    = b_pae_id
+      and    mae.imd_id    = b_imd_id
+      and    mae.direction = pdm_constant.g_con_direction_outgoing
+      and    pbe.pet_id    = pet1.id
+      and    pet1.evt_id   = pet2.evt_id
+      and    pet2.id       = b_pet_id
+      and    rownum        = 1
+      ;
+
+      
+      
+      
+      cursor c_attributes2( b_pet_id          in pdm_package_events.id%type
+                          , b_pae_id          in pdm_packages.id%type
+                          , b_imd_id          in cmn_ifc_msg_definitions.id%type
+                          , b_imd_id_excluded in cmn_ifc_msg_definitions.id%type
+                          )
+      is
+      select pbe.id pbe_id
+      from   pdm_package_attributes pbe
+                left join ( select adn_id     adn_id
+                            ,      mae.imd_id imd_id
+                            from   pdm_message_attributes mae
+                            where  direction = pdm_constant.g_con_direction_incoming
+                          ) vmae
+                on   pbe.adn_id_source = vmae.adn_id
+      ,      pdm_message_attributes mae
+      ,      pdm_package_events     pet1
+      ,      pdm_package_events     pet2
+      where  pbe.adn_id          =  mae.adn_id
+      and    ( pbe.adn_id_source is null
+               or
+               vmae.imd_id       is null
+               or
+               vmae.imd_id       != b_imd_id_excluded
+             )
+      and    pbe.pae_id           = b_pae_id
+      and    mae.imd_id           = b_imd_id
+      and    mae.direction        = pdm_constant.g_con_direction_outgoing
+      and    pet1.evt_id          = pet2.evt_id
+      and    pet2.id              = b_pet_id
+      and    pbe.pet_id           = pet1.id
+      and    rownum               = 1
+      ;
+
+      r_attributes c_attributes%rowtype;
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name
+                             , i_debug_info => 'i_pet_id: ' || nvl(to_char(i_pet_id), 'NULL') ||
+                                               ', i_imd_id: ' || nvl(to_char(i_imd_id), 'NULL')
+                             );
+
+      if i_imd_id_excluded is null
+      then
+         open c_attributes( b_pet_id => i_pet_id
+                          , b_pae_id => i_pae_id
+                          , b_imd_id => i_imd_id
+                          );
+         fetch c_attributes
+         into  r_attributes;
+
+         l_result := c_attributes%found;
+
+         close c_attributes;
+      else
+         open c_attributes2( b_pet_id          => i_pet_id
+                           , b_pae_id          => i_pae_id
+                           , b_imd_id          => i_imd_id
+                           , b_imd_id_excluded => i_imd_id_excluded
+                           );
+         fetch c_attributes2
+         into  r_attributes;
+
+         l_result := c_attributes2%found;
+
+         close c_attributes2;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_result;
+
+   exception
+      when others
+      then
+         if c_attributes%isopen
+         then
+            close c_attributes;
+         end if;
+
+         if c_attributes2%isopen
+         then
+            close c_attributes2;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end message_attributes_exist;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure store_functional_src_attribs( i_pae_id_orig        in pdm_packages.id%type
+                                         , i_pet_id_orig        in pdm_package_events.id%type
+                                         , i_pet_id_curr        in pdm_package_events.id%type
+                                         , i_rt_plk_active      in pdm_package_links%rowtype
+                                         , i_rt_plk_deactivated in pdm_package_links%rowtype
+                                         , i_ind_pae_reopened   in boolean := false
+                                         )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.store_functional_src_attribs';
+
+      l_pae_id_current           pdm_packages.id%type;
+      l_process_pae_id_primary   pdm_packages.id%type;
+      l_process_pae_id_secondary pdm_packages.id%type;
+
+   begin
+      viu_module.enter_module( i_module     => l_con_proc_name
+                             , i_debug_info => 'i_pae_id_orig: '             || nvl(to_char(i_pae_id_orig), 'NULL')   ||
+                                               ', i_pet_id_orig: '           || nvl(to_char(i_pet_id_orig), 'NULL')   ||
+                                               ', i_pet_id_curr: '           || nvl(to_char(i_pet_id_curr), 'NULL')   ||
+                                               ', i_rt_plk_active.id: '      || nvl(to_char(i_rt_plk_active.id), 'NULL') ||
+                                               ', i_rt_plk_deactivated.id: ' || nvl(to_char(i_rt_plk_deactivated.id), 'NULL')||
+                                               ', i_pae_reopened: '          || case when i_ind_pae_reopened then 'TRUE'
+                                                                                     else 'FALSE'
+                                                                                end
+                             );
+
+      
+      l_pae_id_current := nvl( i_rt_plk_active.pae_id_primary
+                             , nvl( i_rt_plk_deactivated.pae_id_primary
+                                  , i_pae_id_orig
+                                  )
+                             );
+
+      
+      
+      
+      l_process_pae_id_primary := case
+                                     when i_pae_id_orig = i_rt_plk_active.pae_id_secondary
+                                     then
+                                        i_rt_plk_active.pae_id_primary
+                                  end;
+
+      
+      
+      
+      
+      
+      l_process_pae_id_secondary := case
+                                       when i_rt_plk_active.id is not null
+                                       and (   i_pet_id_orig = i_rt_plk_active.activated_by_pet_id
+                                            or i_ind_pae_reopened
+                                           )
+                                       then
+                                          i_rt_plk_active.pae_id_secondary
+                                    end;
+
+      merge into pdm_v_pbe_active pbe_functional
+      using ( select adn_functional.id                        adn_id_functional
+              ,      adn_source.adn_id_source                 adn_id_source
+              ,      pbe_source.value                         value
+              ,      pbe_source.value_nr                      value_nr
+              ,      ( case
+                          when value is null
+                          then
+                             0
+                          else
+                             max( value_nr ) over (partition by adn_id)
+                       end
+                     ) value_nr_max
+              from   pdm_v_pbe_active pbe_source
+              ,      ( 
+
+                       
+                       select apy.adn_id_functional id
+                       from   pdm_v_pbe_active         pbe
+                       ,      pdm_attribute_priorities apy
+                       where  pbe.adn_id               = apy.adn_id_source
+                       and    pbe.pae_id               = l_process_pae_id_secondary
+
+                       union
+
+                       
+                       select pbe.adn_id id
+                       from   pdm_v_pbe_active            pbe
+                       ,      pdm_package_type_attributes pea
+                       ,      pdm_packages                pae
+                       where  pea.adn_id                  = pbe.adn_id_source
+                       and    pea.pte_id                  = pae.pte_id
+                       and    pbe.pae_id                  = i_rt_plk_deactivated.pae_id_primary
+                       and    pae.id                      = i_rt_plk_deactivated.pae_id_secondary
+
+                       union
+
+                       
+                       select apy.adn_id_functional id
+                       from   pdm_attribute_priorities apy
+                       ,      pdm_package_attributes   pbe
+                       where  apy.adn_id_source        = pbe.adn_id
+                       and    pbe.pae_id               = i_pae_id_orig
+                       and    pbe.pet_id               = i_pet_id_orig
+
+                       union
+
+                       
+                       select apy.adn_id_functional id
+                       from   pdm_attribute_priorities apy
+                       ,      pdm_package_attributes   pbe
+                       where  apy.adn_id_source        = pbe.adn_id
+                       and    pbe.pae_id               = l_process_pae_id_primary
+                       and    pbe.pet_id               = i_pet_id_curr     
+                       and    pbe.deleted_by_pet_id    = i_pet_id_curr     
+
+                      ) adn_functional
+              ,       ( 
+                        select apy.adn_id_functional
+                        ,      min (pbe.pae_id) keep ( dense_rank first
+                                                       order by apy.ordering
+                                                       ,     pbe.event_time desc
+                                                     ) pae_id_source
+                        ,      min (pbe.adn_id) keep ( dense_rank first
+                                                       order by apy.ordering
+                                                       ,     pbe.event_time desc
+                                                     ) adn_id_source
+                        from   pdm_v_pbe_active         pbe
+                        ,      pdm_attribute_priorities apy
+                        where  pbe.adn_id               = apy.adn_id_source
+                        and    pbe.pae_id               in ( l_pae_id_current
+                                                           , i_rt_plk_active.pae_id_secondary
+                                                           )
+                        group  by apy.adn_id_functional
+                      ) adn_source
+              
+              where  adn_functional.id    = adn_source.adn_id_functional(+)
+              and    pbe_source.adn_id(+) = adn_source.adn_id_source
+              and    pbe_source.pae_id(+) = adn_source.pae_id_source
+            ) pbe_new_dataset
+      
+      on (     pbe_functional.pae_id = l_pae_id_current
+           and pbe_functional.adn_id = pbe_new_dataset.adn_id_functional
+           and ( pbe_new_dataset.value_nr_max = 0                            
+                 or
+                 pbe_functional.value_nr      = pbe_new_dataset.value_nr     
+                 or
+                 ( pbe_functional.value_nr    > pbe_new_dataset.value_nr_max 
+                   and
+                   pbe_new_dataset.value_nr   = 1                            
+                 )
+               )
+         )
+      
+      when matched
+      then
+         update
+            set modified_by_pet_id = ( case
+                                          when pbe_functional.value_nr >  pbe_new_dataset.value_nr_max
+                                          then
+                                             
+                                             pbe_functional.modified_by_pet_id
+
+                                          else
+                                             
+                                             i_pet_id_curr
+
+                                       end
+                                     )
+            ,   deleted_by_pet_id  = ( case
+                                          when pbe_functional.value_nr >  pbe_new_dataset.value_nr_max
+                                          then
+                                             
+                                             i_pet_id_curr
+
+                                          else
+                                             
+                                             
+                                             null
+
+                                       end
+                                     )
+            ,   pet_id             = i_pet_id_curr
+            ,   adn_id_source      = ( case
+                                          when pbe_functional.value_nr >  pbe_new_dataset.value_nr_max
+                                          then
+                                             pbe_functional.adn_id_source
+                                          else
+                                             pbe_new_dataset.adn_id_source
+                                       end
+                                     )
+            ,   value              = ( case
+                                          when pbe_functional.value_nr >  pbe_new_dataset.value_nr_max
+                                          then
+                                             
+                                             pbe_functional.value
+
+                                          else
+                                             
+                                             
+                                             pbe_new_dataset.value
+                                       end
+                                     )
+            where pbe_functional.value    <> pbe_new_dataset.value           
+            or    pbe_functional.value_nr >  pbe_new_dataset.value_nr_max    
+      
+      when not matched
+      then
+         insert ( adn_id
+                , pae_id
+                , adn_id_source
+                , value
+                , pet_id
+                , created_by_pet_id
+                , value_nr
+                , id                                
+                )
+         values ( pbe_new_dataset.adn_id_functional
+                , l_pae_id_current
+                , pbe_new_dataset.adn_id_source
+                , pbe_new_dataset.value
+                , i_pet_id_curr
+                , i_pet_id_curr
+                , pbe_new_dataset.value_nr
+                , pdm_pbe_seq1.nextval              
+                )
+         where  pbe_new_dataset.value is not null;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+   end store_functional_src_attribs;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure initialize_package_attributes( io_it_attributes  in out  pdm_attributes.attribute_coll )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                      := g_con_package || '.initialize_package_attributes';
+
+      cursor c_default_attr
+      is
+         select adn.id
+         ,      adn.path
+         ,      adn.value
+         ,      adn.type
+         from   pdm_attribute_definitions adn
+         where  adn.value is not null;
+
+      type it_default_attr is table of c_default_attr%rowtype;
+
+      l_it_default_attr it_default_attr;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      open  c_default_attr;
+      fetch c_default_attr bulk collect into l_it_default_attr;
+      close c_default_attr;
+
+      if l_it_default_attr.count > 0
+      then
+         for i in l_it_default_attr.first .. l_it_default_attr.count
+         loop
+            io_it_attributes(l_it_default_attr(i).path).adn_id   := l_it_default_attr(i).id;
+            io_it_attributes(l_it_default_attr(i).path).value(1) := l_it_default_attr(i).value;
+            io_it_attributes(l_it_default_attr(i).path).adn_type := l_it_default_attr(i).type;
+         end loop;
+
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         if c_default_attr%isopen
+         then
+            close c_default_attr;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+   end initialize_package_attributes;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure add_attribute ( i_adn_path        in      pdm_attribute_definitions.path%type
+                           , io_it_attributes  in out  pdm_attributes.attribute_coll
+                           )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.add_attribute';
+
+      l_rt_adn                 pdm_attribute_definitions%rowtype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      if not pdm_adn_tapi_pck.adn_select_row_uk1 ( i_adn_path => i_adn_path
+                                                 , o_rt_adn   => l_rt_adn
+                                                 )
+      then
+
+         
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'ATTRIBUTE DEFINTION with PATH: ' || i_adn_path
+            );
+      end if;
+
+      
+      io_it_attributes(i_adn_path).adn_id   := l_rt_adn.id;
+      io_it_attributes(i_adn_path).adn_type := l_rt_adn.type;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end add_attribute;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure add_attribute_null ( i_adn_path        in      pdm_attribute_definitions.path%type
+                                , io_it_attributes  in out  pdm_attributes.attribute_coll
+                                )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.add_attribute_null';
+
+      l_rt_adn                 pdm_attribute_definitions%rowtype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      if not pdm_adn_tapi_pck.adn_select_row_uk1 ( i_adn_path => i_adn_path
+                                                 , o_rt_adn   => l_rt_adn
+                                                 )
+      then
+
+         
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'ATTRIBUTE DEFINTION with PATH: ' || i_adn_path
+            );
+      end if;
+
+      
+      io_it_attributes(i_adn_path).adn_id   := l_rt_adn.id;
+      io_it_attributes(i_adn_path).adn_type := l_rt_adn.type;
+      io_it_attributes(i_adn_path).value(1) := null;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end add_attribute_null;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure add_attribute_value ( i_adn_path        in      pdm_attribute_definitions.path%type
+                                 , i_value           in      pdm_package_attributes.value%type
+                                 , io_it_attributes  in out  pdm_attributes.attribute_coll
+                                 )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.add_attribute_value';
+
+      l_rt_adn                 pdm_attribute_definitions%rowtype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      if not pdm_adn_tapi_pck.adn_select_row_uk1 ( i_adn_path => i_adn_path
+                                                 , o_rt_adn   => l_rt_adn
+                                                 )
+      then
+
+         
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'ATTRIBUTE DEFINTION with PATH: ' || i_adn_path
+            );
+      end if;
+
+      
+      io_it_attributes(i_adn_path).adn_id   := l_rt_adn.id;
+      io_it_attributes(i_adn_path).adn_type := l_rt_adn.type;
+      io_it_attributes(i_adn_path).value(1) := i_value;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end add_attribute_value;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   function get_attr_list_value( i_it_attributes in pdm_attributes.attribute_coll
+                               , i_adn_path      in pdm_attribute_definitions.path%type
+                               )
+      return pdm_package_attributes.value%type
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_attr_list_value' ;
+
+      l_attr_list_value pdm_package_attributes.value%type;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      if i_it_attributes.exists(i_adn_path)
+      then
+         l_attr_list_value := i_it_attributes(i_adn_path).value(1);
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_attr_list_value;
+
+   exception
+      when others
+      then
+
+         viu_module.leave_module( i_module       => l_con_proc_name
+                                , i_debug_info   => 'exception'
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_attr_list_value;
+
+end pdm_attributes;
+/

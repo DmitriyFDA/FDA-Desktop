@@ -1,0 +1,24 @@
+procedure bpi_pdfreport(p_id in number default 0) is
+l_blob blob; l_dd varchar2(20); l_pdfname varchar2(100);
+begin
+  begin
+    
+    select trim(reportname), pdfreport, to_char(created,'YYYYMMDD_HH24MMSS') as dd into l_pdfname, l_blob, l_dd from pdfstore where id=p_id;
+    
+    if upper(substr(l_pdfname,-4)) = '.PDF' then
+      l_pdfname := substr(l_pdfname, length(l_pdfname)-4);
+    end if;
+    
+    l_pdfname := trim(l_pdfname)||'_'||l_dd||'.pdf';
+    owa_util.mime_header('application/pdf', false);
+    htp.p('Content-Disposition: filename="'||l_pdfname||'"') ;
+    htp.p('Content-Length: '||to_char(dbms_lob.getlength(l_blob)));
+    owa_util.http_header_close;
+    wpg_docload.download_file(l_blob);
+  exception when others then
+     htp.print('<HTML><HEAD><TITLE>BPI_PDFReport('||to_char(p_id)||')</TITLE></HEAD><BODY>
+<p>Error producing PDF report '||to_char(p_id)||'</p><br><p>'||sqlerrm||'</p>
+<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>')||'</BODY></HTML>');
+  end;
+end;
+/

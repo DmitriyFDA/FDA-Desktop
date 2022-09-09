@@ -1,0 +1,2000 @@
+create or replace PACKAGE bsis_subscription_mgr
+AUTHID DEFINER
+AS
+   /******************************************************************************
+     NAME:       bsis_subscription_mgr
+     PURPOSE:
+       Package to handle message subscriptions
+     REVISIONS:
+     Date        Author           Description
+     ----------  ---------------  ------------------------------------
+     27-10-2020  nlmv2            vbss-290: Remove references to unsupported message type
+   ******************************************************************************/
+   --
+   FUNCTION redelivery_message_exists
+    (i_target_name IN VARCHAR2) RETURN BOOLEAN;
+   --
+   FUNCTION buffer_message(i_message     IN XMLTYPE
+                           ,i_target_name IN VARCHAR2
+                           )
+   RETURN bsis_subscriber_buffer_msgs%ROWTYPE;
+   --
+   PROCEDURE send_bre_message(i_target_name    IN VARCHAR2
+                             ,i_bre_msg        IN XMLTYPE
+                             ,i_buffer_message IN BOOLEAN := FALSE
+                             );
+   --
+   PROCEDURE publish_bre
+       ( i_msg_id_rec     IN bsis_interface.rt_msg_id
+       );
+   --
+   PROCEDURE publish_ssn
+       (i_msg_id_rec         IN bsis_interface.rt_msg_id
+       ,i_bda_id             IN NUMBER
+       ,i_iata_id_tab_change IN bsis_interface.it_iata_id
+       ,i_bag_data           IN XMLTYPE
+       ,i_reply_data         IN XMLTYPE
+       ,i_msg_src            IN XMLTYPE := NULL
+       ,i_msg_sve            IN XMLTYPE := NULL
+       ,o_message_sent       OUT BOOLEAN
+       );
+   --
+   PROCEDURE publish_ssr
+       (i_msg_id_rec         IN bsis_interface.rt_msg_id
+       ,i_bda_id             IN NUMBER
+       ,i_iata_id_tab_change IN bsis_interface.it_iata_id
+       ,i_bag_data           IN XMLTYPE
+       ,i_reply_data         IN XMLTYPE
+       ,i_message_type       IN VARCHAR2
+       ,i_msg_src            IN XMLTYPE := NULL
+       ,i_msg_sve            IN XMLTYPE := NULL
+       ,o_message_sent       OUT BOOLEAN
+       );
+   --
+   PROCEDURE send_subscriber_buffer_msgs;
+   --
+   PROCEDURE export_subscriber_buffer_msgs
+     (i_ssr_identifier IN bsis_subscribers.identifier%TYPE
+     ,i_start_time     IN TIMESTAMP := NULL -- vbss-31 WITH TIME ZONE 
+     ,i_end_time       IN TIMESTAMP := NULL -- vbss-31 WITH TIME ZONE 
+     );
+   --
+   PROCEDURE clear_subscriber_buffer_msgs;
+   --
+   PROCEDURE publish_bda
+    (i_msg_id_rec         IN bsis_interface.rt_msg_id
+    ,i_bda_rec            IN bsis_baggage_data%ROWTYPE
+    ,i_iata_id_tab_change IN bsis_interface.it_iata_id
+    ,o_message_sent       OUT BOOLEAN
+    );
+   --
+   FUNCTION sse_all
+    (i_msg_id_rec IN bsis_interface.rt_msg_id)
+     RETURN BOOLEAN;
+   --
+   FUNCTION subscribe (i_msg_id_rec IN bsis_interface.rt_msg_id)
+     RETURN BOOLEAN;
+   --
+   FUNCTION unsubscribe(i_msg_id_rec IN bsis_interface.rt_msg_id)
+      RETURN BOOLEAN;
+   --
+   PROCEDURE resync
+    (i_pty_id_cust  IN VARCHAR2
+    ,i_window_begin IN VARCHAR2
+    ,i_window_end   IN VARCHAR2
+    );
+   --
+   PROCEDURE start_resync
+    (i_msg_id_rec IN bsis_interface.rt_msg_id
+    );
+   --
+   FUNCTION subscription_content_passed
+       (i_ssr_id           IN NUMBER
+       ,i_dat_flt_elt_type IN VARCHAR2
+       ,i_dat_elt_root     IN VARCHAR2
+       ,i_dat_xml          IN XMLTYPE
+       ) RETURN BOOLEAN;
+   --
+   FUNCTION subscription_change_passed
+       (i_ssr_id             IN NUMBER
+       ,i_dat_elt_type       IN VARCHAR2
+       ,i_iata_id_tab_change IN bsis_interface.it_iata_id
+       ) RETURN NUMBER;
+   --
+   FUNCTION subscription_filter_passed
+     (i_msg_id_rec         IN bsis_interface.rt_msg_id
+     ,i_ssr_id             IN NUMBER
+     ,i_iata_id_tab_change IN bsis_interface.it_iata_id
+     ,i_msg_src            IN XMLTYPE  := NULL
+     ,i_msg_sve            IN XMLTYPE  := NULL
+     ) RETURN BOOLEAN;
+   --
+   FUNCTION get_next_bagresponse_seq
+    (i_ssr_identifier IN bsis_subscribers.identifier%TYPE)
+    RETURN bsis_subscribers.latest_bagresponse_seq%TYPE;
+   --
+END bsis_subscription_mgr;
+/
+
+
+
+
+package body bsis_subscription_mgr
+as
+   g_con_package              constant varchar2(30) := 'bsis_subscription_mgr';
+   c_no_match                 constant number := 1;
+   c_no_change                constant number := 2;
+   c_change                   constant number := 3;
+   
+   
+   type rt_bda_resync is record
+     (bda_id             bsis_baggage_data.id%type
+     ,end_window_element bsis_baggage_data.last_updated_on%type
+     );
+   
+   type it_bda_resync is table of rt_bda_resync index by pls_integer;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function filter_content_exists
+    (i_ssr_id           in number
+    ,i_dat_flt_elt_type in varchar2
+    )
+    return boolean
+   is
+      l_con_proc constant cmn_constant.st_proc_name := g_con_package || '.filter_content_exists';
+      l_return   boolean;
+      
+      cursor c_scr_count
+       (b_ssr_id       in number
+       ,b_dat_flt_elt_type in varchar2
+       )
+      is
+      select 1
+      from   bsis_subscription_content_ftrs scr
+      where  scr.ssr_id         = b_ssr_id
+      and    scr.filter_element = b_dat_flt_elt_type
+      ;
+      r_scr_count c_scr_count%rowtype;
+   begin
+      
+      
+      open  c_scr_count(b_ssr_id           => i_ssr_id
+                       ,b_dat_flt_elt_type => i_dat_flt_elt_type
+                       );
+      fetch c_scr_count into r_scr_count;
+      l_return := c_scr_count%found;
+      close c_scr_count;
+      
+      return l_return;
+   exception
+   when others
+   then if c_scr_count%isopen
+        then
+           close c_scr_count;
+        end if;
+        
+        viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end filter_content_exists;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   function filter_change_exists
+    (i_ssr_id in number)
+    return boolean
+   is
+      l_con_proc constant cmn_constant.st_proc_name := g_con_package || '.filter_change_exists';
+      l_return   boolean;
+      
+      cursor c_sce_count
+       (b_ssr_id in number
+       )
+      is
+      select 1
+      from   bsis_subscription_change_ftrs sce
+      where  sce.ssr_id = b_ssr_id
+      ;
+      r_sce_count c_sce_count%rowtype;
+   begin
+      
+      open  c_sce_count(b_ssr_id => i_ssr_id);
+      fetch c_sce_count into r_sce_count;
+      l_return := c_sce_count%found;
+      close c_sce_count;
+      
+      return l_return;
+   exception
+   when others
+   then if c_sce_count%isopen
+        then
+           close c_sce_count;
+        end if;
+        
+        viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end filter_change_exists;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function redelivery_message_exists
+    (i_target_name in varchar2)
+    return boolean
+   is
+      l_con_proc constant cmn_constant.st_proc_name := g_con_package || '.redelivery_message_exists';
+      l_return   boolean;
+      
+      
+
+
+
+      cursor c_sbe_count
+       (b_ssr_identifier in bsis_subscribers.identifier%type
+       )
+      is
+      select 1
+      from   bsis_subscribers            ssr
+      ,      bsis_subscriber_buffer_msgs sbe
+      where  ssr.id          = sbe.ssr_id
+      and    ssr.identifier  = b_ssr_identifier
+      and    sbe.created_on >= (cmn_common.default_timestamp - (numtodsinterval(nvl(ssr.redelivery_period,0),'MINUTE')))
+      order by sbe.created_on asc
+      ;
+      r_sbe_count c_sbe_count%rowtype;
+   begin
+      
+      open  c_sbe_count(b_ssr_identifier => i_target_name);
+      fetch c_sbe_count into r_sbe_count;
+      l_return := c_sbe_count%found;
+      close c_sbe_count;
+      
+      return l_return;
+   exception
+   when others
+   then if c_sbe_count%isopen
+        then
+           close c_sbe_count;
+        end if;
+        
+        viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end redelivery_message_exists;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function buffer_message(i_message     in xmltype
+                           ,i_target_name in varchar2
+                           )
+   return bsis_subscriber_buffer_msgs%rowtype
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.buffer_message';
+      l_rt_ssr       bsis_subscribers%rowtype;
+      l_rt_sbe       bsis_subscriber_buffer_msgs%rowtype;
+      l_bda_id_rec   bsis_interface.rt_bda_id;
+   begin
+      if bsis_ssr_tapi_pck.ssr_select_row_uk1(i_ssr_identifier => i_target_name
+                                             ,o_rt_ssr         => l_rt_ssr
+                                             )
+      then
+         l_rt_sbe.ssr_id        := l_rt_ssr.id;
+         l_rt_sbe.created_on    := cmn_common.default_timestamp;
+         l_rt_sbe.message       := i_message;
+         l_rt_sbe.send_attempts := 0;
+         l_rt_sbe.status        := 'RECEIVED';
+         
+         bsis_sbe_tapi_pck.sbe_insert_row (io_rt_sbe => l_rt_sbe);
+         
+         commit;
+      else
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cmnpartynotfound
+                               ,i_calling_procedure => l_con_proc
+                               ,i_severity          => viu_info.c_severity_notification
+                               );
+      end if;
+      return l_rt_sbe;
+   exception
+   when others then
+
+     viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end buffer_message;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_bre_message(i_target_name    in varchar2
+                             ,i_bre_msg        in xmltype
+                             ,i_buffer_message in boolean := false
+                             )
+   is
+     l_con_proc constant cmn_constant.st_proc_name := g_con_package || '.send_bre_message';
+   begin
+     bsis_interface.send_message(i_message             => i_bre_msg
+                                ,i_source_processid    => null
+                                ,i_source_instanceid   => null
+                                ,i_target_processid    => i_target_name
+                                ,i_target_instanceid   => null
+                                ,i_operatorid          => null
+                                ,i_buffer_message      => i_buffer_message
+        );
+   
+   exception
+   when others then
+     viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end send_bre_message;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure publish_bre
+    (i_msg_id_rec in bsis_interface.rt_msg_id)
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                    := g_con_package || '.publish_bre';
+      l_msg_id_rec    bsis_interface.rt_msg_id;
+      l_msg_src       xmltype;
+      l_msg_sve       xmltype;
+      
+      l_bag_data      xmltype;
+      l_reply_data    xmltype;
+      l_bre_msg       xmltype;
+   begin
+      l_msg_id_rec    := i_msg_id_rec;
+      
+      
+      l_msg_id_rec.dat_elt_typ_src := 'Y';
+      l_msg_id_rec.dat_elt_typ_sve := 'Y';
+      
+      
+
+
+      bsis_baggage_data_mgr.get_pda_bre_msg(i_msg_id_rec  => l_msg_id_rec
+                                           ,o_msg_pda_bre => l_bre_msg
+                                           ,i_trigger_src => 'SYNC'
+                                           );
+      if l_bre_msg is null 
+      then
+         
+         l_bag_data  := bsis_interface.get_bag_data(i_msg_id_rec => l_msg_id_rec
+                                                   ,i_bda_rec    => null);
+         
+         l_reply_data:= bsis_interface.get_reply_data(i_msg_id_rec => l_msg_id_rec
+                                                     ,i_trigger_src => 'SYNC');
+         
+         
+         l_bre_msg := bsis_interface.get_bre_msg(i_msg_id_rec => l_msg_id_rec
+                                                ,i_bag_data   => l_bag_data
+                                                ,i_reply_data => l_reply_data
+                                                );
+      end if;
+      
+      send_bre_message(i_target_name    => l_msg_id_rec.src_pcs_id
+                      ,i_bre_msg        => l_bre_msg
+                      ,i_buffer_message => false
+                      );
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end publish_bre;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure publish_ssn
+       (i_msg_id_rec         in bsis_interface.rt_msg_id
+       ,i_bda_id             in number
+       ,i_iata_id_tab_change in bsis_interface.it_iata_id
+       ,i_bag_data           in xmltype
+       ,i_reply_data         in xmltype
+       ,i_msg_src            in xmltype := null
+       ,i_msg_sve            in xmltype := null
+       ,o_message_sent       out boolean
+       )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                    := g_con_package || '.publish_ssn';
+      l_msg_id_rec    bsis_interface.rt_msg_id;
+      l_bre_msg       xmltype;
+   begin
+      o_message_sent := false;
+      l_msg_id_rec    := i_msg_id_rec;
+      
+      <<loop_subscriptions>>
+      for r_ssr in (select ssr.id
+                    ,      ssr.identifier
+                    ,      ssr.sse_all_bags
+                    ,      ssr.buffer_messages
+                    from   bsis_subscriptions ssn
+                    ,      bsis_subscribers   ssr
+                    where  ssn.bda_id = i_bda_id
+                    and    ssn.ssr_id = ssr.id
+                   )
+      loop
+         
+         if r_ssr.sse_all_bags = cmn_constant.g_con_yesno_no
+         then
+           if subscription_filter_passed
+                 (i_msg_id_rec         => l_msg_id_rec
+                 ,i_ssr_id             => r_ssr.id
+                 ,i_msg_src            => i_msg_src
+                 ,i_msg_sve            => i_msg_sve
+                 ,i_iata_id_tab_change => i_iata_id_tab_change
+                 )
+           then
+              l_bre_msg := bsis_interface.get_bre_msg(i_msg_id_rec => l_msg_id_rec
+                                                     ,i_bag_data   => i_bag_data
+                                                     ,i_reply_data => i_reply_data
+                                                     );
+              send_bre_message(i_target_name    => r_ssr.identifier
+                              ,i_bre_msg        => l_bre_msg
+                              ,i_buffer_message => (r_ssr.buffer_messages='Y')
+                              );
+              
+              o_message_sent := true;
+           else
+              null; 
+           end if;
+         end if;
+         
+      end loop loop_subscriptions;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end publish_ssn;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure publish_ssr
+       (i_msg_id_rec         in bsis_interface.rt_msg_id
+       ,i_bda_id             in number
+       ,i_iata_id_tab_change in bsis_interface.it_iata_id
+       ,i_bag_data           in xmltype
+       ,i_reply_data         in xmltype
+       ,i_message_type       in varchar2
+       ,i_msg_src            in xmltype  := null
+       ,i_msg_sve            in xmltype  := null
+       ,o_message_sent       out boolean
+       )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                    := g_con_package || '.publish_ssr';
+      l_msg_id_rec      bsis_interface.rt_msg_id;
+      l_bre_msg         xmltype;
+      l_bda_action      varchar2(100);
+      l_buffer_message  boolean;
+
+   begin
+      o_message_sent := false;
+      l_msg_id_rec      := i_msg_id_rec;
+      
+      <<loop_subscribers>>
+      for r_ssr in (select ssr.id
+                    ,      ssr.identifier
+                    ,      ssr.sse_all_bags
+                    ,      ssr.buffer_messages
+                    from   bsis_subscribers ssr
+                   )
+      loop
+         l_buffer_message := (r_ssr.buffer_messages='Y');
+         
+         
+         if r_ssr.identifier <> l_msg_id_rec.src_pcs_id
+         then
+            
+            if r_ssr.sse_all_bags = cmn_constant.g_con_yesno_yes
+            then
+               if subscription_filter_passed
+                   (i_msg_id_rec         => l_msg_id_rec
+                   ,i_ssr_id             => r_ssr.id
+                   ,i_msg_src            => i_msg_src
+                   ,i_msg_sve            => i_msg_sve
+                   ,i_iata_id_tab_change => i_iata_id_tab_change
+                   )
+               then
+                  if i_msg_sve is not null 
+                  then
+                    l_bre_msg := bsis_interface.get_bre_msg(i_msg_id_rec => l_msg_id_rec
+                                                           ,i_bag_data   => i_bag_data
+                                                           ,i_reply_data => i_reply_data
+                                                           );
+                    send_bre_message(i_target_name    => r_ssr.identifier
+                                    ,i_bre_msg        => l_bre_msg
+                                    ,i_buffer_message => l_buffer_message
+                                    );
+                    
+                    o_message_sent := true;
+                  else
+                     
+                     l_bda_action := bsis_interface.get_bda_action
+                                                       (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                                       ,i_msg      => i_msg_src
+                                                       );
+                     if l_bda_action = bsis_constant.g_con_delete
+                     then
+                        
+
+
+                        bsis_baggage_data_mgr.get_pda_bre_msg(i_msg_id_rec  => l_msg_id_rec
+                                                             ,i_bda_id      => i_bda_id
+                                                             ,i_trigger_src => 'EXTERNAL'
+                                                             ,o_msg_pda_bre => l_bre_msg
+                                                             );
+                        if l_bre_msg is null 
+                        then
+                           
+                           l_bre_msg := bsis_interface.get_bre_msg(i_msg_id_rec => l_msg_id_rec
+                                                                  ,i_bag_data   => i_bag_data
+                                                                  ,i_reply_data => i_reply_data
+                                                                  );
+                        end if;
+                     else
+                        
+
+
+                        bsis_baggage_data_mgr.get_pda_bre_msg(i_msg_id_rec  => l_msg_id_rec
+                                                             ,i_bda_id      => i_bda_id
+                                                             ,i_trigger_src => 'EXTERNAL'
+                                                             ,o_msg_pda_bre => l_bre_msg
+                                                             );
+                     end if;
+                     
+                     send_bre_message(i_target_name    => r_ssr.identifier
+                                     ,i_bre_msg        => l_bre_msg
+                                     ,i_buffer_message => l_buffer_message
+                                     );
+                     
+                     o_message_sent := true;
+                  end if;
+               else
+                  null; 
+               end if;
+            end if;
+         end if;
+         
+      end loop loop_subscribers;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end publish_ssr;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_subscriber_buffer_msgs
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                    := g_con_package || '.send_subscriber_buffer_msgs';
+      l_sbe_deleted   boolean;
+   begin
+      <<loop_subscriber_buffer_msgs>>
+      for r_sbe in (select ssr.identifier
+                    ,      sbe.message
+                    ,      sbe.id         sbe_id
+                    from   bsis_subscriber_buffer_msgs sbe
+                    ,      bsis_subscribers            ssr
+                    where  sbe.ssr_id               = ssr.id
+                    and    ssr.automatic_redelivery = cmn_constant.g_con_yesno_yes
+                    and    sbe.created_on >= (cmn_common.default_timestamp - (numtodsinterval(nvl(ssr.redelivery_period,0),'MINUTE')))
+                    order by sbe.created_on asc
+                   )
+      loop
+         if bsis_interface.send_message_ok
+                               (i_message     => r_sbe.message
+                               ,i_target_name => r_sbe.identifier
+                               )
+         then
+            l_sbe_deleted := bsis_sbe_tapi_pck.sbe_delete_row (i_sbe_id => r_sbe.sbe_id);
+   commit;
+         else
+            commit; 
+         end if;
+      end loop loop_subscriber_buffer_msgs;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end send_subscriber_buffer_msgs;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure export_subscriber_buffer_msgs
+     (i_ssr_identifier in bsis_subscribers.identifier%type
+     ,i_start_time     in timestamp := null 
+     ,i_end_time       in timestamp := null 
+     )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                    := g_con_package || '.export_subscriber_buffer_msgs';
+      l_blob_content  blob;
+      l_name          varchar2(256);
+      l_start_time    timestamp; 
+      l_end_time      timestamp; 
+      
+      function f_clobtoblob(i_clob_in in clob)
+      return blob
+      is
+        l_file_blob        blob;
+        l_file_size        integer := dbms_lob.lobmaxsize;
+        l_dest_offset      integer := 1;
+        l_src_offset       integer := 1;
+        l_blob_csid        integer := dbms_lob.default_csid;
+        l_lang_context     integer := dbms_lob.default_lang_ctx;
+        l_warning          integer;
+      begin
+        dbms_lob.createtemporary( l_file_blob, true );
+        dbms_lob.converttoblob( dest_lob     => l_file_blob
+                                  , src_clob     => i_clob_in
+                                  , amount       => l_file_size
+                                  , dest_offset  => l_dest_offset
+                                  , src_offset   => l_src_offset
+                                  , blob_csid    => l_blob_csid
+                                  , lang_context => l_lang_context
+                                  , warning      => l_warning
+                                  );
+        return l_file_blob;
+      end f_clobtoblob;
+   begin
+      
+      l_start_time := nvl(i_start_time, cmn_common.default_timestamp - (numtodsinterval(10,'DAY')));
+      
+      l_end_time   := nvl(i_end_time,   cmn_common.default_timestamp + (numtodsinterval(10,'DAY')));
+      
+      <<loop_subscriber_buffer_msgs>>
+      for r_sbe in (select ssr.identifier
+                    ,      sbe.message
+                    ,      sbe.id         sbe_id
+                    from   bsis_subscriber_buffer_msgs sbe
+                    ,      bsis_subscribers            ssr
+                    where  upper(ssr.identifier)    = upper(i_ssr_identifier)
+                    and    sbe.ssr_id               = ssr.id
+                    and    sbe.created_on between l_start_time
+                                          and     l_end_time
+                    order by sbe.created_on asc
+                   )
+      loop
+         l_name         := 'Msg_'||r_sbe.identifier||'_'||r_sbe.sbe_id||'.xml';
+         l_blob_content := f_clobtoblob(r_sbe.message.getclobval);
+         
+         execute immediate
+          'INSERT INTO documents
+                     ( name  ,  blob_content  )
+             VALUES  (:l_name, :l_blob_content)'
+             using     l_name,  l_blob_content;
+         
+         commit;
+      end loop loop_subscriber_buffer_msgs;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end export_subscriber_buffer_msgs;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure clear_subscriber_buffer_msgs
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                    := g_con_package || '.clear_subscriber_buffer_msgs';
+      l_sbe_deleted        boolean;
+   begin
+      <<loop_subscriber_buffer_msgs>>
+      for r_sbe in (select ssr.identifier ssr_identifier
+                    ,      sbe.id         sbe_id
+                    ,      sbe.status     sbe_status
+                    from   bsis_subscriber_buffer_msgs sbe
+                    ,      bsis_subscribers            ssr
+                    where  sbe.ssr_id = ssr.id
+                    and    sbe.created_on < (cmn_common.default_timestamp - (numtodsinterval(nvl(ssr.buffer_period,0),'MINUTE')))
+                    order by sbe.created_on asc
+                   )
+      loop
+         if r_sbe.sbe_status <> 'DELIVERED' then
+           viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cleanupmsg
+                                 ,i_calling_procedure => l_con_proc_name
+                                 ,i_severity          => viu_info.c_severity_warning
+                                 ,i_additional_data   => 'Subscriber '|| r_sbe.ssr_identifier ||' message '||
+                                                         r_sbe.sbe_id||' deleted without sending.'
+                                 );
+         end if;
+         l_sbe_deleted := bsis_sbe_tapi_pck.sbe_delete_row(i_sbe_id => r_sbe.sbe_id);
+   commit;
+      end loop loop_subscriber_buffer_msgs;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end clear_subscriber_buffer_msgs;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure publish_bda
+    (i_msg_id_rec         in bsis_interface.rt_msg_id
+    ,i_bda_rec            in bsis_baggage_data%rowtype
+    ,i_iata_id_tab_change in bsis_interface.it_iata_id
+    ,o_message_sent       out boolean
+    )
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                    := g_con_package || '.publish_bda';
+      l_msg_id_rec         bsis_interface.rt_msg_id;
+      l_msg_src            xmltype;
+      l_msg_sve            xmltype;
+      l_bag_data           xmltype;
+      l_reply_data         xmltype;
+      l_bda_rec            bsis_baggage_data%rowtype;
+      l_iata_id_tab_change bsis_interface.it_iata_id;
+      l_message_type       varchar2(100);
+      l_message_sent_ssn   boolean;
+      l_message_sent_ssr   boolean;
+   begin
+      l_msg_id_rec         := i_msg_id_rec;
+      l_bda_rec            := i_bda_rec;
+      l_iata_id_tab_change := i_iata_id_tab_change;
+      
+      
+      l_msg_src := l_bda_rec.src_data;
+      l_msg_sve := l_bda_rec.sve_data;
+      
+      l_msg_id_rec.bda_id_rec.lpc           := l_bda_rec.lpc;
+      l_msg_id_rec.bda_id_rec.lpc_extension := l_bda_rec.lpc_extension;
+      l_msg_id_rec.bda_id_rec.bid           := l_bda_rec.bid;
+      l_msg_id_rec.bda_id_rec.bid_extension := l_bda_rec.bid_extension;
+      
+      l_bag_data := bsis_interface.get_bag_data(i_msg_id_rec => l_msg_id_rec
+                                               ,i_bda_rec    => l_bda_rec
+                                               ,i_msg_src    => l_msg_src
+                                               ,i_msg_sve    => l_msg_sve
+                                               );
+      
+      l_message_type := bsis_interface.get_messagetype
+                                           (i_msg          => l_bda_rec.sve_data
+                                           ,i_root_element => bsis_constant.g_con_bdi_sve_root
+                                           );
+      
+      l_reply_data:= bsis_interface.get_reply_data
+                         (i_msg_id_rec        => l_msg_id_rec
+                         ,i_message_type      => l_message_type
+                         ,i_last_src_data_upd => l_bda_rec.last_src_data_upd
+                         ,i_last_sve_data_upd => l_bda_rec.last_sve_data_upd
+                         ,i_trigger_src       => 'EXTERNAL'
+                         );
+      
+      
+      publish_ssn(i_msg_id_rec         => l_msg_id_rec
+                 ,i_bda_id             => l_bda_rec.id
+                 ,i_iata_id_tab_change => l_iata_id_tab_change
+                 ,i_bag_data           => l_bag_data
+                 ,i_reply_data         => l_reply_data
+                 ,i_msg_src            => l_msg_src
+                 ,i_msg_sve            => l_msg_sve
+                 ,o_message_sent       => l_message_sent_ssn
+                 );
+      
+      publish_ssr(i_msg_id_rec         => l_msg_id_rec
+                 ,i_bda_id             => l_bda_rec.id
+                 ,i_iata_id_tab_change => l_iata_id_tab_change
+                 ,i_bag_data           => l_bag_data
+                 ,i_reply_data         => l_reply_data
+                 ,i_message_type       => l_message_type
+                 ,i_msg_src            => l_msg_src
+                 ,i_msg_sve            => l_msg_sve
+                 ,o_message_sent       => l_message_sent_ssr
+                 );
+
+     o_message_sent := l_message_sent_ssn or l_message_sent_ssr;
+
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end publish_bda;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function sse_all
+    (i_msg_id_rec in bsis_interface.rt_msg_id)
+     return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                    := g_con_package || '.sse_all';
+      l_return          boolean;
+      l_msg_id_rec      bsis_interface.rt_msg_id;
+      l_ssr_rec         bsis_subscribers%rowtype;
+      l_updated         pls_integer;
+   begin
+      l_msg_id_rec    := i_msg_id_rec;
+      
+      
+      if bsis_ssr_tapi_pck.ssr_select_row_upd_uk1
+             (i_ssr_identifier => l_msg_id_rec.src_pcs_id
+             ,o_rt_ssr         => l_ssr_rec
+             )
+      then
+         if l_msg_id_rec.pmd_name = bsis_constant.g_con_pdi_pd_subscribe
+         then 
+            l_ssr_rec.sse_all_bags     := cmn_constant.g_con_yesno_yes;
+         else 
+            l_ssr_rec.sse_all_bags     := cmn_constant.g_con_yesno_no;
+         end if;
+         
+         l_updated := bsis_ssr_tapi_pck.ssr_update_row(i_ssr_id  => l_ssr_rec.id
+                                                      ,io_rt_ssr => l_ssr_rec
+                                                      );
+         if l_updated = 1
+         then
+            l_return := true;
+         else
+            l_return := false;
+         end if;
+      else
+         l_return := false;
+      end if;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end sse_all;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function subscribe (i_msg_id_rec in bsis_interface.rt_msg_id)
+     return boolean
+   is
+      l_con_proc_name      constant cmn_constant.st_proc_name
+                                             := g_con_package || '.subscribe';
+      l_return             boolean;
+      l_ssr_rec            bsis_subscribers%rowtype;
+      l_ssn_rec            bsis_subscriptions%rowtype;
+      l_bda_rec            bsis_baggage_data%rowtype;
+      l_msg_id_rec         bsis_interface.rt_msg_id;
+      l_updated            pls_integer;
+      l_msg_handled        boolean := false;
+      l_iata_id_tab_change bsis_interface.it_iata_id;
+   begin
+      
+      l_msg_id_rec := i_msg_id_rec;
+      
+      
+      if bsis_ssr_tapi_pck.ssr_select_row_upd_uk1
+                             (i_ssr_identifier => l_msg_id_rec.src_pcs_id
+                             ,o_rt_ssr         => l_ssr_rec
+                             )
+      then
+         if bsis_baggage_data_mgr.get_bda_rec(i_msg_id_rec => l_msg_id_rec
+                                             ,o_bda_rec    => l_bda_rec
+                                             )
+         then
+            for r_ssn in (select *
+                          from   bsis_subscriptions ssn
+                          where  ssn.bda_id = l_bda_rec.id
+                          and    ssn.ssr_id = l_ssr_rec.id
+                         )
+            loop
+              l_ssn_rec := r_ssn;
+            end loop;
+         else
+            
+            l_msg_handled := bsis_baggage_data_mgr.insert_baggage_data
+                                (i_baggage_data       => null
+                                ,i_msg_id_rec         => l_msg_id_rec
+                                ,i_deleted_ind        => 'N'
+                                ,o_bda_rec            => l_bda_rec
+                                ,o_iata_id_tab_change => l_iata_id_tab_change
+                                );
+         end if;
+         
+         
+         if l_ssn_rec.id is null
+         then
+            l_ssn_rec.ssr_id            := l_ssr_rec.id;
+            l_ssn_rec.bda_id            := l_bda_rec.id;
+            l_ssn_rec.ssn_lpc           := l_msg_id_rec.bda_id_rec.lpc;
+            l_ssn_rec.ssn_lpc_extension := l_msg_id_rec.bda_id_rec.lpc_extension;
+            l_ssn_rec.created_on        := cmn_common.default_timestamp;
+            l_ssn_rec.last_updated_on   := l_ssn_rec.created_on;
+            bsis_ssn_tapi_pck.ssn_insert_row(l_ssn_rec);
+            
+            l_return := true;
+         else
+            l_ssn_rec.last_updated_on   := cmn_common.default_timestamp;
+            l_updated := bsis_ssn_tapi_pck.ssn_update_row(i_ssn_id  => l_ssn_rec.id
+                                                         ,io_rt_ssn => l_ssn_rec
+                                                         );
+            if l_updated = 1
+            then
+               l_return := true;
+            else
+               l_return := false;
+            end if;
+         end if;
+      else
+         l_return := false;
+      end if;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end subscribe;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function unsubscribe(i_msg_id_rec in bsis_interface.rt_msg_id)
+      return boolean
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                             := g_con_package || '.subscribe';
+      l_return        boolean;
+      l_ssr_rec       bsis_subscribers%rowtype;
+      l_msg_id_rec    bsis_interface.rt_msg_id;
+      l_bda_rec       bsis_baggage_data%rowtype;
+   begin
+      l_msg_id_rec := i_msg_id_rec;
+      
+      
+      if bsis_ssr_tapi_pck.ssr_select_row_upd_uk1
+                                 (i_ssr_identifier => l_msg_id_rec.src_pcs_id
+                                 ,o_rt_ssr         => l_ssr_rec
+                                 )
+      then
+         if bsis_baggage_data_mgr.get_bda_rec(i_msg_id_rec => l_msg_id_rec
+                                             ,o_bda_rec    => l_bda_rec
+                                             )
+         then
+            delete from bsis_subscriptions ssn where ssn.ssr_id = l_ssr_rec.id and ssn.bda_id = l_bda_rec.id;
+            
+            l_return := true;
+         else
+            l_return := false;
+         end if;
+      else
+         l_return := false;
+      end if;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end unsubscribe;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_bda_resync_tab
+     (i_ssr_id       in bsis_subscribers.id%type
+     ,i_window_begin in timestamp 
+     ,i_window_end   in timestamp 
+     ,i_id_bda_prs   in number
+     )
+      return it_bda_resync
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                             := g_con_package || '.get_bda_resync_tab';
+      l_bda_resync_tab it_bda_resync;
+      l_nr_sce_src     number;
+      l_nr_sce_sve     number;
+   begin
+      
+      select sum(decode(att.element,bsis_constant.g_con_att_element_type_src,1,0)) src
+      ,      sum(decode(att.element,bsis_constant.g_con_att_element_type_sve,1,0)) sve
+      into   l_nr_sce_src, l_nr_sce_sve
+      from   bsis_subscription_change_ftrs sce, bsis_attributes att
+      where  sce.att_id = att.id
+      and    sce.ssr_id = i_ssr_id
+      ;
+      if  l_nr_sce_src > 0
+      and l_nr_sce_sve = 0
+      then
+         
+
+
+         select bda.id, bda.last_src_data_upd bulk collect
+         into   l_bda_resync_tab
+         from   bsis_baggage_data bda
+         where  bda.last_src_data_upd between i_window_begin and i_window_end
+         and (  bda.last_src_data_upd != i_window_end
+             or bda.id                 > i_id_bda_prs
+             )
+         order by bda.last_src_data_upd desc, bda.id asc;
+      elsif l_nr_sce_src = 0
+      and   l_nr_sce_sve > 0
+      then
+         
+
+
+         select bda.id, bda.last_sve_data_upd bulk collect
+         into   l_bda_resync_tab
+         from   bsis_baggage_data bda
+         where  bda.last_sve_data_upd between i_window_begin and i_window_end
+         and (  bda.last_sve_data_upd != i_window_end
+             or bda.id                 > i_id_bda_prs
+             )
+         order by bda.last_sve_data_upd desc, bda.id asc;
+      else
+         
+
+
+         select bda.id, bda.last_updated_on bulk collect
+         into   l_bda_resync_tab
+         from   bsis_baggage_data bda
+         where  bda.last_updated_on between i_window_begin and i_window_end
+         and (  bda.last_updated_on != i_window_end
+             or bda.id               > i_id_bda_prs
+             )
+         order by bda.last_updated_on desc, bda.id asc;
+      end if;
+      
+      return l_bda_resync_tab;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_bda_resync_tab;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure resync
+    (i_pty_id_cust  in varchar2
+    ,i_window_begin in varchar2
+    ,i_window_end   in varchar2
+    )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                    := g_con_package || '.resync';
+      l_msg_id_rec      bsis_interface.rt_msg_id;
+      l_msg_src         xmltype;
+      l_msg_sve         xmltype;
+      l_window_begin    timestamp; 
+      l_window_end      timestamp; 
+      l_nr_bda_prs      number;  
+      l_nr_bda_mx_prs   number;  
+      l_id_bda_prs      number;  
+      l_sec_wait_prs    number;  
+      l_stop_prs        boolean; 
+      l_bda_rec         bsis_baggage_data%rowtype;
+      l_bag_data        xmltype;
+      l_reply_data      xmltype;
+      l_bre_msg         xmltype;
+      l_bda_resync_tab  it_bda_resync;
+      l_idx             pls_integer;
+      l_ssr_rec         bsis_subscribers%rowtype;
+      l_nr_lpc_not_del  number;
+      l_get_pda_bre_msg boolean;
+   begin
+      
+      l_window_begin  := cmn_common.varchar_to_timestamp(i_timestamp => i_window_begin);
+      l_window_end    := cmn_common.varchar_to_timestamp(i_timestamp => i_window_end);
+      
+      l_msg_id_rec.src_pcs_id := i_pty_id_cust;
+      l_msg_id_rec.msg_time   := l_window_end;
+      l_msg_id_rec.pmd_name   := bsis_constant.g_con_pdi_pd_subscribe;
+      
+      
+      l_msg_id_rec.dat_elt_typ_src := 'Y';
+      l_msg_id_rec.dat_elt_typ_sve := 'Y';
+      
+      
+      l_nr_bda_mx_prs := to_number(cmn_common.get_parameter_value(bsis_constant.g_con_max_nr_pck_data_resync));
+      l_sec_wait_prs  := bsis_constant.g_con_sec_resync_wait;
+      
+      l_nr_bda_prs := 1;
+      l_id_bda_prs := 0;
+      
+      
+      if bsis_ssr_tapi_pck.ssr_select_row_uk1(i_ssr_identifier => l_msg_id_rec.src_pcs_id
+                                             ,o_rt_ssr         => l_ssr_rec
+                                             )
+      then
+         l_stop_prs   := false;
+      else
+         l_stop_prs   := true; 
+      end if;
+      
+      <<loop_shrink_window>>
+      while not l_stop_prs
+      loop
+         
+         l_stop_prs := true;
+         
+         
+         l_bda_resync_tab := get_bda_resync_tab(i_ssr_id       => l_ssr_rec.id
+                                               ,i_window_begin => l_window_begin
+                                               ,i_window_end   => l_window_end
+                                               ,i_id_bda_prs   => l_id_bda_prs
+                                               );
+         l_idx := l_bda_resync_tab.first;
+         
+         if l_idx is not null
+         then
+            <<loop_baggage_data>>
+            while l_idx is not null
+            loop
+               
+               select bda.*
+               into   l_bda_rec
+               from   bsis_baggage_data bda
+               where  bda.id = l_bda_resync_tab(l_idx).bda_id
+               for update of bda.id;
+               
+               l_msg_id_rec.bda_id_rec.lpc           := l_bda_rec.lpc;
+               l_msg_id_rec.bda_id_rec.lpc_extension := l_bda_rec.lpc_extension;
+               l_msg_id_rec.bda_id_rec.bid           := l_bda_rec.bid;
+               l_msg_id_rec.bda_id_rec.bid_extension := l_bda_rec.bid_extension;
+               
+               if  l_bda_rec.lpc is null
+               then
+                  l_get_pda_bre_msg := false;
+               else
+                  if l_bda_rec.deleted_ind = cmn_constant.g_con_yesno_no
+                  then
+                     l_get_pda_bre_msg := true;
+                  else
+                     select count(1)
+                     into   l_nr_lpc_not_del
+                     from   bsis_baggage_data bda
+                     where  bda.lpc = l_bda_rec.lpc
+                       and (  l_bda_rec.lpc_extension is null
+                           or l_bda_rec.lpc_extension = bda.lpc_extension
+                           )
+                       and  bda.deleted_ind = cmn_constant.g_con_yesno_no
+                     ;
+                     
+                     l_get_pda_bre_msg := (l_nr_lpc_not_del > 0);
+                  end if;
+               end if;
+               
+               if l_get_pda_bre_msg
+               then
+                  
+
+
+                  bsis_baggage_data_mgr.get_pda_bre_msg(i_msg_id_rec  => l_msg_id_rec
+                                                       ,i_trigger_src => 'SYNC'
+                                                       ,o_msg_pda_bre => l_bre_msg
+                                                       );
+               else
+                  l_msg_src := nvl(l_bda_rec.src_data
+                                  ,xmltype('<' ||bsis_constant.g_con_bdi_src_root||'>'
+                                         ||'</'||bsis_constant.g_con_bdi_src_root||'>'
+                                          )
+                                  );
+                  l_msg_sve := nvl(l_bda_rec.sve_data
+                                  ,xmltype('<' ||bsis_constant.g_con_bdi_sve_root||'>'
+                                         ||'</'||bsis_constant.g_con_bdi_sve_root||'>'
+                                          )
+                                  );
+                  l_bag_data := bsis_interface.get_bag_data(i_msg_id_rec => l_msg_id_rec
+                                                           ,i_bda_rec    => null
+                                                           ,i_msg_src    => l_msg_src
+                                                           ,i_msg_sve    => l_msg_sve
+                                                           );
+                  l_reply_data:= bsis_interface.get_reply_data
+                                     (i_msg_id_rec        => l_msg_id_rec
+                                     ,i_message_type      => 'PACKAGEDATA'
+                                     ,i_last_src_data_upd => l_bda_rec.last_src_data_upd
+                                     ,i_last_sve_data_upd => l_bda_rec.last_sve_data_upd
+                                     ,i_trigger_src       => 'SYNC'
+                                     );
+                  l_bre_msg := bsis_interface.get_bre_msg(i_msg_id_rec   => l_msg_id_rec
+                                                         ,i_bag_data     => l_bag_data
+                                                         ,i_reply_data   => l_reply_data
+                                                         );
+               end if;
+               
+               send_bre_message(i_target_name    => l_msg_id_rec.src_pcs_id
+                               ,i_bre_msg        => l_bre_msg
+                               ,i_buffer_message => false
+                               );
+               
+               commit; 
+               
+               
+               l_window_end := l_bda_resync_tab(l_idx).end_window_element;
+               l_id_bda_prs := l_bda_resync_tab(l_idx).bda_id;
+               
+               
+               l_idx := l_bda_resync_tab.next(l_idx);
+               
+               if l_idx is not null
+               then
+                  if l_nr_bda_prs >= l_nr_bda_mx_prs 
+                  then
+                     l_nr_bda_prs := 1;
+                     
+                     l_stop_prs := false; 
+                     
+                     acl_common.sleep(l_sec_wait_prs); 
+                     
+                     exit loop_baggage_data; 
+                     
+                  else
+                     l_nr_bda_prs := l_nr_bda_prs + 1;
+                  end if;
+               else
+                  l_stop_prs := true;
+                  
+                  exit loop_baggage_data; 
+                  
+               end if;
+            end loop loop_baggage_data;
+         end if;
+      end loop loop_shrink_window;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end resync;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure start_resync
+    (i_msg_id_rec in bsis_interface.rt_msg_id
+    )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                    := g_con_package || '.start_resync';
+      l_msg_id_rec    bsis_interface.rt_msg_id;
+      l_job_window_begin  varchar2(100);
+      l_window_begin  varchar2(100);
+      l_window_end    varchar2(100);
+      l_job_name      varchar2(50);
+      l_job_what      varchar2(500);
+      
+      cursor c_resync_job (b_job_name in varchar2)
+      is
+        select sjb.comments
+        from   user_scheduler_jobs sjb
+        where  sjb.job_name = b_job_name
+      ;
+   begin
+      l_msg_id_rec := i_msg_id_rec;
+      l_job_name := 'RESYNC_'||l_msg_id_rec.src_pcs_id;
+      
+      
+      
+      l_window_begin := cmn_common.timestamp_to_varchar(i_timestamp => l_msg_id_rec.resync_time);
+      
+      open c_resync_job(b_job_name => l_job_name);
+      fetch c_resync_job into l_job_window_begin;
+      if c_resync_job%found
+      then
+         
+         
+         if cmn_common.varchar_to_timestamp(i_timestamp => l_window_begin) >
+            cmn_common.varchar_to_timestamp(i_timestamp => l_job_window_begin)
+         then
+            l_window_begin := l_job_window_begin;
+         end if;
+         
+         dbms_scheduler.drop_job(l_job_name);
+      end if;
+      close c_resync_job;
+      
+      
+      
+      l_window_end    := cmn_common.timestamp_to_varchar(i_timestamp => l_msg_id_rec.msg_time);
+      
+      l_job_what :=   'BEGIN bsis_subscription_mgr.resync(i_pty_id_cust =>'''||l_msg_id_rec.src_pcs_id||''''
+                                                      ||',i_window_begin=>'''||l_window_begin         ||''''
+                                                      ||',i_window_end  =>'''||l_window_end           ||''''
+                                                      ||');'
+                    ||'END;'
+      ;
+      
+      dbms_scheduler.create_job( job_name          =>  l_job_name,
+                                 job_type          =>  'PLSQL_BLOCK',
+                                 job_action        =>  l_job_what,
+                                 start_date        =>  sysdate,
+                                 repeat_interval   =>  null,
+                                 enabled           =>  true,
+                                 comments          =>  l_window_begin);
+      
+      commit;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end start_resync;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function subscription_content_passed
+       (i_ssr_id           in number
+       ,i_dat_flt_elt_type in varchar2
+       ,i_dat_elt_root     in varchar2
+       ,i_dat_xml          in xmltype
+       )
+      return boolean
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                             := g_con_package || '.subscription_content_passed';
+      l_return        boolean;
+      l_filter_xpath  varchar2(100);
+      
+      l_domdoc        dbms_xmldom.domdocument;
+      l_nodelist      dbms_xmldom.domnodelist;
+      l_node          dbms_xmldom.domnode;
+      
+      l_element_value varchar2(5000);
+      l_element_root  varchar2(100);
+      
+      cursor c_sfe_count
+       (b_scr_id       in bsis_subscription_ftr_values.scr_id%type
+       ,b_filter_value in bsis_subscription_ftr_values.filter_value%type
+       )
+      is
+      select 1
+      from   bsis_subscription_ftr_values sfe
+      where  sfe.scr_id       = b_scr_id
+      and    sfe.filter_value = b_filter_value
+      ;
+      r_sfe_count c_sfe_count%rowtype;
+   begin
+      l_element_root := '/'||i_dat_elt_root||'/';
+      
+      if i_dat_xml is not null
+      then
+         l_return := false;
+         l_domdoc := dbms_xmldom.newdomdocument(i_dat_xml);
+         
+         <<loop_filters>>
+         for r_scr in (select scr.id
+                       ,      scr.filter_xpath
+                       from   bsis_subscription_content_ftrs scr
+                       where  scr.ssr_id         = i_ssr_id
+                       and    scr.filter_element = i_dat_flt_elt_type
+                      )
+         loop
+            
+            l_filter_xpath := l_element_root ||r_scr.filter_xpath;
+            l_nodelist     := dbms_xslprocessor.selectnodes(dbms_xmldom.makenode(l_domdoc),l_filter_xpath);
+            
+            <<loop_nodes>>
+            for i in 0 .. dbms_xmldom.getlength(l_nodelist) - 1
+            loop
+               l_node          := dbms_xmldom.item(l_nodelist, i);
+               l_element_value := substr(ltrim(rtrim(dbms_xmldom.getnodevalue(dbms_xmldom.getfirstchild(l_node)))),1,5000);
+               
+               
+               open c_sfe_count(b_scr_id       => r_scr.id
+                               ,b_filter_value => l_element_value
+                               );
+               fetch c_sfe_count into r_sfe_count;
+               l_return := c_sfe_count%found;
+               close c_sfe_count;
+               
+               
+               exit loop_filters when l_return and ((i_dat_flt_elt_type = bsis_constant.g_con_flt_element_type_src_or) or (i_dat_flt_elt_type = bsis_constant.g_con_flt_element_type_sve_or));
+               
+            end loop loop_nodes;
+         end loop loop_filters;
+         
+         dbms_xmldom.freedocument(l_domdoc);
+         
+      else
+         l_return := false;
+      end if;
+      
+      return l_return;
+   exception
+      when others
+      then
+         if c_sfe_count%isopen
+         then
+            close c_sfe_count;
+         end if;
+         
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end subscription_content_passed;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function subscription_change_passed
+       (i_ssr_id             in number
+       ,i_dat_elt_type       in varchar2
+       ,i_iata_id_tab_change in bsis_interface.it_iata_id
+       )
+      return number
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                             := g_con_package || '.subscription_change_passed';
+      l_return             number;
+      l_iata_id_tab_change bsis_interface.it_iata_id;
+
+      cursor c_retrieve_filters(i_ssr_id in bsis_subscribers.id%type, i_dat_elt_type in varchar2) is
+      select sce.id
+                          ,      att.attribute_name
+                          from   bsis_subscription_change_ftrs sce, bsis_attributes att
+                          where  sce.att_id = att.id and  sce.ssr_id         = i_ssr_id
+                          and    att.element = i_dat_elt_type;
+   begin
+      l_iata_id_tab_change := i_iata_id_tab_change;
+      
+      
+      if l_iata_id_tab_change.first is not null
+      then
+         l_return := c_no_match;
+         
+         <<loop_change_filters>>
+         for r_sce in c_retrieve_filters(i_ssr_id => i_ssr_id,  i_dat_elt_type => i_dat_elt_type
+                      )
+         loop
+            
+            if bsis_interface.iata_id_elt_exists
+                                   (i_dat_elt_type => i_dat_elt_type
+                                   ,i_elt_name     => r_sce.attribute_name
+                                   ,i_iata_id_tab  => l_iata_id_tab_change
+                                   )
+            then
+               l_return := c_change;
+               exit loop_change_filters;
+            end if;
+         end loop loop_change_filters;
+         
+      else
+         l_return := c_no_match;
+			
+         <<loop_no_change_filters>>
+         for r_sce in c_retrieve_filters(i_ssr_id => i_ssr_id,  i_dat_elt_type => i_dat_elt_type
+                      )
+         loop
+				l_return := c_no_change;
+				exit loop_no_change_filters;
+         end loop loop_filters;
+      end if;
+      
+      return l_return;
+      
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end subscription_change_passed;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function subscription_filter_passed
+     (i_msg_id_rec         in bsis_interface.rt_msg_id
+     ,i_ssr_id             in number
+     ,i_iata_id_tab_change in bsis_interface.it_iata_id
+     ,i_msg_src            in xmltype  := null
+     ,i_msg_sve            in xmltype  := null
+     )
+     return boolean
+   is
+      l_con_proc_name  constant cmn_constant.st_proc_name
+                           := g_con_package || '.subscription_filter_passed';
+      l_ssr_id         number;
+      l_send_bre       boolean;
+      l_msg_id_rec     bsis_interface.rt_msg_id;
+      l_sve_subscription_changes number;
+
+      l_msg_src            xmltype;
+      l_msg_sve            xmltype;
+      
+   begin
+      l_msg_id_rec := i_msg_id_rec;
+      l_ssr_id     := i_ssr_id;
+      l_send_bre   := false;
+          
+      
+      if filter_change_exists(i_ssr_id => l_ssr_id) 
+      then
+      
+         
+
+
+
+         if l_msg_id_rec.dat_elt_typ_src = cmn_constant.g_con_yesno_yes
+         then
+            l_msg_sve := null;
+            l_msg_src := i_msg_src;
+         elsif l_msg_id_rec.dat_elt_typ_sve = cmn_constant.g_con_yesno_yes
+         then
+            l_msg_src := null;
+            l_msg_sve := i_msg_sve;
+         else
+            l_msg_src := null;
+            l_msg_sve := null;
+         end if;
+      
+         
+         if l_msg_src is not null
+         then
+            if subscription_change_passed(i_ssr_id             => l_ssr_id
+                                         ,i_dat_elt_type       => bsis_constant.g_con_att_element_type_src
+                                         ,i_iata_id_tab_change => i_iata_id_tab_change
+                                         ) = c_change
+            then
+               if filter_content_exists(i_ssr_id           => l_ssr_id
+                                       ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_src_or
+                                       )
+               then
+                  l_send_bre:= subscription_content_passed
+                                (i_ssr_id           => l_ssr_id
+                                ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_src_or
+                                ,i_dat_elt_root     => 'BSISBagSource'
+                                ,i_dat_xml          => i_msg_src
+                                );
+               else
+                  l_send_bre := true;
+               end if;
+            end if;
+         end if;
+         
+         
+         if  not l_send_bre
+         and l_msg_sve is not null
+         then
+            
+            l_sve_subscription_changes := subscription_change_passed(
+                                          i_ssr_id             => l_ssr_id
+                                         ,i_dat_elt_type       => bsis_constant.g_con_att_element_type_sve
+                                         ,i_iata_id_tab_change => i_iata_id_tab_change
+                                         );
+            if l_sve_subscription_changes = c_change
+            or ( l_sve_subscription_changes = c_no_change
+              and l_msg_id_rec.org_msg_type = bsis_constant.g_con_msg_type_bagload
+              and bsis_baggage_data_mgr.get_bagload_deliv_ind(i_bda_id_rec => l_msg_id_rec.bda_id_rec
+                                                             ,i_bda_rec => null) = false )
+            then
+
+               if filter_content_exists(i_ssr_id           => l_ssr_id
+                                       ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_sve_or
+                                       )
+               then
+ 
+                  l_send_bre:= subscription_content_passed
+                                (i_ssr_id           => l_ssr_id
+                                ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_sve_or
+                                ,i_dat_elt_root     => 'BSISBagService'
+                                ,i_dat_xml          => i_msg_sve
+                                );
+
+               else
+                  l_send_bre := true;
+               end if;
+            end if;
+         end if;
+      end if;
+      
+
+
+      
+      
+      if  l_send_bre
+      and i_msg_src is not null
+      then
+      
+         
+         if filter_content_exists(i_ssr_id           => l_ssr_id
+                                 ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_src_and
+                                 )
+         then
+            
+            l_send_bre:= subscription_content_passed
+                          (i_ssr_id           => l_ssr_id
+                          ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_src_and
+                          ,i_dat_elt_root     => 'BSISBagSource'
+                          ,i_dat_xml          => i_msg_src
+                          );
+         end if;
+         
+         if filter_content_exists(i_ssr_id           => l_ssr_id
+                                 ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_sve_and
+                                 )
+         then
+            
+            l_send_bre:= subscription_content_passed
+                          (i_ssr_id           => l_ssr_id
+                          ,i_dat_flt_elt_type => bsis_constant.g_con_flt_element_type_sve_and
+                          ,i_dat_elt_root     => 'BSISBagService'
+                          ,i_dat_xml          => i_msg_sve
+                          );
+         end if;
+      end if;
+         
+      return l_send_bre;
+   exception
+      when others
+      then
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end subscription_filter_passed;
+   
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_next_bagresponse_seq
+    (i_ssr_identifier in bsis_subscribers.identifier%type)
+    return bsis_subscribers.latest_bagresponse_seq%type
+   is
+      l_con_proc constant cmn_constant.st_proc_name := g_con_package || '.get_next_bagresponse_seq';
+      
+      l_ssr_rec  bsis_subscribers%rowtype;
+      l_updated  pls_integer;
+      l_return   bsis_subscribers.latest_bagresponse_seq%type;
+      
+      pragma autonomous_transaction;
+   begin
+      
+      if bsis_ssr_tapi_pck.ssr_select_row_upd_uk1
+             ( i_ssr_identifier => i_ssr_identifier
+             , o_rt_ssr         => l_ssr_rec
+             )
+      then
+         
+         if l_ssr_rec.latest_bagresponse_seq >= l_ssr_rec.max_bagresponse_seq or
+         l_ssr_rec.latest_bagresponse_seq <= 0
+         then
+            l_ssr_rec.latest_bagresponse_seq := 1;
+         else
+            l_ssr_rec.latest_bagresponse_seq := l_ssr_rec.latest_bagresponse_seq + 1;
+         end if;
+         
+         
+         l_updated := bsis_ssr_tapi_pck.ssr_update_row(i_ssr_id  => l_ssr_rec.id
+                                                      ,io_rt_ssr => l_ssr_rec
+                                                      );
+      end if;
+      
+      if l_updated > 0
+      then
+         l_return := l_ssr_rec.latest_bagresponse_seq;
+      else
+         viu_info.operator_info(i_ifo_nr                 => viu_constant.c_ifo_updatefailed
+                               ,i_calling_procedure      => l_con_proc
+                               ,i_severity               => viu_info.c_severity_warning
+                               ,i_additional_data        => 'No NEXT BagresponseSequence available '
+                               );
+      end if;
+      
+      
+      commit;
+      
+      return l_return;
+   exception
+   when others
+   then
+      rollback;   
+      viu_info.raise_info(i_calling_procedure => l_con_proc);
+   end get_next_bagresponse_seq;
+   
+end bsis_subscription_mgr;
+/

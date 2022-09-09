@@ -1,0 +1,221 @@
+create or replace PACKAGE bsis_constant
+AUTHID DEFINER
+AS
+  /*********************************************************************************************************************
+  NAME:       bsis_CONSTANTs
+  PURPOSE:
+
+  REVISIONS:
+  Ver        Date        Author           Description
+  ---------  ----------  ---------------  ------------------------------------------------------------------------------
+  1.0        12-15-2006                   Created this package
+  4.0        30-03-2010  nlajas           Request 69: Removed g_con_bdi_handling_terminal
+  21         20-07-2011  nljth            Added ACL related CONSTANTs
+  26         04-03-2013  nlakoc           lhr#27334
+  27         11-03-2013  nlakoc           lhr#27586
+  3          29-07-2014  nlrburg          ra#3586 - Uplift of lhr#43420
+  5          26-08-2014  nlrburg          ra#3935 - Add support for BISBags
+  6          06-01-2020  nlmv2            vbss-172: Add parameter PRIO_LOCAL_OVER_TRANSFER
+             06-03-2020  nlmv2            vbss-184: Moved msg type values from BSIS_PUBLIC
+             23-11-2020  nlmv2            vbss-169: Added message type 'Lifesign'
+             10-02-2021  nlmv2            vbss-246: Added dynamic globals and initialisation procedure
+  **********************************************************************************************************************
+  ** Message interface constants
+  */
+  g_con_new                      CONSTANT varchar2 (3)   := 'NEW';
+  g_con_update                   CONSTANT varchar2 (6)   := 'CHG';
+  g_con_delete                   CONSTANT varchar2 (6)   := 'DEL';
+  /* Baggage Data Interface (bdi) message elements */
+  g_con_bdi_msg_root             CONSTANT varchar2 (20)  := 'Bags';
+  g_con_bdi_src_root             CONSTANT varchar2 (20)  := 'BSISBagSource';
+  g_con_bdi_sve_root             CONSTANT varchar2 (20)  := 'BSISBagService';
+  g_con_bdi_pse_root             CONSTANT varchar2 (20)  := 'PSE';
+  g_con_bdi_action               CONSTANT varchar2 (30)  := 'ChangeOfStatusIndicator';
+  g_con_bdi_data                 CONSTANT varchar2 (10)  := 'BagData';
+  g_con_bdi_flight               CONSTANT varchar2 (100) := 'OperationalOutboundFlightInformation';
+  g_con_bdi_version              CONSTANT varchar2 (100) := 'VersionAndSupplementaryData';
+  g_con_bdi_airline              CONSTANT varchar2 (30)  := 'Airline';
+  g_con_bdi_flight_number        CONSTANT varchar2 (30)  := 'FlightNumber' ;
+  g_con_bdi_pp_status            CONSTANT varchar2 (30)  := 'PassengerProfileStatus';
+  g_con_bdi_flight_date          CONSTANT varchar2 (10)  := 'Date';
+  g_con_bdi_baggagedtagnumber    CONSTANT varchar2 (100) := 'BaggageTagNumber';
+  g_con_bdi_passengername        CONSTANT varchar2 (100) := 'PassengerName';
+  /* BagResponse Data Interface (bre) message elements */
+  g_con_bre_bagresponse          CONSTANT VARCHAR2 (30)  := 'BagResponse';
+  g_con_bre_status               CONSTANT VARCHAR2 (30)  := 'Status';
+  g_con_bre_status_received      CONSTANT VARCHAR2 (30)  := 'RECEIVED';
+  g_con_bre_status_deleted       CONSTANT VARCHAR2 (30)  := 'DELETED';
+  g_con_bre_status_unknown       CONSTANT VARCHAR2 (30)  := 'UNKNOWN';
+  /* PackageData Interface (pdi) message elements */
+  g_con_pdi_pd_request           CONSTANT VARCHAR2 (30)  := 'PackageDataRequest';
+  g_con_pdi_pd_subscribe         CONSTANT VARCHAR2 (30)  := 'PackageDataSubscribe';
+  g_con_pdi_pd_subscriberesponse CONSTANT VARCHAR2 (30)  := 'PackageDataSubscribeResponse';
+  g_con_pdi_pd_unsubscribe       CONSTANT VARCHAR2 (30)  := 'PackageDataUnsubscribe';
+  /* Original Message Types */
+  g_con_msg_type_bsm             CONSTANT VARCHAR2 (30)  := 'BSM';
+  g_con_msg_type_bpm             CONSTANT VARCHAR2 (30)  := 'BPM';
+  g_con_msg_type_bum             CONSTANT VARCHAR2 (30)  := 'BUM';
+  g_con_msg_type_bagevent        CONSTANT VARCHAR2 (30)  := 'BaggageEvent';
+  g_con_msg_type_pkginfo         CONSTANT VARCHAR2 (30)  := 'PackageInfo';
+  g_con_msg_type_bagload         CONSTANT VARCHAR2 (30)  := 'BagLoadEvent';
+  g_con_msg_type_uldtrack        CONSTANT VARCHAR2 (30)  := 'ULDLogisticTrackingReport';
+  g_con_msg_type_uldprocess      CONSTANT VARCHAR2 (30)  := 'ULDProcessStatusReport';
+  g_con_msg_type_bisbags         CONSTANT VARCHAR2 (30)  := 'BISBags';
+  g_con_msg_type_lifesign        CONSTANT VARCHAR2 (30)  := 'Lifesign';
+  /* Different message element CONSTANTs */
+  g_con_src_data_src_bsm         CONSTANT VARCHAR2 (1)   := 'S';
+  g_con_src_data_src_bpm         CONSTANT VARCHAR2 (1)   := 'P';
+  --
+  g_con_att_element_type_src     CONSTANT VARCHAR2 (3)   := 'SRC';
+  g_con_att_element_type_sve     CONSTANT VARCHAR2 (3)   := 'SVE';
+  --
+  g_con_flt_element_type_src_or  CONSTANT VARCHAR2 (10)  := 'SRC-OR';
+  g_con_flt_element_type_sve_or  CONSTANT VARCHAR2 (10)  := 'SVE-OR';
+  g_con_flt_element_type_src_and CONSTANT VARCHAR2 (10)  := 'SRC-AND';
+  g_con_flt_element_type_sve_and CONSTANT VARCHAR2 (10)  := 'SVE-AND';
+  --
+  g_con_flightinfo               CONSTANT VARCHAR2 (50)  := 'OperationalOutboundFlightInformation';
+  g_con_flight                   CONSTANT VARCHAR2 (50)  := 'Flight';
+  g_con_airline                  CONSTANT VARCHAR2 (50)  := 'Airline';
+  g_con_flightnr                 CONSTANT VARCHAR2 (50)  := 'FlightNumber';
+  g_con_flightdate               CONSTANT VARCHAR2 (50)  := 'Date';
+  g_con_inb_flightinfo           CONSTANT VARCHAR2 (50)  := 'InboundFlightInformation';
+  g_con_airline_xpath            CONSTANT VARCHAR2 (100) := g_con_flightinfo||'/'||g_con_flight||'/'||g_con_airline   ||'/text()';
+  g_con_flightnr_xpath           CONSTANT VARCHAR2 (100) := g_con_flightinfo||'/'||g_con_flight||'/'||g_con_flightnr  ||'/text()';
+  g_con_flightdate_xpath         CONSTANT VARCHAR2 (100) := g_con_flightinfo||'/'||g_con_flight||'/'||g_con_flightdate||'/text()';
+  /* 
+  ** Parameter CONSTANTs
+  */
+  g_con_bda_logging              CONSTANT VARCHAR2 (50)  := 'BAGDATA_LOGGING';
+  g_con_store_duplicate_lpn      CONSTANT VARCHAR2 (50)  := 'STORE_DUPLICATE_LPN';
+  g_con_amd_ext_out_facility_id  CONSTANT VARCHAR2 (50)  := 'AMD_EXTENSION_OUT_FACILITY_ID';
+  g_con_handlingarea_id_curr_tml CONSTANT VARCHAR2 (50)  := 'HANDLINGAREA_ID_CURR_TERMINAL';
+  g_con_default_vendor_string    CONSTANT VARCHAR2 (50)  := 'DEFAULT_VENDOR_STRING';
+  g_con_send_pd_subscribe_resp   CONSTANT VARCHAR2 (50)  := 'SEND_PD_SUBSCRIBE_RESPONSE';
+  g_con_prio_local_over_transfer CONSTANT VARCHAR2 (50)  := 'PRIO_LOCAL_OVER_TRANSFER';
+  g_con_max_nr_pck_data_resync   CONSTANT VARCHAR2 (50)  := 'MAX_NR_PACKAGE_DATA_RESYNC';
+  g_con_sec_resync_wait          CONSTANT NUMBER         := 5;
+  /*
+  ** Merge method CONSTANTs
+  */
+  g_con_merge_no_merge           CONSTANT VARCHAR2 (50)  := 0; -- NO_MERGE       : Do NOT merge element
+  g_con_merge_update_new         CONSTANT VARCHAR2 (50)  := 1; -- UPDATE_NEW     : Keep the last received value (only if not null)
+  g_con_merge_new_leading        CONSTANT VARCHAR2 (50)  := 2; -- NEW_LEADING    : Keep the last received value (also if null)
+  g_con_merge_concatenate        CONSTANT VARCHAR2 (50)  := 3; -- CONCATENATE    : Not implemented
+  g_con_merge_custom             CONSTANT VARCHAR2 (50)  := 4; -- CUSTOM_MERGE   : Custom merge function (BSIS_CUSTOM_HANDLERS)
+  g_con_merge_priority           CONSTANT VARCHAR2 (50)  := 5; -- SOURCE_PRIORITY: Priority based on the source of the data
+  /*
+  ** Different cmn_parties.types
+  */
+  g_con_pty_type_self            CONSTANT VARCHAR2 (50)  := 'SELF';
+  g_con_pty_type_pdm             CONSTANT VARCHAR2 (50)  := 'PDM';
+  g_con_pty_type_lm              CONSTANT VARCHAR2 (50)  := 'LM';
+  g_con_pty_type_bpi             CONSTANT VARCHAR2 (50)  := 'BPI';
+  g_con_pty_type_brs             CONSTANT VARCHAR2 (50)  := 'BRS-LL';
+  g_con_pty_type_dcs             CONSTANT VARCHAR2 (50)  := 'DCS';
+  g_con_pty_type_sac             CONSTANT VARCHAR2 (50)  := 'SAC';
+  g_con_pty_type_brs_deliv       CONSTANT VARCHAR2 (50)  := 'BRS_DELIV';
+  g_con_pty_type_odb             CONSTANT VARCHAR2 (50)  := 'ODB';
+  g_con_pty_type_bcc             CONSTANT VARCHAR2 (50)  := 'BCC';
+  g_con_pty_type_pss             CONSTANT VARCHAR2 (50)  := 'PSS';
+  g_con_pty_type_mtt             CONSTANT VARCHAR2 (50)  := 'MTT';
+  /* 
+  ** Different bsis_translations.name
+  */
+  g_con_tln_nme_BagResponseToPD  CONSTANT VARCHAR2 (50)  := 'BagResponseToPackageData';
+  g_con_tln_nme_BagResponseToBUM CONSTANT VARCHAR2 (50)  := 'BagResponseToBUM';
+  g_con_tln_nme_BisBagtoBSISbag  CONSTANT VARCHAR2 (50)  := 'BisBagstoBSISbags';
+  g_con_tln_nme_RemoveNmespace   CONSTANT VARCHAR2 (50)  := 'RemoveNamespace';
+  g_con_tln_nme_AddVibesNmespace CONSTANT VARCHAR2 (50)  := 'AddVibesNamespace';
+  g_con_tln_nme_PackgeInfoToBags CONSTANT VARCHAR2 (50)  := 'PackageInfoToBags';
+  /* 
+  ** Different ACL related CONSTANTs
+  */
+  g_con_acl_aet_active_mode      CONSTANT VARCHAR2 (50)  := 'BSIS_ACTIVE_OR_BACKUP_MODE';
+  g_con_acl_asm_started          CONSTANT VARCHAR2 (50)  := 'STARTED';
+  /*
+  ** Dynamic global variables: Value assignement by package body initalisation procedure 
+  */
+  g_con_host_party               cmn_parties.id_cust%TYPE;
+  g_con_brs_party                cmn_parties.id_cust%TYPE;
+  g_con_brs_deliv_party          cmn_parties.id_cust%TYPE;
+  --
+  g_con_brs_deliv_queue_id       cmn_queues.id%TYPE;
+  g_con_brs_bags_in_queue_id     cmn_queues.id%TYPE;
+  /*
+  ** Declare initialisation procedure to enable external execution (for tracing/debugging).
+  */
+  PROCEDURE init;
+  --
+END bsis_CONSTANT;
+/
+
+
+
+
+package body bsis_constant
+as
+  g_con_package constant varchar2(30) := 'bsis_constant';
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure init
+  is
+    l_con_proc_name constant cmn_constant.st_proc_name := g_con_package||'.init';
+  begin
+    
+
+
+    viu_module.enter_module( i_module => l_con_proc_name );
+    
+    for r_pty in ( select pty.type, pty.id_cust from cmn_parties pty )
+    loop
+      case r_pty.type
+        when g_con_pty_type_dcs       then g_con_host_party      := r_pty.id_cust;
+        when g_con_pty_type_brs       then g_con_brs_party       := r_pty.id_cust;
+        when g_con_pty_type_brs_deliv then g_con_brs_deliv_party := r_pty.id_cust;
+        else null;
+      end case;
+    end loop;
+    
+    for r_que in ( select que.id, que.name from cmn_queues que )
+    loop
+      case r_que.name
+        when 'BRS_DELIVERY_QUEUE' then g_con_brs_deliv_queue_id   := r_que.id;
+        when 'BRS_BAGS_IN_QUEUE'  then g_con_brs_bags_in_queue_id := r_que.id;
+        else null;
+      end case;
+    end loop;
+    
+    viu_module.leave_module ( i_module     => l_con_proc_name );
+  exception
+    when others
+    then
+      viu_module.leave_module ( i_module     => l_con_proc_name
+                              , i_debug_info => sqlerrm
+                              );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+  end init;
+  
+begin
+  init;
+end bsis_constant;
+/

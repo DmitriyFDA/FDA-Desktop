@@ -1,0 +1,28 @@
+procedure showclob(pclob in out nocopy clob) is
+v_clob clob := pclob;
+v_msg varchar2(32767) := '';
+v_count number := 0;
+v_pos number := 0;
+v_eof boolean := false;
+begin
+  v_count := 0;
+  while not v_eof loop
+    v_pos := instr(v_clob, chr(10));
+    if v_pos > 0 then
+      v_msg := substr(v_clob, 1, v_pos - 1) ||'<br>';
+      v_clob := substr(v_clob, v_pos + 1);
+      v_count := v_count + 1;
+      htp.print(v_msg);
+      if v_count > 1000 then
+        htp.print('Too many records. Web page limited to 1000 text lines. Please download text file.<br>');
+        v_eof := true;
+      end if;
+    else
+      v_eof := true;
+    end if;
+  end loop;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

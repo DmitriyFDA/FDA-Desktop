@@ -1,0 +1,71 @@
+create or replace PACKAGE odb_metrics_history
+IS
+
+   PROCEDURE store_metric_history(
+                    i_ind_processed    IN     INTEGER,
+                    i_handling_area    IN     LONG
+             );
+      
+END odb_metrics_history;
+/
+
+
+
+package body odb_metrics_history
+is
+   
+
+
+
+
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure store_metric_history(
+                    i_ind_processed    in     integer,
+                    i_handling_area    in     long
+             )
+   as
+   begin
+        insert into odb_metric_instance_hists
+        (id
+        ,msi_id
+        ,value
+        ,date_snapshot
+        ,ind_processed
+        ,obj_version
+        ,haa_id)
+		select odb_mih_seq1.nextval
+        ,      msi.id
+        ,      min.value
+        ,      systimestamp_utc
+        ,      i_ind_processed
+        ,      0
+        ,      i_handling_area
+		from odb_metric_instances min
+		    inner join odb_metrics mtc on mtc.id = min.mtc_id
+		    inner join odb_metric_subject_instances msi on msi.min_id = min.id
+		    inner join odb_metric_subjects msu on msi.msu_id = msu.id
+		    left outer join odb_handling_area_links lnk on msi.lnk_id = lnk.id
+            inner join odb_systimestamp_v on 1 = 1
+		where (msu.use is null or msu.use = 'START')
+		and (msi.haa_id = i_handling_area
+		     or (lnk.haa_id_start = i_handling_area or lnk.haa_id_end = i_handling_area));
+
+   end store_metric_history;
+
+end odb_metrics_history;
+/

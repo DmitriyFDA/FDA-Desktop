@@ -1,0 +1,1323 @@
+create or replace PACKAGE Route_Availability IS
+  G_CON_PACKAGE           CONSTANT VARCHAR2(30) := 'Route_Availability';
+  g_availability_boundary NUMBER := 0.75; -- N.B. this value is replaced with the value in CMN_PARAMETER_VALUES.AvailabilityBoundary.
+   
+  TYPE seg_states_rec IS RECORD
+  ( eventseconds                  fact_segment_states.eventseconds%TYPE
+  , segmentid                     fact_segment_states.segmentid%TYPE
+  , ind_operational_availability  fact_segment_states.ind_operational_availability%TYPE
+  , ind_technical_availability    fact_segment_states.ind_technical_availability%TYPE
+  , ind_safety_availability       fact_segment_states.ind_safety_availability%TYPE );
+
+  TYPE tab_seg_states IS TABLE OF seg_states_rec;
+  g_seg_states_before_M5 tab_seg_states;
+
+  FUNCTION std_numerical(p_numerical IN VARCHAR2) RETURN NUMBER;
+
+  PROCEDURE measure_segment_operability( i_segmentid   IN  NUMBER
+                                       , i_m5_periodid     NUMBER
+                                       , o_operational OUT NUMBER
+                                       , o_technical   OUT NUMBER
+                                       , o_safety      OUT NUMBER );
+  PROCEDURE sum_segment_states_m5;
+
+  PROCEDURE get_status_translation( i_status                   IN  VARCHAR2
+                                  , o_operational_availability OUT NUMBER
+                                  , o_technical_availability   OUT NUMBER
+                                  , o_safety_availability      OUT NUMBER);
+  PROCEDURE translate_tech_segment_states;
+
+  PROCEDURE get_state_summarization( i_segmentid                 IN fact_tech_segment_states.segmentid%TYPE
+                                   , i_areaid                    IN fact_tech_segment_states.areaid%TYPE
+                                   , i_eventseconds              IN fact_tech_segment_states.eventseconds%TYPE
+                                   , io_id                       IN OUT fact_tech_segment_states.id%TYPE
+                                   , io_operational_availability IN OUT fact_tech_segment_states.ind_operational_availability%TYPE
+                                   , io_technical_availability   IN OUT fact_tech_segment_states.ind_technical_availability%TYPE
+                                   , io_safety_availability      IN OUT fact_tech_segment_states.ind_safety_availability%TYPE
+                                   );
+
+  PROCEDURE sum_tech_segment_states;
+  PROCEDURE retrieve_route_events;
+
+  PROCEDURE get_availability( i_route_id                 IN  NUMBER
+                            , i_m5_periodid              IN  NUMBER
+                            , o_operational_availability OUT NUMBER
+                            , o_technical_availability   OUT NUMBER
+                            , o_safety_availability      OUT NUMBER);
+  PROCEDURE sum_route_availability_m5;
+
+END Route_Availability;
+/
+
+
+
+
+package body route_availability
+is
+   function std_numerical(p_numerical in varchar2)
+      return number
+   is
+      
+      l_num   number := 0;
+   begin
+      begin
+         l_num := to_number(p_numerical);
+      exception
+         when others
+         then
+            l_num := null;
+      end;
+
+      return l_num;
+   end;
+
+   procedure measure_segment_operability(i_segmentid        in  number
+   ,                                     i_m5_periodid          number
+   ,                                     o_operational      out number
+   ,                                     o_technical        out number
+   ,                                     o_safety           out number)
+   is
+      type seg_measurement is record
+      (
+         secondes   number
+      ,  oper_      number
+      ,  tech_      number
+      ,  safe_      number
+      );
+
+      type seg_measurements is table of seg_measurement index by pls_integer;
+
+      l_con_proc            constant varchar2(61) := g_con_package || '.measure_segment_operability';
+      l_msg                 viu_info_logs.additional_data%type;
+      l_status              varchar2(50) := '';
+      l_startdate           timestamp := period.startts(i_m5_periodid);
+      l_enddate             timestamp := period.endts(i_m5_periodid, 'M5');
+      l_startseconds        number := 0;
+      l_endseconds          number := 0;
+      l_oper                number := 0;
+      l_tech                number := 0;
+      l_safe                number := 0;
+      
+      l_segs                seg_measurements;
+      l_count               pls_integer := 0;
+      j                     pls_integer := 0;
+      rec_found             boolean := false;
+   begin
+      l_startseconds := period.seconds_since_millennium(l_startdate);
+      l_endseconds := period.seconds_since_millennium(l_enddate);
+      o_operational := 0;
+      o_technical := 0;
+      o_safety := 0;
+
+      begin
+         j := 0;
+
+         while not rec_found and j < g_seg_states_before_m5.count
+         loop
+            j := j + 1;
+
+            if (g_seg_states_before_m5(j).segmentid = i_segmentid)
+            then
+               l_oper := g_seg_states_before_m5(j).ind_operational_availability;
+               l_tech := g_seg_states_before_m5(j).ind_technical_availability;
+               l_safe := g_seg_states_before_m5(j).ind_safety_availability;
+               rec_found := true;
+            end if;
+         end loop;
+
+         if not rec_found
+         then
+            l_msg := 'No previous record found . M5_PERIODID=' || to_char(i_m5_periodid) || ', (' || to_char(i_segmentid) || ')';
+            viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror
+            ,                      l_con_proc
+            ,                      viu_info.c_severity_debug
+            ,                      'SEARCH'
+            ,                      l_msg);
+            
+            l_oper := 1;
+            l_tech := 1;
+            l_safe := 1;
+         end if;
+      exception
+         when others
+         then
+            
+            l_oper := 1;
+            l_tech := 1;
+            l_safe := 1;
+      end;
+
+      begin
+         l_count := l_count + 1;
+         l_segs(l_count).secondes := 0;
+         l_segs(l_count).oper_ := l_oper;
+         l_segs(l_count).tech_ := l_tech;
+         l_segs(l_count).safe_ := l_safe;
+
+         for c_rec in (select eventseconds
+                       ,      ind_operational_availability
+                       ,      ind_technical_availability
+                       ,      ind_safety_availability
+                       from   fact_segment_states
+                       where  segmentid = i_segmentid
+                       and    eventseconds between l_startseconds
+                                               and l_endseconds
+                       order by eventseconds
+                       )
+         loop
+            l_count := l_count + 1;
+            l_segs(l_count).secondes := c_rec.eventseconds - l_startseconds;
+            l_segs(l_count).oper_ := c_rec.ind_operational_availability;
+            l_segs(l_count).tech_ := c_rec.ind_technical_availability;
+            l_segs(l_count).safe_ := c_rec.ind_safety_availability;
+         end loop;
+
+         l_count := l_count + 1;
+         l_segs(l_count).secondes := l_endseconds - l_startseconds;
+         l_segs(l_count).oper_ := l_segs(l_count - 1).oper_;
+         l_segs(l_count).tech_ := l_segs(l_count - 1).tech_;
+         l_segs(l_count).safe_ := l_segs(l_count - 1).safe_;
+
+         for i in 2 .. l_count
+         loop
+            if l_segs(i - 1).oper_ = 1
+            then
+               o_operational := o_operational + (l_segs(i).secondes - l_segs(i - 1).secondes);
+            end if;
+
+            if l_segs(i - 1).tech_ = 1
+            then
+               o_technical := o_technical + (l_segs(i).secondes - l_segs(i - 1).secondes);
+            end if;
+
+            if l_segs(i - 1).safe_ = 1
+            then
+               o_safety := o_safety + (l_segs(i).secondes - l_segs(i - 1).secondes);
+            end if;
+         end loop;
+
+         o_operational := o_operational / 300;
+         o_technical := o_technical / 300;
+         o_safety := o_safety / 300;
+      exception
+         when others
+         then
+            l_msg :=
+                  'measure_segment_operability failed. M5_PERIODID='
+               || to_char(i_m5_periodid)
+               || ', ISC('
+               || to_char(i_segmentid)
+               || '):'
+               || sqlerrm
+               || chr(10)
+               || dbms_utility.format_error_backtrace;
+            viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror
+            ,                      l_con_proc
+            ,                      viu_info.c_severity_error
+            ,                      null
+            ,                      l_msg);
+      end;
+   end;
+
+   procedure sum_segment_states_m5
+   is
+      l_con_proc            constant varchar2(61) := g_con_package || '.sum_segment_states_m5';
+      l_msg                 viu_info_logs.additional_data%type;
+      l_m5_periodid_start   number;
+      l_m5_periodid_end     number;
+      l_m5_periodid_last    number;
+      l_ins_count           number := 0;
+      l_upd_count           number := 0;
+      l_overlap             number := 5;                                                 
+      l_oper                number;
+      l_tech                number;
+      l_safe                number;
+      p                     number := 0;
+
+      cursor c_updates_this_period(c_m5periodid number)
+      is
+         select   segmentid
+         ,        count(segmentid) as report_count
+         from     fact_tech_segment_states
+         where    eventseconds between c_m5periodid and c_m5periodid + 299
+         and exists
+                         (select 1
+                          from   dim_tr_status_segments
+                          where  status_segment_id = segmentid)
+         group by segmentid;
+
+   begin
+      bpi_trace.enter_module(i_module => l_con_proc);
+
+      begin
+         begin
+            l_overlap := cmn_common.get_parameter_value('AvailabilityM5PeriodOverlap');
+
+            
+            if l_overlap <> trunc(l_overlap)
+            then
+               l_overlap := trunc(l_overlap) + 1;
+            end if;
+         exception
+            when others
+            then
+               l_overlap := 5;
+         end;
+
+         select max(m5_periodid)
+         into   l_m5_periodid_last
+         from   fact_segmentstates_agg_m5;
+
+         l_m5_periodid_end := period.periodid(sys_extract_utc(systimestamp), 'M5');
+         l_m5_periodid_start := l_m5_periodid_end - (l_overlap * 300);                                                 
+
+         
+
+         if l_m5_periodid_last is not null
+         then
+            l_m5_periodid_start := least(l_m5_periodid_last, l_m5_periodid_start);
+         end if;
+
+         l_msg :=
+               l_con_proc
+            || ' started. Using AvailabilityM5PeriodOverlap '
+            || to_char(l_overlap)
+            || '. Starting from M5 period '
+            || to_char(l_m5_periodid_start)
+            || ' onward.';
+         viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo
+         ,                      l_con_proc
+         ,                      viu_info.c_severity_notification
+         ,                      null
+         ,                      l_msg);
+
+         
+         for i in l_m5_periodid_start / 300 .. l_m5_periodid_end / 300
+         loop
+            p := i * 300;                                                                 
+
+            
+            select a.eventseconds
+            ,      a.segmentid
+            ,      a.ind_operational_availability
+            ,      a.ind_technical_availability
+            ,      a.ind_safety_availability
+            bulk   collect into g_seg_states_before_m5
+            from   fact_segment_states a
+            where  eventseconds = (select max(eventseconds)
+                                   from   fact_segment_states
+                                   where  segmentid = a.segmentid
+                                   and    eventseconds < p);
+
+            
+            delete from fact_segmentstates_agg_m5
+            where       m5_periodid = p;
+
+            for j in 1 .. g_seg_states_before_m5.count
+            loop
+               l_oper := g_seg_states_before_m5(j).ind_operational_availability;
+               l_tech := g_seg_states_before_m5(j).ind_technical_availability;
+               l_safe := g_seg_states_before_m5(j).ind_safety_availability;
+
+               if    (l_oper = 0)
+                  or (l_tech = 0)
+                  or (l_safe = 0)
+               then
+                  
+                  insert into fact_segmentstates_agg_m5(m5_periodid
+                  ,                                     segmentid
+                  ,                                     insertts
+                  ,                                     eventts
+                  ,                                     h1_periodid
+                  ,                                     operational_availability
+                  ,                                     technical_availability
+                  ,                                     safety_availability)
+                  values      (p
+                  ,            to_char(g_seg_states_before_m5(j).segmentid)
+                  ,            sys_extract_utc(systimestamp)
+                  ,            period.to_stamp(p, 'M5')
+                  ,            period.periodid(p, 'H1')
+                  ,            l_oper
+                  ,            l_tech
+                  ,            l_safe);
+
+                  l_ins_count := l_ins_count + 1;
+               end if;
+            end loop;
+
+            
+            for c_rec in c_updates_this_period(p)
+            loop
+               measure_segment_operability(c_rec.segmentid
+               ,                           p
+               ,                           l_oper
+               ,                           l_tech
+               ,                           l_safe);
+
+               begin
+                  insert into fact_segmentstates_agg_m5(m5_periodid
+                  ,                                     segmentid
+                  ,                                     insertts
+                  ,                                     eventts
+                  ,                                     h1_periodid
+                  ,                                     report_count
+                  ,                                     operational_availability
+                  ,                                     technical_availability
+                  ,                                     safety_availability)
+                  values      (p
+                  ,            to_char(c_rec.segmentid)
+                  ,            sys_extract_utc(systimestamp)
+                  ,            period.to_stamp(p, 'M5')
+                  ,            period.periodid(p, 'H1')
+                  ,            c_rec.report_count
+                  ,            l_oper
+                  ,            l_tech
+                  ,            l_safe);
+
+                  l_ins_count := l_ins_count + 1;
+               exception
+                  when dup_val_on_index
+                  then
+                     begin
+                        update fact_segmentstates_agg_m5
+                        set    insertts = sys_extract_utc(systimestamp)
+                        ,      report_count = c_rec.report_count
+                        ,      operational_availability = l_oper
+                        ,      technical_availability = l_tech
+                        ,      safety_availability = l_safe
+                        where  segmentid = to_char(c_rec.segmentid)
+                        and    m5_periodid = p;
+
+                        if sql%rowcount <> 1
+                        then
+                           l_msg := 'UPDATE FACT_SEGMENTSTATES_AGG_M5 Failed. M5_PERIODID=' || to_char(p) || ', (' || to_char(c_rec.segmentid) || ')';
+                           viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror
+                           ,                      l_con_proc
+                           ,                      viu_info.c_severity_error
+                           ,                      null
+                           ,                      l_msg);
+                        else
+                           l_upd_count := l_upd_count + 1;
+                        end if;
+                     exception
+                        when others
+                        then
+                           l_msg :=
+                                 'UPDATE FACT_SEGMENTSTATES_AGG_M5 Failed Failed. M5_PERIODID='
+                              || to_char(p)
+                              || ', ('
+                              || to_char(c_rec.segmentid)
+                              || '):'
+                              || sqlerrm
+                              || chr(10)
+                              || dbms_utility.format_error_backtrace;
+                           viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror
+                           ,                      l_con_proc
+                           ,                      viu_info.c_severity_error
+                           ,                      null
+                           ,                      l_msg);
+                     end;
+               end;
+            end loop;
+
+            begin
+               insert into fact_segmentstates_agg_m5(m5_periodid
+               ,                                     segmentid
+               ,                                     insertts
+               ,                                     eventts
+               ,                                     h1_periodid)
+               values      (p
+               ,            '*'
+               ,            sys_extract_utc(systimestamp)
+               ,            period.to_stamp(p, 'M5')
+               ,            period.periodid(p, 'H1'));
+               l_ins_count := l_ins_count + 1;
+            exception
+               when dup_val_on_index
+               then
+                  null;
+            end;
+
+            commit;
+         end loop;
+
+         l_msg :=
+               l_con_proc
+            || ' finished successfully. Inserted '
+            || to_char(l_ins_count)
+            || ' and updated '
+            || to_char(l_upd_count)
+            || ' records from M5_PeriodID '
+            || to_char(l_m5_periodid_start)
+            || ' onward.';
+         viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo
+         ,                      l_con_proc
+         ,                      viu_info.c_severity_notification
+         ,                      null
+         ,                      l_msg);
+      exception
+         when others
+         then
+            l_msg := 'M5_PeriodID:' || to_char(l_m5_periodid_start) || ':' || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+            viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror
+            ,                      l_con_proc
+            ,                      viu_info.c_severity_error
+            ,                      null
+            ,                      l_msg);
+      end;
+
+      bpi_trace.leave_module(i_module => l_con_proc);
+   end;
+
+   procedure get_status_translation(i_status                        in  varchar2
+   ,                                o_operational_availability      out number
+   ,                                o_technical_availability        out number
+   ,                                o_safety_availability           out number)
+   is
+      l_status   varchar2(250) := upper(trim(i_status));                                                                      
+   begin
+      o_operational_availability := 0;
+      o_technical_availability := 1;
+      o_safety_availability := 1;
+
+      if instr(replace( l_status, 'OPERATIONAL-', 'OP-' ), 'OPERATIONAL') > 0
+      then
+         o_operational_availability := 1;
+      end if;
+
+      if instr(l_status, 'TECHNICAL-ERROR') > 0
+      then
+         o_technical_availability := 0;
+      end if;
+
+      if instr(l_status, 'STOPPED-SAFETY') > 0
+      then
+         o_safety_availability := 0;
+      end if;
+   end get_status_translation;
+
+
+   procedure translate_tech_segment_states
+   is
+      l_max_id                     number(19) := 0;
+      l_curr_id                    number(19) := 0;
+      l_count                      number := 0;
+      l_msg                        viu_info_logs.additional_data%type;
+      l_conf_rec                   metric_config%rowtype;
+      l_con_proc                   constant varchar2(61) := g_con_package || '.translate_tech_segment_states';
+      l_areaid                     number;
+      l_segmentid                  number;
+      l_operational_availability   number(1);
+      l_technical_availability     number(1);
+      l_safety_availability        number(1);
+      l_eventts                    timestamp;
+      l_eventseconds               number(23, 0);
+
+      cursor c_stats(c_id          number, c_max_rownum    number)
+      is
+         select *
+         from   (select   *
+                 from     wc_segmentstatusreport
+                 where    key > c_id
+                 order by key)
+         where  rownum <= c_max_rownum;
+
+   begin
+      bpi_trace.enter_module(i_module => l_con_proc);
+
+      begin
+         begin
+            select *
+            into   l_conf_rec
+            from   metric_config
+            where  upper(metric_procedure) = upper(l_con_proc);
+         exception
+            when others
+            then
+               l_conf_rec.status := 0;
+         end;
+
+         
+         if l_conf_rec.status != 1
+         then
+            viu_info.operator_info(i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+            ,                      i_calling_procedure => l_con_proc
+            ,                      i_severity  => viu_info.c_severity_notification
+            ,                      i_info_arguments => null
+            ,                      i_additional_data => l_con_proc || ' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+         else
+            begin
+               select nvl(max(id), 0)
+               into   l_max_id
+               from   fact_tech_segment_states;
+
+               viu_info.operator_info(
+                  i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+               ,  i_calling_procedure => l_con_proc
+               ,  i_severity  => viu_info.c_severity_notification
+               ,  i_info_arguments => null
+               ,  i_additional_data => l_con_proc || ' STARTED. Processing segment status reports with ID greater than ' || to_char(l_max_id));
+
+               for c_rec in c_stats(l_max_id, l_conf_rec.max_measurements)
+               loop
+                  l_curr_id := c_rec.key;
+                  l_eventts := bpi_util.convert_eventtime(c_rec.eventtime, c_rec.eventts);
+                  l_eventseconds := period.seconds_since_millennium(l_eventts);
+                  l_areaid := std_numerical(c_rec.areaid);
+                  l_segmentid := std_numerical(c_rec.segmentid);
+                  get_status_translation(c_rec.l_status
+                  ,                      l_operational_availability
+                  ,                      l_technical_availability
+                  ,                      l_safety_availability);
+
+                  insert into fact_tech_segment_states(id
+                  ,                                    insertts
+                  ,                                    eventts
+                  ,                                    eventtime
+                  ,                                    eventseconds
+                  ,                                    areaid
+                  ,                                    segmentid
+                  ,                                    ind_operational_availability
+                  ,                                    ind_technical_availability
+                  ,                                    ind_safety_availability)
+                  values      (c_rec.key
+                  ,            sys_extract_utc(systimestamp)
+                  ,            l_eventts
+                  ,            c_rec.eventtime
+                  ,            l_eventseconds
+                  ,            l_areaid
+                  ,            l_segmentid
+                  ,            l_operational_availability
+                  ,            l_technical_availability
+                  ,            l_safety_availability);
+
+                  l_count := l_count + 1;
+               end loop;
+
+               commit;
+
+               if l_count >= l_conf_rec.max_measurements
+               then
+                  metrics.unfinished(i_proc => l_con_proc);
+               end if;
+
+               viu_info.operator_info(
+                  i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+               ,  i_calling_procedure => l_con_proc
+               ,  i_severity  => viu_info.c_severity_notification
+               ,  i_info_arguments => null
+               ,  i_additional_data => l_con_proc || ' finished successfully. Inserted ' || to_char(l_count) || ' FACT_TECH_SEGMENT_STATES.');
+            exception
+               when others
+               then
+                  l_msg := l_con_proc || ' ERROR on ID: ' || to_char(l_curr_id) || ', ' || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+                  rollback;
+                  bpi_log.raise_fatal_error(l_con_proc, l_msg);
+            end;
+         end if;
+      exception
+         when others
+         then
+            l_msg := l_con_proc || ' ERROR: ' || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+            bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+
+      bpi_trace.leave_module(i_module => l_con_proc);
+   end;
+
+
+   procedure get_state_summarization(i_segmentid                   in     fact_tech_segment_states.segmentid%type
+   ,                                 i_areaid                      in     fact_tech_segment_states.areaid%type
+   ,                                 i_eventseconds                in     fact_tech_segment_states.eventseconds%type
+   ,                                 io_id                         in out fact_tech_segment_states.id%type
+   ,                                 io_operational_availability   in out fact_tech_segment_states.ind_operational_availability%type
+   ,                                 io_technical_availability     in out fact_tech_segment_states.ind_technical_availability%type
+   ,                                 io_safety_availability        in out fact_tech_segment_states.ind_safety_availability%type)
+   is
+      l_con_proc   constant varchar2(61) := g_con_package || '.get_state_summarization';
+
+      cursor c_states
+      is
+         select   max(id) keep (dense_rank first order by eventts desc) as id
+         ,        max(ind_operational_availability) keep (dense_rank first order by eventts desc) as ind_operational_availability
+         ,        max(ind_technical_availability) keep (dense_rank first order by eventts desc) as ind_technical_availability
+         ,        max(ind_safety_availability) keep (dense_rank first order by eventts desc) as ind_safety_availability
+         from     fact_tech_segment_states
+         where    segmentid     = i_segmentid
+         and      eventseconds <= i_eventseconds
+         and      eventseconds > i_eventseconds - 3600                   
+         and      areaid       <> i_areaid
+         group by areaid;
+
+   begin
+      bpi_trace.enter_module(i_module => l_con_proc);
+
+      begin
+         for r_state in c_states
+         loop
+            io_id := greatest(io_id, r_state.id);
+
+            io_operational_availability := least(io_operational_availability, r_state.ind_operational_availability);
+            io_technical_availability   := least(io_technical_availability, r_state.ind_technical_availability);
+            io_safety_availability      := least(io_safety_availability, r_state.ind_safety_availability);
+         end loop;
+      exception
+         when others
+         then
+            bpi_log.raise_fatal_error(i_con_proc => l_con_proc);
+      end;
+
+      bpi_trace.leave_module(i_module => l_con_proc);
+   end;
+
+
+   procedure sum_tech_segment_states
+   is
+      l_max_id                     number(19) := 0;
+      l_curr_id                    number(19) := 0;
+      l_ins_count                  number := 0;
+      l_upd_count                  number := 0;
+      l_msg                        viu_info_logs.additional_data%type;
+      l_conf_rec                   metric_config%rowtype;
+      l_con_proc                   constant varchar2(61) := g_con_package || '.sum_tech_segment_states';
+      l_operational_availability   number(1);
+      l_technical_availability     number(1);
+      l_safety_availability        number(1);
+
+      cursor c_stats(c_id            number, c_max_rownum    number)
+      is
+         select   *
+         from     (select   *
+                   from     fact_tech_segment_states
+                   where    id > c_id
+                   order by id)
+         where    rownum <= c_max_rownum
+         order by eventts;                                                                                                   
+
+   
+   begin
+      bpi_trace.enter_module(i_module => l_con_proc);
+
+      begin
+         begin
+            select *
+            into   l_conf_rec
+            from   metric_config
+            where  upper(metric_procedure) = upper(l_con_proc);
+         exception
+            when others
+            then
+               l_conf_rec.status := 0;
+         end;
+
+         
+         if l_conf_rec.status != 1
+         then
+            viu_info.operator_info(i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+            ,                      i_calling_procedure => l_con_proc
+            ,                      i_severity  => viu_info.c_severity_notification
+            ,                      i_info_arguments => null
+            ,                      i_additional_data => l_con_proc || ' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+         else
+            begin
+               select nvl(max(id), 0)
+               into   l_max_id
+               from   fact_segment_states;
+
+               viu_info.operator_info(
+                  i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+               ,  i_calling_procedure => l_con_proc
+               ,  i_severity  => viu_info.c_severity_notification
+               ,  i_info_arguments => null
+               ,  i_additional_data => l_con_proc || ' STARTED. Processing FACT_TECH_SEGMENT_STATES with ID greater than ' || to_char(l_max_id));
+
+               for c_rec in c_stats(l_max_id, l_conf_rec.max_measurements)
+               loop
+                  l_curr_id                  := c_rec.id;
+                  l_operational_availability := c_rec.ind_operational_availability;
+                  l_technical_availability   := c_rec.ind_technical_availability;
+                  l_safety_availability      := c_rec.ind_safety_availability;
+                  get_state_summarization(c_rec.segmentid
+                  ,                       c_rec.areaid
+                  ,                       c_rec.eventseconds
+                  ,                       l_curr_id
+                  ,                       l_operational_availability
+                  ,                       l_technical_availability
+                  ,                       l_safety_availability);
+
+                  begin
+                     insert into fact_segment_states(id
+                     ,                               insertts
+                     ,                               updatets
+                     ,                               eventts
+                     ,                               eventseconds
+                     ,                               segmentid
+                     ,                               ind_operational_availability
+                     ,                               ind_technical_availability
+                     ,                               ind_safety_availability)
+                     values      (l_curr_id
+                     ,            sys_extract_utc(systimestamp)
+                     ,            sys_extract_utc(systimestamp)
+                     ,            c_rec.eventts
+                     ,            c_rec.eventseconds
+                     ,            c_rec.segmentid
+                     ,            l_operational_availability
+                     ,            l_technical_availability
+                     ,            l_safety_availability);
+
+                     l_ins_count := l_ins_count + 1;
+                  exception
+                     when dup_val_on_index
+                     then
+                        
+                        
+                        
+                        begin
+                           update fact_segment_states
+                           set    id                           = l_curr_id
+                           ,      updatets                     = sys_extract_utc(systimestamp)
+                           ,      ind_operational_availability = l_operational_availability
+                           ,      ind_technical_availability   = l_technical_availability
+                           ,      ind_safety_availability      = l_safety_availability
+                           where  segmentid    = c_rec.segmentid
+                           and    eventseconds = c_rec.eventseconds;
+                        exception
+                           when dup_val_on_index
+                           then
+                              update fact_segment_states
+                              set    updatets                     = sys_extract_utc(systimestamp)
+                              ,      ind_operational_availability = l_operational_availability
+                              ,      ind_technical_availability   = l_technical_availability
+                              ,      ind_safety_availability      = l_safety_availability
+                              where  segmentid    = c_rec.segmentid
+                              and    eventseconds = c_rec.eventseconds
+                              and    id           = l_curr_id;
+                        end;
+
+                        l_upd_count := l_upd_count + 1;
+                  end;
+               end loop;
+
+               commit;
+
+               if l_upd_count >= l_conf_rec.max_measurements
+               then
+                  metrics.unfinished(i_proc => l_con_proc);
+               end if;
+
+               viu_info.operator_info(
+                  i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+               ,  i_calling_procedure => l_con_proc
+               ,  i_severity  => viu_info.c_severity_notification
+               ,  i_info_arguments => null
+               ,  i_additional_data =>    l_con_proc
+                                       || ' finished successfully. Inserted '
+                                       || to_char(l_ins_count)
+                                       || ', updated '
+                                       || to_char(l_upd_count)
+                                       || ' FACT_SEGMENT_STATES.');
+            exception
+               when others
+               then
+                  l_msg := l_con_proc || ' ERROR on ID: ' || to_char(l_curr_id) || ', ' || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+                  rollback;
+                  bpi_log.raise_fatal_error(l_con_proc, l_msg);
+            end;
+         end if;
+      exception
+         when others
+         then
+            l_msg := l_con_proc || ' ERROR: ' || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+            bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+
+      bpi_trace.leave_module(i_module => l_con_proc);
+   end;
+
+
+   procedure retrieve_route_events
+   is
+      l_con_proc                  constant varchar2(61) := g_con_package || '.retrieve_route_events';
+      l_max_id                    fact_route_events.id%type;
+      l_curr_id                   fact_route_events.id%type;
+      l_ins_count                 pls_integer := 0;
+      l_upd_count                 pls_integer := 0;
+      l_msg                       viu_info_logs.additional_data%type;
+      l_conf_rec                  metric_config%rowtype;
+      l_operational_capacity      dim_status_segments.capacity%type;
+      l_technical_capacity        dim_status_segments.capacity%type;
+      l_safety_capacity           dim_status_segments.capacity%type;
+      l_last_eventseconds         fact_segment_states.eventseconds%type;
+      l_last_transport_route_id   dim_transport_routes.id%type;
+   begin
+      bpi_trace.enter_module(i_module => l_con_proc);
+
+      begin
+         begin
+            select *
+            into   l_conf_rec
+            from   metric_config
+            where  upper(metric_procedure) = upper(l_con_proc);
+         exception
+            when others
+            then
+               l_conf_rec.status := 0;
+         end;
+
+         
+         if l_conf_rec.status != 1
+         then
+            viu_info.operator_info(i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+            ,                      i_calling_procedure => l_con_proc
+            ,                      i_severity  => viu_info.c_severity_notification
+            ,                      i_additional_data => l_con_proc || ' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+         else
+            begin
+               select nvl(max(id), 0)
+               into   l_max_id
+               from   fact_route_events;
+
+               viu_info.operator_info(
+                  i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+               ,  i_calling_procedure => l_con_proc
+               ,  i_severity  => viu_info.c_severity_notification
+               ,  i_additional_data => l_con_proc || ' STARTED. Processing FACT_ROUTE_EVENTS with ID greater than ' || to_char(l_max_id));
+
+               for c_rec in (select   sse.id
+                             ,        sse.eventts
+                             ,        sse.eventseconds
+                             ,        tss.transport_route_id
+                             from     (select *
+                                       from   (select   *
+                                               from     fact_segment_states
+                                               where    id > l_max_id
+                                               order by id)
+                                       where  rownum <= l_conf_rec.max_measurements) sse
+                                       ,      dim_tr_status_segments tss
+                             where    sse.segmentid = tss.status_segment_id
+                             order by eventseconds
+                            ,         transport_route_id)
+               loop
+                  l_curr_id := c_rec.id;
+
+                  if    c_rec.eventseconds <> nvl(l_last_eventseconds, -1)
+                     or c_rec.transport_route_id <> nvl(l_last_transport_route_id, -1)
+                  then
+                     l_last_eventseconds       := c_rec.eventseconds;
+                     l_last_transport_route_id := c_rec.transport_route_id;
+                     route_calc.tr_capacity_all_views(p_tr_id                => l_last_transport_route_id
+                     ,                                p_eventseconds         => l_last_eventseconds
+                     ,                                o_operational_capacity => l_operational_capacity
+                     ,                                o_technical_capacity   => l_technical_capacity
+                     ,                                o_safety_capacity      => l_safety_capacity);
+                  end if;
+
+                  begin
+                     insert into fact_route_events(id
+                     ,                             insertts
+                     ,                             updatets
+                     ,                             eventts
+                     ,                             eventseconds
+                     ,                             route_id
+                     ,                             operational_capacity
+                     ,                             technical_capacity
+                     ,                             safety_capacity)
+                     values      (c_rec.id
+                     ,            sys_extract_utc(systimestamp)
+                     ,            sys_extract_utc(systimestamp)
+                     ,            c_rec.eventts
+                     ,            c_rec.eventseconds
+                     ,            c_rec.transport_route_id
+                     ,            l_operational_capacity
+                     ,            l_technical_capacity
+                     ,            l_safety_capacity);
+
+                     l_ins_count := l_ins_count + 1;
+                  exception
+                     when dup_val_on_index
+                     then
+                        begin
+                           update fact_route_events
+                           set    id                    = c_rec.id
+                           ,       updatets             = sys_extract_utc(systimestamp)
+                           ,       operational_capacity = l_operational_capacity
+                           ,       technical_capacity   = l_technical_capacity
+                           ,       safety_capacity      = l_safety_capacity
+                           where  route_id     = c_rec.transport_route_id
+                           and    eventseconds = c_rec.eventseconds;
+                        exception
+                           when dup_val_on_index
+                           then
+                              update fact_route_events
+                              set    updatets             = sys_extract_utc(systimestamp)
+                              ,      operational_capacity = l_operational_capacity
+                              ,      technical_capacity   = l_technical_capacity
+                              ,      safety_capacity      = l_safety_capacity
+                              where  route_id     = c_rec.transport_route_id
+                              and    eventseconds = c_rec.eventseconds
+                              and    id           = c_rec.id;
+                        end;
+
+                        l_upd_count := l_upd_count + 1;
+                  end;
+               end loop;
+
+               commit;
+
+               viu_info.operator_info(
+                  i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+               ,  i_calling_procedure => l_con_proc
+               ,  i_severity  => viu_info.c_severity_notification
+               ,  i_additional_data =>    l_con_proc
+                                       || ' finished successfully. Inserted '
+                                       || to_char(l_ins_count)
+                                       || ', updated '
+                                       || to_char(l_upd_count)
+                                       || ' FACT_ROUTE_EVENTS.');
+            exception
+               when others
+               then
+                  l_msg := l_con_proc || ' ERROR on ID: ' || to_char(l_curr_id) || ', '
+                              || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+                  rollback;
+                  bpi_log.raise_fatal_error(l_con_proc, l_msg);
+            end;
+         end if;
+      exception
+         when others
+         then
+            l_msg := l_con_proc || ' ERROR: ' || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+            bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+
+      bpi_trace.leave_module(i_module => l_con_proc);
+   end;
+
+
+   procedure get_availability(i_route_id                      in  number
+   ,                          i_m5_periodid                   in  number
+   ,                          o_operational_availability      out number
+   ,                          o_technical_availability        out number
+   ,                          o_safety_availability           out number)
+   is
+      
+      
+      v_capacity                    number := 0;
+      v_availability                number := 0;
+      v_last_operational_capacity   number := 0;
+      v_last_technical_capacity     number := 0;
+      v_last_safety_capacity        number := 0;
+      v_last_eventseconds           number := 0;
+      v_events_found                boolean := false;
+
+      cursor c_events
+      is
+         select   eventseconds
+         ,        operational_capacity
+         ,        technical_capacity
+         ,        safety_capacity
+         from     fact_route_events
+         where    route_id = i_route_id
+         and      eventseconds >= (select nvl(max(eventseconds), i_m5_periodid)
+                                       from   fact_route_events
+                                       where  route_id      = i_route_id
+                                       and    eventseconds <= i_m5_periodid)
+         and      eventseconds < (i_m5_periodid + 300)
+         order by eventseconds;
+
+   begin
+      o_operational_availability := 0;
+      o_technical_availability   := 0;
+      o_safety_availability      := 0;
+
+      begin
+         select fully_functioning_capacity
+         into   v_capacity
+         from   dim_transport_routes
+         where  id = i_route_id;
+      exception
+         when others
+         then
+            v_capacity := -1;
+      end;
+
+      
+      v_last_operational_capacity := v_capacity;
+      v_last_technical_capacity   := v_capacity;
+      v_last_safety_capacity      := v_capacity;
+      v_last_eventseconds         := i_m5_periodid;
+
+      
+      if v_capacity >= 0
+      then
+         for c_rec in c_events
+         loop
+            if c_rec.eventseconds <= i_m5_periodid
+            then
+               
+               v_last_operational_capacity := c_rec.operational_capacity;
+               v_last_technical_capacity   := c_rec.technical_capacity;
+               v_last_safety_capacity      := c_rec.safety_capacity;
+               v_last_eventseconds         := i_m5_periodid;
+            else
+               if v_last_operational_capacity >= (v_capacity * g_availability_boundary)
+               then
+                  o_operational_availability := o_operational_availability + ((c_rec.eventseconds - v_last_eventseconds) / 300);
+               end if;
+
+               if v_last_technical_capacity >= (v_capacity * g_availability_boundary)
+               then
+                  o_technical_availability := o_technical_availability + ((c_rec.eventseconds - v_last_eventseconds) / 300);
+               end if;
+
+               if v_last_safety_capacity >= (v_capacity * g_availability_boundary)
+               then
+                  o_safety_availability := o_safety_availability + ((c_rec.eventseconds - v_last_eventseconds) / 300);
+               end if;
+
+               
+
+               v_last_operational_capacity := c_rec.operational_capacity;
+               v_last_technical_capacity   := c_rec.technical_capacity;
+               v_last_safety_capacity      := c_rec.safety_capacity;
+               v_last_eventseconds         := c_rec.eventseconds;
+               v_events_found              := true;
+            end if;
+         end loop;
+
+         if v_events_found
+         then
+            if v_last_operational_capacity >= (v_capacity * g_availability_boundary)
+            then
+               o_operational_availability := o_operational_availability + ((i_m5_periodid + 300 - v_last_eventseconds) / 300);
+            end if;
+
+            if v_last_technical_capacity >= (v_capacity * g_availability_boundary)
+            then
+               o_technical_availability := o_technical_availability + ((i_m5_periodid + 300 - v_last_eventseconds) / 300);
+            end if;
+
+            if v_last_safety_capacity >= (v_capacity * g_availability_boundary)
+            then
+               o_safety_availability := o_safety_availability + ((i_m5_periodid + 300 - v_last_eventseconds) / 300);
+            end if;
+         
+         else
+            o_operational_availability := 0;
+            o_technical_availability := 0;
+            o_safety_availability := 0;
+
+            if v_last_operational_capacity >= (v_capacity * g_availability_boundary)
+            then
+               o_operational_availability := 1;
+            end if;
+
+            if v_last_technical_capacity >= (v_capacity * g_availability_boundary)
+            then
+               o_technical_availability := 1;
+            end if;
+
+            if v_last_safety_capacity >= (v_capacity * g_availability_boundary)
+            then
+               o_safety_availability := 1;
+            end if;
+         end if;
+      end if;
+   end;
+
+
+   procedure sum_route_availability_m5
+   is
+      l_con_proc                   constant varchar2(61) := g_con_package || '.sum_route_availability_m5';
+      l_msg                        viu_info_logs.additional_data%type;
+      l_m5_periodid_start          number;
+      l_m5_periodid_end            number;
+      l_m5_periodid_last           number;
+      l_ins_count                  number := 0;
+      l_upd_count                  number := 0;
+      l_overlap                    number := 5;                         
+      p                            number := 0;
+      l_operational_availability   number := 1;
+      l_technical_availability     number := 1;
+      l_safety_availability        number := 1;
+      l_conf_rec                   metric_config%rowtype;
+
+      cursor c_routes
+      is
+         select id
+         from   dim_transport_routes;
+
+   begin
+      bpi_trace.enter_module(i_module => l_con_proc);
+
+      begin
+         begin
+            select *
+            into   l_conf_rec
+            from   metric_config
+            where  upper(metric_procedure) = upper(l_con_proc);
+         exception
+            when others
+            then
+               l_conf_rec.status := 0;
+         end;
+
+         
+         if l_conf_rec.status != 1
+         then
+            viu_info.operator_info(i_ifo_nr    => viu_constant.c_ifo_bpidebuginfo
+            ,                      i_calling_procedure => l_con_proc
+            ,                      i_severity  => viu_info.c_severity_notification
+            ,                      i_info_arguments => null
+            ,                      i_additional_data => l_con_proc || ' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+         else
+            begin
+               l_overlap := cmn_common.get_parameter_value('AvailabilityM5PeriodOverlap');
+
+               
+               if l_overlap <> trunc(l_overlap)
+               then
+                  l_overlap := trunc(l_overlap) + 1;
+               end if;
+            exception
+               when others
+               then
+                  l_overlap := 5;
+            end;
+
+            begin
+               g_availability_boundary := cmn_common.get_parameter_value('AvailabilityBoundary');
+            exception
+               when others
+               then
+                  g_availability_boundary := 0.75;
+            end;
+
+            select max(m5_periodid)
+            into   l_m5_periodid_last
+            from   fact_routeavailability_agg_m5;
+
+            l_m5_periodid_end   := period.periodid(sys_extract_utc(systimestamp), 'M5');
+            l_m5_periodid_start := l_m5_periodid_end - (l_overlap * 300);                                              
+
+            
+
+            if l_m5_periodid_last is not null
+            then
+               l_m5_periodid_start := least(l_m5_periodid_last, l_m5_periodid_start);
+            end if;
+
+            l_msg :=
+                  l_con_proc
+               || ' started. Using AvailabilityM5PeriodOverlap '
+               || to_char(l_overlap)
+               || '. Starting from M5 period '
+               || to_char(l_m5_periodid_start)
+               || ' onward.';
+            viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo
+            ,                      l_con_proc
+            ,                      viu_info.c_severity_notification
+            ,                      null
+            ,                      l_msg);
+
+            
+            for i in l_m5_periodid_start / 300 .. l_m5_periodid_end / 300
+            loop
+               p := i * 300;                                                              
+
+               for c_rec in (select id
+                             from   dim_transport_routes)
+               loop
+                  
+                  
+                  
+                  get_availability(c_rec.id
+                  ,                p
+                  ,                l_operational_availability
+                  ,                l_technical_availability
+                  ,                l_safety_availability);
+
+                  begin
+                     insert into fact_routeavailability_agg_m5(route_id
+                     ,                                         m5_periodid
+                     ,                                         insertts
+                     ,                                         updatets
+                     ,                                         eventts
+                     ,                                         h1_periodid
+                     ,                                         operational_availability
+                     ,                                         technical_availability
+                     ,                                         safety_availability)
+                     values      (c_rec.id
+                     ,            p
+                     ,            sys_extract_utc(systimestamp)
+                     ,            sys_extract_utc(systimestamp)
+                     ,            period.to_stamp(p, 'M5')
+                     ,            period.periodid(p, 'H1')
+                     ,            l_operational_availability
+                     ,            l_technical_availability
+                     ,            l_safety_availability);
+
+                     l_ins_count := l_ins_count + 1;
+                  exception
+                     when dup_val_on_index
+                     then
+                        update fact_routeavailability_agg_m5
+                        set    operational_availability = l_operational_availability
+                        ,      technical_availability = l_technical_availability
+                        ,      safety_availability = l_safety_availability
+                        ,      updatets = sys_extract_utc(systimestamp)
+                        where  route_id = c_rec.id
+                        and    m5_periodid = p;
+
+                        if sql%rowcount <> 1
+                        then
+                           l_msg := 'UPDATE FACT_ROUTEAVAILABILITY_AGG_M5 Failed. M5_PERIODID=' || to_char(p) || ',ROUTE_ID=' || to_char(c_rec.id);
+                           viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror
+                           ,                      l_con_proc
+                           ,                      viu_info.c_severity_error
+                           ,                      null
+                           ,                      l_msg);
+                        else
+                           l_upd_count := l_upd_count + 1;
+                        end if;
+                  end;
+               end loop;
+
+               commit;
+            end loop;
+
+            if l_upd_count >= l_conf_rec.max_measurements
+            then
+               metrics.unfinished(i_proc => l_con_proc);
+            end if;
+
+            l_msg :=
+                  l_con_proc
+               || ' finished successfully. Inserted '
+               || to_char(l_ins_count)
+               || ' and updated '
+               || to_char(l_upd_count)
+               || ' records from M5_PeriodID '
+               || to_char(l_m5_periodid_start)
+               || ' onward.';
+            viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo
+            ,                      l_con_proc
+            ,                      viu_info.c_severity_notification
+            ,                      null
+            ,                      l_msg);
+         end if;
+      exception
+         when others
+         then
+            l_msg := 'M5_PeriodID:' || to_char(l_m5_periodid_start) || ':' || sqlerrm || chr(10) || dbms_utility.format_error_backtrace;
+            viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror
+            ,                      l_con_proc
+            ,                      viu_info.c_severity_error
+            ,                      null
+            ,                      l_msg);
+      end;
+
+      bpi_trace.leave_module(i_module => l_con_proc);
+   end;
+end route_availability;
+/

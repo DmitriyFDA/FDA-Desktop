@@ -1,0 +1,938 @@
+create or replace PACKAGE lm_logistic_backup IS
+
+g_con_package CONSTANT lm_constant.st_proc_name := 'lm_logistic_backup';
+
+/* LBP_001: Monitor and re-evaluate TaskInstructions (called from a continuous job) */
+PROCEDURE monitor_main;
+
+/* LBP_002: Monitor and re-evaluate TaskInstructions, one execution cycle. */
+PROCEDURE monitor(io_nt_logistic_backup_stn IN OUT NT_LBP_STATION);
+
+/* LBP_003: Select potential Stations */
+PROCEDURE select_potential_stations(i_nt_logistic_backup_stn IN  NT_LBP_STATION
+                                   ,o_nt_potential_stations     OUT NT_STN_ID);
+                             
+/* LBP_004: Select monitoted TaskInstructions*/
+PROCEDURE select_monitored_instructions(o_nt_task_instructions OUT NT_LBP_TASK_INSTRUCTION);
+
+/* LBP_005: Match potential Stations to monitored TaskInstructions */
+PROCEDURE match_stations_to_instructions(i_nt_potential_stations IN NT_STN_ID
+                                        ,io_nt_task_instructions IN OUT NT_LBP_TASK_INSTRUCTION
+                                        ) ;
+
+/* LPB_006: Calculate monitor timeout */
+FUNCTION calculate_timeout(i_nt_logistic_backup_stn IN NT_LBP_STATION
+                          ,i_max_timeout_sec        IN NUMBER
+                          )
+RETURN NUMBER;
+                          
+END lm_logistic_backup;
+/
+
+
+
+
+package body lm_logistic_backup is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+g_backup_monitor_timestamp lm_constant.st_timestamp;
+
+
+procedure monitor_main
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.monitor_main';
+
+   
+
+
+
+
+
+
+   cursor c_stations
+   is
+   select rt_lbp_station(ilv.stn_id
+                        ,lm_common.default_timestamp   
+                        ,ilv.cache_positions
+                        ,3600/ilv.target_release_rate  
+                        )
+   from (select distinct
+                stn.id stn_id
+               ,stn.cache_positions
+               ,ste.target_release_rate
+         from lm_task_handling thg
+         ,    lm_task_definitions tdn
+         ,    lm_stations stn
+         ,    lm_station_types ste
+         where thg.tdn_id = tdn.id
+         and   thg.stn_id = stn.id
+         and   stn.ste_id = ste.id
+         and   tdn.tdn_id_backup is not null
+        ) ilv;
+
+   l_nt_logistic_backup_stn    nt_lbp_station := nt_lbp_station();
+   l_max_timeout_sec           number;
+   l_timeout_sec               number;
+   l_alertname                 varchar2( 30 );
+   l_alertstatus               integer := lm_constant.g_con_alert_waitany_timeout;
+   l_message                   varchar2( 40 );
+
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+
+   
+   l_alertname := lm_common.build_signal( i_signal_identifier => lm_constant.g_con_alert_logistic_backup );
+
+   l_max_timeout_sec := lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_lbp_sleep_time);
+
+   
+   dbms_alert.register( l_alertname );
+
+   
+   open c_stations;
+   fetch c_stations
+   bulk collect into l_nt_logistic_backup_stn;
+   close c_stations;
+
+   while l_alertstatus !=  lm_constant.g_con_alert_waitany_alert
+   loop
+      begin
+         
+         acl_application_control.register_process;
+
+         g_backup_monitor_timestamp := lm_common.default_timestamp;
+
+         
+         lm_logistic_backup.monitor(io_nt_logistic_backup_stn => l_nt_logistic_backup_stn);
+         
+         
+         
+         
+         l_timeout_sec := lm_logistic_backup.calculate_timeout( i_nt_logistic_backup_stn => l_nt_logistic_backup_stn
+                                                              , i_max_timeout_sec        => l_max_timeout_sec
+                                                              );
+
+         
+         acl_application_control.update_aps_stats;
+
+         
+         
+         
+         
+         
+         
+         
+         acl_common.sleep(l_timeout_sec - floor(l_timeout_sec));
+         dbms_alert.waitone ( name    => l_alertname
+                            , message => l_message
+                            , status  => l_alertstatus
+                            , timeout => floor(l_timeout_sec)
+                           );
+      exception
+         when others
+         then
+            
+            
+            
+            rollback;
+            viu_info.handle_info ();
+
+            dbms_alert.waitone ( name          => l_alertname
+                               , message       => l_message
+                               , status        => l_alertstatus
+                               , timeout       => lm_constant.g_con_job_delay
+                               );
+      end;
+
+   end loop;
+
+   dbms_alert.remove(name => l_alertname);
+
+   viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+exception
+   when others
+   then
+      if c_stations%isopen
+      then
+         close c_stations;
+      end if;
+
+      rollback;
+      dbms_alert.remove(name => l_alertname);
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end monitor_main;
+
+
+procedure monitor(io_nt_logistic_backup_stn in out nt_lbp_station)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.monitor';
+
+   
+   cursor c_dsn(i_tin_id in lm_task_instructions.id%type)
+   is
+   select dsn.stn_id
+   from   lm_determined_stations dsn
+   where  dsn.tin_id = i_tin_id
+   and    dsn.ind_final_expected = lm_constant.g_con_yesno_no;
+
+   l_idx                    number;
+   l_idx2                   number;
+   l_idx3                   number;
+   l_dummy                  boolean;
+
+   l_nt_potential_stations  nt_stn_id := nt_stn_id();
+   l_nt_determined_stations nt_stn_id := nt_stn_id();
+   l_nt_exclude_stations    nt_stn_id := nt_stn_id();
+   l_nt_task_instructions   nt_lbp_task_instruction := nt_lbp_task_instruction();
+   l_additional_data        viu_info_logs.additional_data%type;
+
+   l_logistic_monitor_timestamp lm_constant.st_timestamp;
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+
+   l_logistic_monitor_timestamp := nvl( lm_logistic_backup.g_backup_monitor_timestamp
+                                      , lm_common.default_timestamp
+                                      );
+
+   
+   lm_logistic_backup.select_potential_stations(i_nt_logistic_backup_stn => io_nt_logistic_backup_stn
+                                               ,o_nt_potential_stations  => l_nt_potential_stations
+                                                );
+
+   
+   
+   
+   
+   
+   
+   select lbp.stn_id
+   bulk collect
+   into l_nt_exclude_stations
+   from table ( io_nt_logistic_backup_stn ) lbp;
+
+   l_nt_exclude_stations := l_nt_exclude_stations multiset except distinct l_nt_potential_stations;
+
+
+   if l_nt_potential_stations.count > 0
+   then
+      
+      lm_logistic_backup.select_monitored_instructions(o_nt_task_instructions => l_nt_task_instructions
+                                                       );
+      if l_nt_task_instructions.count > 0
+      then
+         
+         lm_logistic_backup.match_stations_to_instructions(i_nt_potential_stations => l_nt_potential_stations
+                                                          ,io_nt_task_instructions => l_nt_task_instructions
+                                                          );
+         
+         if l_nt_task_instructions.count > 0
+         then
+            l_idx := l_nt_task_instructions.first;
+            while l_idx is not null
+            loop
+               begin
+                  
+                  lm_topology_administration.evaluate_task_instr_for_pck(i_pid                     => l_nt_task_instructions(l_idx).pid
+                                                                        ,i_tin_id                  => l_nt_task_instructions(l_idx).tin_id
+                                                                        ,i_nt_exclude_stations     => l_nt_exclude_stations
+                                                                        ,i_source                  => lm_constant.g_con_src_logistic_backup
+                                                                        ,o_new_determined_stations => l_dummy
+                                                                        );
+               exception
+               when others
+               then
+                  
+
+
+                  viu_info.handle_info;
+               end;
+
+               
+               open c_dsn(i_tin_id => l_nt_task_instructions(l_idx).tin_id);
+               fetch c_dsn
+               bulk collect into l_nt_determined_stations;
+               close c_dsn;
+
+               if l_nt_determined_stations.count = 0
+               then
+                  null;
+                  
+                  
+               else
+                  
+                  if l_nt_determined_stations.count > 1
+                     and
+                     l_nt_task_instructions(l_idx).ind_controlled_routing = lm_constant.g_con_yesno_yes
+                  then
+                     
+                     
+                     
+                     
+                     
+                     select listagg(column_value, '; ')
+                     within group  (order by column_value)
+                     into   l_additional_data
+                     from   table(l_nt_determined_stations);
+                     l_additional_data := 'Task Definition: '|| l_nt_task_instructions(l_idx).tdn_description
+                                        ||', Determined stations:  '||l_additional_data;
+
+                     viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_lbstationgroupinvalid
+                                           , i_calling_procedure      => l_con_proc_name
+                                           , i_severity               => viu_info.c_severity_warning
+                                           , i_additional_data        => l_additional_data
+                                           );
+                  end if;
+                  
+                  
+                  for idx in io_nt_logistic_backup_stn.first .. io_nt_logistic_backup_stn.last
+                  loop
+                     if io_nt_logistic_backup_stn(idx).stn_id member of l_nt_determined_stations
+                     then
+                       io_nt_logistic_backup_stn(idx).allowed_next_release
+                                                                := l_logistic_monitor_timestamp
+                                                                +  numtodsinterval
+                                                                   ( (io_nt_logistic_backup_stn(idx).release_interval /
+                                                                        l_nt_determined_stations.count
+                                                                     )
+                                                                   , 'SECOND'
+                                                                   );
+                     end if;
+                  end loop;
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  for idx in 1..l_nt_determined_stations.count
+                  loop
+                     l_nt_exclude_stations.extend;
+                     l_nt_exclude_stations(l_nt_exclude_stations.count) := l_nt_determined_stations(idx);
+                  end loop;
+
+                  
+                  
+                  
+                  
+                  l_idx2 := l_nt_task_instructions.next(l_idx);
+                  while l_idx2 is not null
+                  loop
+                      
+                      l_idx3 := l_nt_task_instructions(l_idx2).nt_tsn_id.first;
+                      while l_idx3 <= l_nt_task_instructions(l_idx2).nt_tsn_id.last
+                      loop
+                         
+                         if l_nt_task_instructions(l_idx2).nt_tsn_id(l_idx3) member of l_nt_determined_stations
+                         then
+                            
+                            l_nt_task_instructions(l_idx2).nt_tsn_id.delete(l_idx3);
+                            exit; 
+                         end if;
+                         l_idx3 := l_nt_task_instructions(l_idx2).nt_tsn_id.next(l_idx3);
+                      end loop;
+                      l_idx2 := l_nt_task_instructions.next(l_idx2);
+                  end loop;
+                  
+                  
+                  l_idx2 := l_nt_task_instructions.next(l_idx);
+                  while l_idx2 is not null
+                  loop
+                     if l_nt_task_instructions(l_idx2).nt_tsn_id.count = 0
+                     then
+                        l_nt_task_instructions.delete(l_idx2);
+                     end if;
+                     l_idx2 := l_nt_task_instructions.next(l_idx2);
+                  end loop;
+
+               end if;   
+
+               
+               l_idx := l_nt_task_instructions.next(l_idx);
+            end loop; 
+         end if; 
+
+      end if; 
+   end if; 
+
+   viu_module.leave_module(i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_dsn%isopen
+      then
+         close c_dsn;
+      end if;
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end monitor;
+
+
+procedure select_potential_stations(i_nt_logistic_backup_stn in  nt_lbp_station
+                                   ,o_nt_potential_stations  out nt_stn_id
+                                   )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.select_potential_stations';
+
+   
+   cursor c_available_stations(i_nt_logistic_backup_stn in nt_lbp_station)
+   is
+   select rt_lbp_station(ilv.stn_id
+                        ,ilv.allowed_next_release
+                        ,ilv.cache_positions
+                        ,ilv.release_interval
+                        )
+   from   lm_station_availabilities say
+   ,      table(i_nt_logistic_backup_stn) ilv
+   where  say.ssd_id in (lm_constant.g_con_ssd_id_available
+                        ,lm_constant.g_con_ssd_id_initial)
+   and    say.ind_available_derived = lm_constant.g_con_yesno_yes
+   and    nvl(say.sod_id,lm_constant.g_con_sod_id_logged_on) = lm_constant.g_con_sod_id_logged_on
+   and    ilv.stn_id = say.stn_id;
+
+   l_load_factor            number;
+   l_nt_logistic_backup_stn nt_lbp_station := nt_lbp_station();
+   l_nt_potential_stations  nt_stn_id      := nt_stn_id();
+
+   l_logistic_monitor_timestamp lm_constant.st_timestamp;
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+
+   l_logistic_monitor_timestamp := nvl( lm_logistic_backup.g_backup_monitor_timestamp
+                                      , lm_common.default_timestamp
+                                      );
+
+   
+   if i_nt_logistic_backup_stn.count > 0
+   then
+      for idx in i_nt_logistic_backup_stn.first .. i_nt_logistic_backup_stn.last
+      loop
+         if i_nt_logistic_backup_stn(idx).allowed_next_release <= l_logistic_monitor_timestamp
+         then
+            l_nt_logistic_backup_stn.extend;
+            l_nt_logistic_backup_stn(l_nt_logistic_backup_stn.count) := i_nt_logistic_backup_stn(idx);
+         end if;
+      end loop;
+   end if;
+
+   if l_nt_logistic_backup_stn.count > 0
+   then
+      
+      
+      open c_available_stations(i_nt_logistic_backup_stn => l_nt_logistic_backup_stn);
+      fetch c_available_stations
+      bulk collect into l_nt_logistic_backup_stn;
+      close c_available_stations;
+
+      if l_nt_logistic_backup_stn.count > 0
+      
+      
+      
+      then
+         for idx in l_nt_logistic_backup_stn.first .. l_nt_logistic_backup_stn.last
+         loop
+            if l_nt_logistic_backup_stn(idx).cache_positions is null
+            then
+               l_nt_potential_stations.extend;
+               l_nt_potential_stations(l_nt_potential_stations.count) := l_nt_logistic_backup_stn(idx).stn_id;
+            else
+               
+               lm_topology_administration.loadfactor( i_nt_stations     => nt_stn_id(l_nt_logistic_backup_stn(idx).stn_id)
+                                                    , i_pay_id          => null
+                                                    , i_ind_loadbalance => false
+                                                    , o_load_factor     => l_load_factor
+                                                    );
+               if  l_nt_logistic_backup_stn(idx).cache_positions > l_load_factor
+               then
+                  l_nt_potential_stations.extend;
+                  l_nt_potential_stations(l_nt_potential_stations.count) := l_nt_logistic_backup_stn(idx).stn_id;
+               end if;
+            end if;
+         end loop;
+      end if;
+   end if;
+
+   o_nt_potential_stations := l_nt_potential_stations;
+   viu_module.leave_module(i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_available_stations%isopen
+      then
+         close c_available_stations;
+      end if;
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end select_potential_stations;
+
+
+
+procedure select_monitored_instructions(o_nt_task_instructions out nt_lbp_task_instruction)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.select_monitored_instructions';
+
+   
+   cursor c_tin(i_pve_arrived_at_pon in number
+               ,i_time_limit         in number
+               ,i_release_priority   in number
+               ,i_event_time         in number
+              )
+   is
+   select rt_lbp_task_instruction(ilv.id
+                                 ,ilv.pid
+                                 ,ilv.handler
+                                 ,ilv.ind_controlled_routing
+                                 ,ilv.tdn_description
+                                 ,nt_stn_id()
+                                 )
+   from (select /*+ ORDERED */
+                
+                 tin.id
+                ,tin.pid
+                ,tin.handler
+                ,tdn.ind_controlled_routing
+                ,tdn.description tdn_description
+                ,pae.arrived_at_pon
+                ,tin.time_limit
+                ,tin.release_priority
+                ,pae.std
+         from   lm_tin_logistic_backup_v tin
+         ,      lm_task_definitions         tdn
+         ,      lm_pin_active_of_package_v  piev
+         ,      lm_packages                 pae
+         ,      lm_package_destinations     pdn
+         where  piev.pid   = tin.pid
+         and    tin.tdn_id = tdn.id
+         and    pae.pid    = piev.pid
+         and    pdn.pin_id = piev.id
+         and    tdn.ind_controlled_routing = lm_constant.g_con_yesno_yes
+         and    pdn.pon_id = pae.pon_id
+         union all
+         select /*+ ORDERED */
+                
+                 tin.id
+                ,tin.pid
+                ,tin.handler
+                ,tdn.ind_controlled_routing
+                ,tdn.description tdn_description
+                ,pae.arrived_at_pon
+                ,tin.time_limit
+                ,tin.release_priority
+                ,pae.std
+         from   lm_tin_logistic_backup_v tin
+         ,      lm_task_definitions         tdn
+         ,      lm_packages                 pae
+         where  tin.tdn_id = tdn.id
+         and    pae.pid    = tin.pid
+         and    tdn.ind_controlled_routing = lm_constant.g_con_yesno_no
+       ) ilv
+   order by case when i_pve_arrived_at_pon = 1 then ilv.arrived_at_pon
+                 when i_time_limit         = 1 then ilv.time_limit
+                 when i_release_priority   = 1 then
+                                                 case when ilv.release_priority = lm_constant.g_con_tin_release_prio_high then lm_common.default_date
+                                                      when ilv.release_priority = lm_constant.g_con_tin_release_prio_low  then lm_common.default_date + 1
+                                                      else lm_common.default_date + 2
+                                                 end
+                 when i_event_time         = 1 then ilv.std
+            end
+           ,case when i_pve_arrived_at_pon = 2 then ilv.arrived_at_pon
+                 when i_time_limit         = 2 then ilv.time_limit
+                 when i_release_priority   = 2 then
+                                                 case when ilv.release_priority = lm_constant.g_con_tin_release_prio_high then lm_common.default_date
+                                                      when ilv.release_priority = lm_constant.g_con_tin_release_prio_low  then lm_common.default_date + 1
+                                                      else lm_common.default_date + 2
+                                                 end
+                 when i_event_time         = 2 then ilv.std
+            end
+           ,case when i_pve_arrived_at_pon = 3 then ilv.arrived_at_pon
+                 when i_time_limit         = 3 then ilv.time_limit
+                 when i_release_priority   = 3 then
+                                                 case when ilv.release_priority = lm_constant.g_con_tin_release_prio_high then lm_common.default_date
+                                                      when ilv.release_priority = lm_constant.g_con_tin_release_prio_low  then lm_common.default_date + 1
+                                                      else lm_common.default_date + 2
+                                                 end
+                 when i_event_time         = 3 then ilv.std
+            end
+           ,case when i_pve_arrived_at_pon = 4 then ilv.arrived_at_pon
+                 when i_time_limit         = 4 then ilv.time_limit
+                 when i_release_priority   = 4 then
+                                                 case when ilv.release_priority = lm_constant.g_con_tin_release_prio_high then lm_common.default_date
+                                                      when ilv.release_priority = lm_constant.g_con_tin_release_prio_low  then lm_common.default_date + 1
+                                                      else lm_common.default_date + 2
+                                                 end
+                 when i_event_time         = 4 then ilv.std
+            end;
+
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+   open c_tin(i_pve_arrived_at_pon => lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_lbp_eo_storage_time)
+             ,i_time_limit         => lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_lbp_eo_timelimit)
+             ,i_release_priority   => lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_lbp_eo_release_prio)
+             ,i_event_time         => lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_lbp_eo_time_to_std)
+             );
+   fetch c_tin
+   bulk collect into o_nt_task_instructions;
+   close c_tin;
+
+   viu_module.leave_module(i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_tin%isopen
+      then
+         close c_tin;
+      end if;
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end select_monitored_instructions;
+
+
+procedure match_stations_to_instructions(i_nt_potential_stations in nt_stn_id
+                                        ,io_nt_task_instructions in out nt_lbp_task_instruction
+                                        )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.match_stations_to_instructions';
+
+   cursor c_tsn(i_tin_id                in lm_task_instructions.id%type
+               ,i_handler               in lm_task_instructions.handler%type
+               ,i_nt_potential_stations in nt_stn_id
+               )
+   is
+   with all_stations (id) as
+   
+   
+   
+   
+   (select /*+ CARDINALITY(stn1 10) */
+          stn1.column_value as id
+          from   lm_task_stations tsn
+          ,      table(i_nt_potential_stations) stn1
+          where  tsn.tin_id   = i_tin_id
+          and    tsn.tsn_type = lm_constant.g_con_tsn_nonfinal
+          and    tsn.stn_id   = stn1.column_value
+          union all
+          select /*+ CARDINALITY(stn2 10) */ stn2.column_value id
+          from   table(i_nt_potential_stations) stn2
+          where  not exists (select ''
+                             from   lm_task_stations tsn
+                             where  tsn.tin_id   = i_tin_id
+                             and    tsn.tsn_type = lm_constant.g_con_tsn_nonfinal
+                            )
+   )
+   
+   
+   
+   
+   select son.say_stn_id
+   from  lm_scope_of_operation son
+   ,     all_stations          stn
+   where son.say_stn_id = stn.id
+   and   son.id_cust = i_handler
+   union all
+   select stn.id
+   from  all_stations          stn
+   where not exists
+         (select ''
+          from   lm_scope_of_operation son
+          where  son.say_stn_id = stn.id
+         );
+
+   l_nt_task_instructions nt_lbp_task_instruction := nt_lbp_task_instruction();
+   l_nt_matched_stations  nt_stn_id               := nt_stn_id();
+
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+
+   for idx in io_nt_task_instructions.first .. io_nt_task_instructions.last
+   loop
+      
+      
+      
+      
+      
+      
+      
+      
+      open c_tsn(i_tin_id                => io_nt_task_instructions(idx).tin_id
+                ,i_handler               => io_nt_task_instructions(idx).handler
+                ,i_nt_potential_stations => i_nt_potential_stations);
+      fetch c_tsn
+      bulk collect into l_nt_matched_stations;
+      close c_tsn;
+
+      if l_nt_matched_stations.count > 0
+      then
+         l_nt_task_instructions.extend;
+         l_nt_task_instructions(l_nt_task_instructions.count)           := io_nt_task_instructions(idx);
+         l_nt_task_instructions(l_nt_task_instructions.count).nt_tsn_id := l_nt_matched_stations;
+      end if;
+   end loop;
+
+   io_nt_task_instructions := l_nt_task_instructions;
+
+   viu_module.leave_module(i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_tsn%isopen
+      then
+         close c_tsn;
+      end if;
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end match_stations_to_instructions;
+
+
+function calculate_timeout(i_nt_logistic_backup_stn in nt_lbp_station
+                          ,i_max_timeout_sec        in number
+                          )
+return number
+is
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.calculate_timeout';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   cursor c_timeout( b_nt_logistic_backup_stn nt_lbp_station
+                   , b_max_timeout_sec        number
+                   , b_now                    timestamp
+                   )
+    is
+      
+      
+      
+      
+      
+      
+      
+      select least( b_max_timeout_sec
+                  , nvl2(timeout_stn
+                        ,extract( second from timeout_stn ) + 60 * extract( minute from timeout_stn )
+                        ,b_max_timeout_sec
+                        )
+                  ) timeout_sec
+      from   (select /*+ CARDINALITY (STN, 10) */
+                     min(stn.allowed_next_release) - b_now as timeout_stn
+              from   table(b_nt_logistic_backup_stn) stn
+              where  stn.allowed_next_release > b_now
+             );
+
+   l_timeout_sec                number := i_max_timeout_sec;
+   l_logistic_monitor_timestamp lm_constant.st_timestamp;
+begin
+   viu_module.enter_module(i_module => l_con_proc_name);
+
+   l_logistic_monitor_timestamp := nvl( lm_logistic_backup.g_backup_monitor_timestamp
+                                      , lm_common.default_timestamp
+                                      );
+
+   open c_timeout( b_nt_logistic_backup_stn => i_nt_logistic_backup_stn
+                 , b_max_timeout_sec        => i_max_timeout_sec
+                 , b_now                    => l_logistic_monitor_timestamp
+                 );
+   fetch c_timeout
+   into l_timeout_sec;
+
+   close c_timeout;
+
+   viu_module.leave_module(i_module => l_con_proc_name);
+   return l_timeout_sec;
+
+exception
+   when others
+   then
+      if c_timeout%isopen
+      then
+         close c_timeout;
+      end if;
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+end calculate_timeout;
+
+end lm_logistic_backup;
+/

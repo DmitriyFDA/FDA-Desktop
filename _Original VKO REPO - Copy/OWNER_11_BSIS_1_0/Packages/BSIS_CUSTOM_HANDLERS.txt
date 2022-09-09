@@ -1,0 +1,2016 @@
+create or replace PACKAGE bsis_custom_handlers
+AUTHID DEFINER
+AS
+  /******************************************************************************
+    NAME:       bsis_custom_handlers
+    PURPOSE:
+      Package contains custom handlers for xml conversion
+    REVISIONS:
+    Version    Date        Author           Description
+    ---------  ----------  ---------------  ------------------------------------
+    1.0        13-07-2011  TJ               1. Created this package.
+    2.0        01-09-2011  NLJTH            Added amd_extension_out, amd_bag_qualification_extens
+                                            amd_bag_route_and_track_extens,amd_bag_identification_extens
+                                            amd_bag_recognition_extens
+    3.0        05-09-2011  NLJTH            Added sub element TriggerMessageType
+    4.0        30-09-2011  NLAJAS           Added handling_location_extens
+    5.0        28-10-2011  NLAJAS           Added version_and_supplementary_data
+    6.0        18-11-2011  NLAJAS           Added processing_information_extens
+    7.0        01-08-2012  NLJSCHI          Added get_node_value_derived
+    8.0        15-08-2012  NLJSCHI          Added amd_bag_screening_extens_src and amd_screening_process
+    9.0        18-12-2018  NLMV2            VBSS-56: Removed custom_procedure (only used by unit test)
+    10         27-10-2020  NLMV2            vbss-288: Make procedures available for project specific usage
+    11         27-10-2020  NLMV2            vbss-290: Remove references to unsupported message type
+  ******************************************************************************/
+  --
+  FUNCTION compose_node
+  (i_node_name  varchar2
+  ,i_node_value varchar2
+  ,i_node VARCHAR2
+  ,i_empty_node_allowed boolean default FALSE
+  )
+  RETURN VARCHAR2;
+  --
+  FUNCTION determ_secondary_flow
+  (i_doc_nodes IN DBMS_XMLDOM.domnode)
+  RETURN BOOLEAN;
+  --
+  FUNCTION get_aze_number
+  (i_doc_nodes IN DBMS_XMLDOM.domnode)
+  RETURN VARCHAR2;
+  --
+  FUNCTION get_node_value
+  (i_el_xPath varchar2
+  ,i_doc_nodes  DBMS_XMLDOM.domnode
+  )
+  RETURN VARCHAR2;
+  --
+  FUNCTION get_node_value_derived
+  (i_gmd_type IN bsis_generic_mapping_defs.type%type
+  ,i_gmd_key  IN bsis_generic_mapping_defs.key%type
+  )
+  RETURN bsis_generic_mapping_defs.value%type;
+  --
+  FUNCTION transl_handlingareaid
+  (i_handlingareaid IN VARCHAR2)
+  RETURN VARCHAR2;
+  --
+  PROCEDURE amd_extension_out_for_mds
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE handling_location_extens
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE version_and_supplementary_data
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE processing_information_extens
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE baggage_irregularities_ext
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE baggage_security_screening
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE baggage_exception_data
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE processing_information
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE bag_processed_message_version
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE trigger_src
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE bag_load_flight_identification
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+  PROCEDURE handling_location
+  (i_new_xml_data        IN  XMLTYPE
+  ,i_old_xml_data        IN  XMLTYPE
+  ,i_msg_id_obj          IN  ot_msg_id
+  ,i_attribute_id        IN  bsis_attributes.id%TYPE
+  ,o_processed_attribute OUT CLOB
+  );
+  --
+END bsis_custom_handlers;
+/
+
+
+
+
+package body bsis_custom_handlers
+is
+  g_con_package constant varchar2(30) := 'bsis_custom_handlers';
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function compose_node(i_node_name  varchar2
+                       ,i_node_value varchar2
+                       ,i_node varchar2
+                       ,i_empty_node_allowed boolean default false)  return varchar2
+  is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                := g_con_package || '.compose_node';
+      l_node varchar2(32767);
+
+  begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+      if    (i_node_value is null and i_empty_node_allowed)
+         or (i_node_value is not null)
+      then
+   if i_node_name is null then
+     l_node :=   i_node_value;
+           l_node := i_node||l_node;
+   else
+           l_node :=   '<'|| i_node_name  ||'>'||
+                             i_node_value ||
+                       '</'|| i_node_name  ||'>';
+           l_node := i_node||l_node;
+         end if;
+      else
+          l_node := i_node;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      return  l_node;
+  exception
+       when others
+       then
+          viu_module.leave_module( i_module     => l_con_proc_name
+                                 , i_debug_info => sqlerrm
+                                  );
+          viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+  end compose_node;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function get_node_value(i_el_xpath varchar2
+                         ,i_doc_nodes  dbms_xmldom.domnode)  return varchar2
+  is
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                := g_con_package || '.get_node_value';
+      l_nodelist   dbms_xmldom.domnodelist;
+      l_node       dbms_xmldom.domnode;
+      l_node_value varchar2(2000);
+  begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      l_nodelist  := dbms_xslprocessor.selectnodes(i_doc_nodes, i_el_xpath);
+      if dbms_xmldom.getlength(l_nodelist) > 0
+      then
+          l_node       := dbms_xmldom.item(l_nodelist, 0);
+          l_node_value := substr(trim(dbms_xmldom.getnodevalue(dbms_xmldom.getfirstchild(l_node))),1,2000);
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      return  l_node_value;
+  exception
+       when others
+       then
+          viu_module.leave_module( i_module     => l_con_proc_name
+                                 , i_debug_info => sqlerrm
+                                  );
+          viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+  end get_node_value;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function get_node_value_derived(i_gmd_type in bsis_generic_mapping_defs.type%type
+                                 ,i_gmd_key  in bsis_generic_mapping_defs.key%type)
+                           return bsis_generic_mapping_defs.value%type
+  is
+
+      cursor c_gmd(b_type in bsis_generic_mapping_defs.type%type
+                  ,b_key  in bsis_generic_mapping_defs.key%type) is
+        select gmd.value
+        from   bsis_generic_mapping_defs gmd
+        where  gmd.type = b_type
+        and    gmd.key  = b_key;
+
+      r_gmd c_gmd%rowtype;
+      l_con_proc_name constant cmn_constant.st_proc_name
+                                := g_con_package || '.get_node_value_derived';
+  begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+      if i_gmd_key is not null
+      then
+          open c_gmd(i_gmd_type,i_gmd_key);
+          fetch c_gmd
+           into r_gmd;
+          close c_gmd;
+
+          
+          
+          if r_gmd.value is null
+          then
+            open c_gmd(i_gmd_type,'Default');
+            fetch c_gmd
+             into r_gmd;
+            close c_gmd;
+          end if;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      return  r_gmd.value;
+  exception
+      when others
+      then
+          if c_gmd%isopen
+          then
+             close c_gmd;
+          end if;
+          viu_module.leave_module( i_module     => l_con_proc_name
+                                 , i_debug_info => sqlerrm
+                                  );
+          viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+  end get_node_value_derived;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function get_aze_number(i_doc_nodes in dbms_xmldom.domnode)
+                          return varchar2
+  is
+    l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.get_aze_number';
+    l_el_xpath   varchar2(200);
+    l_node_value varchar2(32767);
+  begin
+    viu_module.enter_module( i_module => l_con_proc_name );
+
+    l_el_xpath   := '//BagEventExtensionIn/Location/Equipment/AreaID';
+    l_node_value := get_node_value(l_el_xpath,i_doc_nodes);
+
+    if l_node_value is not null
+    then
+      l_el_xpath   := '//BagEventExtensionIn/Location/Equipment/AreaID';
+      l_node_value := get_node_value(l_el_xpath,i_doc_nodes);
+      l_el_xpath   := '//BagEventExtensionIn/Location/Equipment/ZoneID';
+      l_node_value := l_node_value || '.' || lpad(get_node_value(l_el_xpath,i_doc_nodes), 2, '0');
+      l_el_xpath   := '//BagEventExtensionIn/Location/Equipment/EquipmentID';
+      l_node_value := l_node_value || '.' || lpad(get_node_value(l_el_xpath,i_doc_nodes), 2, '0');
+    end if;
+    viu_module.leave_module( i_module => l_con_proc_name );
+    return  l_node_value;
+  exception
+    when others then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+  end get_aze_number;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function transl_handlingareaid (i_handlingareaid in varchar2)
+  return varchar2
+  is
+    l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.transl_handlingareaid';
+    l_el_xpath   varchar2(200);
+    l_node_value varchar2(32767);
+    l_handlingareaid varchar2(10);
+  begin
+    viu_module.enter_module( i_module => l_con_proc_name );
+
+    l_handlingareaid := substr(i_handlingareaid, 0, 2);
+
+    if l_handlingareaid = 'TX'
+    then
+      l_handlingareaid := get_node_value_derived(i_gmd_type => 'Handlingarea'
+                                                ,i_gmd_key  => cmn_common.get_parameter_value ('HANDLINGAREA_ID_CURR_TERMINAL'));
+    else
+      l_handlingareaid := get_node_value_derived(i_gmd_type => 'Handlingarea'
+                                                ,i_gmd_key  => l_handlingareaid);
+    end if;
+    l_node_value := concat(l_handlingareaid, substr(i_handlingareaid, 3));
+    viu_module.leave_module( i_module => l_con_proc_name );
+    return  l_node_value;
+  exception
+    when others then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+  end transl_handlingareaid;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function determ_secondary_flow(i_doc_nodes in dbms_xmldom.domnode)
+                          return boolean
+  is
+    l_con_proc_name  constant cmn_constant.st_proc_name := g_con_package || '.determ_secondary_flow';
+    l_el_xpath       varchar2(200);
+    l_node_value     varchar2(32767);
+    l_executed_task  varchar2(240);
+    l_station_type   varchar2(240);
+    l_secondary_flow boolean;
+  begin
+    viu_module.enter_module( i_module => l_con_proc_name );
+
+    l_el_xpath   := '//ProcessingInformation/SecondaryCode';
+    l_node_value := get_node_value(l_el_xpath,i_doc_nodes);
+
+    if l_node_value = 'H' then
+      l_secondary_flow := true;
+    elsif l_node_value = 'S' then
+      l_secondary_flow :=  false;
+    else
+      l_secondary_flow :=  null;
+    end if;
+
+    viu_module.leave_module( i_module => l_con_proc_name );
+    return l_secondary_flow;
+  exception
+    when others then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+  end determ_secondary_flow;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure amd_extension_out_for_mds
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'AMDExtensionOut';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.amd_extension_out_for_mds';
+
+      cursor c_check_lpc_not_null
+        (b_bid           in bsis_baggage_data.bid%type
+        ,b_bid_extension in bsis_baggage_data.bid_extension%type
+        )
+      is
+         select 1
+         from   bsis_baggage_data bda
+         where  bda.bid = b_bid
+         and (  b_bid_extension is null
+             or b_bid_extension = bda.bid_extension
+             )
+         and    bda.deleted_ind = 'N'
+         and    bda.lpc         is not null;
+      
+      r_check_lpc_not_null        c_check_lpc_not_null%rowtype;
+      l_add_extension_out_for_mds boolean := false;
+      
+      l_domdoc_new                dbms_xmldom.domdocument;
+      l_doc_nodes_new             dbms_xmldom.domnode;
+      l_domdoc_old                dbms_xmldom.domdocument;
+      l_doc_nodes_old             dbms_xmldom.domnode;
+      
+      l_node_name                 varchar2(200);
+      l_node_value                varchar2(32767);
+      l_el_xpath                  varchar2(200);
+      l_node_value_equipment_type varchar2(32767);
+      l_node_value_eq_type_old    varchar2(32767);
+      
+      l_amdextensionout           varchar2(32767);
+      l_amd_ext_out_facility_id   varchar2(240);
+      l_equipmentid               varchar2(240);
+      l_qualificationstate        varchar2(240);
+      l_qualificationstate_new    varchar2(240);
+      l_qualificationstate_old    varchar2(240);
+      l_recognition_state         varchar2(32767);
+      
+      l_issecondaryflow           boolean := false;
+      l_isitemtracklocation       boolean := false;
+      l_isfallback_airport_tag    boolean := false;
+  begin
+      
+      
+      l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+      l_domdoc_old    := dbms_xmldom.newdomdocument(i_old_xml_data);
+      l_doc_nodes_old := dbms_xmldom.makenode(doc => l_domdoc_old);
+      
+      l_issecondaryflow := determ_secondary_flow(i_doc_nodes => l_doc_nodes_new);
+      
+      
+      
+      l_el_xpath   := '//ProcessingInformationExtension/RecognitionState[1]';
+      l_recognition_state := get_node_value(l_el_xpath, l_doc_nodes_new);
+      if l_recognition_state is null
+      then
+        l_el_xpath   := '//ProcessingInformationExtensionKeep/RecognitionState[1]';
+        l_recognition_state := get_node_value(l_el_xpath, l_doc_nodes_old);
+      end if;
+
+      
+      
+      if substr(i_msg_id_obj.bda_id_obj.lpc,1,1) = '1' or substr(i_msg_id_obj.bda_id_obj.lpc,2,3) = '000' then
+        l_isfallback_airport_tag := true;
+      end if;
+      
+      if nvl(l_recognition_state,'Unknown') <> 'NO_READ' and l_isfallback_airport_tag = false then
+        if i_msg_id_obj.bda_id_obj.bid is not null and
+           i_msg_id_obj.bda_id_obj.lpc is not null
+        then
+          l_add_extension_out_for_mds := true;
+        else 
+          open c_check_lpc_not_null(b_bid           => i_msg_id_obj.bda_id_obj.bid
+                                   ,b_bid_extension => i_msg_id_obj.bda_id_obj.bid_extension
+                                   );
+          fetch c_check_lpc_not_null into r_check_lpc_not_null;
+          l_add_extension_out_for_mds := c_check_lpc_not_null%found;
+          close c_check_lpc_not_null;
+        end if;
+      end if;
+      
+      if l_add_extension_out_for_mds
+      then
+        
+        l_el_xpath   := '//BagProcessedMessageType[1]';
+        l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+        
+        if l_node_value = 'Tracking'
+        then
+          if l_issecondaryflow
+          then
+            l_node_value := null;
+          else
+            l_node_value := get_aze_number(i_doc_nodes => l_doc_nodes_new);
+            l_node_value_equipment_type := nvl(get_node_value_derived(i_gmd_type => 'AreaZoneSectionToEquipmentType'
+                                                                     ,i_gmd_key  => l_node_value)
+                                              ,'---');
+
+            
+            l_el_xpath   := '//BagEventExtensionIn/Tracking/RouteSegmentID';
+            l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+            if l_node_value is not null
+            then
+              if get_node_value_derived(i_gmd_type => 'ItemTrackOnRouteSegment',i_gmd_key  => l_node_value) = 'TRUE'
+              then
+                l_isitemtracklocation := true;
+              end if;
+            end if;
+                                              
+            l_node_value := get_aze_number(i_doc_nodes => l_doc_nodes_old);
+            l_node_value_eq_type_old := nvl(get_node_value_derived(i_gmd_type => 'AreaZoneSectionToEquipmentType'
+                                                                  ,i_gmd_key  => l_node_value)
+                                           ,'---');
+            if l_node_value_eq_type_old = 'RCK' and l_node_value_equipment_type <> 'RCK'
+            then
+              
+              l_node_value := 'Item Withdrawal';
+            elsif l_node_value_equipment_type = 'RCK' and l_node_value_eq_type_old <> 'RCK'
+            then
+              
+              l_node_value := 'Item Receipt';
+            else
+              l_el_xpath   := '//BagEventExtensionIn/Tracking/PackageState[1]';
+              l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+              if l_node_value in ('OPEN','SUSPECT','MISSING') and l_node_value_equipment_type <> 'RCK' and l_isitemtracklocation
+              then
+                
+                l_node_value := 'Item Track';
+              else
+                l_node_value := null;
+              end if;
+            end if;
+          end if;
+        elsif  l_node_value = 'Qualification'
+        then
+          if l_issecondaryflow
+          then
+            l_node_value := null;
+          else
+            
+            l_el_xpath   := '//ProcessingInformationExtension/ExecutedTask[1]';
+            l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+            if l_node_value is not null
+            then
+              
+              
+              case l_node_value
+              when 'AutoScan'           then l_node_value := 'Item Qualification';
+              when 'ManualScan'         then l_node_value := 'Item Qualification';
+              when 'DataCapture'        then l_node_value := 'Item Qualification';
+              when 'Retag'              then l_node_value := 'Item Qualification';
+              when 'ScreenL1L2'         then l_node_value := 'Item Screen';
+              when 'ScreenL1L2TC'       then l_node_value := 'Item Screen';
+              when 'ScreenL2'           then l_node_value := 'Item Screen';
+              when 'ScreenL3'           then l_node_value := 'Item Screen';
+              when 'ScreenL3SC'         then l_node_value := 'Item Screen';
+              when 'ScreenL4'           then l_node_value := 'Item Screen';
+              when 'RouteToOutputPoint' then l_node_value := 'Item Delivery';
+              when 'StoreProduct'       then l_node_value := 'Item Receipt';
+              when 'Release'            then l_node_value := 'Item Withdrawal';
+              when 'Registration'       then l_node_value := 'Item Acquisition';
+              when 'Reclaim'            then l_node_value := 'Item Acquisition';
+              when 'VolumeScan'         then l_node_value := 'Item Verification';
+              when 'SpecialDestination' then l_node_value := 'Item Identification';
+              when 'OperationalControl' then l_node_value := 'Item Identification';
+              else l_node_value := null;
+              end case;
+            else
+              l_el_xpath   := '//ProcessingInformationExtension/ActiveProcess[1]';
+              if nvl(get_node_value(l_el_xpath,l_doc_nodes_new),'NULL') != nvl(get_node_value(l_el_xpath,l_doc_nodes_old),'NULL')
+              then
+                
+                l_node_value := 'Item Qualification';
+              else
+                l_node_value := null;
+              end if;
+            end if;
+            if l_node_value is null
+            then
+              
+              l_el_xpath   := '//ProcessingInformationExtension/QualificationState[1]';
+              l_qualificationstate_new := get_node_value(l_el_xpath,l_doc_nodes_new);
+              l_el_xpath   := '//ProcessingInformationExtensionKeep/QualificationState[1]';
+              l_qualificationstate_old := get_node_value(l_el_xpath,l_doc_nodes_old);
+              if ((not(l_qualificationstate_old = 'OUTBOUND_FLIGHTPLAN' or l_qualificationstate_old = 'OUTBOUND_FLIGHTPLAN_BATCH') or l_qualificationstate_old is null) and (l_qualificationstate_new = 'OUTBOUND_FLIGHTPLAN' or l_qualificationstate_new = 'OUTBOUND_FLIGHTPLAN_BATCH'))
+              then
+                
+                l_node_value := 'Item Sort';
+              else
+                l_node_value := null;
+              end if;
+            end if;
+          end if;
+        else
+          l_el_xpath   := '//LoadingDataExtension/ULDIdentificationCode/ULDTypeCode';
+          l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+          if l_node_value is not null
+          then
+            l_node_value := 'Item Load';
+          else
+            l_node_value := null;
+          end if;
+        end if;
+
+        if l_node_value is not null then
+          l_node_name  := 'TriggerMessageType';
+          l_amdextensionout := compose_node(i_node_name  => l_node_name
+                                           ,i_node_value => l_node_value
+                                           ,i_node       => l_amdextensionout);
+        end if;
+      end if;
+      
+      if l_amdextensionout is not null
+      then
+         l_node_name  := c_processed_attribute;
+         l_node_value := l_amdextensionout;
+         o_processed_attribute := compose_node(i_node_name  => l_node_name
+                                              ,i_node_value => l_node_value
+                                              ,i_node       => o_processed_attribute);
+      end if;
+
+      dbms_xmldom.freedocument(l_domdoc_new);
+      dbms_xmldom.freedocument(l_domdoc_old);
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc_new);
+        dbms_xmldom.freedocument(l_domdoc_old);
+        if c_check_lpc_not_null%isopen then
+          close c_check_lpc_not_null;
+        end if;
+
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end amd_extension_out_for_mds;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure handling_location_extens
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'HandlingLocationExtension';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.handling_location_extens';
+      
+      l_domdoc     dbms_xmldom.domdocument;
+      l_doc_nodes  dbms_xmldom.domnode;
+      
+      l_node_name  varchar2(200);
+      l_node_value varchar2(32767);
+      l_el_xpath   varchar2(200);
+      
+      l_handlinglocationextension varchar2(32767);
+  begin
+      
+      l_domdoc    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes := dbms_xmldom.makenode(doc => l_domdoc);
+
+      
+      l_node_name  := 'HandlingBHS';
+      l_el_xpath   := '//AMDExtensionIn/QualifiedOutboundBHS[1]';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+      
+      
+      if l_node_value is null
+      then
+          l_el_xpath   := '//HandlingLocation/HandlingTerminal[1]';
+          l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+          
+          if l_node_value is not null
+          then
+             l_node_value := get_node_value_derived(i_gmd_type => 'TerminalToHandlingarea'
+                                                   ,i_gmd_key  => l_node_value);
+          else
+             if i_old_xml_data is not null
+             then
+                
+                l_node_value := bsis_interface.get_element_value
+                                    (i_old_xml_data,'//HandlingLocationExtension/HandlingBHS/text()');
+             end if;
+          end if;
+      else
+          l_node_value := get_node_value_derived(i_gmd_type => 'FacilityToHandlingarea'
+                                                ,i_gmd_key  => l_node_value);
+      end if;
+      
+      l_handlinglocationextension := compose_node(i_node_name  => l_node_name
+                                                 ,i_node_value => l_node_value
+                                                 ,i_node       => l_handlinglocationextension);
+      
+      if l_handlinglocationextension is not null
+      then
+         l_node_name  := c_processed_attribute;
+         l_node_value := l_handlinglocationextension;
+         o_processed_attribute := compose_node(i_node_name  => l_node_name
+                                              ,i_node_value => l_node_value
+                                              ,i_node       => o_processed_attribute);
+      end if;
+      
+      dbms_xmldom.freedocument(l_domdoc);
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end handling_location_extens;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure version_and_supplementary_data
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'VersionAndSupplementaryData';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.version_and_supplementary_data';
+      
+      l_domdoc_new                  dbms_xmldom.domdocument;
+      l_doc_nodes_new               dbms_xmldom.domnode;
+      l_domdoc_old                  dbms_xmldom.domdocument;
+      l_doc_nodes_old               dbms_xmldom.domnode;
+      
+      l_nodelist                    dbms_xmldom.domnodelist;
+      l_node                        dbms_xmldom.domnode;
+      
+      l_node_name                   varchar2(200);
+      l_node_value                  varchar2(32767);
+      l_node_value_inbound          varchar2(32767);
+      l_node_value_outbound         varchar2(32767);
+      l_el_xpath                    varchar2(200);
+      l_baggagesourceindicator      varchar2(1);
+      l_versionandsupplementarydata varchar2(32767);
+  begin
+      
+      l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+      
+      l_el_xpath  := '//VersionAndSupplementaryData';
+      l_nodelist  := dbms_xslprocessor.selectnodes(l_doc_nodes_new, l_el_xpath);
+      if dbms_xmldom.getlength(l_nodelist) = 0
+      then
+         
+         l_domdoc_old    := dbms_xmldom.newdomdocument(i_old_xml_data);
+         l_doc_nodes_old := dbms_xmldom.makenode(doc => l_domdoc_old);
+         l_nodelist      := dbms_xslprocessor.selectnodes(l_doc_nodes_old, l_el_xpath);
+      end if;
+      
+      if dbms_xmldom.getlength(l_nodelist) > 0
+      then
+         l_node := dbms_xmldom.item(l_nodelist, 0);
+         xmldom.writetobuffer(l_node, l_node_value); 
+      end if;
+      
+      
+      if l_node_value is null
+      then
+         l_versionandsupplementarydata := compose_node(i_node_name  => 'DataDictionaryVersionNumber'
+                                                      ,i_node_value => '1'
+                                                      ,i_node       => l_versionandsupplementarydata);
+         
+         l_el_xpath           := '//InboundFlightInformation/Flight/Airline';
+         l_node_value_inbound := get_node_value(l_el_xpath,l_doc_nodes_new);
+         
+         l_el_xpath            := '//OperationalOutboundFlightInformation/Flight/Airline';
+         l_node_value_outbound := get_node_value(l_el_xpath,l_doc_nodes_new);
+         
+         
+
+
+
+
+         if  l_node_value_inbound  is null
+         and l_node_value_outbound is null
+         then
+            l_el_xpath           := '//InboundFlightInformation/Flight/Airline';
+            l_node_value_inbound := get_node_value(l_el_xpath,l_doc_nodes_old);
+            
+            l_el_xpath            := '//OperationalOutboundFlightInformation/Flight/Airline';
+            l_node_value_outbound := get_node_value(l_el_xpath,l_doc_nodes_old);
+         end if;
+         
+         if  l_node_value_inbound  is not null
+         and l_node_value_outbound is not null
+         then
+            l_baggagesourceindicator := 'T';
+         elsif l_node_value_inbound is not null
+         then
+            l_baggagesourceindicator := 'X';
+         else
+            l_baggagesourceindicator := 'L';
+         end if;
+         
+         l_versionandsupplementarydata := compose_node(i_node_name  => 'BaggageSourceIndicator'
+                                                      ,i_node_value => l_baggagesourceindicator
+                                                      ,i_node       => l_versionandsupplementarydata);
+         l_versionandsupplementarydata := compose_node(i_node_name  => 'AirportCode'
+                                                      ,i_node_value => cmn_common.get_parameter_value ('AIRPORTCODE')
+                                                      ,i_node       => l_versionandsupplementarydata);
+         o_processed_attribute         := compose_node(i_node_name  => c_processed_attribute
+                                                      ,i_node_value => l_versionandsupplementarydata
+                                                      ,i_node       => o_processed_attribute);
+      else
+         
+         o_processed_attribute := l_node_value;
+      end if;
+      
+      dbms_xmldom.freedocument(l_domdoc_new);
+      dbms_xmldom.freedocument(l_domdoc_old);
+      
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc_new);
+        dbms_xmldom.freedocument(l_domdoc_old);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end version_and_supplementary_data;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure processing_information_extens
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'ProcessingInformationExtension';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.processing_information_extens';
+      
+      l_domdoc     dbms_xmldom.domdocument;
+      l_doc_nodes  dbms_xmldom.domnode;
+      l_nodelist   dbms_xmldom.domnodelist;
+      l_node       dbms_xmldom.domnode;
+      
+      l_node_name                   varchar2(200);
+      l_node_value                  varchar2(32767);
+      l_el_xpath                    varchar2(200);
+      l_facilityid                  varchar2(200);
+      l_currenthandlingareaid       varchar2(200);
+      l_processinginformationextens varchar2(32767);
+  begin
+      
+      l_domdoc    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes := dbms_xmldom.makenode(doc => l_domdoc);
+      
+      l_el_xpath   := '//AMDExtensionIn/FacilityId';
+      l_facilityid := get_node_value(l_el_xpath,l_doc_nodes);
+      
+      l_el_xpath  := '//ProcessingInformationExtension';
+      l_nodelist  := dbms_xslprocessor.selectnodes(l_doc_nodes, l_el_xpath);
+      if dbms_xmldom.getlength(l_nodelist) > 0
+      then
+         l_node   := dbms_xmldom.item(l_nodelist, 0);
+         xmldom.writetobuffer(l_node, l_node_value); 
+      end if;
+      
+      if l_facilityid is not null
+      then
+         l_currenthandlingareaid := get_node_value_derived(i_gmd_type => 'FacilityToHandlingarea'
+                                                          ,i_gmd_key  => l_facilityid);
+         l_processinginformationextens := compose_node(i_node_name  => 'CurrentHandlingAreaID'
+                                                      ,i_node_value => l_currenthandlingareaid
+                                                      ,i_node       => l_processinginformationextens);
+         
+         l_node_name := 'DestinationHandlingAreaID';
+         l_el_xpath  := '//AMDExtensionIn/QualifiedBHS';
+         l_nodelist  := dbms_xslprocessor.selectnodes(l_doc_nodes, l_el_xpath);
+         if dbms_xmldom.getlength(l_nodelist) > 0
+         then
+            <<loop_nodes>>
+            for i in 0 .. dbms_xmldom.getlength(l_nodelist) - 1
+            loop
+               l_node       := dbms_xmldom.item(l_nodelist, i);
+               l_node_value := substr(ltrim(rtrim(dbms_xmldom.getnodevalue(dbms_xmldom.getfirstchild(l_node)))),1,2000);
+               l_node_value := get_node_value_derived(i_gmd_type => 'FacilityToHandlingarea'
+                                                          ,i_gmd_key  => l_node_value);
+               l_processinginformationextens := compose_node(i_node_name  => l_node_name
+                                                            ,i_node_value => l_node_value
+                                                            ,i_node       => l_processinginformationextens);
+            end loop loop_nodes;
+         else
+            null; 
+         end if;
+         
+
+         if l_processinginformationextens is not null
+         then
+            o_processed_attribute         := compose_node(i_node_name  => c_processed_attribute
+                                                         ,i_node_value => l_processinginformationextens
+                                                         ,i_node       => o_processed_attribute);
+         end if;
+      else
+         
+         if l_node_value is null
+         then
+            if i_old_xml_data is not null
+            then
+               dbms_xmldom.freedocument(l_domdoc);
+               
+               
+               l_domdoc    := dbms_xmldom.newdomdocument(i_old_xml_data);
+               l_doc_nodes := dbms_xmldom.makenode(doc => l_domdoc);
+               l_el_xpath  := '//ProcessingInformationExtension';
+               l_nodelist  := dbms_xslprocessor.selectnodes(l_doc_nodes, l_el_xpath);
+               if dbms_xmldom.getlength(l_nodelist) > 0
+               then
+                  l_node   := dbms_xmldom.item(l_nodelist, 0);
+                  xmldom.writetobuffer(l_node, l_node_value); 
+                  
+                  
+                  o_processed_attribute := l_node_value;
+               else
+                  null; 
+               end if;
+            else
+               null; 
+            end if;
+         else
+            
+            o_processed_attribute := l_node_value;
+         end if;
+      end if;
+      
+      dbms_xmldom.freedocument(l_domdoc);
+      
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end processing_information_extens;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure baggage_irregularities_ext
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'BaggageIrregularitiesExtension';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.baggage_irregularities_ext';
+      l_add_baggageirregularitiesext    boolean := false;
+      
+      l_domdoc_new     dbms_xmldom.domdocument;
+      l_doc_nodes_new  dbms_xmldom.domnode;
+      l_domdoc_old     dbms_xmldom.domdocument;
+      l_doc_nodes_old  dbms_xmldom.domnode;
+      l_nodelist       dbms_xmldom.domnodelist;
+      l_node           dbms_xmldom.domnode;
+
+      l_node_name  varchar2(200);
+      l_node_value varchar2(32767);
+      l_el_xpath   varchar2(200);
+
+      l_baggageirregularitiesext         varchar2(32767);
+  begin
+      
+      l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+
+      if i_msg_id_obj.org_msg_type = 'BUM'
+      then
+         l_node_value := 'true';
+      else 
+        l_add_baggageirregularitiesext := bsis_interface.get_baggage_irr_ext
+                                                       (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                                       ,i_msg      => i_old_xml_data
+                                                       );
+
+        if l_add_baggageirregularitiesext = true
+        then l_node_value := 'false';
+        elsif l_add_baggageirregularitiesext = false
+        then l_node_value := 'true';
+        else l_node_value := null;
+        end if;
+      end if;
+      
+      l_node_name  := 'InstructionToUnload';
+
+      l_baggageirregularitiesext := compose_node(i_node_name  => l_node_name
+                                                ,i_node_value => l_node_value
+                                                ,i_node       => l_baggageirregularitiesext);
+
+
+      if l_baggageirregularitiesext is not null
+      then
+         l_node_name  := c_processed_attribute;
+         l_node_value := l_baggageirregularitiesext;
+         o_processed_attribute := compose_node(i_node_name  => l_node_name
+                                              ,i_node_value => l_node_value
+                                              ,i_node       => o_processed_attribute);
+
+      end if;
+
+      
+      dbms_xmldom.freedocument(l_domdoc_new);
+      dbms_xmldom.freedocument(l_domdoc_old);
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc_new);
+        dbms_xmldom.freedocument(l_domdoc_old);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end baggage_irregularities_ext;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure baggage_security_screening
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'BaggageSecurityScreening';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.baggage_security_screening';
+      
+      l_domdoc_new     dbms_xmldom.domdocument;
+      l_doc_nodes_new  dbms_xmldom.domnode;
+      l_domdoc_old     dbms_xmldom.domdocument;
+      l_doc_nodes_old  dbms_xmldom.domnode;
+      l_nodelist       dbms_xmldom.domnodelist;
+      l_node           dbms_xmldom.domnode;
+
+      l_node_name                varchar2(200);
+      l_node_value               varchar2(32767);
+      l_node_value_bsn           varchar2(32767);
+      l_node_value_lrt           varchar2(32767);
+      l_node_value_id            varchar2(32767);
+      l_el_xpath                 varchar2(200);
+      l_baggagesecurityscreening varchar2(32767);
+      l_screening_level          varchar2(32767);
+      l_screening_process_id     varchar2(32767);
+
+  begin
+    
+    l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+    l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+    l_domdoc_old    := dbms_xmldom.newdomdocument(i_old_xml_data);
+    l_doc_nodes_old := dbms_xmldom.makenode(doc => l_domdoc_old);
+
+    
+    l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningResult[1]/ScreeningProcess/ID';
+    l_node_value_bsn := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+    
+    l_node_name  := 'Instruction';
+    l_el_xpath   := '//BaggageSecurityScreening/Instruction';
+    l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+    if l_node_value is not null
+    then
+      l_baggagesecurityscreening := compose_node(i_node_name  => l_node_name
+                                                ,i_node_value => l_node_value
+                                                ,i_node       => l_baggagesecurityscreening);
+    end if;
+
+    
+    l_node_name  := 'BaggageStatus';
+
+    if l_node_value_bsn is null
+    then
+      l_el_xpath   := '//BaggageSecurityScreening/BaggageStatus';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+    else
+      l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningInfo[1]/ScreeningState';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+      if l_node_value is null
+      then
+        
+        l_el_xpath   := '//BaggageSecurityScreening/BaggageStatus';
+        l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+      end if;
+    end if;
+
+    if l_node_value is not null
+    then
+      l_baggagesecurityscreening := compose_node(i_node_name  => l_node_name
+                                                ,i_node_value => l_node_value
+                                                ,i_node       => l_baggagesecurityscreening);
+    end if;
+
+    
+    l_node_name  := 'ResultReason';
+
+    if l_node_value_bsn is null
+    then
+      l_el_xpath   := '//BaggageSecurityScreening/ResultReason';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+    else
+      l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningInfo[1]/ScreeningState';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+      l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningResult[1]/Result';
+      l_node_value_lrt := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+      if l_node_value_lrt is null
+      then
+        l_el_xpath   := '//BaggageSecurityScreening/ResultReason';
+        l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+      else
+        if l_node_value is not null then
+          if l_node_value = 'REJ' then
+            l_node_value := get_node_value_derived(i_gmd_type => 'ScreeningResultReason'
+                                                  ,i_gmd_key  => 'REJ');
+          elsif l_node_value = 'CLR' then
+            l_node_value := null;
+          elsif l_node_value = 'UCL' and l_node_value_lrt = 'NODECISION' then
+            l_node_value := get_node_value_derived(i_gmd_type => 'ScreeningResultReason'
+                                                  ,i_gmd_key  => 'UCL');
+          else l_node_value := get_node_value_derived(i_gmd_type => 'ScreeningResultReason'
+                                                     ,i_gmd_key  => 'Other');
+          end if;
+        else
+           
+          l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+        end if;
+      end if;
+    end if;
+
+   if l_node_value is not null
+   then
+      l_baggagesecurityscreening := compose_node(i_node_name  => l_node_name
+                                                ,i_node_value => l_node_value
+                                                ,i_node       => l_baggagesecurityscreening);
+    end if;
+
+    
+    l_node_name  := 'SecurityMethod';
+
+    if l_node_value_bsn is null
+    then
+      l_el_xpath   := '//BaggageSecurityScreening/SecurityMethod';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+    else
+      l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningResult[1]/ScreeningLevel';
+      l_screening_level := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+      l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningResult[1]/ScreeningProcess/ID';
+      l_screening_process_id := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+      if l_screening_level is not null and l_screening_process_id is not null then
+        l_node_value := get_node_value_derived(i_gmd_type => 'ScreeningMethod'
+                                              ,i_gmd_key  => l_screening_process_id || '-' || l_screening_level);
+      else
+        
+        l_el_xpath   := '//BaggageSecurityScreening/SecurityMethod';
+        l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+      end if;
+    end if;
+
+    if l_node_value is not null
+    then
+      l_baggagesecurityscreening := compose_node(i_node_name  => l_node_name
+                                                ,i_node_value => l_node_value
+                                                ,i_node       => l_baggagesecurityscreening);
+    end if;
+
+    
+    l_node_name  := 'FreeText';
+    if l_node_value_bsn is null
+    then
+      l_el_xpath   := '//BaggageSecurityScreening/FreeText';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+    else
+      
+      l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningResult[1]/ScreeningLevel';
+      l_node_value_lrt := get_node_value(l_el_xpath,l_doc_nodes_new);
+      if l_node_value_lrt is null
+      then
+        l_el_xpath   := '//BaggageSecurityScreening/FreeText';
+        l_node_value := get_node_value(l_el_xpath,l_doc_nodes_old);
+      else
+        l_el_xpath   := '//BaggageSecurityScreeningExtension/ScreeningResult[1]/ScreeningProcess/ID';
+        l_node_value_id := get_node_value(l_el_xpath,l_doc_nodes_new);
+        l_node_value_id := get_node_value_derived(i_gmd_type => 'ScreeningProcessID'
+                                                 ,i_gmd_key  => l_node_value_id);
+        l_node_value := 'LVL' || l_node_value_lrt || l_node_value_id;
+      end if;
+    end if;
+
+    if l_node_value is not null
+    then
+      l_baggagesecurityscreening := compose_node(i_node_name  => l_node_name
+                                                ,i_node_value => l_node_value
+                                                ,i_node       => l_baggagesecurityscreening);
+    end if;
+
+    
+    if l_baggagesecurityscreening is not null
+    then
+       l_node_name  := c_processed_attribute;
+       l_node_value := l_baggagesecurityscreening;
+       o_processed_attribute := compose_node(i_node_name  => l_node_name
+                                            ,i_node_value => l_node_value
+                                            ,i_node       => o_processed_attribute);
+    end if;
+    
+    dbms_xmldom.freedocument(l_domdoc_new);
+    dbms_xmldom.freedocument(l_domdoc_old);
+  exception
+  when others then
+    dbms_xmldom.freedocument(l_domdoc_new);
+    dbms_xmldom.freedocument(l_domdoc_old);
+    viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end baggage_security_screening;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure baggage_exception_data
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'BaggageExceptionDataExtension';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.baggage_exception_data';
+      
+      l_domdoc_new     dbms_xmldom.domdocument;
+      l_doc_nodes_new  dbms_xmldom.domnode;
+      l_domdoc_old     dbms_xmldom.domdocument;
+      l_doc_nodes_old  dbms_xmldom.domnode;
+      l_nodelist       dbms_xmldom.domnodelist;
+      l_node           dbms_xmldom.domnode;
+
+      l_node_name      varchar2(200);
+      l_node_value     varchar2(32767);
+      l_el_xpath       varchar2(200);
+      l_executedtask   varchar2(32767);
+      l_baggageexceptiondataext varchar2(32767);
+
+  begin
+    
+    l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+    l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+    l_domdoc_old    := dbms_xmldom.newdomdocument(i_old_xml_data);
+    l_doc_nodes_old := dbms_xmldom.makenode(doc => l_domdoc_old);
+
+    
+    l_node_name  := 'ExceptionType';
+    l_el_xpath   := '//ProcessingInformationExtension/ExecutedTask';
+    l_executedtask := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+     if l_executedtask = 'Retag'
+     then
+       l_node_value := get_node_value_derived(i_gmd_type => 'ExceptionData'
+                                             ,i_gmd_key  => 'Retag');
+     end if;
+
+     if l_node_value is not null
+     then
+       l_baggageexceptiondataext := compose_node(i_node_name  => l_node_name
+                                                ,i_node_value => l_node_value
+                                                ,i_node       => l_baggageexceptiondataext);
+     end if;
+     
+     if l_baggageexceptiondataext is not null
+     then
+       l_node_name  := c_processed_attribute;
+       l_node_value := l_baggageexceptiondataext;
+       o_processed_attribute := compose_node(i_node_name  => l_node_name
+                                            ,i_node_value => l_node_value
+                                            ,i_node       => o_processed_attribute);
+     end if;
+     
+     dbms_xmldom.freedocument(l_domdoc_new);
+     dbms_xmldom.freedocument(l_domdoc_old);
+  exception
+  when others then
+    dbms_xmldom.freedocument(l_domdoc_new);
+    dbms_xmldom.freedocument(l_domdoc_old);
+    viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end baggage_exception_data;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure processing_information
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'ProcessingInformation';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.processing_information';
+      
+      l_domdoc         dbms_xmldom.domdocument;
+      l_doc_nodes      dbms_xmldom.domnode;
+      
+      l_nodelist       dbms_xmldom.domnodelist;
+      l_node           dbms_xmldom.domnode;
+      
+      l_node_name                   varchar2(200);
+      l_node_value                  varchar2(32767);
+      l_secondaryflow               varchar2(32767);
+      l_el_xpath                    varchar2(200);
+      l_currenthandlingareaid       varchar2(200);
+      l_stationtype                 varchar2(200);
+      l_processinginformation       varchar2(32767);
+      l_issecondaryflow             boolean := false;
+      l_executed_task               varchar2(32767);
+  begin
+      
+      l_domdoc        := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes     := dbms_xmldom.makenode(doc => l_domdoc);
+
+      l_issecondaryflow := determ_secondary_flow(i_doc_nodes => l_doc_nodes);
+
+
+
+
+      
+      
+      
+      l_el_xpath   := '//ProcessingInformation/SecondaryCode';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+
+      if l_node_value is not null then
+        l_node_name  := 'SecondaryCode';
+        l_processinginformation := compose_node(i_node_name  => l_node_name
+                                               ,i_node_value => l_node_value
+                                               ,i_node       => l_processinginformation);
+      end if;
+
+      
+      l_el_xpath   := '//LoadSequence/LoadSequenceNumber';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+
+      if l_issecondaryflow = true or l_node_value is not null
+      then
+        
+        l_node_name  := 'AgentIdentification';
+        l_el_xpath   := '//ProcessingInformationExtension/OperatorID';
+        l_node_value := substr(get_node_value(l_el_xpath,l_doc_nodes), 1, 9);
+
+        if l_node_value is not null then
+          l_processinginformation := compose_node(i_node_name  => l_node_name
+                                                 ,i_node_value => l_node_value
+                                                 ,i_node       => l_processinginformation);
+        end if;
+      end if;
+
+      
+      l_el_xpath   := '//ProcessingInformationExtension/ExecutedTask[1]';
+      l_executed_task := get_node_value(l_el_xpath,l_doc_nodes);
+      if l_executed_task in ('ManualScan', 'AutoScan')
+      then
+        l_node_name  := 'ScannerIdentification';
+        l_el_xpath   := '//ProcessingInformation/ScannerIdentification[1]';
+        l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+        l_node_value := transl_handlingareaid(l_node_value);
+
+        if l_node_value is not null then
+          l_processinginformation := compose_node(i_node_name  => l_node_name
+                                                 ,i_node_value => l_node_value
+                                                 ,i_node       => l_processinginformation);
+        end if;
+      end if;
+
+      
+      l_node_name  := 'DateTime';
+      l_el_xpath   := '//ProcessingInformation/DateTime[1]';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+
+      l_processinginformation := compose_node(i_node_name  => l_node_name
+                                             ,i_node_value => l_node_value
+                                             ,i_node       => l_processinginformation);
+
+      
+      l_node_name  := 'ReadingLocation';
+      l_el_xpath   := '//ProcessingInformation/ReadingLocation[1]';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+
+        l_node_value := transl_handlingareaid(l_node_value);
+
+        if l_node_value is not null then
+          l_processinginformation := compose_node(i_node_name  => l_node_name
+                                                 ,i_node_value => l_node_value
+                                                 ,i_node       => l_processinginformation);
+      end if;
+
+      l_node_name  := 'SentToLocation';
+      l_el_xpath   := '//ProcessingInformation/SentToLocation[1]';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+
+      l_node_value := transl_handlingareaid(l_node_value);
+
+
+
+        if l_node_value is not null then
+          l_processinginformation := compose_node(i_node_name  => l_node_name
+                                                 ,i_node_value => l_node_value
+                                                 ,i_node       => l_processinginformation);
+        end if;
+      
+      if l_processinginformation is not null
+      then
+         o_processed_attribute         := compose_node(i_node_name  => c_processed_attribute
+                                                      ,i_node_value => l_processinginformation
+                                                      ,i_node       => o_processed_attribute);
+      end if;
+      
+      dbms_xmldom.freedocument(l_domdoc);
+      
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end processing_information;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure bag_processed_message_version
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'BagProcessedMessageVersion';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.bag_processed_message_version';
+      
+      l_domdoc_new     dbms_xmldom.domdocument;
+      l_doc_nodes_new  dbms_xmldom.domnode;
+      l_nodelist       dbms_xmldom.domnodelist;
+      l_node           dbms_xmldom.domnode;
+
+      l_node_name      varchar2(200);
+      l_node_value     varchar2(32767);
+      l_el_xpath       varchar2(200);
+      l_bagprocessedmessageversion varchar2(32767);
+
+  begin
+    
+    l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+    l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+
+    l_node_name  := 'BagProcessedMessageVersion';
+    l_el_xpath   := '//SITAExtension/AddressStamp';
+    l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+    l_node_value := get_node_value_derived(i_gmd_type => 'BagProcessedMessageVersion'
+                                          ,i_gmd_key  => l_node_value);
+
+    if l_node_value is not null
+    then
+      l_node_name  := c_processed_attribute;
+      o_processed_attribute := compose_node(i_node_name  => l_node_name
+                                           ,i_node_value => l_node_value
+                                           ,i_node       => o_processed_attribute);
+    end if;
+    
+    dbms_xmldom.freedocument(l_domdoc_new);
+  exception
+  when others then
+    dbms_xmldom.freedocument(l_domdoc_new);
+    viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end bag_processed_message_version;
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure trigger_src
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'Trigger';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.trigger_src';
+      
+      l_domdoc_new     dbms_xmldom.domdocument;
+      l_doc_nodes_new  dbms_xmldom.domnode;
+
+      l_node_name      varchar2(200);
+      l_node_value     varchar2(32767);
+
+      l_el_xpath       varchar2(200);
+      l_trigger        varchar2(32767);
+
+  begin
+    
+    l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+    l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+
+    l_node_name  := 'BagInformationMessageIdentifier';
+    l_el_xpath   := '//BSISBagSource/MessageType';
+    l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+    if l_node_value = bsis_constant.g_con_msg_type_bsm
+    then
+      l_el_xpath   := '//ChangeOfStatusIndicator';
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes_new);
+      l_node_value := get_node_value_derived(i_gmd_type => 'BagInformationMessageIdentifier'
+                                            ,i_gmd_key  => l_node_value);
+    else
+      l_node_value := get_node_value_derived(i_gmd_type => 'BagInformationMessageIdentifier'
+                                            ,i_gmd_key  => l_node_value);
+    end if;
+
+    if l_node_value is not null
+    then
+      l_trigger := compose_node(i_node_name  => l_node_name
+                               ,i_node_value => l_node_value
+                               ,i_node       => l_trigger);
+    end if;
+    
+    l_node_name  := 'UpdatedSequenceNr';
+    l_node_value := bsis_bda_seq2.nextval;
+
+    if l_node_value is not null
+    then
+      l_trigger := compose_node(i_node_name  => l_node_name
+                               ,i_node_value => l_node_value
+                               ,i_node       => l_trigger);
+    end if;
+
+    if l_trigger is not null
+    then
+       l_node_name  := c_processed_attribute;
+       l_node_value := l_trigger;
+       o_processed_attribute := compose_node(i_node_name  => l_node_name
+                                            ,i_node_value => l_node_value
+                                            ,i_node       => o_processed_attribute);
+    end if;
+
+    dbms_xmldom.freedocument(l_domdoc_new);
+  exception
+  when others then
+    dbms_xmldom.freedocument(l_domdoc_new);
+    viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end trigger_src;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure bag_load_flight_identification
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'BagLoadFlightIdentification';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.bag_load_flight_identification';
+
+      l_domdoc_new     dbms_xmldom.domdocument;
+      l_doc_nodes_new  dbms_xmldom.domnode;
+      l_domdoc_old     dbms_xmldom.domdocument;
+      l_doc_nodes_old  dbms_xmldom.domnode;
+
+      l_node_name                   varchar2(200);
+      l_bagload_airline             varchar2(32767);
+      l_bagload_flightnumber        varchar2(32767);
+      l_bagload_date                varchar2(32767);
+      l_outboundflight_airline      varchar2(32767);
+      l_outboundflight_flightnumber varchar2(32767);
+      l_outboundflight_date         varchar2(32767);
+      l_el_xpath                    varchar2(200);
+
+      l_bagloadflightidentification           varchar2(32767);
+  begin
+      
+      l_domdoc_new    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes_new := dbms_xmldom.makenode(doc => l_domdoc_new);
+      l_domdoc_old    := dbms_xmldom.newdomdocument(i_old_xml_data);
+      l_doc_nodes_old := dbms_xmldom.makenode(doc => l_domdoc_old);
+      
+      l_el_xpath   := '//BagLoadFlightIdentification/Airline';
+      l_bagload_airline := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+      l_el_xpath   := '//BagLoadFlightIdentification/FlightNumber';
+      l_bagload_flightnumber := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+      l_el_xpath   := '//BagLoadFlightIdentification/Date';
+      l_bagload_date := get_node_value(l_el_xpath,l_doc_nodes_new);
+
+      l_el_xpath   := '//OperationalOutboundFlightInformation/Flight/Airline';
+      l_outboundflight_airline := get_node_value(l_el_xpath,l_doc_nodes_old);
+
+      l_el_xpath   := '//OperationalOutboundFlightInformation/Flight/FlightNumber';
+      l_outboundflight_flightnumber := get_node_value(l_el_xpath,l_doc_nodes_old);
+
+      l_el_xpath   := '//OperationalOutboundFlightInformation/Flight/Date';
+      l_outboundflight_date := get_node_value(l_el_xpath,l_doc_nodes_old);
+
+      if l_bagload_airline is not null
+      and l_bagload_flightnumber is not null
+      and l_bagload_date is not null
+      then
+        if (not (l_bagload_airline = l_outboundflight_airline and l_bagload_flightnumber = l_outboundflight_flightnumber and l_bagload_date = l_outboundflight_date))
+        or l_outboundflight_airline is null
+        or l_outboundflight_flightnumber is null
+        or l_outboundflight_date is null
+        then
+          viu_info.operator_info
+             (i_ifo_nr                 => viu_constant.c_ifo_incorrectflightid
+             ,i_calling_procedure      => l_con_proc_name
+             ,i_severity               => viu_info.c_severity_warning
+             ,i_additional_data        =>    'LPN (' || i_msg_id_obj.bda_id_obj.lpc || ') BagLoadFlightIdentification ('
+                       || l_bagload_airline || l_bagload_flightnumber || ' '
+                       || l_bagload_date || ') does not match OperationalOutboundFlightInformation ('
+                       || l_outboundflight_airline || l_outboundflight_flightnumber || ' '
+                       || l_outboundflight_date || ')'
+             );
+        end if;
+      end if;
+
+      dbms_xmldom.freedocument(l_domdoc_new);
+      dbms_xmldom.freedocument(l_domdoc_old);
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc_new);
+        dbms_xmldom.freedocument(l_domdoc_old);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end bag_load_flight_identification;
+  
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure handling_location
+      (i_new_xml_data        in  xmltype
+      ,i_old_xml_data        in  xmltype
+      ,i_msg_id_obj          in  ot_msg_id
+      ,i_attribute_id        in  bsis_attributes.id%type
+      ,o_processed_attribute out clob
+      )
+  is
+      c_processed_attribute  constant varchar2(200) := 'HandlingLocation';
+      l_con_proc_name        constant cmn_constant.st_proc_name := g_con_package || '.handling_location';
+      
+      l_domdoc     dbms_xmldom.domdocument;
+      l_doc_nodes  dbms_xmldom.domnode;
+      l_nodelist   dbms_xmldom.domnodelist;
+      l_node       dbms_xmldom.domnode;
+      
+      l_node_name                   varchar2(200);
+      l_node_value                  varchar2(32767);
+      l_el_xpath                    varchar2(200);
+      l_handlinglocation            varchar2(200);
+  begin
+      
+      l_domdoc    := dbms_xmldom.newdomdocument(i_new_xml_data);
+      l_doc_nodes := dbms_xmldom.makenode(doc => l_domdoc);
+
+      
+      l_node_name  := 'HandlingTerminal';
+      l_el_xpath   := '//HandlingLocationExtension/HandlingBHS[1]';
+
+      l_node_value := get_node_value(l_el_xpath,l_doc_nodes);
+      l_node_value := get_node_value_derived(i_gmd_type => 'HandlingareaToTerminal'
+                                            ,i_gmd_key  => l_node_value);
+
+      if l_node_value is not null then
+        l_handlinglocation := compose_node(i_node_name  => l_node_name
+                                          ,i_node_value => l_node_value
+                                          ,i_node       => l_handlinglocation);
+      end if;
+      
+      if l_handlinglocation is not null
+      then
+         o_processed_attribute         := compose_node(i_node_name  => c_processed_attribute
+                                                      ,i_node_value => l_handlinglocation
+                                                      ,i_node       => o_processed_attribute);
+      end if;
+      
+      dbms_xmldom.freedocument(l_domdoc);
+      
+  exception
+      when others then
+        dbms_xmldom.freedocument(l_domdoc);
+        viu_info.raise_info(i_calling_procedure => l_con_proc_name);
+  end handling_location;
+  
+end bsis_custom_handlers;
+/

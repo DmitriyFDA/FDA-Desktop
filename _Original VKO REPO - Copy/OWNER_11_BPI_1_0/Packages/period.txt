@@ -1,0 +1,596 @@
+create or replace PACKAGE period
+IS
+   FUNCTION SECONDS_SINCE_MILLENNIUM(i_dt DATE) RETURN NUMBER DETERMINISTIC;
+
+   FUNCTION year(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC;
+   FUNCTION quarter(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 1..4
+   FUNCTION month(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 1..12
+   FUNCTION dayofmonth(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 1..31
+   FUNCTION hourofday(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 0..23
+   FUNCTION quarterhourblock(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 0..3
+   FUNCTION fiveminuteblock(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 0..11
+   FUNCTION minute(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 0..59
+   FUNCTION weekofyear(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 1..53
+   FUNCTION dayofweek(i_ts TIMESTAMP) RETURN NUMBER DETERMINISTIC; -- 1..7 (1 = Sunday, 7 = Saturday)
+
+   -- Determine UTC timestamp of LOCAL start time of period of type i_periodtype
+   SUBTYPE t_ds_interval IS INTERVAL DAY(9) To SECOND(9);  -- Oracle bug workaround
+   FUNCTION startts(i_ts IN TIMESTAMP, i_periodtype  IN VARCHAR2, i_delta IN t_ds_interval := NUMTODSINTERVAL(0, 'SECOND')) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION endts(i_ts TIMESTAMP, i_periodtype VARCHAR2) RETURN TIMESTAMP DETERMINISTIC;
+
+   -- Convert period to timestamp
+   FUNCTION startts(i_periodid NUMBER) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION endts(i_periodid NUMBER, i_periodtype VARCHAR2) RETURN TIMESTAMP DETERMINISTIC;
+
+   FUNCTION PERIODID(i_ts TIMESTAMP, i_periodtype VARCHAR2) RETURN NUMBER DETERMINISTIC;
+   FUNCTION PERIODID(i_seconds_since_millenium NUMBER, i_periodtype VARCHAR2) RETURN NUMBER DETERMINISTIC;
+   FUNCTION tuples(i_ts_s TIMESTAMP, i_ts_e TIMESTAMP, i_periodtype VARCHAR2) RETURN period_table PIPELINED;
+
+   FUNCTION to_stamp(i_periodid NUMBER, i_periodtype VARCHAR2) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION to_stamp(i_periodid NUMBER) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION to_stamp(i_ts TIMESTAMP, i_periodtype VARCHAR2) RETURN TIMESTAMP DETERMINISTIC;
+
+   -- Obsolete functions
+   FUNCTION to_stamp(i_ts TIMESTAMP with time zone) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION to_stamp(i_ts TIMESTAMP) RETURN TIMESTAMP DETERMINISTIC;
+
+   FUNCTION xmldt2ts(i_xmldt VARCHAR2, i_ts_on_failure TIMESTAMP) RETURN TIMESTAMP DETERMINISTIC;
+
+   FUNCTION gmt2local(i_gmt TIMESTAMP) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION gmt2local(i_gmt TIMESTAMP, i_tz VARCHAR2) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION gmt2local(i_periodid NUMBER) RETURN NUMBER DETERMINISTIC;
+   FUNCTION gmt2local(i_periodid NUMBER, i_tz VARCHAR2) RETURN NUMBER DETERMINISTIC;
+
+   FUNCTION local2gmt(i_gmt TIMESTAMP) RETURN TIMESTAMP DETERMINISTIC;
+   FUNCTION local2gmt(i_gmt TIMESTAMP, i_tz VARCHAR2) RETURN TIMESTAMP DETERMINISTIC;
+
+   FUNCTION get_D1s_in_range(i_start TIMESTAMP, i_end TIMESTAMP, i_max_days NUMBER) RETURN VARCHAR2 DETERMINISTIC;
+   FUNCTION gmt2localSTD (i_ref_ts TIMESTAMP, i_std in VARCHAR2) RETURN VARCHAR2 DETERMINISTIC;
+
+   FUNCTION get_local_tz RETURN VARCHAR2 DETERMINISTIC;
+   PROCEDURE set_local_tz(i_local_tz VARCHAR2);
+   PROCEDURE load_local_tz;
+
+END period;
+/
+
+
+
+
+package body period is
+
+
+
+
+
+
+
+
+
+
+
+g_local_tz varchar2(100);
+
+function seconds_since_millennium(i_dt date) return number deterministic is
+begin
+  if i_dt is null then return 0; end if;
+  return (i_dt - to_date('2000-01-01', 'YYYY-MM-DD')) * 86400;
+  
+end;
+
+
+function year(i_ts timestamp)
+   return number deterministic
+is
+begin
+   return to_number(to_char(i_ts, 'YYYY'));
+end;
+
+
+function quarter(i_ts timestamp) return number deterministic is
+begin
+  
+  return to_number(to_char(i_ts, 'Q'));
+end;
+
+
+function month(i_ts timestamp)
+   return number deterministic
+is
+begin
+  
+  return to_number(to_char(i_ts, 'MM'));
+end;
+
+
+function dayofmonth(i_ts timestamp)
+   return number deterministic
+is
+begin
+   
+   return to_number(to_char(i_ts, 'DD'));
+end;
+
+
+function hourofday(i_ts timestamp)
+   return number deterministic is
+begin
+  
+  return to_number(to_char(i_ts, 'HH24'));
+end;
+
+
+function quarterhourblock(i_ts timestamp)
+   return number deterministic is
+begin
+  
+  return trunc(to_number(to_char(i_ts, 'MI'))/15) ;
+end;
+
+
+function fiveminuteblock(i_ts timestamp)
+   return number deterministic is
+begin
+  
+  return trunc(to_number(to_char(i_ts, 'MI'))/5);
+end;
+
+
+function minute(i_ts timestamp)
+   return number deterministic is
+begin
+  
+  return to_number(to_char(i_ts, 'MI'));
+end;
+
+
+function weekofyear(i_ts timestamp)
+   return number deterministic is
+begin
+  
+  return to_number(to_char(i_ts, 'IW'));
+end;
+
+
+function dayofweek(i_ts timestamp)
+   return number deterministic is
+begin
+   
+   return to_number(to_char(i_ts, 'D'));
+end;
+
+
+function startts( i_ts          in timestamp
+                , i_periodtype  in varchar2
+                , i_delta       in t_ds_interval := numtodsinterval(0, 'SECOND')
+                )
+   return timestamp deterministic
+is
+   l_str         varchar2(30);
+   l_ts          timestamp;
+   l_5minblock   pls_integer; 
+   l_15minblock  pls_integer; 
+begin
+   case i_periodtype
+      when 'M1' then
+         l_str := to_char( i_ts, 'yyyymmddhh24mi');
+         l_ts  := to_timestamp( l_str, 'yyyymmddhh24mi') + i_delta;
+      when 'M5' then
+         l_5minblock := 5*trunc(to_number(to_char(i_ts, 'mi'))/5);
+         l_str       := to_char(i_ts, 'yyyymmddhh24');
+         l_ts        := to_timestamp( l_str||to_char(l_5minblock, '00')
+                                    , 'yyyymmddhh24mi'
+                                    ) + i_delta;
+      when 'M15' then
+         l_15minblock := 15*trunc(to_number(to_char(i_ts, 'mi'))/15);
+         l_str        := to_char(i_ts, 'yyyymmdd hh24');
+         l_ts         := to_timestamp( l_str||to_char(l_15minblock, '00')
+                                     , 'yyyymmddhh24mi'
+                                     ) + i_delta;
+      when 'H1' then
+         l_ts  := gmt2local(i_ts);
+         l_str := to_char(l_ts, 'yyyymmddhh24');
+         l_ts  := to_timestamp(l_str, 'yyyymmddhh24');
+         l_ts  := local2gmt(l_ts) + i_delta;  
+      when 'D1' then
+         l_ts  := gmt2local(i_ts);
+         l_str := to_char(l_ts, 'yyyymmdd');
+         l_ts  := to_timestamp(l_str, 'yyyymmdd');
+         begin
+            
+            
+            l_ts  := local2gmt(l_ts + i_delta);  
+         exception
+            when others then
+               l_ts  := to_timestamp(l_str, 'yyyymmdd') - numtodsinterval(1, 'MINUTE');
+               l_ts  := local2gmt(l_ts + i_delta) + numtodsinterval(1, 'MINUTE');
+         end;
+      else
+         return null;
+   end case;
+
+   return l_ts;
+end;
+
+
+function startts(i_periodid number)
+   return timestamp deterministic
+is
+begin
+   return to_timestamp('20000101', 'YYYYMMDD') + numtodsinterval(i_periodid, 'SECOND');
+end;
+
+
+function duration(i_periodtype varchar2)
+   return interval day to second deterministic
+is
+begin
+   
+
+   return case i_periodtype
+             when 'M1'  then numtodsinterval(1, 'MINUTE')
+             when 'M5'  then numtodsinterval(5, 'MINUTE')
+             when 'M15' then numtodsinterval(15, 'MINUTE')
+             when 'H1'  then numtodsinterval(1, 'HOUR')        
+             when 'D1'  then numtodsinterval(1, 'DAY')         
+             else null
+          end;
+end;
+
+
+function endts( i_ts         timestamp
+              , i_periodtype varchar2
+              )
+   return timestamp deterministic
+is
+begin
+   return startts(i_ts, i_periodtype, duration(i_periodtype));
+end;
+
+
+function endts( i_periodid   number
+              , i_periodtype varchar2
+              )
+   return timestamp deterministic
+is
+begin
+   return endts(startts(i_periodid), i_periodtype);
+end;
+
+
+function periodid( i_ts         timestamp
+                 , i_periodtype varchar2
+                 )
+   return number deterministic
+is
+   l_ts timestamp;
+begin
+   l_ts := startts(i_ts, i_periodtype);
+
+   
+   return seconds_since_millennium(cast(l_ts as date));
+end;
+
+
+function periodid( i_seconds_since_millenium number
+                 , i_periodtype              varchar2
+                 )
+   return number deterministic
+is
+   l_secs number;
+begin
+   if i_periodtype = 'M1'
+   then
+      l_secs := 60;
+   elsif i_periodtype = 'M5'
+   then
+      l_secs := 300;
+   elsif i_periodtype = 'M15'
+   then
+      l_secs := 900;
+   elsif i_periodtype = 'H1'
+   then
+      return periodid(to_stamp(i_seconds_since_millenium), 'H1');
+   elsif i_periodtype = 'D1'
+   then
+      return periodid(to_stamp(i_seconds_since_millenium), 'D1');
+   else
+      return null;
+   end if;
+
+   return i_seconds_since_millenium - mod(i_seconds_since_millenium, l_secs);
+end;
+
+
+function tuples( i_ts_s       timestamp
+               , i_ts_e       timestamp
+               , i_periodtype varchar2
+               )
+   return period_table pipelined
+is
+   
+   l_ts       timestamp;
+   l_ts_next  timestamp;
+   l_ts_local timestamp;
+begin
+   l_ts := startts( i_ts_s, i_periodtype);
+   while l_ts < i_ts_e
+   loop
+      l_ts_next := endts( l_ts, i_periodtype);
+      exit when l_ts_next is null or l_ts_next <= l_ts;  
+
+      l_ts_local := gmt2local(l_ts);
+      pipe row( period_tuple( periodid(l_ts, i_periodtype)
+                            , year(l_ts_local)
+                            , quarter(l_ts_local)
+                            , month(l_ts_local)
+                            , dayofmonth(l_ts_local)
+                            , hourofday(l_ts_local)
+                            , quarterhourblock(l_ts_local)
+                            , fiveminuteblock(l_ts_local)
+                            , minute(l_ts_local)
+                            , weekofyear(l_ts_local)
+                            , dayofweek(l_ts_local)
+                            , l_ts
+                            , l_ts_next
+                            )
+              );
+
+      l_ts := l_ts_next;
+   end loop;
+end;
+
+
+function to_stamp( i_periodid   number
+                 , i_periodtype varchar2
+                 )
+   return timestamp deterministic
+is
+begin
+   return startts(startts(i_periodid), i_periodtype);
+end;
+
+
+function to_stamp( i_periodid number )
+   return timestamp deterministic
+is
+begin
+   return startts(i_periodid);
+end;
+
+
+function to_stamp( i_ts         timestamp
+                 , i_periodtype varchar2
+                 )
+   return timestamp deterministic
+is
+begin
+   return startts(i_ts, i_periodtype);
+end;
+
+
+function to_stamp(i_ts timestamp with time zone) return timestamp deterministic is
+v_ts timestamp;
+begin
+  select cast(i_ts as timestamp) into v_ts from dual;
+  return v_ts;
+end;
+
+function to_stamp(i_ts timestamp) return timestamp deterministic is
+
+begin
+  return i_ts;
+end;
+
+
+function xmldt2ts(i_xmldt varchar2, i_ts_on_failure timestamp) return timestamp deterministic is
+l_timestamp timestamp := i_ts_on_failure;
+l_eventtime varchar2(50) := trim(i_xmldt);
+l_dateformat varchar2(50);
+begin
+  if l_eventtime is null then
+    l_timestamp := null;
+  else
+    
+    begin
+      l_dateformat :=  'YYYY-MM-DD"T"HH24:MI:SS.FF"Z"';
+      l_timestamp := to_timestamp_tz(l_eventtime, l_dateformat);
+    exception when others then
+      begin
+        
+        l_dateformat :=  'YYYY-MM-DD"T"HH24:MI:SS.FFTZH:TZM';
+        l_timestamp := sys_extract_utc(to_timestamp_tz(l_eventtime, l_dateformat));
+      exception when others then
+        begin
+          
+          l_dateformat := 'YYYY-MM-DD HH24:MI:SS.FF';
+          l_eventtime := replace(l_eventtime, 'T', ' ');
+          l_eventtime := replace(l_eventtime, 'Z', '');
+          l_timestamp := to_timestamp(l_eventtime, l_dateformat);
+        exception when others then
+          l_timestamp := i_ts_on_failure;
+        end;
+      end;
+    end;
+  end if;
+  return l_timestamp;
+end;
+
+
+
+
+
+
+
+
+function gmt2local(i_gmt timestamp) return timestamp deterministic is
+v_local timestamp;
+begin
+  v_local := from_tz(i_gmt, 'UTC') at time zone g_local_tz;
+  return v_local;
+end;
+
+function gmt2local(i_gmt timestamp, i_tz varchar2) return timestamp deterministic is
+v_local timestamp;
+begin
+  v_local := from_tz(i_gmt, 'UTC') at time zone i_tz;
+  return v_local;
+end;
+
+function gmt2local(i_periodid number) return number deterministic is
+v_local timestamp;
+begin
+  v_local := from_tz(period.to_stamp(i_periodid), 'UTC') at time zone g_local_tz;
+  return trunc(period.seconds_since_millennium(v_local));
+end;
+
+function gmt2local(i_periodid number, i_tz varchar2) return number deterministic is
+v_local timestamp;
+begin
+  v_local := from_tz(period.to_stamp(i_periodid), 'UTC') at time zone i_tz;
+  return trunc(period.seconds_since_millennium(v_local));
+end;
+
+function local2gmt(i_gmt timestamp) return timestamp deterministic is
+v_local timestamp;
+begin
+  v_local := from_tz(i_gmt, g_local_tz) at time zone 'UTC';
+  return v_local;
+end;
+
+function local2gmt(i_gmt timestamp, i_tz varchar2) return timestamp deterministic is
+v_local timestamp;
+begin
+  v_local := from_tz(i_gmt, i_tz) at time zone 'UTC';
+  return v_local;
+end;
+
+
+
+
+
+
+
+function get_d1s_in_range( i_start timestamp
+                         , i_end   timestamp
+                         , i_max_days number
+                         )
+   return varchar2 deterministic
+is
+   l_startts timestamp;
+   l_endts   timestamp;
+   l_csv     varchar2(32767) := '';
+begin
+   l_endts := nvl( i_end, i_start + numtodsinterval(10, 'DAY'));
+   for i in 0..i_max_days-1
+   loop
+      l_startts := startts(i_start, 'D1', numtodsinterval(i, 'DAY'));
+      exit when l_startts > l_endts;
+
+      l_csv := case when l_csv is not null then l_csv||',' end|| to_char(seconds_since_millennium(cast(l_startts as date)));
+   end loop;
+
+   return l_csv;
+end;
+
+
+
+
+
+
+
+function gmt2localstd(i_ref_ts timestamp, i_std in varchar2) return varchar2 deterministic is
+l_std varchar2(50) := trim(i_std);
+l_ds varchar2(50) := to_char(nvl(i_ref_ts, sys_extract_utc(systimestamp)),'YYYYMMDD');
+l_date date;
+begin
+  if l_std is not null then
+    begin
+      if length(l_std) > 10 and length(l_std) < 16 then
+        l_std := to_char(to_timestamp_tz(l_std, 'hh24:mi:ss TZH:TZM'), 'hh24:mi":00"');
+      else
+        if length(l_std) > 5 then
+          l_std := substr(l_std, 1, 5);
+        end if;
+        l_date := to_date(l_ds||' '||l_std, 'YYYYMMDD HH24:MI');
+        l_date := period.gmt2local(l_date);
+        l_std := to_char(l_date, 'HH24:MI')||':00';
+        
+      end if;
+    exception when others then
+      l_std := null;
+    end;
+  end if;
+  return l_std;
+end;
+
+
+
+
+
+
+
+
+
+function get_local_tz return varchar2 deterministic is
+begin
+  return g_local_tz;
+end;
+
+procedure set_local_tz(i_local_tz varchar2) is
+v_count number := 0;
+v_value number(5,2) := 0.0;
+begin
+  if i_local_tz is null then
+    dbms_output.put_line('No TIMEZONE value provided.');
+    dbms_output.put_line('Period local time zone remains: '||g_local_tz);
+  else
+    begin
+      if substr(i_local_tz,1,1) in ('+','-') then
+        begin
+          v_value := to_number(replace(i_local_tz,':','.'));
+        exception when others then
+          v_value := 999;
+        end;
+        if v_value between -12 and +12 then
+          g_local_tz := i_local_tz;
+          dbms_output.put_line('Period local time zone has been reset to: '||g_local_tz);
+        else
+          dbms_output.put_line('Incorrect TIMEZONE value: '||i_local_tz||'. Use a value between +12:00 and -12:00 or check V$TIMEZONE_NAMES for correct values.');
+          dbms_output.put_line('Period local time zone remains: '||g_local_tz);
+        end if;
+      else
+        select count(*) into v_count from v$timezone_names where (tzabbrev = i_local_tz) or (tzname = i_local_tz);
+        if v_count > 0 then
+          g_local_tz := i_local_tz;
+          dbms_output.put_line('Period local time zone has been reset to: '||g_local_tz);
+        else
+          dbms_output.put_line('Incorrect TIMEZONE value: '||i_local_tz||'. Use a value between +12:00 and -12:00 or check V$TIMEZONE_NAMES for correct values.');
+          dbms_output.put_line('Period local time zone remains: '||g_local_tz);
+        end if;
+      end if;
+    exception when others then
+      dbms_output.put_line(sqlerrm);
+      dbms_output.put_line('Period local time zone remains: '||g_local_tz);
+    end;
+  end if;
+end;
+
+procedure load_local_tz is
+l_tz varchar2(100);
+begin
+  begin
+    select trim(value) into l_tz from cmn_parameter_values where pve_comment='LocalTimeZone';
+  exception when others then
+    
+    l_tz := dbtimezone;
+  end;
+  period.set_local_tz(l_tz);
+end;
+
+
+begin
+  
+  period.load_local_tz;
+end period;
+/

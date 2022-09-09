@@ -1,0 +1,345 @@
+create or replace PACKAGE lm_cfg_lnk
+IS
+g_con_package CONSTANT VARCHAR2( 30 ) := 'LM_CFG_LNK';
+
+PROCEDURE load_link_data;
+
+END lm_cfg_lnk;
+/
+
+
+
+
+package body lm_cfg_lnk is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure create_has ( i_nt_downstreamha in nt_vc2_coll
+                     , i_link_id         in lm_links.id%type
+                     )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.create_has';
+
+   l_rt_haa_downstream lm_handling_areas%rowtype;
+   l_rt_has            lm_handling_area_accesses%rowtype;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   if i_nt_downstreamha.count > 0
+   then
+
+      
+      for i in i_nt_downstreamha.first..i_nt_downstreamha.last
+      loop
+
+         
+         if not lm_haa_tapi_pck.haa_select_row( i_haa_id => i_nt_downstreamha(i)
+                                              , o_rt_haa => l_rt_haa_downstream
+                                              )
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   =>    'For link '                                        || i_link_id
+                                        || ', HANDLING AREA for downstreamHA does not exist: '|| i_nt_downstreamha(i)
+               );
+         end if;
+
+         
+         select nvl( max( has.id ) + 1, 1)
+         into   l_rt_has.id
+         from   lm_handling_area_accesses has
+         ;
+
+         
+         l_rt_has.haa_id := l_rt_haa_downstream.id;
+         l_rt_has.lnk_id := i_link_id;
+
+         lm_has_tapi_pck.has_insert_row( io_rt_has => l_rt_has );
+
+      end loop;
+   end if;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end create_has;
+
+
+
+
+
+
+
+
+
+
+procedure create_link_data ( i_rt_haa_upstream   in lm_handling_areas%rowtype
+                           , i_rt_haa_downstream in lm_handling_areas%rowtype
+                           , i_node_id           in lm_nodes.id%type
+                           , i_link_id_cust      in lm_links.id_cust%type
+                           , i_link_description  in lm_links.description%type
+                           , i_nt_downstreamha   in nt_vc2_coll
+                           )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.create_link_data';
+
+   l_haa_id_cust       lm_handling_areas.id_cust%type;
+   l_haa_description   lm_handling_areas.description%type;
+   l_pty_id_cust       lm_parties.id_cust%type;
+   l_rt_lnk            lm_links%rowtype;
+   l_rt_pty            lm_parties%rowtype;
+   l_rt_lpy            lm_lifesign_parties%rowtype;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   if    i_rt_haa_upstream.ind_current   = lm_constant.g_con_yesno_yes
+      or i_rt_haa_downstream.ind_current = lm_constant.g_con_yesno_yes
+   then
+
+      if i_rt_haa_upstream.ind_current is null
+      then
+         l_haa_id_cust     := i_rt_haa_upstream.id_cust;
+         l_haa_description := i_rt_haa_upstream.description;
+      else
+         l_haa_id_cust     := i_rt_haa_downstream.id_cust;
+         l_haa_description := i_rt_haa_downstream.description;
+      end if;
+
+      l_pty_id_cust := lm_constant.g_con_cfg_party_first_part ||
+                       l_haa_id_cust                          ||
+                       lm_constant.g_con_cfg_party_last_part
+                       ;
+
+      
+      if not lm_pty_tapi_pck.pty_select_row_uk1( i_pty_id_cust     => l_pty_id_cust
+                                               , i_pty_instance_id => null
+                                               , o_rt_pty          => l_rt_pty
+                                               )
+      then
+         
+         l_rt_pty.id_cust     := l_pty_id_cust;
+         l_rt_pty.description := l_haa_description;
+
+         lm_pty_tapi_pck.pty_insert_row( io_rt_pty => l_rt_pty );
+
+         
+         l_rt_lpy.pty_id            := l_rt_pty.id;
+         l_rt_lpy.response_interval := lm_common.get_parameter_value(i_prr_name => lm_constant.g_con_pve_pmr_lsn_def_resp_int);
+         l_rt_lpy.allowed_misses    := lm_common.get_parameter_value(i_prr_name => lm_constant.g_con_pve_pmr_lsn_allowed_miss);
+         l_rt_lpy.ind_initiator     := lm_constant.g_con_yesno_no;
+
+         lm_lpy_tapi_pck.lpy_insert_row( io_rt_lpy => l_rt_lpy );
+      end if;
+
+      
+      select nvl( max( lnk.id ) + 1, 1)
+      into   l_rt_lnk.id
+      from   lm_links lnk
+      ;
+
+      
+      l_rt_lnk.id_cust           := i_link_id_cust;
+      l_rt_lnk.nde_id            := i_node_id;
+      l_rt_lnk.pty_id            := l_rt_pty.id;
+      l_rt_lnk.haa_id_upstream   := i_rt_haa_upstream.id;
+      l_rt_lnk.haa_id_downstream := i_rt_haa_downstream.id;
+      l_rt_lnk.description       := i_link_description;
+
+      lm_lnk_tapi_pck.lnk_insert_row( io_rt_lnk => l_rt_lnk );
+
+      
+      create_has ( i_nt_downstreamha => i_nt_downstreamha
+                 , i_link_id         => l_rt_lnk.id
+                 );
+
+   end if; 
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end create_link_data;
+
+
+
+
+
+
+
+procedure load_link_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_link_data';
+
+   l_rt_haa_upstream   lm_handling_areas%rowtype;
+   l_rt_haa_downstream lm_handling_areas%rowtype;
+   l_rt_nde            lm_nodes%rowtype;
+   l_start_time        timestamp := lm_common.default_timestamp;
+   l_#lnk              integer;
+
+   
+   cursor c_lnk
+   is
+      select lnk.link_id_cust
+      ,      lnk.startha
+      ,      lnk.endha
+      ,      lnk.description
+      ,      (select cast (collect (nde.node_id) as nt_id_coll)
+              from   cmn_v_sysconfig_data pd
+              ,      xmltable( '/project_definition/nodes/node'
+                               passing pd.data
+                               columns node_id      number       path '@id'
+                               ,       link_id_cust varchar2(30) path '@link_id'
+                             ) nde
+              where  nde.link_id_cust = lnk.link_id_cust
+             ) nt_node
+      ,      cast( multiset( select downstreamha_id
+                             from   xmltable( '/downstreamHA'
+                                              passing lnk.downstreamha_xml
+                                              columns downstreamha_id varchar2(30) path '@id' 
+                                            )
+                           ) as nt_vc2_coll
+                 ) nt_downstreamha
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable( '/project_definition/links/link'
+                       passing pd.data
+                       columns link_id_cust     varchar2(30)  path '@id'
+                       ,       startha          varchar2(30)  path '@startHA'      
+                       ,       endha            varchar2(30)  path '@endHA'        
+                       ,       description      varchar2(240) path '@description'  
+                       ,       downstreamha_xml xmltype       path '/link/downstreamHA'
+                     ) lnk
+   ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_lnk in c_lnk
+   loop
+
+      
+      if l_rec_lnk.nt_node.count = 0
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'No node found in project defintion for link ' || l_rec_lnk.link_id_cust
+            );
+
+      
+      elsif l_rec_lnk.nt_node.count > 1
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'More nodes found in project defintion for link ' || l_rec_lnk.link_id_cust
+            );
+
+      else 
+
+         
+         if not lm_nde_tapi_pck.nde_select_row( i_nde_id => l_rec_lnk.nt_node(1)
+                                              , o_rt_nde => l_rt_nde
+                                              )
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   =>    'For link '              || l_rec_lnk.link_id_cust
+                                        || ', NODE does not exist: '|| l_rec_lnk.nt_node(1)
+               );
+         end if;
+
+         
+         if not lm_haa_tapi_pck.haa_select_row( i_haa_id => l_rec_lnk.startha
+                                              , o_rt_haa => l_rt_haa_upstream
+                                              )
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   =>    'For link '                                   || l_rec_lnk.link_id_cust
+                                        || ', HANDLING AREA for startHA does not exist: '|| l_rec_lnk.startha
+               );
+         end if;
+
+         
+         if not lm_haa_tapi_pck.haa_select_row( i_haa_id => l_rec_lnk.endha
+                                              , o_rt_haa => l_rt_haa_downstream
+                                              )
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   =>    'For link '                                 || l_rec_lnk.link_id_cust
+                                        || ', HANDLING AREA for endHA does not exist: '|| l_rec_lnk.endha
+               );
+         end if;
+
+         
+         create_link_data ( i_rt_haa_upstream   => l_rt_haa_upstream
+                          , i_rt_haa_downstream => l_rt_haa_downstream
+                          , i_node_id           => l_rt_nde.id
+                          , i_link_id_cust      => l_rec_lnk.link_id_cust
+                          , i_link_description  => l_rec_lnk.description
+                          , i_nt_downstreamha   => l_rec_lnk.nt_downstreamha
+                          );
+      end if;
+
+   end loop; 
+
+   
+   select count(*)
+   into   l_#lnk
+   from   lm_links lnk
+   ;
+   lm_config.log_processing_time( i_message_name    => 'links'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#lnk||' lm_links'
+                                );
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_link_data;
+
+end lm_cfg_lnk;
+/

@@ -1,0 +1,3031 @@
+create or replace PACKAGE lm_tracking IS
+
+   g_con_package CONSTANT lm_constant.st_proc_name := 'LM_TRACKING';
+
+   TYPE g_rt_routing_entries IS
+      RECORD
+      ( direction       lm_routing_entries_v.direction%TYPE
+      , preference      lm_routing_entries_v.preference%TYPE
+      );
+
+   TYPE g_rt_faileddirection IS
+      RECORD
+      ( direction       lm_package_attribute_values.value%TYPE
+      , decisionlevel   lm_package_attribute_values.value%TYPE
+      , destination     lm_package_attribute_values.value%TYPE
+      , failedreason    lm_package_attribute_values.value%TYPE
+      , detailerrorcode lm_package_attribute_values.value%TYPE
+      );
+
+   TYPE g_it_routing_entries IS
+      TABLE OF lm_tracking.g_rt_routing_entries
+      INDEX BY BINARY_INTEGER;
+
+   TYPE g_it_faileddirection IS
+      TABLE OF lm_tracking.g_rt_faileddirection
+      INDEX BY BINARY_INTEGER;
+
+/* TRK_001 : Handle tracking report */
+PROCEDURE HDL_TRACKING_REPORT;
+/* TRK_002 : Get message attributes */
+procedure get_message_attributes
+ (i_it_trep                IN lm_interface.g_it_ima
+ ,o_pty_id_cust           OUT lm_parties.id_cust%TYPE
+ ,o_event_time            OUT lm_package_events.event_time%TYPE
+ ,o_area_id_cust          OUT lm_areas_v.id_cust%TYPE
+ ,o_zone_id_cust          OUT lm_zones_v.id_cust%TYPE
+ ,o_identifier_within_sct OUT lm_nodes.identifier_within_sct%TYPE
+ ,o_lic                   OUT lm_packages.lic%TYPE
+ ,o_status                OUT VARCHAR2
+ ,o_routing_table_type    OUT lm_routing_tables_v.rte_type%TYPE
+ ,o_destination1          OUT lm_physical_destinations.id_cust%TYPE
+ ,o_destination2          OUT lm_physical_destinations.id_cust%TYPE
+ ,o_destination3          OUT lm_physical_destinations.id_cust%TYPE
+ ,o_destination4          OUT lm_physical_destinations.id_cust%TYPE
+ ,o_destination5          OUT lm_physical_destinations.id_cust%TYPE
+ ,o_routing_entry1        OUT lm_tracking.g_it_routing_entries
+ ,o_routing_entry2        OUT lm_tracking.g_it_routing_entries
+ ,o_routing_entry3        OUT lm_tracking.g_it_routing_entries
+ ,o_routing_entry4        OUT lm_tracking.g_it_routing_entries
+ ,o_routing_entry5        OUT lm_tracking.g_it_routing_entries
+ ,o_suc_directiontaken    OUT lm_package_attribute_values.value%TYPE
+ ,o_suc_directionfrom     OUT lm_package_attribute_values.value%TYPE
+ ,o_suc_decisionlevel     OUT lm_package_attribute_values.value%TYPE
+ ,o_suc_destination       OUT lm_package_attribute_values.value%TYPE
+ ,o_it_failed_direction   OUT lm_tracking.g_it_faileddirection
+ ,o_rt_bir                OUT lm_common.g_rt_bir
+ ,o_ims_id                OUT lm_ifc_messages.id%TYPE
+ );
+/* TRK_003 : Store incoming data */
+PROCEDURE store_incoming_data
+ (i_event_time            IN     lm_package_events.event_time%TYPE
+ ,i_pty_id                IN     lm_parties.id%TYPE
+ ,i_area_id_cust          IN     lm_areas_v.id_cust%TYPE
+ ,i_zone_id_cust          IN     lm_zones_v.id_cust%TYPE
+ ,i_identifier_within_sct IN     lm_nodes.identifier_within_sct%TYPE
+ ,i_lic                   IN     lm_packages.lic%TYPE
+ ,i_suc_directiontaken    IN     lm_package_attribute_values.value%TYPE
+ ,i_suc_directionfrom     IN     lm_package_attribute_values.value%TYPE
+ ,i_suc_decisionlevel     IN     lm_package_attribute_values.value%TYPE
+ ,i_suc_destination       IN     lm_package_attribute_values.value%TYPE
+ ,i_it_failed_direction   IN     lm_tracking.g_it_faileddirection
+ ,i_rt_bir                IN     lm_common.g_rt_bir
+ ,i_pss_id                IN     lm_packages.pss_id%TYPE
+ ,i_ims_id                IN     lm_ifc_messages.id%TYPE
+ ,i_msg_obsolete          IN     BOOLEAN
+ ,io_rec_package          IN OUT lm_packages%ROWTYPE
+ ,o_rst_id                   OUT lm_route_segments.id%TYPE
+ ,o_rt_pet                   OUT lm_package_events%ROWTYPE
+ );
+/* TRK_005 : Validate incoming data. */
+PROCEDURE validate_incoming_data
+ (i_area_id_cust          IN     lm_areas_v.id_cust%TYPE
+ ,i_zone_id_cust          IN     lm_zones_v.id_cust%TYPE
+ ,i_identifier_within_sct IN     lm_nodes.identifier_within_sct%TYPE
+ ,i_pid                   IN     lm_packages.pid%TYPE
+ ,i_msg_event_time        IN     lm_package_events.event_time%TYPE
+ ,i_pty_id_cust           IN     lm_parties.id_cust%TYPE
+ ,o_pty_id                   OUT lm_parties.id%TYPE
+ ,o_msg_obsolete             OUT BOOLEAN
+ );
+/* TRK_006 : Check routing decision */
+PROCEDURE CHECK_ROUTING_DECISION
+ (I_AREA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ ,I_ZONE_ID_CUST IN LM_ZONES_V.ID_CUST%TYPE
+ ,I_IDENTIFIER_WITHIN_SCT IN LM_NODES.IDENTIFIER_WITHIN_SCT%TYPE
+ ,I_STATUS IN VARCHAR2
+ ,I_ROUTING_TABLE_TYPE IN LM_ROUTING_TABLES_V.RTE_TYPE%TYPE
+ ,I_DESTINATION1 IN LM_PHYSICAL_DESTINATIONS.ID_CUST%TYPE
+ ,I_DESTINATION2 IN LM_PHYSICAL_DESTINATIONS.ID_CUST%TYPE
+ ,I_DESTINATION3 IN LM_PHYSICAL_DESTINATIONS.ID_CUST%TYPE
+ ,I_DESTINATION4 IN LM_PHYSICAL_DESTINATIONS.ID_CUST%TYPE
+ ,I_DESTINATION5 IN LM_PHYSICAL_DESTINATIONS.ID_CUST%TYPE
+ ,I_ROUTING_ENTRY1 IN Lm_Tracking.G_IT_ROUTING_ENTRIES
+ ,I_ROUTING_ENTRY2 IN Lm_Tracking.G_IT_ROUTING_ENTRIES
+ ,I_ROUTING_ENTRY3 IN Lm_Tracking.G_IT_ROUTING_ENTRIES
+ ,I_ROUTING_ENTRY4 IN Lm_Tracking.G_IT_ROUTING_ENTRIES
+ ,I_ROUTING_ENTRY5 IN Lm_Tracking.G_IT_ROUTING_ENTRIES
+ ,I_PID IN LM_PACKAGES.PID%TYPE
+ );
+/* TRK_008 detect recirculation for a package and take appropriate action */
+PROCEDURE check_recirculation
+ ( i_rt_pae              IN     lm_packages%ROWTYPE
+ , i_rt_pet              IN     lm_package_events%ROWTYPE
+ , i_area_id_cust        IN     lm_areas_v.id_cust%TYPE
+ , i_zone_id_cust        IN     lm_zones_v.id_cust%TYPE
+ , i_event_time          IN     lm_package_events.event_time%TYPE
+ , o_ind_taskreport_sent    OUT BOOLEAN
+ );
+/* TRK_009 update time_recirc_obsolete of package events with event time */
+PROCEDURE RESET_RECIRCULATION_EVENTS
+ (I_PID IN LM_PACKAGES.PID%TYPE
+ ,I_EVENT_TIME IN LM_PACKAGE_EVENTS.EVENT_TIME%TYPE
+ );
+/* TRK_010 transfer determined stations to evaluated stations */
+PROCEDURE INSERT_EVALUATED_STATIONS
+ (I_TIN_ID IN LM_TASK_INSTRUCTIONS.ID%TYPE
+ ,I_RT_PET IN LM_PACKAGE_EVENTS%ROWTYPE
+ );
+/* TRK_011 check whether a received routing entry is valid or invalid */
+FUNCTION VALIDATE_ROUTING_TABLE_ENTRY
+ (I_IT_ROUTING_ENTRY IN Lm_Tracking.G_IT_ROUTING_ENTRIES
+ ,I_DIRECTION IN LM_ROUTING_ENTRIES_V.DIRECTION%TYPE
+ ,I_PREFERENCE IN LM_ROUTING_ENTRIES_V.PREFERENCE%TYPE
+ )
+ RETURN BOOLEAN;
+/* TRK_012 Send package to fallback station */
+procedure send_to_fallback_station
+ (i_pid          IN lm_packages.pid%TYPE
+ ,i_lic          IN lm_packages.lic%TYPE
+ ,i_pty_id_cust  IN lm_parties.id_cust%TYPE
+ ,i_pae_found    IN BOOLEAN
+ );
+/* TRK_013 Determine the threshold for recirculation detection */
+FUNCTION GET_RECIRCULATION_THRESHOLD
+ (I_RST_ID IN LM_ROUTE_SEGMENTS.ID%TYPE
+ )
+ RETURN NUMBER;
+/* TRK_014: handle missed events */
+PROCEDURE HANDLE_MISSED_EVENTS
+ (I_PID IN LM_PACKAGES.PID%TYPE
+ ,I_RST_ID IN LM_PACKAGES.RST_ID%TYPE
+ ,I_AREA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ ,I_ZONE_ID_CUST IN LM_ZONES_V.ID_CUST%TYPE
+ ,I_SECTION_ID_CUST IN LM_SECTIONS_V.ID_CUST%TYPE
+ ,I_EVENT_TIME IN LM_PACKAGE_EVENTS.EVENT_TIME%TYPE
+ );
+
+ 
+END LM_TRACKING;
+/
+
+
+
+
+package body lm_tracking is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure hdl_tracking_report
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.hdl_tracking_report';
+
+   l_rec_package            lm_packages%rowtype;
+   l_status                 lm_package_attribute_values.value%type;
+   l_routing_table_type     lm_routing_tables_v.rte_type%type;
+   l_routing_entry1         lm_tracking.g_it_routing_entries;
+   l_pty_id_cust            lm_parties.id_cust%type;
+   l_pty_id                 lm_parties.id%type;
+   l_routing_entry2         lm_tracking.g_it_routing_entries;
+   l_routing_entry3         lm_tracking.g_it_routing_entries;
+   l_routing_entry4         lm_tracking.g_it_routing_entries;
+   l_routing_entry5         lm_tracking.g_it_routing_entries;
+   l_destination1           lm_physical_destinations.id_cust%type;
+   l_destination2           lm_physical_destinations.id_cust%type;
+   l_destination3           lm_physical_destinations.id_cust%type;
+   l_destination4           lm_physical_destinations.id_cust%type;
+   l_destination5           lm_physical_destinations.id_cust%type;
+   l_suc_directiontaken     lm_package_attribute_values.value%type;
+   l_suc_directionfrom      lm_package_attribute_values.value%type;
+   l_suc_decisionlevel      lm_package_attribute_values.value%type;
+   l_suc_destination        lm_package_attribute_values.value%type;
+   l_event_time             lm_package_events.event_time%type;
+   l_area_id_cust           lm_areas_v.id_cust%type;
+   l_zone_id_cust           lm_zones_v.id_cust%type;
+   l_identifier_within_sct  lm_nodes.identifier_within_sct%type;
+   l_lic                    lm_packages.lic%type;
+   l_pid                    lm_packages.pid%type;
+   l_ims_id                 lm_ifc_messages.id%type;
+   l_it_failed_direction    lm_tracking.g_it_faileddirection;
+   l_pss_id                 lm_packages.pss_id%type;
+   l_rt_bir                 lm_common.g_rt_bir;
+   l_found                  boolean;
+   l_msg_obsolete           boolean;
+   l_ind_ghostbag           boolean;
+   l_rst_id_old             lm_route_segments.id%type;
+   l_rt_rst_old             lm_route_segments%rowtype;
+   l_rst_id_reported        lm_route_segments.id%type;
+   l_rt_rst_reported        lm_route_segments%rowtype;
+   l_rt_pet                 lm_package_events%rowtype;
+   l_nt_stn_id_cust_dummy   nt_stn_id_cust := nt_stn_id_cust();
+   l_it_failed_dir_dummy    lm_tracking.g_it_faileddirection;
+   l_nt_stn_id_cust         nt_stn_id_cust;
+   l_haa_id_cust            lm_handling_areas.id_cust%type;
+   l_eta                    timestamp;
+   l_rt_pss                 lm_package_statuses%rowtype;
+   l_rt_taskreport_result   lm_package_administration.g_rt_taskreport_result;
+   l_task_instruction_type  lm_task_definitions.task_instruction_type%type;
+   l_ind_taskreport_sent    boolean;
+
+   
+   cursor c_tin_tdn_by_pid( b_pid in lm_packages.pid%type)
+   is
+   
+   select tdn.task_instruction_type
+   from   lm_task_definitions tdn
+   where  tdn.id =
+          (select tpev.tdn_id
+           from   lm_tin_active_of_package_v tpev
+           where  tpev.pid = b_pid
+          )
+   ;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+
+   l_ind_taskreport_sent := false;
+    
+   lm_tracking.get_message_attributes( i_it_trep                    => lm_interface.g_it_message_content
+                                     , o_pty_id_cust                => l_pty_id_cust
+                                     , o_event_time                 => l_event_time
+                                     , o_area_id_cust               => l_area_id_cust
+                                     , o_zone_id_cust               => l_zone_id_cust
+                                     , o_identifier_within_sct      => l_identifier_within_sct
+                                     , o_lic                        => l_lic
+                                     , o_ims_id                     => l_ims_id
+                                     , o_status                     => l_status
+                                     , o_routing_table_type         => l_routing_table_type
+                                     , o_destination1               => l_destination1
+                                     , o_destination2               => l_destination2
+                                     , o_destination3               => l_destination3
+                                     , o_destination4               => l_destination4
+                                     , o_destination5               => l_destination5
+                                     , o_routing_entry1             => l_routing_entry1
+                                     , o_routing_entry2             => l_routing_entry2
+                                     , o_routing_entry3             => l_routing_entry3
+                                     , o_routing_entry4             => l_routing_entry4
+                                     , o_routing_entry5             => l_routing_entry5
+                                     , o_suc_directiontaken         => l_suc_directiontaken
+                                     , o_suc_directionfrom          => l_suc_directionfrom
+                                     , o_suc_decisionlevel          => l_suc_decisionlevel
+                                     , o_suc_destination            => l_suc_destination
+                                     , o_rt_bir                     => l_rt_bir
+                                     , o_it_failed_direction        => l_it_failed_direction
+                                     );
+                                        
+   
+   l_pid    := l_rt_bir.pid;
+   l_found  := lm_pae_tapi_pck.pae_select_row_upd( i_pae_pid      => l_pid
+                                                 , o_rt_pae       => l_rec_package
+                                                 );
+   
+   if    not l_found
+      or l_rec_package.pss_id = lm_constant.g_con_pss_name_closed
+      or l_rec_package.pss_id = lm_constant.g_con_pss_name_missing
+   then
+      
+      lm_tracking.send_to_fallback_station( i_pid               => l_pid
+                                          , i_lic               => l_lic
+                                          , i_pty_id_cust       => l_pty_id_cust
+                                          , i_pae_found         => l_found
+                                          );
+   else
+      l_ind_ghostbag := (l_rec_package.pss_id = lm_constant.g_con_pss_name_ghost);
+      
+      
+      
+      l_pss_id := l_rec_package.pss_id;
+
+      
+      lm_tracking.validate_incoming_data( i_area_id_cust               => l_area_id_cust
+                                        , i_zone_id_cust               => l_zone_id_cust
+                                        , i_identifier_within_sct      => l_identifier_within_sct
+                                        , i_pid                        => l_pid
+                                        , i_msg_event_time             => l_event_time
+                                        , i_pty_id_cust                => l_pty_id_cust
+                                        , o_pty_id                     => l_pty_id
+                                        , o_msg_obsolete               => l_msg_obsolete
+                                        );
+
+      
+      if not l_msg_obsolete
+      then
+         
+         lm_package_administration.check_local_identifier( i_pid               => l_pid
+                                                         , i_event_time        => l_event_time
+                                                         , i_lic               => l_lic
+                                                         , i_pty_id            => l_pty_id
+                                                         , o_pss_id            => l_pss_id
+                                                         );
+      end if;
+      
+      
+      
+      
+      
+      l_rst_id_old := l_rec_package.rst_id;
+
+      
+      lm_tracking.store_incoming_data( io_rec_package               => l_rec_package
+                                     , i_event_time                 => l_event_time
+                                     , i_pty_id                     => l_pty_id
+                                     , i_area_id_cust               => l_area_id_cust
+                                     , i_zone_id_cust               => l_zone_id_cust
+                                     , i_identifier_within_sct      => l_identifier_within_sct
+                                     , i_lic                        => l_lic
+                                     , i_suc_directiontaken         => l_suc_directiontaken
+                                     , i_suc_directionfrom          => l_suc_directionfrom
+                                     , i_suc_decisionlevel          => l_suc_decisionlevel
+                                     , i_suc_destination            => l_suc_destination
+                                     , i_it_failed_direction        => l_it_failed_direction
+                                     , i_rt_bir                     => l_rt_bir
+                                     , i_pss_id                     => l_pss_id
+                                     , i_ims_id                     => l_ims_id
+                                     , i_msg_obsolete               => l_msg_obsolete
+                                     , o_rst_id                     => l_rst_id_reported
+                                     , o_rt_pet                     => l_rt_pet
+                                     );
+
+      if not l_msg_obsolete
+      then
+         if l_pss_id = lm_constant.g_con_pss_name_open
+         then
+            
+            lm_tracking.check_routing_decision( i_area_id_cust               => l_area_id_cust
+                                              , i_zone_id_cust               => l_zone_id_cust
+                                              , i_identifier_within_sct      => l_identifier_within_sct
+                                              , i_status                     => l_status
+                                              , i_routing_table_type         => l_routing_table_type
+                                              , i_destination1               => l_destination1
+                                              , i_destination2               => l_destination2
+                                              , i_destination3               => l_destination3
+                                              , i_destination4               => l_destination4
+                                              , i_destination5               => l_destination5
+                                              , i_routing_entry1             => l_routing_entry1
+                                              , i_routing_entry2             => l_routing_entry2
+                                              , i_routing_entry3             => l_routing_entry3
+                                              , i_routing_entry4             => l_routing_entry4
+                                              , i_routing_entry5             => l_routing_entry5
+                                              , i_pid                        => l_pid
+                                              );
+         end if;
+         
+         if l_rst_id_reported is not null
+         then
+            
+            
+            lm_tracking.check_recirculation( i_rt_pae              => l_rec_package
+                                           , i_rt_pet              => l_rt_pet
+                                           , i_area_id_cust        => l_area_id_cust
+                                           , i_zone_id_cust        => l_zone_id_cust
+                                           , i_event_time          => l_event_time
+                                           , o_ind_taskreport_sent => l_ind_taskreport_sent
+                                           );
+         end if;
+      end if; 
+
+      
+      
+      
+      
+      
+      
+      
+      if l_rec_package.batch_id is not null
+         and
+         l_rst_id_reported is not null
+      then
+         
+         
+         
+         l_found := lm_rst_tapi_pck.rst_select_row( i_rst_id => l_rst_id_old
+                                                  , o_rt_rst => l_rt_rst_old
+                                                  );
+         l_found := lm_rst_tapi_pck.rst_select_row( i_rst_id => l_rst_id_reported
+                                                  , o_rt_rst => l_rt_rst_reported
+                                                  );
+         if l_rt_rst_old.region <> l_rt_rst_reported.region
+           or (l_rt_rst_old.region is null and l_rt_rst_reported.region is not null)
+           or (l_rt_rst_old.region is not null and l_rt_rst_reported.region is null)
+         then
+            lm_package_administration.send_baggage_event( i_event_time           => l_event_time
+                                                        , i_pid                  => l_rec_package.pid
+                                                        , i_bid                  => l_rec_package.bid
+                                                        , i_bid_extension        => l_rec_package.bid_extension
+                                                        , i_nt_carrier           => l_rec_package.carrier
+                                                        , i_event_type           => lm_constant.g_con_mae_regionchange
+                                                        , i_lst_id_cust          => null
+                                                        , i_area_id_cust         => null
+                                                        , i_zone_id_cust         => null
+                                                        , i_section_id_cust      => null
+                                                        , i_region               => l_rt_rst_reported.region
+                                                        , i_region_exception     => case when l_rt_rst_reported.region is null
+                                                                                    then
+                                                                                       lm_constant.g_con_mae_undefined_region
+                                                                                    else
+                                                                                       null
+                                                                                    end
+                                                        , i_rst_id               => null
+                                                        , i_nt_stn_id_cust       => l_nt_stn_id_cust_dummy
+                                                        , i_haa_id_cust          => null
+                                                        , i_eta                  => null
+                                                        , i_pss_id_cust          => null
+                                                        , i_it_failed_direction  => l_it_failed_dir_dummy
+                                                        );
+         end if;
+      end if;  
+
+      
+      lm_topology_administration.determine_eta_stn( i_rt_pae         => l_rec_package
+                                                  , i_rst_id         => l_rst_id_reported
+                                                  , i_event_type     => lm_constant.g_con_ete_name_tracking_event
+                                                  , i_event_time     => l_event_time
+                                                  , o_nt_stn_id_cust => l_nt_stn_id_cust
+                                                  , o_haa_id_cust    => l_haa_id_cust
+                                                  , o_eta            => l_eta
+                                                  );
+      l_found := lm_pss_tapi_pck.pss_select_row( i_pss_id => l_rec_package.pss_id
+                                               , o_rt_pss => l_rt_pss
+                                               );
+      lm_package_administration.send_baggage_event( i_event_time          => l_event_time
+                                                  , i_pid                 => l_rec_package.pid
+                                                  , i_bid                 => l_rec_package.bid
+                                                  , i_bid_extension       => l_rec_package.bid_extension
+                                                  , i_nt_carrier          => l_rec_package.carrier
+                                                  , i_event_type          => lm_constant.g_con_mae_tracking
+                                                  , i_lst_id_cust         => null
+                                                  , i_area_id_cust        => l_area_id_cust
+                                                  , i_zone_id_cust        => l_zone_id_cust
+                                                  , i_section_id_cust     => l_identifier_within_sct
+                                                  , i_region              => null
+                                                  , i_region_exception    => null
+                                                  , i_rst_id              => nvl( l_rst_id_reported
+                                                                                , l_rec_package.rst_id
+                                                                                )
+                                                  , i_nt_stn_id_cust      => l_nt_stn_id_cust
+                                                  , i_haa_id_cust         => l_haa_id_cust
+                                                  , i_eta                 => l_eta
+                                                  , i_pss_id_cust         => l_rt_pss.name
+                                                  , i_it_failed_direction => l_it_failed_direction
+                                                  );
+
+      if l_ind_ghostbag
+         and
+         not l_ind_taskreport_sent
+      then
+         
+         
+         
+         
+         
+         
+         
+
+         
+         open c_tin_tdn_by_pid( b_pid      => l_rec_package.pid );
+
+         fetch c_tin_tdn_by_pid
+         into  l_task_instruction_type;
+
+         close c_tin_tdn_by_pid;
+         
+         l_rt_taskreport_result.error  := lm_constant.g_con_mae_no_ghostbag;
+                  
+         lm_package_administration.send_task_report( i_event_time        => l_event_time
+                                                   , i_bid               => l_rec_package.bid
+                                                   , i_bid_extension     => l_rec_package.bid_extension
+                                                   , i_pid               => l_rec_package.pid
+                                                   , i_area_id_cust      => l_area_id_cust
+                                                   , i_zone_id_cust      => l_zone_id_cust
+                                                   , i_stn_id_cust       => null
+                                                   , i_tasktype          => l_task_instruction_type
+                                                   , i_register_reason   => null
+                                                   , i_deregister_reason => null
+                                                   , i_rt_result         => l_rt_taskreport_result
+                                                   , i_rt_bir            => null
+                                                   );
+      end if;
+
+      
+      if not l_msg_obsolete
+      then
+         lm_tracking.handle_missed_events( i_pid             => l_rec_package.pid
+                                         , i_rst_id          => l_rst_id_old
+                                         , i_area_id_cust    => l_area_id_cust
+                                         , i_zone_id_cust    => l_zone_id_cust
+                                         , i_section_id_cust => l_identifier_within_sct
+                                         , i_event_time      => l_event_time
+                                         );
+      end if;
+
+   end if; 
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_tin_tdn_by_pid%isopen
+      then
+         close c_tin_tdn_by_pid;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_tracking_report;
+
+
+procedure get_message_attributes
+ (i_it_trep                in lm_interface.g_it_ima
+ ,o_pty_id_cust           out lm_parties.id_cust%type
+ ,o_event_time            out lm_package_events.event_time%type
+ ,o_area_id_cust          out lm_areas_v.id_cust%type
+ ,o_zone_id_cust          out lm_zones_v.id_cust%type
+ ,o_identifier_within_sct out lm_nodes.identifier_within_sct%type
+ ,o_lic                   out lm_packages.lic%type
+ ,o_status                out varchar2
+ ,o_routing_table_type    out lm_routing_tables_v.rte_type%type
+ ,o_destination1          out lm_physical_destinations.id_cust%type
+ ,o_destination2          out lm_physical_destinations.id_cust%type
+ ,o_destination3          out lm_physical_destinations.id_cust%type
+ ,o_destination4          out lm_physical_destinations.id_cust%type
+ ,o_destination5          out lm_physical_destinations.id_cust%type
+ ,o_routing_entry1        out lm_tracking.g_it_routing_entries
+ ,o_routing_entry2        out lm_tracking.g_it_routing_entries
+ ,o_routing_entry3        out lm_tracking.g_it_routing_entries
+ ,o_routing_entry4        out lm_tracking.g_it_routing_entries
+ ,o_routing_entry5        out lm_tracking.g_it_routing_entries
+ ,o_suc_directiontaken    out lm_package_attribute_values.value%type
+ ,o_suc_directionfrom     out lm_package_attribute_values.value%type
+ ,o_suc_decisionlevel     out lm_package_attribute_values.value%type
+ ,o_suc_destination       out lm_package_attribute_values.value%type
+ ,o_it_failed_direction   out lm_tracking.g_it_faileddirection
+ ,o_rt_bir                out lm_common.g_rt_bir
+ ,o_ims_id                out lm_ifc_messages.id%type
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name   constant lm_constant.st_proc_name := g_con_package||'.get_message_attributes';
+
+   l_destination_counter       number := 0;
+   l_routing_direction_counter number := 0;
+   l_failed_direction_counter  number := 0;
+   l_dest_counter              number := 0;
+   l_screeninginfo_counter     number := 0;
+   l_carrier_counter           number := 0;
+   l_tmp_faileddir_direction   lm_package_attribute_values.value%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   o_rt_bir.destination   := nt_stn_id_cust();
+   o_rt_bir.screeninginfo := nt_screeninginfo();
+   o_rt_bir.carrier       := nt_carrier();
+
+   
+   for i in i_it_trep.first .. i_it_trep.last
+   loop
+      case i_it_trep( i ).attribute
+         when 'Header/Source/ProcessID'
+         then
+            o_pty_id_cust  := i_it_trep( i ).value;
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp      => i_it_trep( i ).value );
+         when 'PhysicalLocation/AreaID'
+         then
+            o_area_id_cust  := i_it_trep( i ).value;
+         when 'PhysicalLocation/ZoneID'
+         then
+            o_zone_id_cust  := i_it_trep( i ).value;
+         when 'PhysicalLocation/EquipmentID'
+         then
+            o_identifier_within_sct  := i_it_trep( i ).value;
+         when 'LIC'
+         then
+            o_lic  := i_it_trep( i ).value;
+         
+         when 'Routing/Status'
+         then
+            o_status  := i_it_trep( i ).value;
+         when 'Routing/RoutingTableEntries/RoutingTableType'
+         then
+            o_routing_table_type  := i_it_trep( i ).value;
+         when 'Routing/RoutingTableEntries/TEntry/Destination'
+         then
+            l_routing_direction_counter  := 0;
+            l_destination_counter        := l_destination_counter + 1;
+
+            if l_destination_counter = 1
+            then
+               o_destination1  := i_it_trep( i ).value;
+            elsif l_destination_counter = 2
+            then
+               o_destination2  := i_it_trep( i ).value;
+            elsif l_destination_counter = 3
+            then
+               o_destination3  := i_it_trep( i ).value;
+            elsif l_destination_counter = 4
+            then
+               o_destination4  := i_it_trep( i ).value;
+            elsif l_destination_counter = 5
+            then
+               o_destination5  := i_it_trep( i ).value;
+            end if;
+         when 'Routing/RoutingTableEntries/TEntry/DEntry/Direction'
+         then
+            l_routing_direction_counter  := l_routing_direction_counter + 1;
+
+            if l_destination_counter = 1
+            then
+               o_routing_entry1( l_routing_direction_counter ).direction  := i_it_trep( i ).value;
+            elsif l_destination_counter = 2
+            then
+               o_routing_entry2( l_routing_direction_counter ).direction  := i_it_trep( i ).value;
+            elsif l_destination_counter = 3
+            then
+               o_routing_entry3( l_routing_direction_counter ).direction  := i_it_trep( i ).value;
+            elsif l_destination_counter = 4
+            then
+               o_routing_entry4( l_routing_direction_counter ).direction  := i_it_trep( i ).value;
+            elsif l_destination_counter = 5
+            then
+               o_routing_entry5( l_routing_direction_counter ).direction  := i_it_trep( i ).value;
+            end if;
+         when 'Routing/RoutingTableEntries/TEntry/DEntry/Preference'
+         then
+            if l_destination_counter = 1
+            then
+               o_routing_entry1( l_routing_direction_counter ).preference  := i_it_trep( i ).value;
+            elsif l_destination_counter = 2
+            then
+               o_routing_entry2( l_routing_direction_counter ).preference  := i_it_trep( i ).value;
+            elsif l_destination_counter = 3
+            then
+               o_routing_entry3( l_routing_direction_counter ).preference  := i_it_trep( i ).value;
+            elsif l_destination_counter = 4
+            then
+               o_routing_entry4( l_routing_direction_counter ).preference  := i_it_trep( i ).value;
+            elsif l_destination_counter = 5
+            then
+               o_routing_entry5( l_routing_direction_counter ).preference  := i_it_trep( i ).value;
+            end if;
+         
+         when 'SuccessDirection/DirectionTaken'
+         then
+            o_suc_directiontaken  := i_it_trep( i ).value;
+         when 'SuccessDirection/DirectionFrom'
+         then
+            o_suc_directionfrom  := i_it_trep( i ).value;
+         when 'SuccessDirection/DecisionLevel'
+         then
+            o_suc_decisionlevel  := i_it_trep( i ).value;
+         when 'SuccessDirection/Destination'
+         then
+            o_suc_destination  := i_it_trep( i ).value;
+         
+         
+         
+         
+         
+         when 'FailedDirection/Direction'
+         then
+            l_tmp_faileddir_direction := i_it_trep( i ).value;
+         when 'FailedDirection/DecisionLevel'
+         then
+            l_failed_direction_counter                                        := l_failed_direction_counter + 1;
+            o_it_failed_direction( l_failed_direction_counter ).decisionlevel := i_it_trep( i ).value;
+            o_it_failed_direction( l_failed_direction_counter ).direction     := l_tmp_faileddir_direction;
+            l_tmp_faileddir_direction := null;
+         when 'FailedDirection/Destination'
+         then
+            o_it_failed_direction( l_failed_direction_counter ).destination  := i_it_trep( i ).value;
+         when 'FailedDirection/FailedReason'
+         then
+            o_it_failed_direction( l_failed_direction_counter ).failedreason  := i_it_trep( i ).value;
+         when 'FailedDirection/DetailErrorCode'
+         then
+            o_it_failed_direction( l_failed_direction_counter ).detailerrorcode  := i_it_trep( i ).value;
+         when 'BIR/Version'
+         then
+            o_rt_bir.version := i_it_trep( i ).value;
+         when 'BIR/VirtualBagIndicator'
+         then
+            o_rt_bir.virtual_bag_indicator := i_it_trep( i ).value;
+         when 'BIR/Carrier/ID'
+         then
+            l_carrier_counter := l_carrier_counter + 1;
+            o_rt_bir.carrier.extend;
+            
+            
+            o_rt_bir.carrier(l_carrier_counter) := new rt_carrier(i_id => i_it_trep( i ).value);
+         when 'BIR/Carrier/Type'
+         then
+            o_rt_bir.carrier(l_carrier_counter).type := i_it_trep( i ).value;
+         when 'BIR/PID'
+         then
+            o_rt_bir.pid := i_it_trep( i ).value;
+         when 'BIR/Destination'
+         then
+            l_dest_counter := l_dest_counter + 1;
+            o_rt_bir.destination.extend;
+            o_rt_bir.destination( l_dest_counter) := i_it_trep( i ).value;
+         when 'BIR/DestinationHandlingArea'
+         then
+            o_rt_bir.destination_handling_area  := i_it_trep( i ).value;
+         when 'BIR/BaggageIdentifier/BID'
+         then
+            o_rt_bir.bid  := i_it_trep( i ).value;
+         when 'BIR/BaggageIdentifier/BID_Extension'
+         then
+            o_rt_bir.bid_extension  := i_it_trep( i ).value;
+         when 'BIR/BaggageTag/LPC'
+         then
+            o_rt_bir.lpc := i_it_trep( i ).value;
+         when 'BIR/BaggageTag/LPC_Extension'
+         then
+            o_rt_bir.lpc_extension  := i_it_trep( i ).value;
+         when 'BIR/BaggageCharacteristics/PhysicalClass'
+         then
+            o_rt_bir.physical_class  := i_it_trep( i ).value;
+         when 'BIR/BaggageCharacteristics/Size/Length'
+         then
+            o_rt_bir.length  := i_it_trep( i ).value;
+         when 'BIR/BaggageCharacteristics/Size/Width'
+         then
+            o_rt_bir.width  := i_it_trep( i ).value;
+         when 'BIR/BaggageCharacteristics/Size/Height'
+         then
+            o_rt_bir.height := i_it_trep( i ).value;
+         when 'BIR/BaggageCharacteristics/Volume'
+         then
+            o_rt_bir.volume  := i_it_trep( i ).value;
+         when 'BIR/BaggageCharacteristics/Weight'
+         then
+            o_rt_bir.weight  := i_it_trep( i ).value;
+         when 'BIR/ScreeningInfo/ScreeningProcess/ID'
+         then
+            l_screeninginfo_counter := l_screeninginfo_counter + 1;
+            o_rt_bir.screeninginfo.extend;
+            
+            
+            o_rt_bir.screeninginfo(l_screeninginfo_counter) :=
+               new rt_screeninginfo(i_process_id => i_it_trep( i ).value);
+         when 'BIR/ScreeningInfo/ScreeningProcess/Name'
+         then
+            
+            
+            
+            
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).process_name  := i_it_trep( i ).value;
+         when 'BIR/ScreeningInfo/RequiredScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).required_screening_level := i_it_trep( i ).value;
+         when 'BIR/ScreeningInfo/ReachedScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).reached_screening_level  := i_it_trep( i ).value;
+         when 'BIR/ScreeningInfo/FailedScreeningLevel'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).failed_screening_level  :=  i_it_trep( i ).value;
+         when 'BIR/ScreeningInfo/PseudoID'
+         then
+            o_rt_bir.screeninginfo(l_screeninginfo_counter).pseudo_id  :=  i_it_trep( i ).value;
+         when 'BIR/BagStatus'
+         then
+            o_rt_bir.bag_status  := i_it_trep( i ).value;
+         when 'BIR/PriorityIndicator'
+         then
+            o_rt_bir.priority_indicator  := i_it_trep( i ).value;
+         when 'BIR/FlightInformation/SegregationID/ProcessPlanIDName'
+         then
+            o_rt_bir.process_plan_id_name  := i_it_trep( i ).value;
+         when 'BIR/FlightInformation/SegregationID/ProductName'
+         then
+            o_rt_bir.product_name  := i_it_trep( i ).value;
+         when 'BIR/FlightInformation/Flight/Airline'
+         then
+            o_rt_bir.airline  := i_it_trep( i ).value;
+         when 'BIR/FlightInformation/Flight/FlightNumber'
+         then
+            o_rt_bir.flightnumber := i_it_trep( i ).value;
+         when 'BIR/FlightInformation/Flight/Date'
+         then
+            o_rt_bir.flightdate := i_it_trep( i ).value;
+         when 'BIR/FlightInformation/STD'
+         then
+            o_rt_bir.std := i_it_trep( i ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_trep( i ).value;
+         else
+            
+            if i_it_trep( i ).attribute not in ( 'Header/MessageTime'
+                                               , 'Header/Source/InstanceID'
+                                               , 'Header/Target/ProcessID'
+                                               , 'Header/Target/InstanceID'
+                                               , 'Header/OperatorID'
+                                               , 'BIR/AssignmentReason'
+                                               )
+            then
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: TrackingReport; Attribute: '''
+                                                                   || i_it_trep( i ).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_trep( i ).value
+                                                                   || ''''
+                                     );
+            end if;
+                                  
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes;
+
+
+procedure store_incoming_data
+ (i_event_time            in     lm_package_events.event_time%type
+ ,i_pty_id                in     lm_parties.id%type
+ ,i_area_id_cust          in     lm_areas_v.id_cust%type
+ ,i_zone_id_cust          in     lm_zones_v.id_cust%type
+ ,i_identifier_within_sct in     lm_nodes.identifier_within_sct%type
+ ,i_lic                   in     lm_packages.lic%type
+ ,i_suc_directiontaken    in     lm_package_attribute_values.value%type
+ ,i_suc_directionfrom     in     lm_package_attribute_values.value%type
+ ,i_suc_decisionlevel     in     lm_package_attribute_values.value%type
+ ,i_suc_destination       in     lm_package_attribute_values.value%type
+ ,i_it_failed_direction   in     lm_tracking.g_it_faileddirection
+ ,i_rt_bir                in     lm_common.g_rt_bir
+ ,i_pss_id                in     lm_packages.pss_id%type
+ ,i_ims_id                in     lm_ifc_messages.id%type
+ ,i_msg_obsolete          in     boolean
+ ,io_rec_package          in out lm_packages%rowtype
+ ,o_rst_id                   out lm_route_segments.id%type
+ ,o_rt_pet                   out lm_package_events%rowtype
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name        constant lm_constant.st_proc_name := g_con_package||'.store_incoming_data';
+
+   l_zone_id                       lm_system_components.id%type;
+   idx_fd                          pls_integer;
+   l_nde_id                        lm_nodes.id%type;
+   l_nde_type                      lm_nodes.nde_type%type;
+   l_only_rst_found                boolean;
+   l_rows                          number;
+   l_pkv_order                     number := 0;
+   
+   
+   cursor c_get_node
+          ( i_sct_id                in lm_system_components.id%type
+          , i_identifier_within_sct in lm_nodes.identifier_within_sct%type
+          )
+   is
+   select nde.id as nde_id
+   ,      nde.nde_type
+   from   lm_nodes nde
+   where  nde.sct_id                = i_sct_id
+   and    nde.identifier_within_sct = i_identifier_within_sct;
+
+   
+   cursor c_get_last_known_rst_dir
+          ( i_node_id         in lm_nodes.id%type
+          , i_direction_taken in lm_route_segments.direction_start_node%type
+          )
+   is
+   select rst.id as rst_id
+   from   lm_route_segments rst
+   where  rst.nde_id_start_node    = i_node_id
+   and    rst.direction_start_node = i_direction_taken
+   ;
+
+   
+   cursor c_get_last_known_rst( i_node_id in lm_nodes.id%type)
+   is
+   select rst.id as rst_id
+   from   lm_route_segments rst
+   where  rst.nde_id_start_node = i_node_id;
+
+   
+   cursor c_get_enabled_rst
+          (i_node_id_start in lm_route_segments.nde_id_start_node%type
+          )
+   is
+   
+   select rst.id
+   from   lm_route_segments rst
+   where  rst.nde_id_start_node = i_node_id_start
+   and    rst.mom_id            = ( select mon.mom_id
+                                    from   lm_modes_of_operation mon
+                                    where  mon.sct_id = rst.sct_id
+                                  )
+   ;
+
+   
+   cursor c_get_default_rst
+          (i_node_id_start lm_route_segments.nde_id_start_node%type
+          )
+   is
+   
+   select rst.id
+   from   lm_route_segments rst
+   where  rst.nde_id_start_node = i_node_id_start
+   and    ( rst.mom_id is null
+            or
+            rst.mom_id = lm_constant.g_con_mom_mom_mode_normal
+          )
+   ;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   l_zone_id := lm_topology_administration.get_sct_id( i_area_id_cust         => i_area_id_cust
+                                                     , i_zone_id_cust         => i_zone_id_cust
+                                                     , i_section_id_cust      => null
+                                                     );
+
+   
+   open c_get_node( i_identifier_within_sct      => i_identifier_within_sct
+                  , i_sct_id                     => l_zone_id
+                  );
+
+   fetch c_get_node
+   into  l_nde_id
+       , l_nde_type;
+
+   close c_get_node;
+                        
+   
+   
+   
+   
+   if i_suc_decisionlevel <> lm_constant.g_con_mae_decisionlvl_waiting
+   then
+      
+      if l_nde_type not in( lm_constant.g_con_nde_type_divert, lm_constant.g_con_nde_type_collector_line )
+      then
+         l_only_rst_found  := false;
+         
+         for l_rt_rst_id in c_get_last_known_rst( i_node_id      => l_nde_id )
+         loop
+            l_only_rst_found  := true;
+
+            if c_get_last_known_rst%rowcount = 1
+            then
+               
+               
+               o_rst_id  := l_rt_rst_id.rst_id;
+            elsif c_get_last_known_rst%rowcount > 1
+            then
+               
+               
+               o_rst_id  := null;
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_multipleroutesegfound
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Node: '
+                                                                   || l_nde_id
+                                                                   || 'NumberFoundRouteSegments: '
+                                                                   || c_get_last_known_rst%rowcount
+                                     );
+               exit;
+            end if;
+         end loop;
+
+         if not l_only_rst_found
+         then   
+            
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_noroutesegmentfound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_additional_data        => 'Node not divert: ' || l_nde_id || 'SuccessDirectionTaken: ' || i_suc_directiontaken
+                                  );
+         end if;
+      elsif l_nde_type = lm_constant.g_con_nde_type_divert   
+      then
+         
+         if i_suc_directiontaken is not null
+         then
+            open c_get_last_known_rst_dir( i_node_id              => l_nde_id
+                                         , i_direction_taken      => i_suc_directiontaken
+                                         );
+
+            fetch c_get_last_known_rst_dir
+            into  o_rst_id;
+
+            close c_get_last_known_rst_dir;
+
+            if o_rst_id is null
+            then
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_noroutesegmentfound
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        => 'Divert node: ' || l_nde_id || 'SuccessDirectionTaken: ' || i_suc_directiontaken
+                                     );
+            end if;
+         else   
+            
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_multipleroutesegfound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_additional_data        => 'Divert node: ' || l_nde_id || 'Node type: ' || l_nde_type
+                                  );
+         end if;
+      else   
+         open c_get_enabled_rst( i_node_id_start      => l_nde_id );
+
+         fetch c_get_enabled_rst
+         into  o_rst_id;
+         close c_get_enabled_rst;
+         
+         if o_rst_id is null
+         then
+            l_only_rst_found  := false;
+            
+            for rec_default_rst in c_get_default_rst( i_node_id_start      => l_nde_id )
+            loop
+               l_only_rst_found  := true;
+               if c_get_default_rst%rowcount = 1
+               then
+                  
+                  o_rst_id := rec_default_rst.id;
+               elsif c_get_default_rst%rowcount > 1
+               then
+                  
+                  o_rst_id  := null;
+                  viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_multipleroutesegfound
+                                        , i_calling_procedure      => l_con_proc_name
+                                        , i_severity               => viu_info.c_severity_warning
+                                        , i_additional_data        => 'Collectorline node: '
+                                                                   || l_nde_id
+                                                                   || 'NumberFoundRouteSegments: '
+                                                                   || c_get_default_rst%rowcount
+                                        );
+               end if;
+            end loop;
+
+            if not l_only_rst_found
+            then
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_noroutesegmentfound
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        => 'Collector line node, no segment enabled and no rst with mom normal/null. Node: '
+                                                                || l_nde_id
+                                     );
+            end if;
+         end if;   
+      end if;   
+
+   end if; 
+
+   if not i_msg_obsolete
+   then
+      
+      if i_pss_id = lm_constant.g_con_pss_name_suspect
+      then
+         
+         io_rec_package.lic           := null;
+         io_rec_package.pty_id        := null;
+
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_packagesuspectupd
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_additional_data        => 'MessageId:' || i_ims_id
+                                                          || '; PID: ' || io_rec_package.pid
+                                                          || '; Area idcust: ' || i_area_id_cust
+                               );
+      else
+         
+         
+         
+         io_rec_package.lic           := i_lic;
+         io_rec_package.pty_id        := i_pty_id;
+      end if; 
+      
+      io_rec_package.pss_id        := i_pss_id;
+      io_rec_package.date_modified := lm_common.default_timestamp;
+      io_rec_package.carrier       := i_rt_bir.carrier; 
+
+      if o_rst_id is not null
+      then
+         io_rec_package.rst_id     := o_rst_id;
+      end if;
+
+      l_rows := lm_pae_tapi_pck.pae_update_row( i_pae_pid      => io_rec_package.pid
+                                              , io_rt_pae      => io_rec_package
+                                              );
+   end if;   
+
+   
+   o_rt_pet.id          := null;
+   o_rt_pet.pty_id      := i_pty_id;
+   o_rt_pet.ete_id      := lm_constant.g_con_ete_name_tracking_event;
+   o_rt_pet.pid         := io_rec_package.pid;
+   o_rt_pet.nde_id      := l_nde_id;
+   o_rt_pet.sct_id      := null;
+   o_rt_pet.lic         := i_lic;
+   o_rt_pet.ims_id      := i_ims_id;
+   o_rt_pet.event_time  := i_event_time;
+   o_rt_pet.rst_id      := o_rst_id;
+   
+   lm_pet_tapi_pck.pet_insert_row( io_rt_pet      => o_rt_pet );
+
+   
+   lm_common.store_bir(i_rt_bir         => i_rt_bir
+                      ,i_pet_id         => o_rt_pet.id
+                      ,i_pkv_order      => l_pkv_order
+                      ,i_nt_attr_except => nt_id_coll(lm_constant.g_con_pka_name_pid)
+                      );
+
+   
+   lm_package_administration.insert_package_attribute_value( i_value          => i_suc_directiontaken
+                                                           , i_pka_id         => lm_constant.g_con_pka_name_directiontaken
+                                                           , io_pkv_order     => l_pkv_order
+                                                           , i_pet_id         => o_rt_pet.id
+                                                           );
+   lm_package_administration.insert_package_attribute_value( i_value          => i_suc_directionfrom
+                                                           , i_pka_id         => lm_constant.g_con_pka_name_directionfrom
+                                                           , io_pkv_order     => l_pkv_order
+                                                           , i_pet_id         => o_rt_pet.id
+                                                           );
+   lm_package_administration.insert_package_attribute_value( i_value          => i_suc_decisionlevel
+                                                           , i_pka_id         => lm_constant.g_con_pka_name_suc_decision
+                                                           , io_pkv_order     => l_pkv_order
+                                                           , i_pet_id         => o_rt_pet.id
+                                                           );
+   lm_package_administration.insert_package_attribute_value( i_value          => i_suc_destination
+                                                           , i_pka_id         => lm_constant.g_con_pka_name_suc_dest
+                                                           , io_pkv_order     => l_pkv_order
+                                                           , i_pet_id         => o_rt_pet.id
+                                                           );
+
+   for idx_fd in 1 .. i_it_failed_direction.count
+   loop
+      lm_package_administration.insert_package_attribute_value( i_value          => i_it_failed_direction( idx_fd ).direction
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_direction
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => o_rt_pet.id
+                                                              );
+      lm_package_administration.insert_package_attribute_value( i_value          => i_it_failed_direction( idx_fd ).decisionlevel
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_fail_decision
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => o_rt_pet.id
+                                                              );
+      lm_package_administration.insert_package_attribute_value( i_value          => i_it_failed_direction( idx_fd ).destination
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_fail_dest
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => o_rt_pet.id
+                                                              );
+      lm_package_administration.insert_package_attribute_value( i_value          => i_it_failed_direction( idx_fd ).failedreason
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_reason
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => o_rt_pet.id
+                                                              );
+      lm_package_administration.insert_package_attribute_value( i_value          => i_it_failed_direction( idx_fd ).detailerrorcode
+                                                              , i_pka_id         => lm_constant.g_con_pka_name_detailerrorcode
+                                                              , io_pkv_order     => l_pkv_order
+                                                              , i_pet_id         => o_rt_pet.id
+                                                              );
+   end loop;
+
+
+
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_get_node%isopen
+      then
+         close c_get_node;
+      end if;
+
+      if c_get_last_known_rst_dir%isopen
+      then
+         close c_get_last_known_rst_dir;
+      end if;
+
+      if c_get_last_known_rst%isopen
+      then
+         close c_get_last_known_rst;
+      end if;
+
+      if c_get_enabled_rst%isopen
+      then
+         close c_get_enabled_rst;
+      end if;
+
+      if c_get_default_rst%isopen
+      then
+         close c_get_default_rst;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end store_incoming_data;
+
+
+procedure validate_incoming_data
+ (i_area_id_cust          in lm_areas_v.id_cust%type
+ ,i_zone_id_cust          in lm_zones_v.id_cust%type
+ ,i_identifier_within_sct in lm_nodes.identifier_within_sct%type
+ ,i_pid                   in lm_packages.pid%type
+ ,i_msg_event_time        in lm_package_events.event_time%type
+ ,i_pty_id_cust           in lm_parties.id_cust%type
+ ,o_pty_id               out lm_parties.id%type
+ ,o_msg_obsolete         out boolean
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.validate_incoming_data';
+
+   
+   cursor c_get_last_package_event
+    (i_pid in lm_package_events.pid%type
+    ,i_event_time in lm_package_events.event_time%type
+    )
+   is
+   select pet.id
+   from   lm_package_events pet
+   where  pet.pid = i_pid
+   and    pet.event_time > i_event_time;
+   
+   l_pet_id lm_package_events.id%type;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   lm_topology_administration.chk_area_zone_node (i_area_id_cust =>             i_area_id_cust
+                                                 ,i_zone_id_cust =>             i_zone_id_cust
+                                                 ,i_identifier_within_sct =>    i_identifier_within_sct
+                                                 );
+   
+   o_pty_id := lm_lifesign.check_party(i_pty_id_cust     => i_pty_id_cust
+                                      ,i_pty_instance_id => null
+                                      );
+
+   
+   open c_get_last_package_event(i_pid        => i_pid
+                                ,i_event_time => i_msg_event_time);
+   fetch c_get_last_package_event
+   into  l_pet_id;
+   o_msg_obsolete  := c_get_last_package_event%found;
+   close c_get_last_package_event;
+   if o_msg_obsolete
+   then
+      viu_info.operator_info (i_ifo_nr =>               viu_constant.c_ifo_obsoletemessage
+                            , i_calling_procedure =>    l_con_proc_name
+                            , i_severity =>             viu_info.c_severity_warning
+                            , i_info_arguments =>          'Message '
+                                                        || lm_constant.g_con_name_msg_trackingreport
+                                                        || ', PID "'
+                                                        || i_pid
+                                                        || '"'
+                             );
+   end if;
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when others
+   then
+      if c_get_last_package_event%isopen
+      then
+         close c_get_last_package_event;
+      end if;
+
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info (i_calling_procedure =>    l_con_proc_name);
+end validate_incoming_data;
+
+
+procedure check_routing_decision
+ (i_area_id_cust in lm_areas_v.id_cust%type
+ ,i_zone_id_cust in lm_zones_v.id_cust%type
+ ,i_identifier_within_sct in lm_nodes.identifier_within_sct%type
+ ,i_status in varchar2
+ ,i_routing_table_type in lm_routing_tables_v.rte_type%type
+ ,i_destination1 in lm_physical_destinations.id_cust%type
+ ,i_destination2 in lm_physical_destinations.id_cust%type
+ ,i_destination3 in lm_physical_destinations.id_cust%type
+ ,i_destination4 in lm_physical_destinations.id_cust%type
+ ,i_destination5 in lm_physical_destinations.id_cust%type
+ ,i_routing_entry1 in lm_tracking.g_it_routing_entries
+ ,i_routing_entry2 in lm_tracking.g_it_routing_entries
+ ,i_routing_entry3 in lm_tracking.g_it_routing_entries
+ ,i_routing_entry4 in lm_tracking.g_it_routing_entries
+ ,i_routing_entry5 in lm_tracking.g_it_routing_entries
+ ,i_pid in lm_packages.pid%type
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.check_routing_decision';
+
+   
+   cursor c_sel_routing_entries
+    (i_area_id_cust in lm_areas_v.id_cust%type
+    ,i_zone_id_cust in lm_zones_v.id_cust%type
+    ,i_identifier_within_sct in lm_nodes.identifier_within_sct%type
+    ,i_route_table_type in lm_routing_tables_v.rte_type%type
+    ,i_destination1 in lm_physical_destinations.id_cust%type
+    ,i_destination2 in lm_physical_destinations.id_cust%type
+    ,i_destination3 in lm_physical_destinations.id_cust%type
+    ,i_destination4 in lm_physical_destinations.id_cust%type
+    ,i_destination5 in lm_physical_destinations.id_cust%type
+    )
+   is
+   
+   select /*+ cardinality(pon 1) */
+          pon.id_cust as id_cust
+   ,      rey.direction as direction
+   ,      rey.preference as preference
+   from   lm_routing_tables_v rte
+   ,      lm_routing_entries_v rey
+   ,      lm_physical_destinations pon
+   where  rte.nde_id = ( select nde.id
+                         from lm_nodes nde
+                         where nde.sct_id = ( select zne.zone_id
+                                              from lm_areas_v ara
+                                              ,    lm_zones_v zne
+                                              where ara.id_cust = i_area_id_cust
+                                              and zne.id_cust = i_zone_id_cust
+                                              and ara.area_id = zne.area_id
+                                            )
+                         and nde.identifier_within_sct = i_identifier_within_sct
+                       )
+   and rte.rte_type = i_route_table_type
+   and rey.rte_id = rte.id
+   and rey.pon_id = pon.id
+   and pon.id_cust in (i_destination1, i_destination2, i_destination3, i_destination4, i_destination5)
+   order by id_cust
+   ,        direction;
+
+   cursor c_last_package_destinations
+    (i_pid in lm_packages.pid%type
+    )
+   is
+   
+   
+   select pdn.pin_id
+   ,      pdn.id as pdn_id
+   ,      pdn.pon_id pon_id
+   ,      ( select pon.id_cust
+            from lm_physical_destinations pon
+            where pon.id = pdn.pon_id
+          ) pon_id_cust
+   from   lm_package_destinations pdn
+   
+   ,      lm_pin_active_of_package_v piev
+   where  pdn.pin_id = piev.id
+   and    piev.pid = i_pid;
+
+   
+   cursor c_get_node
+    (i_sct_id                in lm_system_components.id%type
+    ,i_identifier_within_sct in lm_nodes.identifier_within_sct%type
+    )
+   is
+   select nde.ind_autonomous_routing
+   from   lm_nodes nde
+   where  nde.sct_id                = i_sct_id
+   and    nde.identifier_within_sct = i_identifier_within_sct;
+
+   l_send_routingtableupdate     boolean := false;
+   l_routing_entry_valid         boolean := false;
+   l_found                       boolean;
+   l_rows                        number;
+   l_cur_destination             lm_physical_destinations.id_cust%type;
+   l_pin_ims_id                  lm_ifc_messages.id%type;
+   l_rt_package                  lm_packages%rowtype;
+   l_it_destination              lm_common.g_it_pon_id_cust;
+   l_it_destinations             lm_common.g_it_pon_id_cust;
+   l_rec_sel_routing_entries     c_sel_routing_entries%rowtype;
+   l_pin_id_sent                 lm_package_instructions.id%type;
+   l_rt_pin                      lm_package_instructions%rowtype;
+   l_rt_haa                      lm_handling_areas%rowtype;
+   l_it_pon_id                   lm_topology_administration.g_it_dst;
+   l_nt_screeninginstruction     nt_screeninginstruction := nt_screeninginstruction();
+   l_zone_id                     lm_system_components.id%type;
+   l_nde_ind_autonomous_routing  lm_nodes.ind_autonomous_routing%type;
+   l_package_instruction         lm_common.g_rt_package_instruction;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_zone_id := lm_topology_administration.get_sct_id( i_area_id_cust         => i_area_id_cust
+                                                     , i_zone_id_cust         => i_zone_id_cust
+                                                     , i_section_id_cust      => null
+                                                     );
+   
+   
+   open c_get_node( i_identifier_within_sct      => i_identifier_within_sct
+                  , i_sct_id                     => l_zone_id
+                  );
+
+   fetch c_get_node
+   into  l_nde_ind_autonomous_routing;
+
+   close c_get_node;
+                                               
+   if l_nde_ind_autonomous_routing = lm_constant.g_con_yesno_yes
+   then
+      
+      l_send_routingtableupdate := false;
+
+   
+   
+   elsif i_status = lm_constant.g_con_rte_status_ok
+      and i_routing_table_type is not null
+   then
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      for l_rec_sel_routing_entries in c_sel_routing_entries( i_area_id_cust               => i_area_id_cust
+                                                            , i_zone_id_cust               => i_zone_id_cust
+                                                            , i_identifier_within_sct      => i_identifier_within_sct
+                                                            , i_route_table_type           => i_routing_table_type
+                                                            , i_destination1               => i_destination1
+                                                            , i_destination2               => i_destination2
+                                                            , i_destination3               => i_destination3
+                                                            , i_destination4               => i_destination4
+                                                            , i_destination5               => i_destination5
+                                                            )
+      loop
+         
+         
+         
+         if l_cur_destination is null 
+            or l_cur_destination <> l_rec_sel_routing_entries.id_cust
+         then
+            
+            
+            
+            if l_cur_destination is not null 
+               and not l_routing_entry_valid
+            then
+               
+               l_it_destinations( l_it_destinations.count + 1 )  := l_cur_destination;
+            end if;
+
+            
+            l_routing_entry_valid := true;
+            
+            
+            l_cur_destination := l_rec_sel_routing_entries.id_cust;
+         end if;
+
+         
+         if l_routing_entry_valid
+         then
+            
+            
+            
+            
+            if l_rec_sel_routing_entries.id_cust = i_destination1
+            then
+               l_routing_entry_valid := lm_tracking.validate_routing_table_entry( i_it_routing_entry => i_routing_entry1
+                                                                                , i_direction        => l_rec_sel_routing_entries.direction
+                                                                                , i_preference       => l_rec_sel_routing_entries.preference
+                                                                                );
+            elsif l_rec_sel_routing_entries.id_cust = i_destination2
+            then
+               l_routing_entry_valid := lm_tracking.validate_routing_table_entry( i_it_routing_entry => i_routing_entry2
+                                                                                , i_direction        => l_rec_sel_routing_entries.direction
+                                                                                , i_preference       => l_rec_sel_routing_entries.preference
+                                                                                );
+            elsif l_rec_sel_routing_entries.id_cust = i_destination3
+            then
+               l_routing_entry_valid := lm_tracking.validate_routing_table_entry( i_it_routing_entry => i_routing_entry3
+                                                                                , i_direction        => l_rec_sel_routing_entries.direction
+                                                                                , i_preference       => l_rec_sel_routing_entries.preference
+                                                                                );
+            elsif l_rec_sel_routing_entries.id_cust = i_destination4
+            then
+               l_routing_entry_valid := lm_tracking.validate_routing_table_entry( i_it_routing_entry => i_routing_entry4
+                                                                                , i_direction        => l_rec_sel_routing_entries.direction
+                                                                                , i_preference       => l_rec_sel_routing_entries.preference
+                                                                                );
+            elsif l_rec_sel_routing_entries.id_cust = i_destination5
+            then
+               l_routing_entry_valid := lm_tracking.validate_routing_table_entry( i_it_routing_entry => i_routing_entry5
+                                                                                , i_direction        => l_rec_sel_routing_entries.direction
+                                                                                , i_preference       => l_rec_sel_routing_entries.preference
+                                                                                );
+            end if;
+         end if;
+      end loop check_dest;
+
+      
+      if not l_routing_entry_valid
+      then
+         
+         l_it_destinations( l_it_destinations.count + 1 ) := l_cur_destination;
+      end if;
+
+      
+      
+      
+      if l_it_destinations.count > 0
+      then
+         l_send_routingtableupdate := true;
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_invalidroutingtable
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_additional_data        =>    'AreaID: '
+                                                             || i_area_id_cust
+                                                             || ', ZoneID: '
+                                                             || i_zone_id_cust
+                                                             || ', NodeID: '
+                                                             || i_identifier_within_sct
+                                                             || ', RoutingTableType: '
+                                                             || i_routing_table_type
+                                                             || ', Destinations: '
+                                                             || i_destination1
+                                                             || ', '
+                                                             || i_destination2
+                                                             || ', '
+                                                             || i_destination3
+                                                             || ', '
+                                                             || i_destination4
+                                                             || ', '
+                                                             || i_destination5
+                               );
+      end if;
+
+   
+   elsif i_status = lm_constant.g_con_rte_status_no_route_tabl
+   then
+      l_send_routingtableupdate := true;
+
+   
+   
+   elsif i_status = lm_constant.g_con_rte_status_no_destinatio
+   then
+      l_send_routingtableupdate := false;
+      
+      
+      
+      l_found                    := lm_pae_tapi_pck.pae_select_row( i_pae_pid      => i_pid
+                                                                  , o_rt_pae       => l_rt_package
+                                                                  );
+
+      
+      
+      
+      if l_rt_package.pss_id <> lm_constant.g_con_pss_name_suspect
+      then  
+         
+         for l_rt_last_package_destinations in c_last_package_destinations( i_pid )
+         loop
+            l_it_destination( l_it_destination.count + 1 ) := l_rt_last_package_destinations.pon_id_cust;
+            l_it_pon_id(l_it_pon_id.count + 1)             := l_rt_last_package_destinations.pon_id;
+            l_pin_id_sent := l_rt_last_package_destinations.pin_id;
+         end loop;
+
+         
+         l_found          := lm_pin_tapi_pck.pin_select_row( i_pin_id      => l_pin_id_sent
+                                                           , o_rt_pin      => l_rt_pin
+                                                           );
+         
+         if l_rt_pin.haa_id is not null
+         then
+            l_found := lm_haa_tapi_pck.haa_select_row( i_haa_id => l_rt_pin.haa_id
+                                                     , o_rt_haa => l_rt_haa
+                                                     );
+         end if;
+         
+         lm_package_administration.store_package_instruction( i_pid            => l_rt_pin.pid
+                                                            , i_pty_id         => l_rt_pin.pty_id
+                                                            , i_it_pon_id      => l_it_pon_id
+                                                            , i_haa_id         => l_rt_pin.haa_id
+                                                            , o_rt_pin         => l_rt_pin
+                                                            );
+                                                            
+         l_nt_screeninginstruction := lm_package_administration.get_screeninginstruction(i_pid => i_pid);
+
+         l_package_instruction.instruction.it_pon_id_cust          := l_it_destination;
+         l_package_instruction.instruction.destination_haa_id_cust := l_rt_haa.id_cust;
+         l_package_instruction.instruction.priority_indicator      := l_rt_package.priority_indicator;
+         l_package_instruction.instruction.release_group_id        := l_rt_package.rgp_id;
+         l_package_instruction.screeninginstruction                := l_nt_screeninginstruction;
+         
+
+         
+         lm_package_administration.send_instruction_for_package(i_pty_id     => l_rt_package.pty_id
+                                                               ,i_event_time => lm_common.default_timestamp
+                                                               ,i_pid        => i_pid
+                                                               ,i_lic_id     => l_rt_package.lic
+                                                               ,i_pi         => l_package_instruction
+                                                               ,o_ims_id     => l_pin_ims_id
+                                                               );
+
+         if l_pin_ims_id is not null
+         then
+            
+            l_rt_pin.ims_id  := l_pin_ims_id;
+            l_rows           := lm_pin_tapi_pck.pin_update_row( i_pin_id       => l_rt_pin.id
+                                                              , io_rt_pin      => l_rt_pin
+                                                              );
+         end if;
+      else
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_packagesuspect
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_additional_data        => 'PID:' || i_pid
+                               );
+      end if;
+   end if;
+
+   
+   if l_send_routingtableupdate = true
+   then
+      lm_flow_administration.send_routing_table( i_area_id_cust                    => i_area_id_cust
+                                               , i_zone_id_cust                    => i_zone_id_cust
+                                               , i_node_identifier_within_sct      => i_identifier_within_sct
+                                               , i_routing_table_type              => i_routing_table_type
+                                               , i_it_destinations                 => l_it_destinations
+                                               );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_get_node%isopen
+      then
+         close c_get_node;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_routing_decision;
+
+
+procedure check_recirculation
+ ( i_rt_pae              in     lm_packages%rowtype
+ , i_rt_pet              in     lm_package_events%rowtype
+ , i_area_id_cust        in     lm_areas_v.id_cust%type
+ , i_zone_id_cust        in     lm_zones_v.id_cust%type
+ , i_event_time          in     lm_package_events.event_time%type
+ , o_ind_taskreport_sent    out boolean
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.CHECK_RECIRCULATION';
+
+   
+   cursor c_tin_tdn_by_pid( i_pid in lm_packages.pid%type)
+   is
+   
+   select tpev.id as tin_id
+   ,      tpev.origin
+   ,      ( select tdn.task_instruction_type
+            from lm_task_definitions tdn
+            where tdn.id = tpev.tdn_id
+          ) as task_instruction_type
+   from   lm_tin_active_of_package_v tpev
+   where  tpev.pid = i_pid
+   ;
+
+   
+   cursor c_dsn_fallback_count
+          ( i_tin_id          in lm_task_instructions.id%type
+          , i_fallback_stn_id in lm_stations.id%type
+          )
+   is
+   
+   
+   
+   
+   
+   
+   select count( stn.stn_id ) as determined_station_count
+   ,      sum( decode( stn.stn_id, i_fallback_stn_id, 1, 0 )) as fallback_station_count
+   from ( select dsn.stn_id
+          from   lm_determined_stations dsn
+          where  dsn.tin_id = i_tin_id
+        ) stn
+   ;
+
+   
+   cursor c_recirculation_events
+          ( i_pid    in lm_packages.pid%type
+          , i_rst_id in lm_route_segments.id%type
+          )
+   is
+   select count(pet.id)
+   ,      min(pet.event_time)
+   from   lm_package_events pet
+   where  pet.pid                  = i_pid
+   and    pet.ete_id               = lm_constant.g_con_ete_name_tracking_event
+   and    pet.rst_id               = i_rst_id
+   and    pet.time_recirc_obsolete is null
+   ;
+
+   l_continue                           boolean := false;
+   l_rt_rst                             lm_route_segments%rowtype;
+   l_recirculation_events               number := 0;
+   l_time_first_event                   lm_package_events.event_time%type;
+   l_tin_id                             lm_task_instructions.id%type;
+   l_new_determined_stations            boolean;
+   l_retval                             number;
+   l_rt_dfc                             c_dsn_fallback_count%rowtype;
+   l_tin_origin                         lm_task_instructions.origin%type;
+   l_it_lpc                             nt_lpc := nt_lpc();
+   l_max_route_segment_passing          number := 0;
+   l_ims_id                             lm_ifc_messages.id%type;
+   l_it_pon_id_cust                     lm_common.g_it_pon_id_cust;
+   l_rt_pin                             lm_package_instructions%rowtype;
+   l_task_instruction_type              lm_task_definitions.task_instruction_type%type;
+   l_rt_pae                             lm_packages%rowtype;
+   l_nt_stn_id                          nt_stn_id := nt_stn_id();
+   l_nt_final_stn_id                    nt_stn_id := nt_stn_id();
+   l_rt_stn                             lm_stations%rowtype;
+   l_sm_lpy_id                          lm_lifesign_parties.id%type;
+   l_rt_taskreport_result               lm_package_administration.g_rt_taskreport_result;
+   l_nt_screeninginstruction            nt_screeninginstruction := nt_screeninginstruction();
+   l_package_instruction                lm_common.g_rt_package_instruction;
+
+begin
+   viu_module.enter_module( i_module  => l_con_proc_name );
+   
+   o_ind_taskreport_sent := false;
+   
+   if lm_rst_tapi_pck.rst_select_row( i_rst_id      => i_rt_pae.rst_id
+                                    , o_rt_rst      => l_rt_rst
+                                    )
+   then
+      if l_rt_rst.recirculation_count > 0
+         or
+         l_rt_rst.recirculation_interval > to_dsinterval('+00 00:00:00.000000')
+      then
+         l_continue := true;
+      end if;
+   end if;
+          
+   if l_continue
+   then
+      l_continue := false;
+      
+      
+      
+      l_rt_pae := i_rt_pae;
+
+      
+      
+      
+      if l_rt_rst.recirculation_count > 0
+      then
+         l_max_route_segment_passing  := lm_tracking.get_recirculation_threshold( i_rst_id => i_rt_pae.rst_id);
+      end if;
+
+      
+      
+      open c_recirculation_events( i_pid     => l_rt_pae.pid
+                                 , i_rst_id  => l_rt_pae.rst_id
+                                 );
+      fetch c_recirculation_events
+      into  l_recirculation_events
+      ,     l_time_first_event;
+      close c_recirculation_events;
+
+      
+      
+      
+      
+      
+      
+      
+      
+
+      if (l_rt_rst.recirculation_count = 0
+          and
+          i_rt_pet.event_time - l_time_first_event >= l_rt_rst.recirculation_interval
+          
+         )
+         or
+         (l_rt_rst.recirculation_interval = to_dsinterval ('+00 00:00:00.000000')
+          and
+          l_max_route_segment_passing > 0
+          and
+          l_recirculation_events >= l_max_route_segment_passing
+          
+         )
+         or
+         (l_max_route_segment_passing > 0
+          and
+          l_rt_rst.recirculation_interval > to_dsinterval ('+00 00:00:00.000000')
+          and
+          l_recirculation_events >= l_max_route_segment_passing
+          and
+          i_rt_pet.event_time - l_time_first_event >= l_rt_rst.recirculation_interval
+          
+         )
+      then
+         
+         l_continue := true;
+      end if;
+   end if;
+   
+   if l_continue
+   then
+      
+      
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_recirculationdetected
+                            , i_calling_procedure  => l_con_proc_name
+                            , i_severity           => viu_info.severity_warning
+                            , i_info_arguments     => l_rt_pae.pid || '##' || l_rt_pae.rst_id
+                            , i_additional_data    => 'Package status: '                  || l_rt_pae.pss_id
+                                                   || '; number of passes: '              || l_recirculation_events
+                                                   || '(count-based threshold value: '    || l_max_route_segment_passing
+                                                   || '); time passed since first pass: ' || (i_rt_pet.event_time - l_time_first_event)
+                                                   || ' (time-based-threshold value: '    || l_rt_rst.recirculation_interval
+                                                   || ')'
+                            );
+      
+      lm_tracking.reset_recirculation_events( i_pid        => l_rt_pae.pid
+                                            , i_event_time => i_rt_pet.event_time
+                                            );
+      
+      
+      
+      if l_rt_pae.pss_id = lm_constant.g_con_pss_name_open
+      then
+         
+         
+         
+         open c_tin_tdn_by_pid( i_pid  => l_rt_pae.pid );
+         fetch c_tin_tdn_by_pid
+         into  l_tin_id
+         ,     l_tin_origin
+         ,     l_task_instruction_type;
+         close c_tin_tdn_by_pid;
+         
+         
+         
+         
+         
+         lm_tracking.insert_evaluated_stations( i_tin_id  => l_tin_id
+                                              , i_rt_pet  => i_rt_pet
+                                              );
+         
+         lm_topology_administration.evaluate_taskinstruction
+                                    ( i_pid                      => l_rt_pae.pid
+                                    , i_tin_id                   => l_tin_id
+                                    , i_source                   => lm_constant.g_con_src_recirculation
+                                    , i_nt_exclude_stations      => nt_stn_id()
+                                    , o_new_determined_stations  => l_new_determined_stations
+                                    );
+         
+         if not l_new_determined_stations
+         then
+            
+            
+            
+            
+            
+            begin
+               l_sm_lpy_id := lm_common.get_parameter_value (i_prr_name => lm_constant.g_con_pve_lpy_id_sm);
+            exception
+               when value_error then
+                  
+                  
+                  
+                  l_sm_lpy_id := null;
+            end;
+            if l_tin_origin <> lm_constant.g_con_origin_csci_lm
+               and
+               lm_lifesign.determine_lpy_healthiness( i_lpy_id => l_sm_lpy_id)
+            then
+               
+               
+               
+               
+               l_rt_taskreport_result.it_lpc := l_it_lpc; 
+               l_rt_taskreport_result.error  := lm_constant.g_con_mae_cannot_reach_dest;
+                  
+               lm_package_administration.send_task_report( i_event_time        => i_event_time
+                                                         , i_bid               => l_rt_pae.bid
+                                                         , i_bid_extension     => l_rt_pae.bid_extension
+                                                         , i_pid               => l_rt_pae.pid
+                                                         , i_area_id_cust      => i_area_id_cust
+                                                         , i_zone_id_cust      => i_zone_id_cust
+                                                         , i_stn_id_cust       => null
+                                                         , i_tasktype          => l_task_instruction_type
+                                                         , i_register_reason   => null
+                                                         , i_deregister_reason => null
+                                                         , i_rt_result         => l_rt_taskreport_result
+                                                         , i_rt_bir            => null
+                                                         );
+               o_ind_taskreport_sent := true;
+            else
+               
+               
+               
+
+               
+               
+               
+               
+
+               
+               lm_topology_administration.get_fallback_station( o_rt_stn  => l_rt_stn );
+               
+               open c_dsn_fallback_count( i_tin_id          => l_tin_id
+                                        , i_fallback_stn_id => l_rt_stn.id
+                                        );
+               fetch c_dsn_fallback_count into l_rt_dfc;
+               close c_dsn_fallback_count;
+               if l_rt_dfc.determined_station_count = 1
+                  and
+                  l_rt_dfc.fallback_station_count = 1
+               then
+                  
+                  
+                  
+                  null;
+               else
+                  
+                  viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_fallbacknewpackage
+                                        , i_calling_procedure  => l_con_proc_name
+                                        , i_severity           => viu_info.c_severity_warning
+                                        , i_info_arguments     => i_rt_pae.pid
+                                        , i_additional_data    => 'Cause: Recirculation '
+                                                               || case when l_tin_origin = lm_constant.g_con_origin_csci_lm
+                                                                       then '(Default LM TaskInstruction)'
+                                                                       else '(No recent lifesign response received from Service Manager)'
+                                                                  end
+                                        );
+
+                  
+                  l_nt_stn_id.extend;
+                  l_nt_stn_id( 1 ) := l_rt_stn.id;
+                  
+                  lm_package_administration.del_determined_stations_by_tin( i_tin_id  => l_tin_id );
+                  
+                     
+                  lm_package_administration.create_instr_determined_stn( i_tin_id           => l_tin_id
+                                                                       , i_pid              => l_rt_pae.pid
+                                                                       , i_pty_id           => l_rt_pae.pty_id
+                                                                       , i_nt_stn_id        => l_nt_stn_id
+                                                                       , i_nt_final_stn_id  => l_nt_final_stn_id
+                                                                       , o_it_pon_id_cust   => l_it_pon_id_cust
+                                                                       , o_rt_pin           => l_rt_pin
+                                                                       );
+
+
+             
+                  l_nt_screeninginstruction := lm_package_administration.get_screeninginstruction(i_pid => i_rt_pae.pid);
+
+                  l_package_instruction.instruction.it_pon_id_cust          := l_it_pon_id_cust;
+                  l_package_instruction.instruction.priority_indicator      := l_rt_pae.priority_indicator;
+                  l_package_instruction.instruction.release_group_id        := l_rt_pae.rgp_id;
+                  l_package_instruction.screeninginstruction                := l_nt_screeninginstruction;
+                     
+                  
+                  lm_package_administration.send_instruction_for_package(i_pty_id     => l_rt_pae.pty_id
+                                                                        ,i_event_time => lm_common.default_timestamp
+                                                                        ,i_pid        => l_rt_pae.pid
+                                                                        ,i_lic_id     => l_rt_pae.lic
+                                                                        ,i_pi         => l_package_instruction
+                                                                        ,o_ims_id     => l_ims_id
+                                                                        );
+                                               
+                  
+                  l_rt_pin.ims_id := l_ims_id;
+                  l_retval        := lm_pin_tapi_pck.pin_update_row( i_pin_id   => l_rt_pin.id
+                                                                   , io_rt_pin  => l_rt_pin
+                                                                   );
+                  
+                  l_rt_pae.expected_time_to_arrive := null;
+                  l_retval                         := lm_pae_tapi_pck.pae_update_row
+                                                                      ( i_pae_pid  => l_rt_pae.pid
+                                                                      , io_rt_pae  => l_rt_pae
+                                                                      );
+               end if; 
+            end if;    
+         end if;       
+      end if;          
+        
+   end if;             
+      
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_recirculation_events%isopen
+      then
+         close c_recirculation_events;
+      end if;
+
+      if c_tin_tdn_by_pid%isopen
+      then
+         close c_tin_tdn_by_pid;
+      end if;
+
+      if c_dsn_fallback_count%isopen
+      then
+         close c_dsn_fallback_count;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_recirculation;
+
+
+procedure reset_recirculation_events
+ (i_pid in lm_packages.pid%type
+ ,i_event_time in lm_package_events.event_time%type
+ )
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package || '.RESET_RECIRCULATION_EVENTS';
+
+begin
+   viu_module.enter_module ( i_module =>    l_con_proc_name );
+
+   begin
+      
+      
+      
+      update lm_package_events pet
+      set    pet.time_recirc_obsolete = i_event_time
+      where  pet.pid                  = i_pid
+      and    pet.ete_id               = lm_constant.g_con_ete_name_tracking_event
+      and    pet.time_recirc_obsolete is null;
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                  => viu_constant.c_ifo_updatefailed
+                            ,  i_calling_procedure      => l_con_proc_name
+                            ,  i_severity               => viu_info.c_severity_error
+                            ,  i_info_arguments         => 'lm_package_events'
+                            ,  i_additional_data        => 'pid: ' || i_pid ||'; '||sqlerrm
+                            );
+   end;
+
+   viu_module.leave_module ( i_module =>    l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module       => l_con_proc_name
+                             , i_debug_info   => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end reset_recirculation_events;
+
+
+procedure insert_evaluated_stations
+ (i_tin_id in lm_task_instructions.id%type
+ ,i_rt_pet in lm_package_events%rowtype
+ )
+ is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package || '.INSERT_EVALUATED_STATIONS';
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   begin
+      
+      
+      
+      insert into lm_evaluated_stations esn
+                  ( esn.pet_id
+                  , esn.stn_id
+                  , esn.tin_id
+                  , esn.time_recirculation_obsolete
+                  )
+                  ( select i_rt_pet.id
+                    ,      dsn.stn_id
+                    ,      dsn.tin_id
+                    ,      i_rt_pet.event_time
+                    from   lm_determined_stations dsn
+                    where  dsn.tin_id = i_tin_id
+                    and    dsn.ind_final_expected = lm_constant.g_con_yesno_no
+                  );
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_insertfailed
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_info_arguments         => 'lm_evaluated_stations'
+                            , i_additional_data        => 'tin_id: ' || i_tin_id ||
+                                                          '; pet_id: ' || i_rt_pet.id ||
+                                                          '; event_time: ' || i_rt_pet.event_time ||
+                                                          '; ' || sqlerrm
+                            );
+   end;
+   
+   viu_module.leave_module ( i_module =>    l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module       => l_con_proc_name
+                             , i_debug_info   => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end insert_evaluated_stations;
+
+
+function validate_routing_table_entry
+ (i_it_routing_entry in lm_tracking.g_it_routing_entries
+ ,i_direction in lm_routing_entries_v.direction%type
+ ,i_preference in lm_routing_entries_v.preference%type
+ )
+ return boolean
+ is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package || '.VALIDATE_ROUTING_TABLE_ENTRY';
+
+   l_rte_valid boolean := false;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   if i_preference <> 0
+   then
+      l_rte_valid := false;
+      for idx_rte in 1 .. i_it_routing_entry.count
+      loop
+         if ( i_it_routing_entry( idx_rte ).direction = i_direction
+            and i_it_routing_entry( idx_rte ).preference = i_preference
+            )
+         then
+            l_rte_valid := true;
+            exit;
+         end if;
+      end loop;
+   else
+      
+      
+      
+      
+      
+      
+      
+      l_rte_valid := true;
+      for idx_rte in 1 .. i_it_routing_entry.count
+      loop
+         if i_direction = i_it_routing_entry( idx_rte).direction
+         then
+            l_rte_valid := false;
+            exit;
+         end if;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_rte_valid;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end validate_routing_table_entry;
+
+
+procedure send_to_fallback_station
+ (i_pid          in lm_packages.pid%type
+ ,i_lic          in lm_packages.lic%type
+ ,i_pty_id_cust  in lm_parties.id_cust%type
+ ,i_pae_found    in boolean)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   l_con_proc_name constant  lm_constant.st_proc_name := g_con_package || '.send_to_fallback_station';
+
+   l_found                   boolean;
+   l_rows                    number;
+   l_ims_id                  lm_ifc_messages.id%type;
+   l_it_pon_id_cust          lm_common.g_it_pon_id_cust;
+   l_rt_pon                  lm_physical_destinations%rowtype;
+   l_rt_stn                  lm_stations%rowtype;
+   l_it_pon_id               lm_topology_administration.g_it_dst;
+   l_rt_haa                  lm_handling_areas%rowtype;
+   l_rt_pin                  lm_package_instructions%rowtype;
+   l_nt_stn_id               nt_stn_id := nt_stn_id();
+   l_package_instruction     lm_common.g_rt_package_instruction;
+   l_pty_id                  lm_parties.id%type;
+  
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   lm_topology_administration.get_fallback_station( o_rt_stn      => l_rt_stn );
+   l_nt_stn_id.extend;
+   l_nt_stn_id( 1 ) := l_rt_stn.id;
+
+   
+   lm_topology_administration.determine_destinations( i_nt_stn_id      => l_nt_stn_id
+                                                    , o_it_pon_id      => l_it_pon_id
+                                                    , o_rt_haa         => l_rt_haa
+                                                    );
+
+   
+   l_found := lm_pon_tapi_pck.pon_select_row( i_pon_id => l_it_pon_id( 1 )
+                                            , o_rt_pon => l_rt_pon
+                                            );
+   l_it_pon_id_cust( 1 )  := l_rt_pon.id_cust;
+   
+   
+   l_pty_id := lm_lifesign.check_party(i_pty_id_cust     => i_pty_id_cust
+                                      ,i_pty_instance_id => null
+                                       );
+
+   if i_pae_found
+   then
+      
+      lm_package_administration.store_package_instruction( i_pid            => i_pid
+                                                         , i_pty_id         => l_pty_id
+                                                         , i_it_pon_id      => l_it_pon_id
+                                                         , i_haa_id         => l_rt_haa.id
+                                                         , o_rt_pin         => l_rt_pin
+                                                         );
+
+   end if;
+   
+   l_package_instruction.instruction.it_pon_id_cust          := l_it_pon_id_cust;
+   l_package_instruction.instruction.priority_indicator      := lm_constant.g_con_pae_priority_low;
+   
+   
+   lm_package_administration.send_instruction_for_package(i_pty_id     => l_pty_id
+                                                         ,i_event_time => lm_common.default_timestamp
+                                                         ,i_pid        => i_pid
+                                                         ,i_lic_id     => i_lic
+                                                         ,i_pi         => l_package_instruction
+                                                         ,o_ims_id     => l_ims_id
+                                                         );
+
+   if     l_ims_id is not null
+      and i_pae_found
+   then
+      
+      l_rt_pin.ims_id  := l_ims_id;
+      l_rows           := lm_pin_tapi_pck.pin_update_row( i_pin_id       => l_rt_pin.id
+                                                        , io_rt_pin      => l_rt_pin
+                                                        );
+   end if;
+
+   
+   viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_fallbacknewpackage
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_warning
+                         , i_info_arguments         => i_pid
+                         , i_additional_data        => 'Cause: Reported package from TrackingReport unknown or exists with status closed or missing'
+                         );
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_to_fallback_station;
+
+
+function get_recirculation_threshold
+ (i_rst_id in lm_route_segments.id%type
+ )
+ return number
+ is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.get_recirculation_threshold';
+
+   
+   cursor c_load_group
+    (i_lst_id lm_logical_segments.id%type
+    )
+    is
+   select lgp.id
+   ,      lgp.name
+   from   lm_segment_group_members sgr
+   ,      lm_load_groups           lgp
+   where  sgr.lgp_id = lgp.id
+   and    sgr.lst_id = i_lst_id
+   ;
+   
+   cursor c_available_positions
+    (i_lgp_id in lm_load_groups.id%type
+    )
+    is
+   select sum(nvl(lse.number_of_items, 0)) available_positions
+   ,      min(lse.event_time)              min_event_time
+   from   lm_segment_group_members     sgr
+   ,      lm_logical_segm_performances lse
+   where  sgr.lgp_id = i_lgp_id
+   and    sgr.lst_id = lse.lst_id
+   ;
+   
+   cursor c_lgp_open_packages
+    (i_lgp_id in lm_load_groups.id%type
+    )
+    is
+   select count( * ) load
+   from   lm_segment_group_members sgr
+   ,      lm_logical_segments      lst
+   ,      lm_route_segments        rst
+   ,      lm_packages              pae
+   where  sgr.lst_id         = lst.id
+   and    lst.id             = rst.lst_id
+   and    rst.id             = pae.rst_id
+   and    sgr.lgp_id         = i_lgp_id
+   and    pae.pss_id         = lm_constant.g_con_pss_name_open
+   ;
+
+   
+   cursor c_load_rule
+    (i_lgp_id in lm_load_rules.lgp_id%type
+    ,i_load_value in lm_load_rules.lower_load_value%type
+    )
+    is
+   select lre.recirculation_count
+   from   lm_load_rules lre
+   where  lre.lgp_id            = i_lgp_id
+   and    lre.lower_load_value <= i_load_value
+   order by lre.lower_load_value desc
+   ;
+   
+   l_threshold                   lm_route_segments.recirculation_count%type;
+   l_rt_rst                      lm_route_segments%rowtype;
+   l_continue                    boolean := true;
+   l_rt_load_group               c_load_group%rowtype;
+   l_rt_load_group_too_much      c_load_group%rowtype;
+   l_rt_available_positions      c_available_positions%rowtype;
+   l_interval_stale_segm_perf    interval day to second;
+   l_found                       boolean;
+   l_rt_lgp_open_packages        c_lgp_open_packages%rowtype;
+   l_load                        number;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+          
+   
+   l_found := lm_rst_tapi_pck.rst_select_row( i_rst_id => i_rst_id
+                                            , o_rt_rst => l_rt_rst
+                                            );
+
+   
+   
+   
+   open c_load_group( i_lst_id => l_rt_rst.lst_id);
+   fetch c_load_group into l_rt_load_group;
+   
+   if c_load_group%notfound
+   then
+      
+      
+      
+      l_threshold := l_rt_rst.recirculation_count;
+      l_continue := false;
+   else
+      
+      fetch c_load_group
+      into  l_rt_load_group_too_much;
+      if c_load_group%found
+      then
+         
+         
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_toomanyloadgroups
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_info_arguments         => l_rt_rst.lst_id
+                               , i_additional_data        => 'This is a configuration error.'
+                               );
+         
+         l_threshold := l_rt_rst.recirculation_count;
+         l_continue := false;
+      end if;
+   end if;
+   close c_load_group;
+   
+   if l_continue
+   then
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      open c_available_positions( i_lgp_id => l_rt_load_group.id);
+      fetch c_available_positions
+      into  l_rt_available_positions;
+      close c_available_positions;
+      if nvl(l_rt_available_positions.available_positions, 0) = 0
+      then
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_availablepositionszero
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_info_arguments         => l_rt_load_group.id||'##'||l_rt_load_group.name
+                               , i_additional_data        => 'Route segment '||l_rt_rst.id||'  recirculation_count: '
+                                                             ||l_rt_rst.recirculation_count||' used.'
+                               );
+         l_threshold := l_rt_rst.recirculation_count;
+      else
+         
+         l_interval_stale_segm_perf := lm_common.varchar_to_interval
+                                       ( lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_int_segmperf_outdate)
+                                       );
+         if l_rt_available_positions.min_event_time < lm_common.default_timestamp - l_interval_stale_segm_perf
+         then
+            
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_stalesegmperformancedata
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_info_arguments         => l_rt_load_group.id||'##'||l_rt_load_group.name
+                                  , i_additional_data        => 'Outdated data is used. Oldest event time: '
+                                                                || lm_common.timestamp_to_varchar( l_rt_available_positions.min_event_time)
+                                  );
+         end if;
+         
+         
+         
+         open c_lgp_open_packages( i_lgp_id => l_rt_load_group.id);
+         fetch c_lgp_open_packages
+         into  l_rt_lgp_open_packages;
+         close c_lgp_open_packages;
+         
+         
+         
+         l_load := l_rt_lgp_open_packages.load / l_rt_available_positions.available_positions;
+         
+         
+         
+         open c_load_rule( i_lgp_id     => l_rt_load_group.id
+                         , i_load_value => l_load
+                         );
+         fetch c_load_rule
+         into  l_threshold;
+         if c_load_rule%notfound
+         then
+            
+            l_threshold := l_rt_rst.recirculation_count;
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_noloadrulefound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_info_arguments         => to_char(l_load, '0D000')
+                                                                ||'##'||l_rt_load_group.id||'##'||l_rt_load_group.name
+                                  , i_additional_data        => 'This is a configuration error'
+                                  );
+         end if;
+         close c_load_rule;
+
+      end if; 
+   end if; 
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_threshold;
+exception
+   when others
+   then
+      if c_load_group%isopen
+      then
+         close c_load_group;
+      end if;
+      if c_available_positions%isopen
+      then
+         close c_available_positions;
+      end if;
+      if c_lgp_open_packages%isopen
+      then
+         close c_lgp_open_packages;
+      end if;
+      if c_load_rule%isopen
+      then
+         close c_load_rule;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_recirculation_threshold;
+
+
+procedure handle_missed_events
+ (i_pid in lm_packages.pid%type
+ ,i_rst_id in lm_packages.rst_id%type
+ ,i_area_id_cust in lm_areas_v.id_cust%type
+ ,i_zone_id_cust in lm_zones_v.id_cust%type
+ ,i_section_id_cust in lm_sections_v.id_cust%type
+ ,i_event_time in lm_package_events.event_time%type
+ )
+ is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.handle_missed_events';
+
+   l_it_pid_missed          lm_package_administration.g_it_pid;
+   l_found                  boolean;
+   l_rt_rst_administered    lm_route_segments%rowtype;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   
+   
+   
+   
+   l_found := lm_rst_tapi_pck.rst_select_row( i_rst_id => i_rst_id
+                                            , o_rt_rst => l_rt_rst_administered
+                                            );
+   
+   
+   if l_rt_rst_administered.ind_detect_missed_events = lm_constant.g_con_yesno_yes
+   then
+      
+      lm_package_administration.select_earlier_packages_on_rst( i_rst_id => i_rst_id
+                                                              , i_pid    => i_pid
+                                                              , o_it_pid => l_it_pid_missed
+                                                              );
+      
+      if l_it_pid_missed.count > 0
+      then
+         for i in l_it_pid_missed.first .. l_it_pid_missed.last
+         loop
+            lm_package_administration.handle_missed_trackingreport( i_pid             => l_it_pid_missed(i)
+                                                                  , i_rst_id          => i_rst_id
+                                                                  , i_event_time      => i_event_time
+                                                                  , i_pid_trigger     => i_pid
+                                                                  , i_area_id_cust    => i_area_id_cust
+                                                                  , i_zone_id_cust    => i_zone_id_cust
+                                                                  , i_section_id_cust => i_section_id_cust
+                                                                  );
+         end loop;
+      end if; 
+   end if; 
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info (i_calling_procedure =>    l_con_proc_name);
+end handle_missed_events;
+
+  
+end lm_tracking;
+/

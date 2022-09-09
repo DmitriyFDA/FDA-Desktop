@@ -1,0 +1,505 @@
+create or replace PACKAGE LM_SEGMENT_PERFORMANCE IS
+
+G_CON_PACKAGE CONSTANT LM_CONSTANT.ST_PROC_NAME := 'LM_SEGMENT_PERFORMANCE';
+
+/* SPE_001: Handle a SegmentPerformanceReport message */
+PROCEDURE HDL_SEGMENTPERFORMANCEREPORT;
+/* SPE_002: Get the message attrinutes of a SegmentPerformanceReport mess */
+PROCEDURE GET_MESSAGE_ATTRIBUTES_SPT
+ (I_IT_LSE IN Lm_Interface.G_IT_IMA
+ ,O_EVENT_TIME OUT LM_LOGICAL_SEGM_PERFORMANCES.EVENT_TIME%TYPE
+ ,O_AREA_ID_CUST OUT LM_AREAS_V.ID_CUST%TYPE
+ ,O_SEGMENT_ID_CUST OUT LM_LOGICAL_SEGMENTS.ID_CUST%TYPE
+ ,O_NUMBER_OF_ITEMS OUT LM_LOGICAL_SEGM_PERFORMANCES.NUMBER_OF_ITEMS%TYPE
+ );
+/* SPE_003: Update the SEGMENT_PERFORMANCE tables */
+PROCEDURE UPDATE_SEGMENT_PERFORMANCE
+ (I_EVENT_TIME IN LM_LOGICAL_SEGM_PERFORMANCES.EVENT_TIME%TYPE
+ ,I_LST_ID IN LM_LOGICAL_SEGMENTS.ID%TYPE
+ ,I_TST_ID IN LM_TECHNICAL_SEGMENTS.ID%TYPE
+ ,I_NUMBER_OF_ITEMS IN LM_LOGICAL_SEGM_PERFORMANCES.NUMBER_OF_ITEMS%TYPE
+ );
+END LM_SEGMENT_PERFORMANCE;
+/
+
+
+
+
+package body lm_segment_performance is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure hdl_segmentperformancereport
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.hdl_segmentperformancereport';
+
+   l_event_time      lm_logical_segm_performances.event_time%type;
+   l_area_id_cust    lm_areas_v.id_cust%type;
+   l_segment_id_cust lm_logical_segments.id_cust%type;
+   l_number_of_items lm_logical_segm_performances.number_of_items%type;
+   l_rt_lst          lm_logical_segments%rowtype;
+   l_rt_tst          lm_technical_segments%rowtype;
+   l_sct_id_area     lm_system_components.id%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   lm_segment_performance.get_message_attributes_spt( i_it_lse               => lm_interface.g_it_message_content
+                                                    , o_event_time           => l_event_time
+                                                    , o_area_id_cust         => l_area_id_cust
+                                                    , o_segment_id_cust      => l_segment_id_cust
+                                                    , o_number_of_items      => l_number_of_items
+                                                    );
+
+   
+   if not lm_lst_tapi_pck.lst_select_row_upd_uk1( i_lst_id_cust      => l_segment_id_cust
+                                                , o_rt_lst           => l_rt_lst
+                                                )
+   then
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_selectreturnednorecords
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_additional_data        => 'LM_LOGICAL_SEGMENTS.ID_CUST: ' || l_segment_id_cust
+                         );
+   end if;
+
+   
+   lm_topology_administration.chk_area_zone_section( i_area_id_cust         => l_area_id_cust
+                                                   , i_zone_id_cust         => null
+                                                   , i_section_id_cust      => null
+                                                   );
+   
+   
+   l_sct_id_area  := lm_topology_administration.get_sct_id( i_area_id_cust         => l_area_id_cust
+                                                          , i_zone_id_cust         => null
+                                                          , i_section_id_cust      => null
+                                                          );
+
+   
+   if not lm_tst_tapi_pck.tst_select_row_uk2( i_tst_sct_id      => l_sct_id_area
+                                            , i_tst_lst_id      => l_rt_lst.id
+                                            , o_rt_tst          => l_rt_tst
+                                            )
+   then
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_selectreturnednorecords
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_additional_data        => 'LM_LOGICAL_SEGMENTS.ID: ' || l_rt_lst.id || ', SCT_ID: ' || l_sct_id_area
+                         );
+   end if;
+
+   
+   
+   lm_segment_performance.update_segment_performance( i_event_time           => l_event_time
+                                                    , i_lst_id               => l_rt_lst.id
+                                                    , i_tst_id               => l_rt_tst.id
+                                                    , i_number_of_items      => l_number_of_items
+                                                    );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_segmentperformancereport;
+
+
+procedure get_message_attributes_spt
+ (i_it_lse           in lm_interface.g_it_ima
+ ,o_event_time      out lm_logical_segm_performances.event_time%type
+ ,o_area_id_cust    out lm_areas_v.id_cust%type
+ ,o_segment_id_cust out lm_logical_segments.id_cust%type
+ ,o_number_of_items out lm_logical_segm_performances.number_of_items%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.get_message_attributes_spt';
+
+   l_ims_id lm_ifc_messages.id%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   for idx_lse in i_it_lse.first .. i_it_lse.last
+   loop
+      case i_it_lse( idx_lse ).attribute
+         
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp      => i_it_lse( idx_lse ).value );
+         
+         when 'AreaID'
+         then
+            o_area_id_cust  := i_it_lse( idx_lse ).value;
+         
+         when 'SegmentID'
+         then
+            o_segment_id_cust  := i_it_lse( idx_lse ).value;
+         
+         when 'NumberOfItems'
+         then
+            o_number_of_items  := i_it_lse( idx_lse ).value;
+         
+         
+         
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            l_ims_id  := i_it_lse( idx_lse ).value;
+         else
+            
+            if i_it_lse( idx_lse ).attribute not in ( 'Header/MessageTime'
+                                                    , 'Header/Source/ProcessID'
+                                                    , 'Header/Source/InstanceID'
+                                                    , 'Header/Target/ProcessID'
+                                                    , 'Header/Target/InstanceID'
+                                                    , 'Header/OperatorID'
+                                                    )
+            then
+               
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: '
+                                                                   || lm_constant.g_con_msg_availability
+                                                                   || ' ; Attribute: '''
+                                                                   || i_it_lse( idx_lse ).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_lse( idx_lse ).value
+                                                                   || ''''
+                                     );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes_spt;
+
+
+procedure update_segment_performance
+ (i_event_time      in lm_logical_segm_performances.event_time%type
+ ,i_lst_id          in lm_logical_segments.id%type
+ ,i_tst_id          in lm_technical_segments.id%type
+ ,i_number_of_items in lm_logical_segm_performances.number_of_items%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.update_segment_performance';
+   
+   
+   cursor c_count_tst_in_lst
+    (i_lst_id in lm_logical_segments.id%type
+    )
+    is
+   select count( * ) tst_amount
+   from   lm_technical_segments tst
+   where  tst.lst_id = i_lst_id
+   and    exists( select ''
+                 from   lm_technical_segm_performances tse
+                 where  tse.tst_id = tst.id );
+                 
+   
+   
+   cursor c_logical_segment(i_lst_id in lm_logical_segments.id%type)
+   is
+   select nvl(sum(tse.number_of_items),0) number_of_items
+   from  lm_technical_segm_performances tse
+        ,lm_technical_segments tst
+   where tse.tst_id = tst.id
+   and   tst.lst_id = i_lst_id;
+
+   l_rt_tse                  lm_technical_segm_performances%rowtype;
+   l_rt_lse                  lm_logical_segm_performances%rowtype;
+   l_tse_found               boolean;
+   l_lse_found               boolean;
+   l_tse_inserted            boolean := false;
+   l_tse_modified            boolean := false;
+   l_tse_updated             number;
+   l_tst_amount              number;
+   l_lse_updated             number;
+   l_sum_number_of_items     number := 0;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   l_tse_found  := lm_tse_tapi_pck.tse_select_row_uk1( i_tse_tst_id      => i_tst_id
+                                                     , o_rt_tse          => l_rt_tse
+                                                     );
+
+   
+   
+   if     l_tse_found
+      and l_rt_tse.event_time > i_event_time
+   then
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_obsoletemessage
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_additional_data        =>    'Message: SegmentPerformanceReport'
+                                                       || 'TECHNICAL_SEGMENT.ID: '
+                                                       || i_tst_id
+                                                       || ', '
+                                                       || 'LOGICAL_SEGMENT.ID: '
+                                                       || i_lst_id
+                                                       || ', '
+                                                       || 'EventTime record: '
+                                                       || l_rt_tse.event_time
+                                                       || ', '
+                                                       || 'EventTime message: '
+                                                       || i_event_time
+                         );
+   else
+      
+
+
+
+
+
+
+
+      if l_tse_found
+      then
+         
+         
+         l_rt_tse.event_time  := i_event_time;
+
+         
+         
+         if l_rt_tse.number_of_items <> i_number_of_items
+         or (l_rt_tse.number_of_items is null and i_number_of_items is not null)
+         or (l_rt_tse.number_of_items is not null and i_number_of_items is null)
+         then
+            l_rt_tse.number_of_items  := i_number_of_items;
+            l_tse_modified            := true;
+         end if;
+
+         
+         l_tse_updated        := lm_tse_tapi_pck.tse_update_row( i_tse_id       => l_rt_tse.id
+                                                               , io_rt_tse      => l_rt_tse
+                                                               );
+      else
+         
+         
+         l_rt_tse.tst_id           := i_tst_id;
+         l_rt_tse.event_time       := i_event_time;
+         l_rt_tse.number_of_items  := i_number_of_items;
+         lm_tse_tapi_pck.tse_insert_row( io_rt_tse      => l_rt_tse );
+         l_tse_inserted            := true;
+      end if;
+
+      
+
+
+
+      l_lse_found  := lm_lse_tapi_pck.lse_select_row_uk1( i_lse_lst_id      => i_lst_id
+                                                        , o_rt_lse          => l_rt_lse
+                                                        );
+
+      
+      
+      
+      
+      
+      
+
+      open c_count_tst_in_lst( i_lst_id      => i_lst_id );
+
+      fetch c_count_tst_in_lst
+      into  l_tst_amount;
+
+      close c_count_tst_in_lst;
+
+      if l_lse_found
+      then
+         
+         
+         if not l_tse_modified and not l_tse_inserted
+         then
+            l_rt_lse.event_time       := i_event_time;
+         else
+            
+
+
+
+
+
+            if l_tst_amount = 1
+            then
+               l_rt_lse.event_time       := i_event_time;
+               l_rt_lse.number_of_items  := i_number_of_items;
+
+            
+
+
+
+
+
+            else
+               
+               
+               open c_logical_segment(i_lst_id => i_lst_id);
+               fetch c_logical_segment
+               into l_sum_number_of_items;
+               close c_logical_segment;
+
+               l_rt_lse.event_time       := i_event_time;
+               l_rt_lse.number_of_items  := l_sum_number_of_items;
+
+            end if;
+         end if;
+
+         
+         l_lse_updated             := lm_lse_tapi_pck.lse_update_row( i_lse_id       => l_rt_lse.id
+                                                                    , io_rt_lse      => l_rt_lse
+                                                                    );
+
+      
+
+
+
+
+
+      else
+         l_rt_lse.lst_id           := i_lst_id;
+         l_rt_lse.event_time       := i_event_time;
+         l_rt_lse.number_of_items  := i_number_of_items;
+         lm_lse_tapi_pck.lse_insert_row( io_rt_lse      => l_rt_lse );
+      end if;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_count_tst_in_lst%isopen
+      then
+         close c_count_tst_in_lst;
+      end if;
+
+      if c_logical_segment%isopen
+      then
+         close c_logical_segment;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end update_segment_performance;
+
+end lm_segment_performance;
+/

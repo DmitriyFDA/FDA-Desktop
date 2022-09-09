@@ -1,0 +1,1469 @@
+create or replace PACKAGE pdm_taskinstruction
+IS
+   /* Send a TaskInstruction message. */
+   FUNCTION send( i_target_process_id_cust IN VARCHAR2
+                , i_target_instance_id     IN VARCHAR2
+                , i_rt_pet                 IN pdm_package_events%ROWTYPE
+                , i_ind_force              IN BOOLEAN   := FALSE
+                , i_rt_pae                 IN pdm_packages%ROWTYPE
+                )
+   RETURN BOOLEAN;
+
+   -- Procedure to verify for permittance and if allowed to send a TaskInstruction message
+   PROCEDURE match_send_taskinstruction( io_rt_pae                       IN OUT  pdm_packages%ROWTYPE
+                                       , io_rt_pet                       IN OUT  pdm_package_events%ROWTYPE
+                                       , io_ind_update_package           IN OUT  BOOLEAN
+                                       , i_rt_pte                        IN      pdm_package_types%ROWTYPE
+                                       , i_rt_pty                        IN      cmn_parties%ROWTYPE
+                                       , i_party_id_cust                 IN      cmn_parties.id_cust%TYPE
+                                       , i_instance_id                   IN      VARCHAR2
+                                       , i_ind_force_taskinstruction     IN      BOOLEAN
+                                       , i_ind_chk_max_taskreport_error  IN      BOOLEAN
+                                       , i_ind_deregistration            IN      BOOLEAN
+                                       );
+
+END pdm_taskinstruction;
+/
+
+
+
+
+package body pdm_taskinstruction
+is
+   
+
+
+
+
+   g_con_package                constant varchar2( 19 ) := 'pdm_taskinstruction';
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function create_taskinstruction(
+      i_rt_pae                   in   pdm_packages%rowtype
+    , i_target_process_id_cust   in   cmn_parties.id_cust%type
+    , i_target_instance_id       in   varchar2
+    , i_ti_tasktype              in   pdm_attributes.package_attribute_value_coll
+    , i_eventtime                in   cmn_constant.st_timestamp
+   )
+      return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                      := g_con_package || '.create_taskinstruction';
+      l_msg_xml                  xmltype;
+      l_xml_header               xmltype;
+      l_event_time               varchar2(30);
+      l_it_mae_values            pdm_attributes.it_mae_name_values;
+      l_attribute_coll           pdm_attributes.attribute_coll;
+
+      l_xml_mae_stationid            xmltype;
+      l_xml_mae_finalexpdstationid   xmltype;
+      l_xml_mae_buildstationid       xmltype;
+      l_xml_mae_desthandlingarea     xmltype;
+      l_xml_mae_storagestationid     xmltype;
+      l_mae_timelimit                pdm_package_attributes.value%type;
+      l_mae_timelimitactive          pdm_package_attributes.value%type;
+      l_mae_procplanidname           pdm_package_attributes.value%type;
+      l_mae_productname              pdm_package_attributes.value%type;
+      l_mae_ac_cpdname               pdm_package_attributes.value%type;
+      l_mae_ac_procplanidname        pdm_package_attributes.value%type;
+      l_mae_ac_procplanidversion     pdm_package_attributes.value%type;
+      l_mae_ac_procdefname           pdm_package_attributes.value%type;
+      l_mae_ac_activityname          pdm_package_attributes.value%type;
+      l_mae_ar_cpdname               pdm_package_attributes.value%type;
+      l_mae_ar_procplanidname        pdm_package_attributes.value%type;
+      l_mae_ar_procplanidversion     pdm_package_attributes.value%type;
+      l_mae_ar_procdefname           pdm_package_attributes.value%type;
+      l_mae_ar_activityname          pdm_package_attributes.value%type;
+      l_mae_airporttag_lpc           pdm_package_attributes.value%type;
+      l_mae_releaseprio              pdm_package_attributes.value%type;
+      l_mae_releaserate              pdm_package_attributes.value%type;
+      l_mae_handler                  pdm_package_attributes.value%type;
+      l_mae_batchid                  pdm_package_attributes.value%type;
+      l_mae_sc1_scrproc_id           pdm_package_attributes.value%type;
+      l_mae_sc1_scrproc_name         pdm_package_attributes.value%type;
+      l_mae_sc1_requiredscrlvl       pdm_package_attributes.value%type;
+      l_mae_sc2_scrproc_id           pdm_package_attributes.value%type;
+      l_mae_sc2_scrproc_name         pdm_package_attributes.value%type;
+      l_mae_sc2_requiredscrlvl       pdm_package_attributes.value%type;
+      l_mae_sc3_scrproc_id           pdm_package_attributes.value%type;
+      l_mae_sc3_scrproc_name         pdm_package_attributes.value%type;
+      l_mae_sc3_requiredscrlvl       pdm_package_attributes.value%type;
+      l_mae_sc4_scrproc_id           pdm_package_attributes.value%type;
+      l_mae_sc4_scrproc_name         pdm_package_attributes.value%type;
+      l_mae_sc4_requiredscrlvl       pdm_package_attributes.value%type;
+      l_mae_sc5_scrproc_id           pdm_package_attributes.value%type;
+      l_mae_sc5_scrproc_name         pdm_package_attributes.value%type;
+      l_mae_sc5_requiredscrlvl       pdm_package_attributes.value%type;
+      l_mae_bi_lpc                   pdm_package_attributes.value%type;
+      l_mae_bi_lpc_extension         pdm_package_attributes.value%type;
+      l_mae_bi_flightnr              pdm_package_attributes.value%type;
+      l_mae_bi_sdd                   pdm_package_attributes.value%type;
+      l_mae_bi_std                   pdm_package_attributes.value%type;
+      l_mae_bi_sc1_scrproc_id        pdm_package_attributes.value%type;
+      l_mae_bi_sc1_scrproc_name      pdm_package_attributes.value%type;
+      l_mae_bi_sc1_reqscrlvl         pdm_package_attributes.value%type;
+      l_mae_bi_sc1_reachedscrlvl     pdm_package_attributes.value%type;
+      l_mae_bi_sc1_failedscrlvl      pdm_package_attributes.value%type;
+      l_mae_bi_sc1_pseudoid          pdm_package_attributes.value%type;
+      l_mae_bi_sc2_scrproc_id        pdm_package_attributes.value%type;
+      l_mae_bi_sc2_scrproc_name      pdm_package_attributes.value%type;
+      l_mae_bi_sc2_reqscrlvl         pdm_package_attributes.value%type;
+      l_mae_bi_sc2_reachedscrlvl     pdm_package_attributes.value%type;
+      l_mae_bi_sc2_failedscrlvl      pdm_package_attributes.value%type;
+      l_mae_bi_sc2_pseudoid          pdm_package_attributes.value%type;
+      l_mae_bi_sc3_scrproc_id        pdm_package_attributes.value%type;
+      l_mae_bi_sc3_scrproc_name      pdm_package_attributes.value%type;
+      l_mae_bi_sc3_reqscrlvl         pdm_package_attributes.value%type;
+      l_mae_bi_sc3_reachedscrlvl     pdm_package_attributes.value%type;
+      l_mae_bi_sc3_failedscrlvl      pdm_package_attributes.value%type;
+      l_mae_bi_sc3_pseudoid          pdm_package_attributes.value%type;
+      l_mae_bi_sc4_scrproc_id        pdm_package_attributes.value%type;
+      l_mae_bi_sc4_scrproc_name      pdm_package_attributes.value%type;
+      l_mae_bi_sc4_reqscrlvl         pdm_package_attributes.value%type;
+      l_mae_bi_sc4_reachedscrlvl     pdm_package_attributes.value%type;
+      l_mae_bi_sc4_failedscrlvl      pdm_package_attributes.value%type;
+      l_mae_bi_sc4_pseudoid          pdm_package_attributes.value%type;
+      l_mae_bi_sc5_scrproc_id        pdm_package_attributes.value%type;
+      l_mae_bi_sc5_scrproc_name      pdm_package_attributes.value%type;
+      l_mae_bi_sc5_reqscrlvl         pdm_package_attributes.value%type;
+      l_mae_bi_sc5_reachedscrlvl     pdm_package_attributes.value%type;
+      l_mae_bi_sc5_failedscrlvl      pdm_package_attributes.value%type;
+      l_mae_bi_sc5_pseudoid          pdm_package_attributes.value%type;
+      l_mae_bi_physicalclass         pdm_package_attributes.value%type;
+      l_mae_bi_bagstatus             pdm_package_attributes.value%type;
+      l_mae_bi_length                pdm_package_attributes.value%type;
+      l_mae_bi_width                 pdm_package_attributes.value%type;
+      l_mae_bi_height                pdm_package_attributes.value%type;
+      l_mae_bi_measuredvolume        pdm_package_attributes.value%type;
+      l_mae_bi_weight                pdm_package_attributes.value%type;
+      l_mae_bi_lpccollectionid       pdm_package_attributes.value%type;
+
+      l_attr                         pdm_attribute_definitions.path%type;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      l_event_time := cmn_common.timestamp_to_varchar (i_eventtime);
+
+      
+      l_xml_header := pdm_common.create_header
+                         ( i_target_process_id_cust => i_target_process_id_cust
+                         , i_target_instance_id     => i_target_instance_id
+                         );
+
+      
+      l_it_mae_values := pdm_attributes.get_package_attribute_values
+                            ( i_pae_id                => i_rt_pae.id
+                            , i_imd_name              => pdm_constant.g_con_taskinstruction
+                            , i_it_attributes_current => l_attribute_coll
+                            );
+
+      l_attr := l_it_mae_values.first;
+      while l_attr is not null
+      loop
+         case l_attr
+
+            
+            when pdm_constant.g_con_mae_stationid
+            then
+               select   xmlagg( xmlelement( "StationID", stn.column_value))
+               into     l_xml_mae_stationid
+               from     table( l_it_mae_values(pdm_constant.g_con_mae_stationid).pbe_values) stn;
+
+            when pdm_constant.g_con_mae_finalexpdstationid
+            then
+               select   xmlagg( xmlelement( "FinalExpectedStationID", stn.column_value))
+               into     l_xml_mae_finalexpdstationid
+               from     table( l_it_mae_values(pdm_constant.g_con_mae_finalexpdstationid).pbe_values) stn;
+
+            when pdm_constant.g_con_mae_buildstationid
+            then
+               select   xmlagg( xmlelement( "BuildStationID", stn.column_value))
+               into     l_xml_mae_buildstationid
+               from     table( l_it_mae_values(pdm_constant.g_con_mae_buildstationid).pbe_values) stn;
+
+            when pdm_constant.g_con_mae_desthandlingarea
+            then
+               select   xmlagg( xmlelement( "DestinationHandlingArea", haa.column_value))
+               into     l_xml_mae_desthandlingarea
+               from     table( l_it_mae_values(pdm_constant.g_con_mae_desthandlingarea).pbe_values) haa;
+
+            when pdm_constant.g_con_mae_storagestationid
+            then
+               select   xmlagg( xmlelement( "StorageStationID", stn.column_value))
+               into     l_xml_mae_storagestationid
+               from     table( l_it_mae_values(pdm_constant.g_con_mae_storagestationid).pbe_values) stn;
+
+            
+            when pdm_constant.g_con_mae_timelimit
+            then
+               l_mae_timelimit := l_it_mae_values(pdm_constant.g_con_mae_timelimit).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_timelimitactive
+            then
+               l_mae_timelimitactive := l_it_mae_values(pdm_constant.g_con_mae_timelimitactive).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_procplanidname
+            then
+               l_mae_procplanidname := l_it_mae_values(pdm_constant.g_con_mae_procplanidname).pbe_values(1);
+            when pdm_constant.g_con_mae_productname
+            then
+               l_mae_productname := l_it_mae_values(pdm_constant.g_con_mae_productname).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_ac_cpdname
+            then
+               l_mae_ac_cpdname := l_it_mae_values(pdm_constant.g_con_mae_ac_cpdname).pbe_values(1);
+            when pdm_constant.g_con_mae_ac_procplanid_name
+            then
+               l_mae_ac_procplanidname := l_it_mae_values(pdm_constant.g_con_mae_ac_procplanid_name).pbe_values(1);
+            when pdm_constant.g_con_mae_ac_procplanid_versn
+            then
+               l_mae_ac_procplanidversion := l_it_mae_values(pdm_constant.g_con_mae_ac_procplanid_versn).pbe_values(1);
+            when pdm_constant.g_con_mae_ac_processdefname
+            then
+               l_mae_ac_procdefname := l_it_mae_values(pdm_constant.g_con_mae_ac_processdefname).pbe_values(1);
+            when pdm_constant.g_con_mae_ac_activityname
+            then
+               l_mae_ac_activityname := l_it_mae_values(pdm_constant.g_con_mae_ac_activityname).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_ar_cpdname
+            then
+               l_mae_ar_cpdname := l_it_mae_values(pdm_constant.g_con_mae_ar_cpdname).pbe_values(1);
+            when pdm_constant.g_con_mae_ar_procplanid_name
+            then
+               l_mae_ar_procplanidname := l_it_mae_values(pdm_constant.g_con_mae_ar_procplanid_name).pbe_values(1);
+            when pdm_constant.g_con_mae_ar_procplanid_versn
+            then
+               l_mae_ar_procplanidversion := l_it_mae_values(pdm_constant.g_con_mae_ar_procplanid_versn).pbe_values(1);
+            when pdm_constant.g_con_mae_ar_processdefname
+            then
+               l_mae_ar_procdefname := l_it_mae_values(pdm_constant.g_con_mae_ar_processdefname).pbe_values(1);
+            when pdm_constant.g_con_mae_ar_activityname
+            then
+               l_mae_ar_activityname := l_it_mae_values(pdm_constant.g_con_mae_ar_activityname).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_releaseprio
+            then
+               l_mae_releaseprio := l_it_mae_values(pdm_constant.g_con_mae_releaseprio).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_releaserate
+            then
+               l_mae_releaserate := l_it_mae_values(pdm_constant.g_con_mae_releaserate).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_handler
+            then
+               l_mae_handler := l_it_mae_values(pdm_constant.g_con_mae_handler).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_batchid
+            then
+               l_mae_batchid := l_it_mae_values(pdm_constant.g_con_mae_batchid).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_sc1_scrproc_id
+            then
+               l_mae_sc1_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_sc1_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_sc1_scrproc_name
+            then
+               l_mae_sc1_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_sc1_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_sc1_requiredscrlvl
+            then
+               l_mae_sc1_requiredscrlvl := l_it_mae_values(pdm_constant.g_con_mae_sc1_requiredscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_sc2_scrproc_id
+            then
+               l_mae_sc2_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_sc2_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_sc2_scrproc_name
+            then
+               l_mae_sc2_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_sc2_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_sc2_requiredscrlvl
+            then
+               l_mae_sc2_requiredscrlvl := l_it_mae_values(pdm_constant.g_con_mae_sc2_requiredscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_sc3_scrproc_id
+            then
+               l_mae_sc3_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_sc3_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_sc3_scrproc_name
+            then
+               l_mae_sc3_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_sc3_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_sc3_requiredscrlvl
+            then
+               l_mae_sc3_requiredscrlvl := l_it_mae_values(pdm_constant.g_con_mae_sc3_requiredscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_sc4_scrproc_id
+            then
+               l_mae_sc4_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_sc4_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_sc4_scrproc_name
+            then
+               l_mae_sc4_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_sc4_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_sc4_requiredscrlvl
+            then
+               l_mae_sc4_requiredscrlvl := l_it_mae_values(pdm_constant.g_con_mae_sc4_requiredscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_sc5_scrproc_id
+            then
+               l_mae_sc5_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_sc5_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_sc5_scrproc_name
+            then
+               l_mae_sc5_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_sc5_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_sc5_requiredscrlvl
+            then
+               l_mae_sc5_requiredscrlvl := l_it_mae_values(pdm_constant.g_con_mae_sc5_requiredscrlvl).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_airporttag_lpc
+            then
+               l_mae_airporttag_lpc := l_it_mae_values(pdm_constant.g_con_mae_airporttag_lpc).pbe_values(1);
+
+            
+            when pdm_constant.g_con_mae_bi_lpc
+            then
+               l_mae_bi_lpc := l_it_mae_values(pdm_constant.g_con_mae_bi_lpc).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_lpc_extension
+            then
+               l_mae_bi_lpc_extension := l_it_mae_values(pdm_constant.g_con_mae_bi_lpc_extension).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_airline
+            then
+               
+               l_mae_bi_flightnr :=    l_it_mae_values(pdm_constant.g_con_mae_bi_airline).pbe_values(1)
+                                    || l_mae_bi_flightnr;
+            when pdm_constant.g_con_mae_bi_flightnr
+            then
+               
+               l_mae_bi_flightnr :=    l_mae_bi_flightnr
+                                    || l_it_mae_values(pdm_constant.g_con_mae_bi_flightnr).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sdd
+            then
+               l_mae_bi_sdd :=    '---'
+                               || substr ( l_it_mae_values(pdm_constant.g_con_mae_bi_sdd).pbe_values(1)
+                                         , -2
+                                         );
+            when pdm_constant.g_con_mae_bi_std
+            then
+               l_mae_bi_std := l_it_mae_values(pdm_constant.g_con_mae_bi_std).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc1_scrproc_id
+            then
+               l_mae_bi_sc1_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_bi_sc1_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc1_scrproc_name
+            then
+               l_mae_bi_sc1_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_bi_sc1_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc1_reqscrlvl
+            then
+               l_mae_bi_sc1_reqscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc1_reqscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc1_reachedscrlvl
+            then
+               l_mae_bi_sc1_reachedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc1_reachedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc1_failedscrlvl
+            then
+               l_mae_bi_sc1_failedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc1_failedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc1_pseudoid
+            then
+               l_mae_bi_sc1_pseudoid := l_it_mae_values(pdm_constant.g_con_mae_bi_sc1_pseudoid).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc2_scrproc_id
+            then
+               l_mae_bi_sc2_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_bi_sc2_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc2_scrproc_name
+            then
+               l_mae_bi_sc2_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_bi_sc2_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc2_reqscrlvl
+            then
+               l_mae_bi_sc2_reqscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc2_reqscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc2_reachedscrlvl
+            then
+               l_mae_bi_sc2_reachedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc2_reachedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc2_failedscrlvl
+            then
+               l_mae_bi_sc2_failedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc2_failedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc2_pseudoid
+            then
+               l_mae_bi_sc2_pseudoid := l_it_mae_values(pdm_constant.g_con_mae_bi_sc2_pseudoid).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc3_scrproc_id
+            then
+               l_mae_bi_sc3_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_bi_sc3_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc3_scrproc_name
+            then
+               l_mae_bi_sc3_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_bi_sc3_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc3_reqscrlvl
+            then
+               l_mae_bi_sc3_reqscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc3_reqscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc3_reachedscrlvl
+            then
+               l_mae_bi_sc3_reachedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc3_reachedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc3_failedscrlvl
+            then
+               l_mae_bi_sc3_failedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc3_failedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc3_pseudoid
+            then
+               l_mae_bi_sc3_pseudoid := l_it_mae_values(pdm_constant.g_con_mae_bi_sc3_pseudoid).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc4_scrproc_id
+            then
+               l_mae_bi_sc4_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_bi_sc4_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc4_scrproc_name
+            then
+               l_mae_bi_sc4_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_bi_sc4_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc4_reqscrlvl
+            then
+               l_mae_bi_sc4_reqscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc4_reqscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc4_reachedscrlvl
+            then
+               l_mae_bi_sc4_reachedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc4_reachedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc4_failedscrlvl
+            then
+               l_mae_bi_sc4_failedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc4_failedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc4_pseudoid
+            then
+               l_mae_bi_sc4_pseudoid := l_it_mae_values(pdm_constant.g_con_mae_bi_sc4_pseudoid).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc5_scrproc_id
+            then
+               l_mae_bi_sc5_scrproc_id := l_it_mae_values(pdm_constant.g_con_mae_bi_sc5_scrproc_id).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc5_scrproc_name
+            then
+               l_mae_bi_sc5_scrproc_name := l_it_mae_values(pdm_constant.g_con_mae_bi_sc5_scrproc_name).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc5_reqscrlvl
+            then
+               l_mae_bi_sc5_reqscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc5_reqscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc5_reachedscrlvl
+            then
+               l_mae_bi_sc5_reachedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc5_reachedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc5_failedscrlvl
+            then
+               l_mae_bi_sc5_failedscrlvl := l_it_mae_values(pdm_constant.g_con_mae_bi_sc5_failedscrlvl).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_sc5_pseudoid
+            then
+               l_mae_bi_sc5_pseudoid := l_it_mae_values(pdm_constant.g_con_mae_bi_sc5_pseudoid).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_physicalclass
+            then
+               l_mae_bi_physicalclass := l_it_mae_values(pdm_constant.g_con_mae_bi_physicalclass).pbe_values(1);
+            when pdm_constant.g_con_mae_bagstatus
+            then
+               l_mae_bi_bagstatus := l_it_mae_values(pdm_constant.g_con_mae_bagstatus).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_length
+            then
+               l_mae_bi_length := l_it_mae_values(pdm_constant.g_con_mae_bi_length).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_width
+            then
+               l_mae_bi_width := l_it_mae_values(pdm_constant.g_con_mae_bi_width).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_height
+            then
+               l_mae_bi_height := l_it_mae_values(pdm_constant.g_con_mae_bi_height).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_measuredvolume
+            then
+               l_mae_bi_measuredvolume := l_it_mae_values(pdm_constant.g_con_mae_bi_measuredvolume).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_weight
+            then
+               l_mae_bi_weight := l_it_mae_values(pdm_constant.g_con_mae_bi_weight).pbe_values(1);
+            when pdm_constant.g_con_mae_bi_lpccollectionid
+            then
+               l_mae_bi_lpccollectionid := l_it_mae_values(pdm_constant.g_con_mae_bi_lpccollectionid).pbe_values(1);
+            else
+               null;
+         end case;
+
+         l_attr := l_it_mae_values.next(l_attr);
+      end loop;
+
+      select xmlroot( xmlelement( "TaskInstruction"
+
+                                
+                                , xmlelement( "EventTime"
+                                            , l_event_time
+                                            )
+
+                                
+                                , l_xml_header
+
+                                
+                                , xmlelement( "PID"
+                                            , i_rt_pae.pid
+                                            )
+
+                                
+                                , xmlelement( "TaskType"
+                                            , i_ti_tasktype(1)
+                                            )
+
+                                
+                                , l_xml_mae_stationid
+                                , case when l_xml_mae_stationid is not null
+                                         or l_xml_mae_desthandlingarea is null
+                                  then
+                                     l_xml_mae_finalexpdstationid
+                                  end
+                                , case when l_xml_mae_stationid is not null
+                                         or l_xml_mae_desthandlingarea is null
+                                  then
+                                     l_xml_mae_buildstationid
+                                  end
+                                , case when l_xml_mae_stationid is null
+                                  then
+                                     l_xml_mae_desthandlingarea
+                                  end
+                                , l_xml_mae_storagestationid
+
+                                
+                                , case when l_mae_timelimit is not null
+                                  then
+                                     xmlelement( "TimeLimit", l_mae_timelimit)
+                                  end
+
+                                
+                                , case when l_mae_timelimitactive is not null
+                                  then
+                                     xmlelement( "TimeLimitActivePhase", l_mae_timelimitactive)
+                                  end
+
+                                
+                                , case when l_mae_procplanidname is not null
+                                  then
+                                     xmlelement( "SegregationID"
+                                               , xmlelement( "ProcessPlanIDName"
+                                                           , l_mae_procplanidname
+                                                           )
+                                               , case when l_mae_productname is not null
+                                                 then
+                                                    xmlelement( "ProductName"
+                                                              , l_mae_productname
+                                                              )
+                                                 end
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_ar_cpdname is not null
+                                  then
+                                     xmlelement( "ActivityReference"
+                                               , xmlelement( "CommonProcessDefinitionName"
+                                                           , l_mae_ar_cpdname
+                                                           )
+                                               , xmlelement( "ProcessPlanID"
+                                                           , xmlelement( "Name"
+                                                                       , l_mae_ar_procplanidname
+                                                                       )
+                                                           , xmlelement( "Version"
+                                                                       , l_mae_ar_procplanidversion
+                                                                       )
+                                                           )
+                                               , xmlelement( "ProcessDefinitionName"
+                                                           , l_mae_ar_procdefname
+                                                           )
+                                               , xmlelement( "ActivityName"
+                                                           , l_mae_ar_activityname
+                                                           )
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_ac_cpdname is not null
+                                  then
+                                     xmlelement( "ActiveActivityReference"
+                                               , xmlelement( "CommonProcessDefinitionName"
+                                                           , l_mae_ac_cpdname
+                                                           )
+                                               , xmlelement( "ProcessPlanID"
+                                                           , xmlelement( "Name"
+                                                                       , l_mae_ac_procplanidname
+                                                                       )
+                                                           , xmlelement( "Version"
+                                                                       , l_mae_ac_procplanidversion
+                                                                       )
+                                                           )
+                                               , xmlelement( "ProcessDefinitionName"
+                                                           , l_mae_ac_procdefname
+                                                           )
+                                               , xmlelement( "ActivityName"
+                                                           , l_mae_ac_activityname
+                                                           )
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_releaseprio is not null
+                                  then
+                                     xmlelement( "ReleasePriority"
+                                               , l_mae_releaseprio
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_releaserate is not null
+                                  then
+                                     xmlelement( "ReleaseRate"
+                                               , l_mae_releaserate
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_handler is not null
+                                  then
+                                     xmlelement( "Handler"
+                                               , l_mae_handler
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_batchid is not null
+                                  then
+                                     xmlelement( "BatchID"
+                                               , l_mae_batchid
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_sc1_scrproc_id is not null
+                                  then
+                                     xmlelement( "Screening"
+                                               , xmlelement( "ScreeningProcess"
+                                                           , xmlelement( "ID"
+                                                                       , l_mae_sc1_scrproc_id
+                                                                       )
+                                                           , case when l_mae_sc1_scrproc_name is not null
+                                                             then
+                                                                xmlelement( "Name"
+                                                                          , l_mae_sc1_scrproc_name
+                                                                          )
+                                                             end
+                                                           )
+                                               , xmlelement( "RequiredScreeningLevel"
+                                                           , l_mae_sc1_requiredscrlvl
+                                                           )
+                                               )
+                                  end
+                                , case when l_mae_sc2_scrproc_id is not null
+                                  then
+                                     xmlelement( "Screening"
+                                               , xmlelement( "ScreeningProcess"
+                                                           , xmlelement( "ID"
+                                                                       , l_mae_sc2_scrproc_id
+                                                                       )
+                                                           , case when l_mae_sc2_scrproc_name is not null
+                                                             then
+                                                                xmlelement( "Name"
+                                                                          , l_mae_sc2_scrproc_name
+                                                                          )
+                                                             end
+                                                           )
+                                               , xmlelement( "RequiredScreeningLevel"
+                                                           , l_mae_sc2_requiredscrlvl
+                                                           )
+                                               )
+                                  end
+                                , case when l_mae_sc3_scrproc_id is not null
+                                  then
+                                     xmlelement( "Screening"
+                                               , xmlelement( "ScreeningProcess"
+                                                           , xmlelement( "ID"
+                                                                       , l_mae_sc3_scrproc_id
+                                                                       )
+                                                           , case when l_mae_sc3_scrproc_name is not null
+                                                             then
+                                                                xmlelement( "Name"
+                                                                          , l_mae_sc3_scrproc_name
+                                                                          )
+                                                             end
+                                                           )
+                                               , xmlelement( "RequiredScreeningLevel"
+                                                           , l_mae_sc3_requiredscrlvl
+                                                           )
+                                               )
+                                  end
+                                , case when l_mae_sc4_scrproc_id is not null
+                                  then
+                                     xmlelement( "Screening"
+                                               , xmlelement( "ScreeningProcess"
+                                                           , xmlelement( "ID"
+                                                                       , l_mae_sc4_scrproc_id
+                                                                       )
+                                                           , case when l_mae_sc4_scrproc_name is not null
+                                                             then
+                                                                xmlelement( "Name"
+                                                                          , l_mae_sc4_scrproc_name
+                                                                          )
+                                                             end
+                                                           )
+                                               , xmlelement( "RequiredScreeningLevel"
+                                                           , l_mae_sc4_requiredscrlvl
+                                                           )
+                                               )
+                                  end
+                                , case when l_mae_sc5_scrproc_id is not null
+                                  then
+                                     xmlelement( "Screening"
+                                               , xmlelement( "ScreeningProcess"
+                                                           , xmlelement( "ID"
+                                                                       , l_mae_sc5_scrproc_id
+                                                                       )
+                                                           , case when l_mae_sc5_scrproc_name is not null
+                                                             then
+                                                                xmlelement( "Name"
+                                                                          , l_mae_sc5_scrproc_name
+                                                                          )
+                                                             end
+                                                           )
+                                               , xmlelement( "RequiredScreeningLevel"
+                                                           , l_mae_sc5_requiredscrlvl
+                                                           )
+                                               )
+                                  end
+
+                                
+                                , case when l_mae_airporttag_lpc is not null
+                                  then
+                                     xmlelement( "AirportTag"
+                                               , xmlelement( "LPC"
+                                                           , l_mae_airporttag_lpc
+                                                           )
+                                               )
+                                  end
+
+                                
+                                , xmlelement( "Bag_Info"
+                                            , xmlelement( "BaggageIdentifier"
+                                                        , xmlelement( "BID"
+                                                                    , i_rt_pae.pi_id
+                                                                    )
+                                                        , xmlelement( "BID_Extension"
+                                                                    , i_rt_pae.place_of_birth
+                                                                    )
+                                                        )
+                                            , case when l_mae_bi_lpc is not null
+                                              then
+                                                 xmlelement( "BaggageTag"
+                                                           , xmlelement( "LPC"
+                                                                       , l_mae_bi_lpc
+                                                                       )
+                                                           , case when l_mae_bi_lpc_extension is not null
+                                                             then
+                                                                xmlelement( "LPC_Extension"
+                                                                          , l_mae_bi_lpc_extension
+                                                                          )
+                                                             end
+                                                           )
+                                              end
+                                            , case when l_mae_bi_flightnr is not null
+                                              then
+                                                 xmlelement( "FlightNr"
+                                                           , l_mae_bi_flightnr
+                                                           )
+                                              end
+                                            , case when l_mae_bi_sdd is not null
+                                              then
+                                                 xmlelement( "SDD"
+                                                           , l_mae_bi_sdd
+                                                           )
+                                              end
+                                            , case when l_mae_bi_std is not null
+                                              then
+                                                 xmlelement( "STD"
+                                                           , l_mae_bi_std
+                                                           )
+                                              end
+                                            , case when l_mae_bi_sc1_scrproc_id is not null
+                                              then
+                                                 xmlelement( "Screening"
+                                                           , xmlelement( "ScreeningProcess"
+                                                                       , xmlelement( "ID"
+                                                                                   , l_mae_bi_sc1_scrproc_id
+                                                                                   )
+                                                                       , case when l_mae_bi_sc1_scrproc_name is not null
+                                                                         then
+                                                                            xmlelement( "Name"
+                                                                                      , l_mae_bi_sc1_scrproc_name
+                                                                                      )
+                                                                         end
+                                                                       )
+                                                           , xmlelement( "RequiredScreeningLevel"
+                                                                       , l_mae_bi_sc1_reqscrlvl
+                                                                       )
+                                                           , xmlelement( "ReachedScreeningLevel"
+                                                                       , l_mae_bi_sc1_reachedscrlvl
+                                                                       )
+                                                           , xmlelement( "FailedScreeningLevel"
+                                                                       , l_mae_bi_sc1_failedscrlvl
+                                                                       )
+                                                           , case when l_mae_bi_sc1_pseudoid is not null
+                                                             then
+                                                                xmlelement( "PseudoID"
+                                                                          , l_mae_bi_sc1_pseudoid
+                                                                          )
+                                                             end
+                                                           )
+                                              end
+                                            , case when l_mae_bi_sc2_scrproc_id is not null
+                                              then
+                                                 xmlelement( "Screening"
+                                                           , xmlelement( "ScreeningProcess"
+                                                                       , xmlelement( "ID"
+                                                                                   , l_mae_bi_sc2_scrproc_id
+                                                                                   )
+                                                                       , case when l_mae_bi_sc2_scrproc_name is not null
+                                                                         then
+                                                                            xmlelement( "Name"
+                                                                                      , l_mae_bi_sc2_scrproc_name
+                                                                                      )
+                                                                         end
+                                                                       )
+                                                           , xmlelement( "RequiredScreeningLevel"
+                                                                       , l_mae_bi_sc2_reqscrlvl
+                                                                       )
+                                                           , xmlelement( "ReachedScreeningLevel"
+                                                                       , l_mae_bi_sc2_reachedscrlvl
+                                                                       )
+                                                           , xmlelement( "FailedScreeningLevel"
+                                                                       , l_mae_bi_sc2_failedscrlvl
+                                                                       )
+                                                           , case when l_mae_bi_sc2_pseudoid is not null
+                                                             then
+                                                                xmlelement( "PseudoID"
+                                                                          , l_mae_bi_sc2_pseudoid
+                                                                          )
+                                                             end
+                                                           )
+                                              end
+                                            , case when l_mae_bi_sc3_scrproc_id is not null
+                                              then
+                                                 xmlelement( "Screening"
+                                                           , xmlelement( "ScreeningProcess"
+                                                                       , xmlelement( "ID"
+                                                                                   , l_mae_bi_sc3_scrproc_id
+                                                                                   )
+                                                                       , case when l_mae_bi_sc3_scrproc_name is not null
+                                                                         then
+                                                                            xmlelement( "Name"
+                                                                                      , l_mae_bi_sc3_scrproc_name
+                                                                                      )
+                                                                         end
+                                                                       )
+                                                           , xmlelement( "RequiredScreeningLevel"
+                                                                       , l_mae_bi_sc3_reqscrlvl
+                                                                       )
+                                                           , xmlelement( "ReachedScreeningLevel"
+                                                                       , l_mae_bi_sc3_reachedscrlvl
+                                                                       )
+                                                           , xmlelement( "FailedScreeningLevel"
+                                                                       , l_mae_bi_sc3_failedscrlvl
+                                                                       )
+                                                           , case when l_mae_bi_sc3_pseudoid is not null
+                                                             then
+                                                                xmlelement( "PseudoID"
+                                                                          , l_mae_bi_sc3_pseudoid
+                                                                          )
+                                                             end
+                                                           )
+                                              end
+                                            , case when l_mae_bi_sc4_scrproc_id is not null
+                                              then
+                                                 xmlelement( "Screening"
+                                                           , xmlelement( "ScreeningProcess"
+                                                                       , xmlelement( "ID"
+                                                                                   , l_mae_bi_sc4_scrproc_id
+                                                                                   )
+                                                                       , case when l_mae_bi_sc4_scrproc_name is not null
+                                                                         then
+                                                                            xmlelement( "Name"
+                                                                                      , l_mae_bi_sc4_scrproc_name
+                                                                                      )
+                                                                         end
+                                                                       )
+                                                           , xmlelement( "RequiredScreeningLevel"
+                                                                       , l_mae_bi_sc4_reqscrlvl
+                                                                       )
+                                                           , xmlelement( "ReachedScreeningLevel"
+                                                                       , l_mae_bi_sc4_reachedscrlvl
+                                                                       )
+                                                           , xmlelement( "FailedScreeningLevel"
+                                                                       , l_mae_bi_sc4_failedscrlvl
+                                                                       )
+                                                           , case when l_mae_bi_sc4_pseudoid is not null
+                                                             then
+                                                                xmlelement( "PseudoID"
+                                                                          , l_mae_bi_sc4_pseudoid
+                                                                          )
+                                                             end
+                                                           )
+                                              end
+                                            , case when l_mae_bi_sc5_scrproc_id is not null
+                                              then
+                                                 xmlelement( "Screening"
+                                                           , xmlelement( "ScreeningProcess"
+                                                                       , xmlelement( "ID"
+                                                                                   , l_mae_bi_sc5_scrproc_id
+                                                                                   )
+                                                                       , case when l_mae_bi_sc5_scrproc_name is not null
+                                                                         then
+                                                                            xmlelement( "Name"
+                                                                                      , l_mae_bi_sc5_scrproc_name
+                                                                                      )
+                                                                         end
+                                                                       )
+                                                           , xmlelement( "RequiredScreeningLevel"
+                                                                       , l_mae_bi_sc5_reqscrlvl
+                                                                       )
+                                                           , xmlelement( "ReachedScreeningLevel"
+                                                                       , l_mae_bi_sc5_reachedscrlvl
+                                                                       )
+                                                           , xmlelement( "FailedScreeningLevel"
+                                                                       , l_mae_bi_sc5_failedscrlvl
+                                                                       )
+                                                           , case when l_mae_bi_sc5_pseudoid is not null
+                                                             then
+                                                                xmlelement( "PseudoID"
+                                                                          , l_mae_bi_sc5_pseudoid
+                                                                          )
+                                                             end
+                                                           )
+                                              end
+                                            , case when l_mae_bi_bagstatus is not null
+                                              then
+                                                 xmlelement( "BagStatus"
+                                                           , l_mae_bi_bagstatus
+                                                           )
+                                              end
+                                            , case when l_mae_bi_physicalclass is not null
+                                              then
+                                                 xmlelement( "PhysicalClass"
+                                                           , l_mae_bi_physicalclass
+                                                           )
+                                              end
+                                            , case when l_mae_bi_length is not null
+                                              then
+                                                 xmlelement( "Size"
+                                                           , xmlelement( "Length"
+                                                                       , l_mae_bi_length
+                                                                       )
+                                                           , xmlelement( "Width"
+                                                                       , l_mae_bi_width
+                                                                       )
+                                                           , xmlelement( "Height"
+                                                                       , l_mae_bi_height
+                                                                       )
+                                                           )
+                                              end
+                                            , case when l_mae_bi_measuredvolume is not null
+                                              then
+                                                 xmlelement( "MeasuredVolume"
+                                                           , l_mae_bi_measuredvolume
+                                                           )
+                                              end
+                                            , case when l_mae_bi_weight is not null
+                                              then
+                                                 xmlelement( "Weight"
+                                                           , l_mae_bi_weight
+                                                           )
+                                              end
+                                            , case when l_mae_bi_lpccollectionid is not null
+                                              then
+                                                 xmlelement( "LPCCollectionID"
+                                                           , l_mae_bi_lpccollectionid
+                                                           )
+                                              end
+                                            )
+                                )
+                    , version cmn_constant.g_con_xmlroot
+                    )
+      into   l_msg_xml
+      from   dual;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_msg_xml;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_taskinstruction;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function send( i_target_process_id_cust in varchar2
+                , i_target_instance_id     in varchar2
+                , i_rt_pet                 in pdm_package_events%rowtype
+                , i_ind_force              in boolean   := false
+                , i_rt_pae                 in pdm_packages%rowtype
+                )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send';
+      l_message                  xmltype;
+      l_rt_eme                   pdm_event_messages%rowtype;
+      l_timestamp                cmn_constant.st_timestamp;
+      l_result                   boolean := false;
+      l_adn_id                   pdm_attribute_definitions.id%type;
+      l_ti_tasktype              pdm_attributes.package_attribute_value_coll;
+      l_rt_imd                   cmn_ifc_msg_definitions%rowtype;
+      l_dummy                    boolean;
+
+      
+      
+      cursor c_ti_attributes( b_pae_id in pdm_packages.id%type
+                            , b_evt_id in pdm_events.id%type
+                            )
+      is
+         select adn1.id
+         from   pdm_package_attributes    pbe
+                   left join ( select mae2.adn_id    adn_id
+                               ,      imd2.name      imd_name
+                               ,      mae2.direction mae_direction
+                               from   pdm_message_attributes    mae2
+                               ,      cmn_ifc_msg_definitions   imd2
+                               where  mae2.imd_id    = imd2.id
+                               and    mae2.direction = pdm_constant.g_con_direction_incoming
+                             ) vadn
+                   on   vadn.adn_id = pbe.adn_id_source
+         ,      pdm_attribute_definitions adn1
+         ,      pdm_message_attributes    mae1
+         ,      cmn_ifc_msg_definitions   imd1
+         where  pbe.adn_id     = adn1.id
+
+         
+         
+         and    pbe.pae_id     = b_pae_id
+
+         
+         
+         
+         and    mae1.adn_id    =  adn1.id
+         and    mae1.imd_id    =  imd1.id
+         and    imd1.name      =  pdm_constant.g_con_taskinstruction
+
+         
+         
+         
+         
+         
+         and    mae1.name      <> pdm_constant.g_con_mae_ar_procplanid_versn
+         and    mae1.name      <> pdm_constant.g_con_mae_ac_procplanid_versn
+
+         
+         and    (
+         
+                
+                
+                
+                exists ( select 1
+                         from   pdm_package_events pet
+                         where  pet.pae_id = b_pae_id
+                         and    pet.evt_id = b_evt_id
+                         and    pet.id     = pbe.pet_id            
+                         and    pet.id     = pbe.deleted_by_pet_id 
+                       )
+                
+                or 
+                (
+
+                
+                
+                
+                exists ( select 1
+                         from   pdm_package_events pet
+                         where  pet.pae_id = b_pae_id
+                         and    pet.evt_id = b_evt_id
+                         and    pet.id     = pbe.pet_id            
+                         and    pet.id in ( pbe.created_by_pet_id  
+                                          , pbe.modified_by_pet_id 
+                                          )
+                       )
+
+                and
+                (
+                  
+                  
+                  pbe.adn_id_source is null
+
+                  
+                  
+                  or
+                  vadn.imd_name     is null
+
+                  
+                  
+                  or
+                  vadn.imd_name     != pdm_constant.g_con_taskreport
+                )
+                )
+                )
+
+         
+         and    rownum = 1
+         ;
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      l_dummy := cmn_imd_tapi_pck.imd_select_row_uk
+                    ( i_imd_name => pdm_constant.g_con_taskinstruction
+                    , o_rt_imd   => l_rt_imd
+                    );
+
+      l_ti_tasktype := pdm_attributes.get_package_attribute_values
+                          ( i_pae_id   => i_rt_pae.id
+                          , i_imd_id   => l_rt_imd.id
+                          , i_mae_name => pdm_constant.g_con_mae_tasktype
+                          );
+
+      if l_ti_tasktype.count = 1
+      then
+         
+         if i_ind_force
+         then
+
+            
+            l_result := true;
+
+         
+         else
+            open c_ti_attributes( b_pae_id => i_rt_pae.id
+                                , b_evt_id => i_rt_pet.evt_id
+                                );
+            fetch c_ti_attributes
+            into  l_adn_id;
+
+            
+            l_result := c_ti_attributes%found;
+
+            close c_ti_attributes;
+         end if;
+
+      else 
+
+         
+         if i_ind_force
+         then
+            
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_taskinstrnotasktype
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_additional_data        => 'PACKAGE.ID='                  || i_rt_pae.id
+                                                                || ', target_process_id_cust=' || i_target_process_id_cust
+                                                                || ', target_instance_id='     || i_target_instance_id
+                                  );
+         end if;
+      end if; 
+
+      
+      if l_result
+      then
+         l_timestamp := cmn_common.default_timestamp;
+
+         l_message  := create_taskinstruction( i_rt_pae                 => i_rt_pae
+                                             , i_target_process_id_cust => i_target_process_id_cust
+                                             , i_target_instance_id     => i_target_instance_id
+                                             , i_ti_tasktype            => l_ti_tasktype
+                                             , i_eventtime              => l_timestamp
+                                             );
+
+         if l_message is not null
+         then
+            
+            cmn_interface.send_message( i_message              => l_message
+                                      , i_pty_id_cust          => i_target_process_id_cust
+                                      , i_pty_instance_id_cust => i_target_instance_id
+                                      , i_imd_id               => l_rt_imd.id
+                                      );
+
+            
+            l_rt_eme.ims_id := cmn_interface.get_message_id
+                                  ( i_direction => cmn_constant.g_con_msg_direction_outgoing
+                                  );
+
+            l_rt_eme.imd_id       := l_rt_imd.id;
+            l_rt_eme.date_created := l_timestamp;
+            l_rt_eme.pet_id       := i_rt_pet.id;
+            pdm_eme_tapi_pck.eme_insert_row( io_rt_eme => l_rt_eme );
+         else
+
+            
+            l_result := false;
+
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_taskinstrnotcreated
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_additional_data        => 'PACKAGE.ID='                  || i_rt_pae.id
+                                                                || ', target_process_id_cust=' || i_target_process_id_cust
+                                                                || ', target_instance_id='     || i_target_instance_id
+                                  );
+         end if;
+      end if; 
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+      return l_result;
+
+   exception
+      when others
+      then
+         if c_ti_attributes%isopen
+         then
+            close c_ti_attributes;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end send;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function max_taskreport_error( io_rt_pae in out pdm_packages%rowtype )
+   return boolean
+   is
+      l_con_proc_name     constant cmn_constant.st_proc_name := g_con_package || '.max_taskreport_error';
+      l_result                     boolean;
+      l_current_time               cmn_constant.st_timestamp;
+      l_taskinstruction_timeout    cmn_parameter_values.value%type;
+      l_ti_max_suspect_sent        pdm_packages.count_suspect_ti_sent%type;
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      if io_rt_pae.last_ti_sent_time is null
+      then
+         l_result := false;
+      else
+         l_current_time  := cmn_common.default_timestamp;
+         l_taskinstruction_timeout  :=
+               cmn_common.get_parameter_value( i_prr_name      => pdm_constant.g_con_ti_timeout );
+         if  l_current_time  > io_rt_pae.last_ti_sent_time + cmn_common.varchar_to_interval (i_int => l_taskinstruction_timeout)
+         then
+            l_result := false;
+         else
+            if io_rt_pae.count_suspect_ti_sent is null
+            then
+               io_rt_pae.count_suspect_ti_sent := 1;
+            else
+               io_rt_pae.count_suspect_ti_sent := io_rt_pae.count_suspect_ti_sent + 1;
+            end if;
+            l_ti_max_suspect_sent :=
+                 cmn_common.get_parameter_value( i_prr_name      => pdm_constant.g_con_ti_max_suspect_sent );
+            if io_rt_pae.count_suspect_ti_sent > l_ti_max_suspect_sent
+            then
+               l_result := true;
+            else
+               l_result := false;
+            end if;
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_result;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end max_taskreport_error;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure match_send_taskinstruction( io_rt_pae                       in out  pdm_packages%rowtype
+                                       , io_rt_pet                       in out  pdm_package_events%rowtype
+                                       , io_ind_update_package           in out  boolean
+                                       , i_rt_pte                        in      pdm_package_types%rowtype
+                                       , i_rt_pty                        in      cmn_parties%rowtype
+                                       , i_party_id_cust                 in      cmn_parties.id_cust%type
+                                       , i_instance_id                   in      varchar2
+                                       , i_ind_force_taskinstruction     in      boolean
+                                       , i_ind_chk_max_taskreport_error  in      boolean
+                                       , i_ind_deregistration            in      boolean
+                                       )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.match_send_taskinstruction';
+
+      l_dummy                boolean;
+      l_ti_sent              boolean;
+      l_max_taskreport_error boolean := false;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if          io_rt_pae.status    = pdm_constant.g_con_pae_status_open
+          and     i_rt_pte.name       = pdm_constant.g_con_pte_physical
+          and     io_rt_pae.ind_ghost = cmn_constant.g_con_yesno_no
+          and not i_ind_deregistration
+      then
+
+         
+         if i_ind_chk_max_taskreport_error
+         then
+            l_max_taskreport_error := max_taskreport_error( io_rt_pae => io_rt_pae );
+         end if;
+
+         
+         if l_max_taskreport_error
+         then
+
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_maxtaskreporterror
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_warning
+                                  , i_additional_data        => 'package.id '|| io_rt_pae.id
+                                  );
+         else
+
+            
+            if i_party_id_cust is not null
+            then
+
+               
+               l_dummy := pdm_taskinstruction.send( i_target_process_id_cust => i_party_id_cust
+                                                  , i_target_instance_id     => i_instance_id
+                                                  , i_rt_pet                 => io_rt_pet
+                                                  , i_ind_force              => true
+                                                  , i_rt_pae                 => io_rt_pae
+                                                  );
+
+            end if;
+
+            
+            
+            if    i_rt_pty.type in ( pdm_constant.g_con_lm_party_type
+                                   , pdm_constant.g_con_bcm_party_type
+                                   )
+               or (    i_rt_pty.type   =  pdm_constant.g_con_mtt_party_type
+                   and i_party_id_cust is null
+                  )
+            then
+
+               
+               l_ti_sent := pdm_taskinstruction.send( i_target_process_id_cust => i_rt_pty.id_cust
+                                                    , i_target_instance_id     => null
+                                                    , i_rt_pet                 => io_rt_pet
+                                                    , i_ind_force              => i_ind_force_taskinstruction
+                                                    , i_rt_pae                 => io_rt_pae
+                                                    );
+            end if;
+
+            
+            if l_ti_sent
+            then
+
+               
+               io_rt_pae.last_ti_sent_time   := cmn_common.default_timestamp;
+               io_ind_update_package := true;
+            end if;
+
+         end if; 
+
+      end if; 
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module        => l_con_proc_name
+                                , i_debug_info    => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end match_send_taskinstruction;
+
+end pdm_taskinstruction;
+/

@@ -1,0 +1,23 @@
+procedure drop_table(tab in varchar2) is
+sqlddl varchar2(255) := 'DROP TABLE '||tab||' CASCADE CONSTRAINTS PURGE';
+all_done boolean := false;
+max_reps number := 10;
+
+
+begin
+  while not all_done and max_reps > 0 loop
+    begin
+      max_reps := max_reps - 1;
+      
+      execute immediate sqlddl;
+    exception when others then
+      
+      if sqlcode = -942 then
+        all_done := true;
+      else
+        raise;
+      end if;
+    end;
+  end loop;
+end;
+/

@@ -1,0 +1,156 @@
+create or replace PACKAGE lm_comm_objects
+IS
+
+FUNCTION get_package_destinations( i_pin_id IN lm_package_instructions.id%TYPE
+                                 , i_separator IN VARCHAR2 DEFAULT '; '
+                                 )
+RETURN VARCHAR2;
+
+FUNCTION get_task_stations( i_tin_id IN lm_task_instructions.id%TYPE
+                          , i_separator IN VARCHAR2 DEFAULT '; '
+                          )
+RETURN VARCHAR2;
+
+END lm_comm_objects;
+/
+
+
+
+
+package body lm_comm_objects
+is
+
+function get_package_destinations( i_pin_id in lm_package_instructions.id%type
+                                 , i_separator in varchar2 default '; '
+                                 )
+return varchar2
+is
+   cursor c_pdn_per_pin
+   is
+      select pon.id_cust
+      from   lm_package_destinations pdn
+      ,      lm_physical_destinations pon
+      where  pdn.pon_id = pon.id
+      and    pdn.pin_id = i_pin_id
+      order by pdn.pdn_order;
+
+   l_pon_id_cust    lm_physical_destinations.id_cust%type;
+   l_destinations   varchar2(4000);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+
+   if i_pin_id is not null
+   then
+      for l_rt_pon in c_pdn_per_pin loop
+         l_destinations := l_destinations || i_separator || l_rt_pon.id_cust;
+      end loop;
+   end if;
+   
+   return ltrim(l_destinations, i_separator);
+
+exception
+when others
+then
+   return null;
+end get_package_destinations;
+
+function get_task_stations( i_tin_id in lm_task_instructions.id%type
+                          , i_separator in varchar2 default '; '
+                          )
+return varchar2
+is
+   cursor c_tsn_per_tin
+   is
+      select decode (tsn.tsn_type,'N', 'NF', 'F', 'F', 'T', 'ST')
+          ||'{'
+          || listagg(stn.id_cust, ',')
+              within group  (order by stn.id)
+          || '}' stns
+      from   lm_task_stations tsn
+      ,      lm_stations stn
+      where  tsn.stn_id = stn.id
+      and    tsn.tin_id = i_tin_id
+      group by tsn.tsn_type
+      order by decode (tsn.tsn_type,'N', 1, 'F', 2, 'T', 3)
+      ;
+
+   l_pon_id_cust    lm_physical_destinations.id_cust%type;
+   l_stations       varchar2(4000);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+
+   if i_tin_id is not null
+   then
+      for l_rt_stn in c_tsn_per_tin loop
+         l_stations := l_stations || i_separator || l_rt_stn.stns;
+      end loop;
+   end if;
+   
+   return ltrim(l_stations, i_separator);
+
+exception
+when others
+then
+   return null;
+end get_task_stations;
+
+end lm_comm_objects;
+/

@@ -1,0 +1,1045 @@
+create or replace PACKAGE pdm_constant
+IS
+   /****************************************************************************
+   Name        : pdm_constant
+   Type        : package body
+   Description : This package contains globally accessible constants
+
+   Change history:
+
+   Nr. Date       Author  Request Description
+   --- ---------- ------- ------- ---------------------------------------------
+     0 02-11-2010 nljval     2367 Creation
+**************************************************************/
+
+   g_con_package                    CONSTANT VARCHAR2( 30 )  := 'pdm_constant';
+
+   g_con_boolean_type_false         CONSTANT INTEGER         := 0;
+   g_con_boolean_type_true          CONSTANT INTEGER         := 1;
+   g_con_attr_value_false           CONSTANT VARCHAR2( 30 )  := 'FALSE';
+   g_con_attr_value_true            CONSTANT VARCHAR2( 30 )  := 'TRUE';
+   g_con_truefalse_true             CONSTANT VARCHAR2(4)     := 'true';
+   g_con_truefalse_false            CONSTANT VARCHAR2(5)     := 'false';
+   g_con_prio_high                  CONSTANT VARCHAR2(4)     := 'HIGH';
+   g_con_prio_low                   CONSTANT VARCHAR2(3)     := 'LOW';
+   
+   -- LPC_Status values
+   g_con_lpc_status_read            CONSTANT VARCHAR2( 30 )  := 'READ';
+   g_con_lpc_status_noread          CONSTANT VARCHAR2( 30 )  := 'NO_READ';
+   g_con_lpc_status_multiread       CONSTANT VARCHAR2( 30 )  := 'MULTI_READ';
+   g_con_lpc_status_multi_nolog     CONSTANT VARCHAR2( 30 )  := 'MULTI_READ_NO_LOGICAL';
+   g_con_lpc_status_vfbta           CONSTANT VARCHAR2( 30 )  := 'VFBTA';
+   g_con_lpc_status_multi_vfbta     CONSTANT VARCHAR2( 30 )  := 'MULTI_READ_VFBTA';
+   g_con_lpc_status_unknown         CONSTANT VARCHAR2( 30 )  := 'UNKNOWN';
+
+   -- Alerts
+   g_con_max_signal_length          CONSTANT NUMBER := 30;
+   g_con_job_wait_delay             CONSTANT NUMBER := 10;
+   g_con_timeout_occurred           CONSTANT NUMBER := 1;
+
+   g_con_alrt_monitor_timeout        CONSTANT VARCHAR2( 30 )  := 'AL001';
+   g_con_alrt_psn_task               CONSTANT VARCHAR2( 30 )  := 'AL002';
+   g_con_alrt_time                   CONSTANT VARCHAR2( 30 )  := 'AL003';
+   g_con_alrt_pae_psn_prio_high      CONSTANT VARCHAR2( 30 )  := 'AL004';
+   g_con_alrt_pae_psn_prio_low       CONSTANT VARCHAR2( 30 )  := 'AL005';
+   g_con_alrt_pae_time_prio_high     CONSTANT VARCHAR2( 30 )  := 'AL006';
+   g_con_alrt_pae_time_prio_low      CONSTANT VARCHAR2( 30 )  := 'AL007';
+   g_con_alrt_etk                    CONSTANT VARCHAR2( 30 )  := 'AL008';
+   g_con_alrt_test                   CONSTANT VARCHAR2( 30 )  := 'ALTST';
+
+   -- PARAMETER.NAMEs
+   g_con_ptr_restart_hdl_etk        CONSTANT VARCHAR2( 30 )  := 'RESTART_PERIOD_HDL_ETK';
+   g_con_ptr_restart_hdl_ptk        CONSTANT VARCHAR2( 30 )  := 'RESTART_PERIOD_HDL_PTK';
+   g_con_ptr_restart_hdl_time       CONSTANT VARCHAR2( 30 )  := 'RESTART_PERIOD_HDL_TIME';
+   g_con_ptr_restart_hdl_pae_psn    CONSTANT VARCHAR2( 30 )  := 'RESTART_PERIOD_HDL_PAE_PSN';
+   g_con_ptr_restart_hdl_pae_time   CONSTANT VARCHAR2( 30 )  := 'RESTART_PERIOD_HDL_PAE_TIME';
+   g_con_ptr_restart_mon_timeout    CONSTANT VARCHAR2( 30 )  := 'RESTART_PERIOD_MON_TIMEOUT';
+   g_con_ptr_hdl_etk_low_prio       CONSTANT VARCHAR2( 30 )  := 'NUMBER_HDL_ETK_LOW_PRIO';
+   g_con_ptr_maxrow_hdl_pae_psn     CONSTANT VARCHAR2( 30 )  := 'MAXROWNUM_HDL_PAE_PSN';
+   g_con_ptr_use_current_pd_id      CONSTANT VARCHAR2( 30 )  := 'USE_CURRENT_PD_ID_MULTI_SCAN';
+   g_con_pae_place_of_birth         CONSTANT VARCHAR2( 30 )  := 'PAE_PLACE_OF_BIRTH';
+   g_con_open_physical_pae          CONSTANT VARCHAR2( 30 )  := 'INTERVAL_OPEN_PHYSICAL_PACKAGE';
+   g_con_retention_physical_pae     CONSTANT VARCHAR2( 30 )  := 'RETENTION_PHYSICAL_PACKAGE';
+   g_con_retention_logical_pae      CONSTANT VARCHAR2( 30 )  := 'RETENTION_LOGICAL_PACKAGE';
+   g_con_ti_timeout                 CONSTANT VARCHAR2( 30 )  := 'TASKINSTRUCTION_TIMEOUT';
+   g_con_ti_max_suspect_sent        CONSTANT VARCHAR2( 30 )  := 'TI_MAX_SUSPECT_SENT';
+   g_con_sdd_delay_allowed          CONSTANT VARCHAR2( 30 )  := 'SDD_DELAY_ALLOWED';
+   g_con_sdd_ahead_allowed          CONSTANT VARCHAR2( 30 )  := 'SDD_AHEAD_ALLOWED';
+   g_con_pve_airline_regexp         CONSTANT VARCHAR2( 30 )  := 'AIRLINE_REGEXP';
+   g_con_pve_flightnumber_regexp    CONSTANT VARCHAR2( 30 )  := 'FLIGHTNUMBER_REGEXP';
+   g_con_ptr_digit_1_airport_tag    CONSTANT VARCHAR2( 30 )  := 'DIGIT_1_AIRPORT_TAG';
+   g_con_ptr_ghost_concept          CONSTANT VARCHAR2( 30 )  := 'GHOST_CONCEPT';
+   g_con_ptr_ident_logic_mode       CONSTANT VARCHAR2( 30 )  := 'IDENTIFICATION_LOGIC_MODE';
+   g_con_ptr_previous_schema        CONSTANT VARCHAR2( 30 )  := 'PREVIOUS_SCHEMA';
+   g_con_ptr_use_multiple_bagdata   CONSTANT VARCHAR2( 30 )  := 'USE_MULTIPLE_BAGDATA';
+   g_con_ptr_del_extask_unexp_stn   CONSTANT VARCHAR2( 30 )  := 'DEL_EXEC_TASK_UNEXP_STATION';
+
+   -- PARAMETER.IDs
+   g_con_ptrID_cyclic_number        CONSTANT NUMBER := 167;
+
+   -- Separator between individual eon values
+   g_con_eon_value_separator        CONSTANT VARCHAR2( 2 )   := '<>';
+
+   -- Separator between values of concatenated ATTRIBUTE DEFINITION
+   g_con_adn_concat_separator       CONSTANT VARCHAR2( 2 )   := '##';
+
+   g_con_pve_pd_id_regexp           CONSTANT VARCHAR2( 100 ) := 'PD_ID_REGEXP';
+
+   -- Valid Fallback Tag
+   g_con_pve_vfbta_regexp           CONSTANT VARCHAR2( 100 ) := 'VFBTA_REGEXP';
+
+   -- Process id's of interface parties
+   g_con_opm_party_process_id       CONSTANT VARCHAR2( 20 )  := 'OPM_PARTY_PROCESS_ID';
+   g_con_odb_party_process_id       CONSTANT VARCHAR2( 20 )  := 'ODB_PARTY_PROCESS_ID';
+   g_con_pi_party_process_id        CONSTANT VARCHAR2( 20 )  := 'PI_PARTY_PROCESS_ID';
+   g_con_pd_party_process_id        CONSTANT VARCHAR2( 20 )  := 'PD_PARTY_PROCESS_ID';
+   g_con_lm_party_type              CONSTANT VARCHAR2( 10 )  := 'LM';
+   g_con_bcm_party_type             CONSTANT VARCHAR2( 10 )  := 'BCM';
+   g_con_mtt_party_type             CONSTANT VARCHAR2( 10 )  := 'MTT';
+   g_con_mcs_party_type             CONSTANT VARCHAR2( 10 )  := 'MCS';
+   g_con_odb_party_type             CONSTANT VARCHAR2( 10 )  := 'ODB';
+
+   -- Parameter for timestamp of default synchronisation time for BSIS
+   g_con_ptr_pd_resync_start_time   CONSTANT VARCHAR2( 30 )  := 'DEFAULT_PD_RESYNC_START_TIME';
+----------------------------------------------------------------------------------------
+   g_con_pi_request_timeout         CONSTANT VARCHAR2( 30 )  := 'PI_REQUEST_TIMEOUT';
+   g_con_xpath_idx_placeholder      CONSTANT VARCHAR2( 30 )  := '[]';
+   g_con_max_rematch                CONSTANT VARCHAR2( 30 )  := 'MAX_REMATCH';
+   g_con_send_ps_logical            CONSTANT VARCHAR2( 30 )  := 'SEND_PROCESSSTATUS_LOGICAL';
+
+   -- Process Plan types
+   g_con_psn_flight_build           CONSTANT VARCHAR2( 30 )  := 'FLIGHT_BUILD';
+   g_con_psn_reclaim                CONSTANT VARCHAR2( 30 )  := 'RECLAIM';
+   g_con_psn_ito                    CONSTANT VARCHAR2( 30 )  := 'INTER_TERMINAL_OPERATION';
+
+   -- Families
+   g_con_fly_segregation            CONSTANT VARCHAR2( 30 )  := 'SEGREGATION';
+   g_con_fly_handler                CONSTANT VARCHAR2( 30 )  := 'HANDLER';
+   
+   -- Actions
+   g_con_non_primary_action         CONSTANT VARCHAR2( 30 )  := 'TemporaryStorage';
+
+   -- Parameter name for handling area
+   g_con_prr_handling_area          CONSTANT VARCHAR2( 30 )  := 'HANDLINGAREA';
+
+   -- package statuses
+   g_con_pae_status_closed          CONSTANT VARCHAR2( 6 )   := 'CLOSED';
+   g_con_pae_status_open            CONSTANT VARCHAR2( 4 )   := 'OPEN';
+   g_con_pae_status_suspended       CONSTANT VARCHAR2( 9 )   := 'SUSPENDED';
+   g_con_pae_status_obsolete        CONSTANT VARCHAR2( 9 )   := 'OBSOLETE';
+
+   g_con_tr_error_bag_dereg         CONSTANT VARCHAR2( 30 )  := 'BAG_DEREGISTERED';
+   g_con_tr_error_inactivated       CONSTANT VARCHAR2( 30 )  := 'PACKAGE_INACTIVATED';
+   g_con_tr_error_unexp_station     CONSTANT VARCHAR2( 30 )  := 'UNEXPECTED_STATION';
+   g_con_tr_dereg_missing           CONSTANT VARCHAR2(  7 )  := 'MISSING';
+   g_con_rout_except_hdld_false     CONSTANT VARCHAR2(  5 )  := 'FALSE';
+   g_con_rout_except_hdld_true      CONSTANT VARCHAR2(  5 )  := 'TRUE';
+   g_con_direction_incoming         CONSTANT VARCHAR2(  1 )  := 'I';
+   g_con_direction_outgoing         CONSTANT VARCHAR2(  1 )  := 'O';
+   g_con_pte_logical                CONSTANT VARCHAR2( 20 )  := 'LOGICAL';
+   g_con_pte_physical               CONSTANT VARCHAR2( 20 )  := 'PHYSICAL';
+   g_con_pte_member                 CONSTANT VARCHAR2( 20 )  := 'MEMBER';
+   g_con_pte_id_logical             CONSTANT NUMBER          := 1;
+   g_con_pte_id_physical            CONSTANT NUMBER          := 2;
+   g_con_pte_id_member              CONSTANT NUMBER          := 3;
+   g_con_pln_compose_attributes     CONSTANT NUMBER          := 1;
+   g_con_pln_physical_resume        CONSTANT NUMBER          := 2;
+   g_con_pln_logical_member         CONSTANT NUMBER          := 3;
+   g_con_pln_physical_member        CONSTANT NUMBER          := 4;
+
+   -- APPLICATION ELEMENT.NAME
+   g_con_aet_psn_status_change      CONSTANT VARCHAR2( 30 )  := 'JOB_PROC_PLAN_STATUS_CHANGE';
+   g_con_aet_psn_task_physical      CONSTANT VARCHAR2( 30 )  := 'JOB_PROC_PLAN_TASK';
+   g_con_aet_psn_task_logical       CONSTANT VARCHAR2( 30 )  := 'JOB_PROC_PLAN_TASK_LOGICAL';
+   g_con_aet_psn_pae_prio_high      CONSTANT VARCHAR2( 30 )  := 'JOB_PLAN_PACKAGE_PRIO_HIGH';
+   g_con_aet_psn_pae_prio_low       CONSTANT VARCHAR2( 30 )  := 'JOB_PLAN_PACKAGE_PRIO_LOW';
+   g_con_aet_time_pae_prio_high     CONSTANT VARCHAR2( 30 )  := 'JOB_TIME_PACKAGE_PRIO_HIGH';
+   g_con_aet_time_pae_prio_low      CONSTANT VARCHAR2( 30 )  := 'JOB_TIME_PACKAGE_PRIO_low';
+   g_con_aet_monitor_timeout        CONSTANT VARCHAR2( 30 )  := 'TASK_TIMEOUT_MONITOR_JOB';
+   g_con_aet_package_retention      CONSTANT VARCHAR2( 30 )  := 'PACKAGE_RETENTION_JOB';
+
+   -- message types -----------------------------------------------------------------------
+   g_con_ProcessPlanMessage         CONSTANT VARCHAR2( 30 )  := 'ProcessPlanMessage';
+   g_con_ProcessPlanListMessage     CONSTANT VARCHAR2( 30 )  := 'ProcessPlanListMessage';
+   g_con_packagedata                CONSTANT VARCHAR2( 30 )  := 'PackageData';
+   g_con_packageinfo                CONSTANT VARCHAR2( 30 )  := 'PackageInfo';
+   g_con_packageinforequest         CONSTANT VARCHAR2( 30 )  := 'PackageInfoRequest';
+   g_con_taskreport                 CONSTANT VARCHAR2( 30 )  := 'TaskReport';
+   g_con_taskinstruction            CONSTANT VARCHAR2( 30 )  := 'TaskInstruction';
+   g_con_processstatusmessage       CONSTANT VARCHAR2( 30 )  := 'ProcessStatusMessage';
+   g_con_pdsubscribe                CONSTANT VARCHAR2( 30 )  := 'PackageDataSubscribe';
+   g_con_pdsubscriberesponse        CONSTANT VARCHAR2( 30 )  := 'PackageDataSubscribeResponse';
+
+   -- Although this message will not be sent it is required as part of resume-tracking functionality
+   g_con_pirequest_pi               CONSTANT VARCHAR2( 30 )  := 'PackageInfoRequest';
+
+   -- PackageDataStatuses
+   g_con_packagedatasts_received    CONSTANT VARCHAR2( 10 )  := 'RECEIVED';
+   g_con_packagedatasts_deleted     CONSTANT VARCHAR2( 10 )  := 'DELETED';
+   g_con_packagedatasts_multiple    CONSTANT VARCHAR2( 10 )  := 'MULTIPLE';
+
+   -- EXPRESSION.OPERATOR TYPE ------------------------------------------------------------------------
+   g_con_esn_operator_type_and      CONSTANT VARCHAR2( 10 )  := 'AND';
+   g_con_esn_operator_type_or       CONSTANT VARCHAR2( 10 )  := 'OR';
+
+   -- EVALUATE OPERATION statuses
+   g_con_eon_status_prepared        CONSTANT VARCHAR2( 10 )  := 'PREPARED';
+   g_con_eon_status_in_use          CONSTANT VARCHAR2( 10 )  := 'IN_USE';
+
+   -- OPERATION TYPES ------------------------------------------------------------------------
+   g_con_ote_existence              CONSTANT VARCHAR2( 20 )  := 'Existence';
+   g_con_ote_nonExistence           CONSTANT VARCHAR2( 20 )  := 'NonExistence';
+   g_con_ote_StringMatch            CONSTANT VARCHAR2( 20 )  := 'StringMatch';
+   g_con_ote_regExp                 CONSTANT VARCHAR2( 20 )  := 'RegExp';
+   g_con_ote_SubString              CONSTANT VARCHAR2( 20 )  := 'SubString';
+   g_con_ote_inCollection           CONSTANT VARCHAR2( 20 )  := 'InCollection'; -- Not used in table but in code
+   g_con_ote_MultiPurpose           CONSTANT VARCHAR2( 20 )  := 'MultiPurpose'; -- PDM internal use, in table and code
+
+   g_con_ote_id_existence           CONSTANT NUMBER          := 1;
+   g_con_ote_id_nonExistence        CONSTANT NUMBER          := 2;
+   g_con_ote_id_StringMatch         CONSTANT NUMBER          := 3;
+   g_con_ote_id_regExp              CONSTANT NUMBER          := 4;
+   g_con_ote_id_SubString           CONSTANT NUMBER          := 5;
+   g_con_ote_id_inCollection        CONSTANT NUMBER          := 6;
+   g_con_ote_id_MultiPurpose        CONSTANT NUMBER          := 7;
+
+   -- PROCESS SPEC STATUSES ------------------------------------------------------------------------
+   g_con_pns_status_future          CONSTANT NUMBER          := 1;
+   g_con_pns_status_current         CONSTANT NUMBER          := 2;
+   g_con_pns_status_obsolete        CONSTANT NUMBER          := 3;
+
+   -- PHASE TYPES
+   g_con_tpe_type_prepare           CONSTANT VARCHAR2( 10 )  := 'PREPARE';
+   g_con_tpe_type_execute           CONSTANT VARCHAR2( 10 )  := 'EXECUTE';
+   g_con_tpe_type_wrapup            CONSTANT VARCHAR2( 10 )  := 'WRAP_UP';
+
+   -- RESOURCE TYPES ------------------------------------------------------------------------
+   g_con_rte_handling_area          CONSTANT NUMBER          := 1;
+   g_con_rte_station                CONSTANT NUMBER          := 2;
+
+   -- MONITORING TYPES ----------------------------------------------------------------------
+   g_con_tle_production             CONSTANT VARCHAR2( 30 )  := 'PRODUCTION';
+   g_con_tle_id_production          CONSTANT NUMBER          := 1;
+   g_con_tle_id_non_production      CONSTANT NUMBER          := 2;
+
+   -- DerivedPackageStatuses -----------------------------------------------------------------
+   g_con_derpaests_log              CONSTANT VARCHAR2( 60 )  := 'LOGICAL';
+   g_con_derpaests_log_ready        CONSTANT VARCHAR2( 60 )  := 'LOGICAL_READY';
+   g_con_derpaests_log_del          CONSTANT VARCHAR2( 60 )  := 'LOGICAL_DELETED';
+   g_con_derpaests_log_del_ready    CONSTANT VARCHAR2( 60 )  := 'LOGICAL_DELETED_READY';
+   g_con_derpaests_log_mlt          CONSTANT VARCHAR2( 60 )  := 'LOGICAL_MULTIPLE';
+   g_con_derpaests_log_mlt_ready    CONSTANT VARCHAR2( 60 )  := 'LOGICAL_MULTIPLE_READY';
+   g_con_derpaests_sys              CONSTANT VARCHAR2( 60 )  := 'IN_SYSTEM';
+   g_con_derpaests_not_sys          CONSTANT VARCHAR2( 60 )  := 'NOT_IN_SYSTEM';
+   g_con_derpaests_sys_ready        CONSTANT VARCHAR2( 60 )  := 'IN_SYSTEM_READY';
+   g_con_derpaests_not_sys_ready    CONSTANT VARCHAR2( 60 )  := 'NOT_IN_SYSTEM_READY';
+   g_con_derpaests_sys_rdydel       CONSTANT VARCHAR2( 60 )  := 'IN_SYSTEM_READY_PACKAGEDATA_DELETED';
+   g_con_derpaests_not_sys_rdydel   CONSTANT VARCHAR2( 60 )  := 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED';
+   g_con_derpaests_sys_pd_del       CONSTANT VARCHAR2( 60 )  := 'IN_SYSTEM_PACKAGEDATA_DELETED';
+   g_con_derpaests_not_sys_pd_del   CONSTANT VARCHAR2( 60 )  := 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED';
+   g_con_derpaests_sys_pd_mlt       CONSTANT VARCHAR2( 60 )  := 'IN_SYSTEM_PACKAGEDATA_MULTIPLE';
+   g_con_derpaests_not_sys_pd_mlt   CONSTANT VARCHAR2( 60 )  := 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE';
+
+   -- ProcessPlan Statuses -----------------------------------------------------
+   g_con_ppn_status_set             CONSTANT VARCHAR2( 60 )  := 'SET';
+   g_con_ppn_status_deleted         CONSTANT VARCHAR2( 60 )  := 'DELETED';
+
+------------------------------------------------------------------------------------------------------------------------
+-- XPATH expressions
+------------------------------------------------------------------------------------------------------------------------
+
+-- XPATH expressions shared for CommonProcessDefinitions and ProcesPlan message ----------------------------------------
+
+   -- ProcessAttribute
+   g_con_xpath_ProcessAttr          CONSTANT VARCHAR2( 60 ) :=  'ProcessAttribute';
+   g_con_xpath_ProcessAttrRoot      CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ProcessAttr;
+   g_con_xpath_ProcessAttr_name     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ProcessAttrRoot ||'/Name';
+
+   -- Family
+   g_con_xpath_family               CONSTANT VARCHAR2( 60 ) :=  'Family';
+   g_con_xpath_familyRoot           CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_family;
+   g_con_xpath_family_name          CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_familyRoot ||'/Name';
+   g_con_xpath_product              CONSTANT VARCHAR2( 60 ) :=  'Product';
+   g_con_xpath_fam_prd              CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_familyRoot ||'/'||g_con_xpath_product;
+
+   -- Product within Family
+   g_con_xpath_fam_prdRoot          CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_product;
+   g_con_xpath_fam_prd_name         CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_fam_prdRoot ||'/Name';
+   g_con_xpath_fam_prd_cond         CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_fam_prdRoot ||'/Condition';
+
+   -- AppliedTo
+   g_con_xpath_appliedTo            CONSTANT VARCHAR2( 60 ) :=  'AppliedTo';
+   g_con_xpath_appliedToRoot        CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_appliedTo;
+   g_con_xpath_appliedTo_family     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_appliedToRoot ||'/FamilyName';
+   g_con_xpath_productName          CONSTANT VARCHAR2( 60 ) :=  'ProductName';
+   g_con_xpath_appliedTo_product    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_appliedToRoot ||'/'||g_con_xpath_productName;
+
+   -- Parameter
+   g_con_xpath_parameter            CONSTANT VARCHAR2( 60 ) :=  'Parameter';
+   g_con_xpath_parameterRoot        CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_parameter;
+   g_con_xpath_parameter_attribut   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_parameterRoot ||'/Attribute';
+   g_con_xpath_parameter_value      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_parameterRoot ||'/Value';
+
+
+-- XPATH expressions CommonProcessDefinitions ------------------------------------------------------------------------
+
+   -- CommonProcessDefinitions
+   g_con_xpath_ctn_CmnProcDefs      CONSTANT VARCHAR2( 60 ) :=  '//CommonProcessDefinitions';
+   g_con_xpath_ctn_handlingArea     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefs ||'/HandlingArea';
+   g_con_xpath_ctn_version          CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefs ||'/Version';
+   g_con_xpath_ctn_CmnProcessDef    CONSTANT VARCHAR2( 60 ) :=  'CommonProcessDefinition';
+   g_con_xpath_ctn_CmnProcDef       CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefs ||'/'||g_con_xpath_ctn_CmnProcessDef;
+
+   -- CommonProcessDefinition within commonProcessDefinitions
+   g_con_xpath_ctn_CmnProcDefRoot   CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ctn_CmnProcessDef;
+   g_con_xpath_ctn_name             CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefRoot ||'/Name';
+   g_con_xpath_ctn_monitoringType   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefRoot ||'/PlanSettings/MonitoringType';
+   g_con_xpath_ctn_param            CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefRoot ||'/'||g_con_xpath_parameter;
+   g_con_xpath_ctn_condition        CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefRoot ||'/Condition';
+   g_con_xpath_ctn_ProcessAttr      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefRoot ||'/'||g_con_xpath_ProcessAttr;
+   g_con_xpath_ctn_family           CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefRoot ||'/'||g_con_xpath_family;
+   g_con_xpath_ctn_processDef       CONSTANT VARCHAR2( 60 ) :=  'ProcessDefinition';
+   g_con_xpath_ctn_process          CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_CmnProcDefRoot ||'/'||g_con_xpath_ctn_processDef;
+
+   -- Family within CommonProcessDefinition
+   g_con_xpath_ctn_familyRoot       CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_family;
+   g_con_xpath_ctn_family_param     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_familyRoot ||'/'||g_con_xpath_parameter;
+
+   -- ProcessDefinition within CommonProcessDefinition
+   g_con_xpath_ctn_processRoot      CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ctn_processDef;
+   g_con_xpath_ctn_process_name     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_processRoot ||'/Name';
+   g_con_xpath_ctn_process_param    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_processRoot ||'/'||g_con_xpath_parameter;
+   g_con_xpath_ctn_process_cond     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_processRoot ||'/Condition';
+   g_con_xpath_ctn_process_prio     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_processRoot ||'/Priority';
+   g_con_xpath_ctn_process_apfam    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_processRoot ||'/'||g_con_xpath_appliedTo||'/FamilyName';
+   g_con_xpath_ctn_process_apprd    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_processRoot ||'/'||g_con_xpath_appliedTo||'/'||g_con_xpath_productName;
+   g_con_xpath_ctn_phaseDef         CONSTANT VARCHAR2( 60 ) :=  'PhaseDefinition';
+   g_con_xpath_ctn_process_phase    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_processRoot ||'/'||g_con_xpath_ctn_phaseDef;
+
+   -- PhaseDefinition within ProcessDefinition
+   g_con_xpath_ctn_phaseRoot        CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ctn_phaseDef;
+   g_con_xpath_ctn_phase_name       CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_phaseRoot ||'/Name';
+   g_con_xpath_ctn_phase_param      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_phaseRoot ||'/'||g_con_xpath_parameter;
+   g_con_xpath_ctn_actionDef        CONSTANT VARCHAR2( 60 ) :=  'ActionDefinition';
+   g_con_xpath_ctn_phase_action     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_phaseRoot ||'/'||g_con_xpath_ctn_actionDef;
+
+   -- ActionDefinition within PhaseDefinition
+   g_con_xpath_ctn_actionRoot       CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ctn_actionDef;
+   g_con_xpath_ctn_action_name      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ctn_actionRoot ||'/Name';
+
+
+-- XPATH expressions ProcessPlanMessage ------------------------------------------------------------------------
+
+   -- ProcessPlanMessage
+   g_con_xpath_ppn_ProcPlanMsg      CONSTANT VARCHAR2( 60 ) :=  '//ProcessPlanMessage';
+   g_con_xpath_ppn_EventTime        CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_ProcPlanMsg ||'/EventTime';
+   g_con_xpath_ppn_ProcPlan         CONSTANT VARCHAR2( 60 ) :=  'ProcessPlan';
+   g_con_xpath_ppn_ProcessPlan      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_ProcPlanMsg ||'/'||g_con_xpath_ppn_ProcPlan;
+
+   -- ProcessPlan within ProcessPlanMessage
+   g_con_xpath_ppn_PrPlanRoot       CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ppn_ProcPlan;
+   g_con_xpath_ppn_PrPlan_status    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/Status';
+   g_con_xpath_ppn_PrPlan_comName   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/CommonProcessDefinitionName';
+   g_con_xpath_ppn_PrPlan_name      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/ProcessPlanID/Name';
+   g_con_xpath_ppn_PrPlan_version   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/ProcessPlanID/Version';
+   g_con_xpath_ppn_PrPlan_hanArea   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/HandlingArea';
+   g_con_xpath_ppn_PrPlan_active    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/TimeFrame/Activation';
+   g_con_xpath_ppn_PrPlan_expire    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/TimeFrame/Expiration';
+   g_con_xpath_ppn_PrPlan_prop      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/Properties';
+   g_con_xpath_ppn_PrPlan_param     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/'||g_con_xpath_parameter;
+   g_con_xpath_ppn_PrPlan_cond      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/Condition';
+   g_con_xpath_ppn_PrPlan_family    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/'||g_con_xpath_family;
+   g_con_xpath_ppn_process          CONSTANT VARCHAR2( 60 ) :=  'Process';
+   g_con_xpath_ppn_PrPlan_process   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_PrPlanRoot || '/'||g_con_xpath_ppn_process;
+
+   -- Properties
+   g_con_xpath_PropFlightRoot       CONSTANT VARCHAR2( 60 ) :=  '//Properties/Flight';
+   g_con_xpath_PropAirline          CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/FlightIdentification/Airline';
+   g_con_xpath_PropFlightNumber     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/FlightIdentification/FlightNumber';
+   g_con_xpath_PropDate             CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/FlightIdentification/Date';
+   g_con_xpath_PropSchedDateTime    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/ScheduledDateTime';
+   g_con_xpath_PropAirport          CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/Airport';
+   g_con_xpath_PropHandlingArea     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/HandlingArea';
+   g_con_xpath_PropStand            CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/Stand';
+   g_con_xpath_PropOnBlocks         CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/ActualOnBlocksDateTime';
+   g_con_xpath_PropOffBlocks        CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/ActualOffBlocksDateTime';
+   g_con_xpath_PropHandler          CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_PropFlightRoot ||'/Handler';
+
+   -- Process within ProcessPlan
+   g_con_xpath_ppn_processRoot      CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ppn_process;
+   g_con_xpath_ppn_procDefName      CONSTANT VARCHAR2( 60 ) :=  'ProcessDefinitionName';
+   g_con_xpath_ppn_proc_DefName     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_processRoot ||'/'||g_con_xpath_ppn_procDefName;
+   g_con_xpath_ppn_process_cond     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_processRoot ||'/Condition';
+   g_con_xpath_ppn_process_param    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_processRoot ||'/'||g_con_xpath_parameter;
+   g_con_xpath_ppn_process_apTo     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_processRoot ||'/'||g_con_xpath_appliedTo;
+   g_con_xpath_ppn_activity         CONSTANT VARCHAR2( 60 ) :=  'Activity';
+   g_con_xpath_ppn_process_act      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_processRoot ||'/'||g_con_xpath_ppn_activity;
+
+   -- Activity within Process
+   g_con_xpath_ppn_activityRoot     CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ppn_activity;
+   g_con_xpath_ppn_activity_name    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_activityRoot ||'/Name';
+   g_con_xpath_ppn_activity_prop    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_activityRoot || '/Properties';
+   g_con_xpath_ppn_activity_param   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_activityRoot ||'/'||g_con_xpath_parameter;
+   g_con_xpath_ppn_activity_apTo    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_activityRoot ||'/'||g_con_xpath_appliedTo;
+   g_con_xpath_ppn_phase            CONSTANT VARCHAR2( 60 ) :=  'Phase';
+   g_con_xpath_ppn_activity_phase   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_activityRoot ||'/'||g_con_xpath_ppn_phase;
+
+   -- Properties
+   g_con_xpath_ActivityPropRoot     CONSTANT VARCHAR2( 60 ) :=  '//Properties';
+   g_con_xpath_ActPropReleaseRate   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ActivityPropRoot ||'/ReleaseProperties/ReleaseRate';
+
+   -- Phase within Activity
+   g_con_xpath_ppn_phaseRoot        CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ppn_phase;
+   g_con_xpath_ppn_phaseDefName     CONSTANT VARCHAR2( 60 ) :=  'PhaseDefinitionName';
+   g_con_xpath_ppn_phase_DefName    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_phaseRoot ||'/PhaseID/'||g_con_xpath_ppn_phaseDefName;
+   g_con_xpath_ppn_phaseName        CONSTANT VARCHAR2( 60 ) :=  'Name';
+   g_con_xpath_ppn_phase_name       CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_phaseRoot ||'/PhaseID/'||g_con_xpath_ppn_phaseName;
+   g_con_xpath_ppn_phase_active     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_phaseRoot ||'/TimeFrame/Activation';
+   g_con_xpath_ppn_phase_expire     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_phaseRoot ||'/TimeFrame/Expiration';
+   g_con_xpath_ppn_phase_param      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_phaseRoot ||'/'||g_con_xpath_parameter;
+   g_con_xpath_ppn_action           CONSTANT VARCHAR2( 60 ) :=  'Action';
+   g_con_xpath_ppn_phase_action     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_phaseRoot ||'/'||g_con_xpath_ppn_action;
+
+   -- Action within Phase
+   g_con_xpath_ppn_actionRoot       CONSTANT VARCHAR2( 60 ) :=  '//'||g_con_xpath_ppn_action;
+   g_con_xpath_ppn_actionDefName    CONSTANT VARCHAR2( 60 ) :=  'ActionDefinitionName';
+   g_con_xpath_ppn_action_DefName   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_actionRoot ||'/'||g_con_xpath_ppn_actionDefName;
+   g_con_xpath_ppn_resourceType     CONSTANT VARCHAR2( 60 ) :=  '/Resources/ResourceType';
+   g_con_xpath_ppn_action_resType   CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_actionRoot ||g_con_xpath_ppn_resourceType;
+   g_con_xpath_ppn_resourceID       CONSTANT VARCHAR2( 60 ) :=  '/Resources/ResourceID';
+   g_con_xpath_ppn_action_resID     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_ppn_actionRoot ||g_con_xpath_ppn_resourceID;
+
+
+-- XPATH expressions for Condition -------------------------------------------------------------------------------------
+
+   -- Condition
+   g_con_xpath_conditionRoot        CONSTANT VARCHAR2( 60 ) :=  '//Condition';
+   g_con_xpath_ElementDisjunction   CONSTANT VARCHAR2( 60 ) :=  'Disjunction';
+   g_con_xpath_ElementConjunction   CONSTANT VARCHAR2( 60 ) :=  'Conjunction';
+   g_con_xpath_ElementEvaluate      CONSTANT VARCHAR2( 60 ) :=  'Evaluate';
+   g_con_xpath_cond_disjunction     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_conditionRoot ||'/'||g_con_xpath_ElementDisjunction;
+   g_con_xpath_cond_conjunction     CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_conditionRoot ||'/'||g_con_xpath_ElementConjunction;
+   g_con_xpath_cond_evaluate        CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_conditionRoot ||'/'||g_con_xpath_ElementEvaluate;
+   g_con_xpath_disjunction          CONSTANT VARCHAR2( 60 ) :=  '/'||g_con_xpath_ElementDisjunction;
+   g_con_xpath_conjunction          CONSTANT VARCHAR2( 60 ) :=  '/'||g_con_xpath_ElementConjunction;
+   g_con_xpath_evaluate             CONSTANT VARCHAR2( 60 ) :=  '/'||g_con_xpath_ElementEvaluate;
+
+   -- Evaluate
+   g_con_xpath_evaluateRoot         CONSTANT VARCHAR2( 60 ) :=  '//Evaluate';
+   g_con_xpath_evaluate_attribute   CONSTANT VARCHAR2( 60 ) :=  '/Attribute';
+   g_con_xpath_inCollection_elem    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_evaluateRoot || '/InCollection/Collection/Element';
+   g_con_xpath_regExp_expression    CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_evaluateRoot || '/RegExp/Expression';
+   g_con_xpath_SubString_const      CONSTANT VARCHAR2( 60 ) :=  g_con_xpath_evaluateRoot || '/SubString/Constant';
+
+
+-- XPATH expressions for PackageData message ---------------------------------------------------------------------------
+
+   -- PackageData message
+   g_con_xpath_pd_eventtime         CONSTANT VARCHAR2( 60 )  := '/'||g_con_packagedata||'/EventTime/';
+
+
+-- XPATH expressions for PackageDataSubscribeResponse message ----------------------------------------------------------
+
+   -- PackageDataSubscribeResponse message
+   g_con_xpath_pdsr_eventtime       CONSTANT VARCHAR2( 60 )  := '/'||g_con_pdsubscriberesponse||'/EventTime/';
+   g_con_xpath_pdsr_sessionid       CONSTANT VARCHAR2( 60 )  := '/'||g_con_pdsubscriberesponse||'/SubscribeSessionID/';
+
+
+-- XPATH expressions for outgoing Message attributes---------------------------------------------------------------------------------
+
+   -- PackageInfo message (sorted alphabetically on value of constant)
+   g_con_mae_bd_AutomatedPNRAddr    CONSTANT pdm_message_attributes.name%type  := 'BagData/AutomatedPNRAddress';
+   g_con_mae_bd_BagTypeCode         CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/BagTypeCode';
+   g_con_mae_bd_CheckedWeight       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/CheckedWeight';
+   g_con_mae_bd_Height              CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/Height';
+   g_con_mae_bd_Length              CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/Length';
+   g_con_mae_bd_NumberOfChecked     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/NumberOfChecked';
+   g_con_mae_bd_PiecesOrWeightInd   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/PiecesOrWeightIndicator';
+   g_con_mae_bd_UncheckedWeight     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/UncheckedWeight';
+   g_con_mae_bd_Unit                CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/Unit';
+   g_con_mae_bd_Width               CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetails/Width';
+   g_con_mae_bd_PhysicalClass       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageDetailsExtension/PhysicalClass';
+   g_con_mae_bd_ExceptionType       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageExceptionData/ExceptionType';
+   g_con_mae_bd_bede_ExceptType     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageExceptionDataExtension/ExceptionType';
+   g_con_mae_bd_BaggageStatusCode   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageIrregularities/BaggageStatusCode';
+   g_con_mae_bd_BaggageTagNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageIrregularities/BaggageTagNumber';
+   g_con_mae_bd_bie_InstrToUnload   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageIrregularitiesExtension/InstructionToUnload';
+   g_con_mae_bd_AuthToLoad          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/AuthorityToLoad';
+   g_con_mae_bd_AuthToTransport     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/AuthorityToTransport';
+   g_con_mae_bd_brd_BaggageStatus   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/BaggageStatus';
+   g_con_mae_bd_PassProfileSts      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/PassengerProfileStatus';
+   g_con_mae_bd_PassStatus          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/PassengerStatus';
+   g_con_mae_bd_SeatNumber          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/SeatNumber';
+   g_con_mae_bd_SecurityNumber      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/SecurityNumber';
+   g_con_mae_bd_SequenceNumber      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageReconciliationData/SequenceNumber';
+   g_con_mae_bd_Autograph           CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreening/Autograph';
+   g_con_mae_bd_bss_BaggageStatus   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreening/BaggageStatus';
+   g_con_mae_bd_FreeText            CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreening/FreeText';
+   g_con_mae_bd_Instruction         CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreening/Instruction';
+   g_con_mae_bd_ResultReason        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreening/ResultReason';
+   g_con_mae_bd_SecurityMethod      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreening/SecurityMethod';
+   g_con_mae_bd_si1_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/ScreeningProcess/ID';
+   g_con_mae_bd_si1_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/ScreeningProcess/Name';
+   g_con_mae_bd_si1_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/RequiredScreeningLevel';
+   g_con_mae_bd_si1_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/ReachedScreeningLevel';
+   g_con_mae_bd_si1_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/FailedScreeningLevel';
+   g_con_mae_bd_si1_ScrState        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/ScreeningState';
+   g_con_mae_bd_si1_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/PseudoID';
+   g_con_mae_bd_si1_BagStatus       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID1]/BagStatus';
+   g_con_mae_bd_si2_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/ScreeningProcess/ID';
+   g_con_mae_bd_si2_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/ScreeningProcess/Name';
+   g_con_mae_bd_si2_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/RequiredScreeningLevel';
+   g_con_mae_bd_si2_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/ReachedScreeningLevel';
+   g_con_mae_bd_si2_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/FailedScreeningLevel';
+   g_con_mae_bd_si2_ScrState        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/ScreeningState';
+   g_con_mae_bd_si2_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/PseudoID';
+   g_con_mae_bd_si2_BagStatus       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID2]/BagStatus';
+   g_con_mae_bd_si3_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/ScreeningProcess/ID';
+   g_con_mae_bd_si3_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/ScreeningProcess/Name';
+   g_con_mae_bd_si3_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/RequiredScreeningLevel';
+   g_con_mae_bd_si3_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/ReachedScreeningLevel';
+   g_con_mae_bd_si3_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/FailedScreeningLevel';
+   g_con_mae_bd_si3_ScrState        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/ScreeningState';
+   g_con_mae_bd_si3_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/PseudoID';
+   g_con_mae_bd_si3_BagStatus       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID3]/BagStatus';
+   g_con_mae_bd_si4_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/ScreeningProcess/ID';
+   g_con_mae_bd_si4_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/ScreeningProcess/Name';
+   g_con_mae_bd_si4_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/RequiredScreeningLevel';
+   g_con_mae_bd_si4_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/ReachedScreeningLevel';
+   g_con_mae_bd_si4_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/FailedScreeningLevel';
+   g_con_mae_bd_si4_ScrState        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/ScreeningState';
+   g_con_mae_bd_si4_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/PseudoID';
+   g_con_mae_bd_si4_BagStatus       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID4]/BagStatus';
+   g_con_mae_bd_si5_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/ScreeningProcess/ID';
+   g_con_mae_bd_si5_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/ScreeningProcess/Name';
+   g_con_mae_bd_si5_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/RequiredScreeningLevel';
+   g_con_mae_bd_si5_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/ReachedScreeningLevel';
+   g_con_mae_bd_si5_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/FailedScreeningLevel';
+   g_con_mae_bd_si5_ScrState        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/ScreeningState';
+   g_con_mae_bd_si5_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/PseudoID';
+   g_con_mae_bd_si5_BagStatus       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningInfo[ID5]/BagStatus';
+   g_con_mae_bd_sr1_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID1]/ScreeningProcess/ID';
+   g_con_mae_bd_sr1_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID1]/ScreeningProcess/Name';
+   g_con_mae_bd_sr1_ScreeningLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID1]/ScreeningLevel';
+   g_con_mae_bd_sr1_Result          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID1]/Result';
+   g_con_mae_bd_sr1_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID1]/PseudoID';
+   g_con_mae_bd_sr1_PrStartTime     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID1]/ProcessStartTime';
+   g_con_mae_bd_sr1_PrEndTime       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID1]/ProcessEndTime';
+   g_con_mae_bd_sr2_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID2]/ScreeningProcess/ID';
+   g_con_mae_bd_sr2_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID2]/ScreeningProcess/Name';
+   g_con_mae_bd_sr2_ScreeningLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID2]/ScreeningLevel';
+   g_con_mae_bd_sr2_Result          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID2]/Result';
+   g_con_mae_bd_sr2_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID2]/PseudoID';
+   g_con_mae_bd_sr2_PrStartTime     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID2]/ProcessStartTime';
+   g_con_mae_bd_sr2_PrEndTime       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID2]/ProcessEndTime';
+   g_con_mae_bd_sr3_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID3]/ScreeningProcess/ID';
+   g_con_mae_bd_sr3_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID3]/ScreeningProcess/Name';
+   g_con_mae_bd_sr3_ScreeningLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID3]/ScreeningLevel';
+   g_con_mae_bd_sr3_Result          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID3]/Result';
+   g_con_mae_bd_sr3_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID3]/PseudoID';
+   g_con_mae_bd_sr3_PrStartTime     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID3]/ProcessStartTime';
+   g_con_mae_bd_sr3_PrEndTime       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID3]/ProcessEndTime';
+   g_con_mae_bd_sr4_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID4]/ScreeningProcess/ID';
+   g_con_mae_bd_sr4_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID4]/ScreeningProcess/Name';
+   g_con_mae_bd_sr4_ScreeningLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID4]/ScreeningLevel';
+   g_con_mae_bd_sr4_Result          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID4]/Result';
+   g_con_mae_bd_sr4_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID4]/PseudoID';
+   g_con_mae_bd_sr4_PrStartTime     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID4]/ProcessStartTime';
+   g_con_mae_bd_sr4_PrEndTime       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID4]/ProcessEndTime';
+   g_con_mae_bd_sr5_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID5]/ScreeningProcess/ID';
+   g_con_mae_bd_sr5_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID5]/ScreeningProcess/Name';
+   g_con_mae_bd_sr5_ScreeningLvl    CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID5]/ScreeningLevel';
+   g_con_mae_bd_sr5_Result          CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID5]/Result';
+   g_con_mae_bd_sr5_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID5]/PseudoID';
+   g_con_mae_bd_sr5_PrStartTime     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID5]/ProcessStartTime';
+   g_con_mae_bd_sr5_PrEndTime       CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageSecurityScreeningExtension/ScreeningResult[ID5]/ProcessEndTime';
+   g_con_mae_bd_LPC1                CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageTagDetails/BaggageTag[1]/LPC';
+   g_con_mae_bd_LPC_Extension1      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageTagDetails/BaggageTag[1]/LPC_Extension';
+   g_con_mae_bd_LPC2                CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageTagDetails/BaggageTag[2]/LPC';
+   g_con_mae_bd_LPC_Extension2      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageTagDetails/BaggageTag[2]/LPC_Extension';
+   g_con_mae_bd_LPC3                CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageTagDetails/BaggageTag[3]/LPC';
+   g_con_mae_bd_LPC_Extension3      CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageTagDetails/BaggageTag[3]/LPC_Extension';
+   g_con_mae_bd_BagTagPrinterID     CONSTANT pdm_message_attributes.name%type  := 'BagData/BaggageTagPrinter/BagTagPrinterID';
+   g_con_mae_bd_BagInfoMsgIdent     CONSTANT pdm_message_attributes.name%type  := 'BagData/BagInformationMessageIdentifier';
+   g_con_mae_bd_CorpOrGroupName     CONSTANT pdm_message_attributes.name%type  := 'BagData/CorporateOrGroupName';
+   g_con_mae_bd_DefaultPrinterID    CONSTANT pdm_message_attributes.name%type  := 'BagData/DefaultMessagePrinter/DefaultPrinterID';
+   g_con_mae_bd_FreqTravellerIDNr   CONSTANT pdm_message_attributes.name%type  := 'BagData/FrequentTravellerNumber/FrequentTravellerIDNumber';
+   g_con_mae_bd_TierIdentifier      CONSTANT pdm_message_attributes.name%type  := 'BagData/FrequentTravellerNumber/TierIdentifier';
+   g_con_mae_bd_AddressOrLocDesc    CONSTANT pdm_message_attributes.name%type  := 'BagData/GroundTransport/AddressOrLocationDescription';
+   g_con_mae_bd_EarliestDelivMom    CONSTANT pdm_message_attributes.name%type  := 'BagData/GroundTransport/EarliestDeliveryMoment';
+   g_con_mae_bd_LatestDeliveryMom   CONSTANT pdm_message_attributes.name%type  := 'BagData/GroundTransport/LatestDeliveryMoment';
+   g_con_mae_bd_HandlingBayOrPier   CONSTANT pdm_message_attributes.name%type  := 'BagData/HandlingLocation/HandlingBayOrPier';
+   g_con_mae_bd_HandlingGate        CONSTANT pdm_message_attributes.name%type  := 'BagData/HandlingLocation/HandlingGateOrStandOrClaimArea';
+   g_con_mae_bd_HandlingTerminal    CONSTANT pdm_message_attributes.name%type  := 'BagData/HandlingLocation/HandlingTerminal';
+   g_con_mae_bd_HandlingBHS         CONSTANT pdm_message_attributes.name%type  := 'BagData/HandlingLocationExtension/HandlingBHS';
+   g_con_mae_bd_ifi_ClassOfTravel   CONSTANT pdm_message_attributes.name%type  := 'BagData/InboundFlightInformation/ClassOfTravel';
+   g_con_mae_bd_ifi_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/InboundFlightInformation/Flight/Airline';
+   g_con_mae_bd_ifi_Date            CONSTANT pdm_message_attributes.name%type  := 'BagData/InboundFlightInformation/Flight/Date';
+   g_con_mae_bd_ifi_FlightNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/InboundFlightInformation/Flight/FlightNumber';
+   g_con_mae_bd_ifi_OrigAirpCode    CONSTANT pdm_message_attributes.name%type  := 'BagData/InboundFlightInformation/OriginatingAirportCode';
+   g_con_mae_bd_ifie_SchedDOA       CONSTANT pdm_message_attributes.name%type  := 'BagData/InboundFlightInformationExtension/ScheduledDateOfArrival';
+   g_con_mae_bd_ifie_OSS_Status     CONSTANT pdm_message_attributes.name%type  := 'BagData/InboundFlightInformationExtension/OSS_Status';
+   g_con_mae_bd_IntAirlineData      CONSTANT pdm_message_attributes.name%type  := 'BagData/InternalAirlineData';
+   g_con_mae_bd_ld_AirportCode1     CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/AirportCode1';
+   g_con_mae_bd_ld_AirportCode2     CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/AirportCode2';
+   g_con_mae_bd_ld_BaggageType      CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/BaggageType';
+   g_con_mae_bd_ld_ClassOfTravel    CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/ClassOfTravel';
+   g_con_mae_bd_ld_ConAirlineCode   CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/ConnectionAirlineCode';
+   g_con_mae_bd_ld_ConDepartDate    CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/ConnectionDepartureDate';
+   g_con_mae_bd_ld_ConFlightNr      CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/ConnectionFlightNumber';
+   g_con_mae_bd_ld_LoadLocation     CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/LoadingLocation';
+   g_con_mae_bd_ld_SealdContainer   CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/SealedContainer';
+   g_con_mae_bd_ld_StowDeviceId     CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingData/StowageDeviceId';
+   g_con_mae_bd_lde_LoadSeqNo       CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingDataExtension/LoadSequenceNumber';
+   g_con_mae_bd_lde_XPos            CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingDataExtension/PositionInULD/XPos';
+   g_con_mae_bd_lde_YPos            CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingDataExtension/PositionInULD/YPos';
+   g_con_mae_bd_lde_ZPos            CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingDataExtension/PositionInULD/ZPos';
+   g_con_mae_bd_lde_ULDOwnerCode    CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingDataExtension/ULDIdentificationCode/ULDOwnerCode';
+   g_con_mae_bd_lde_ULDSerialNo     CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingDataExtension/ULDIdentificationCode/ULDSerialNumber';
+   g_con_mae_bd_lde_ULDTypeCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadingDataExtension/ULDIdentificationCode/ULDTypeCode';
+   g_con_mae_bd_LoadSequenceNr      CONSTANT pdm_message_attributes.name%type  := 'BagData/LoadSequence/LoadSequenceNumber';
+   g_con_mae_bd_ohd_BagBrandName    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagBrandName';
+   g_con_mae_bd_ohd_BagColour       CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagColour';
+   g_con_mae_bd_ohd_bc1_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[1]/Category';
+   g_con_mae_bd_ohd_bc1_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[1]/Description';
+   g_con_mae_bd_ohd_bc2_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[2]/Category';
+   g_con_mae_bd_ohd_bc2_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[2]/Description';
+   g_con_mae_bd_ohd_bc3_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[3]/Category';
+   g_con_mae_bd_ohd_bc3_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[3]/Description';
+   g_con_mae_bd_ohd_bc4_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[4]/Category';
+   g_con_mae_bd_ohd_bc4_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[4]/Description';
+   g_con_mae_bd_ohd_bc5_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[5]/Category';
+   g_con_mae_bd_ohd_bc5_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[5]/Description';
+   g_con_mae_bd_ohd_bc6_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[6]/Category';
+   g_con_mae_bd_ohd_bc6_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[6]/Description';
+   g_con_mae_bd_ohd_bc7_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[7]/Category';
+   g_con_mae_bd_ohd_bc7_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[7]/Description';
+   g_con_mae_bd_ohd_bc8_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[8]/Category';
+   g_con_mae_bd_ohd_bc8_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[8]/Description';
+   g_con_mae_bd_ohd_bc9_Category    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[9]/Category';
+   g_con_mae_bd_ohd_bc9_Desc        CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[9]/Description';
+   g_con_mae_bd_ohd_bc10_Category   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[10]/Category';
+   g_con_mae_bd_ohd_bc10_Desc       CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[10]/Description';
+   g_con_mae_bd_ohd_bc11_Category   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[11]/Category';
+   g_con_mae_bd_ohd_bc11_Desc       CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[11]/Description';
+   g_con_mae_bd_ohd_bc12_Category   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[12]/Category';
+   g_con_mae_bd_ohd_bc12_Desc       CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagContents/BagContent[12]/Description';
+   g_con_mae_bd_ohd_BagMaterial     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagMaterial';
+   g_con_mae_bd_ohd_LPC             CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagTagNumber/LPC';
+   g_con_mae_bd_ohd_LPC_Ext         CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagTagNumber/LPC_Extension';
+   g_con_mae_bd_ohd_BagTypeCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/BagTypeCode';
+   g_con_mae_bd_ohd_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Flight/Airline';
+   g_con_mae_bd_ohd_Date            CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Flight/Date';
+   g_con_mae_bd_ohd_FlightNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Flight/FlightNumber';
+   g_con_mae_bd_ohd_FreeFormInfo    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/FreeFormInformation';
+   g_con_mae_bd_ohd_nm1_Initials    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Names[1]/Initials';
+   g_con_mae_bd_ohd_nm1_SurName     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Names[1]/SurName';
+   g_con_mae_bd_ohd_nm2_Initials    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Names[2]/Initials';
+   g_con_mae_bd_ohd_nm2_SurName     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Names[2]/SurName';
+   g_con_mae_bd_ohd_nm3_Initials    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Names[3]/Initials';
+   g_con_mae_bd_ohd_nm3_SurName     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Names[3]/SurName';
+   g_con_mae_bd_ohd_AirportCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDData/Routing/AirportCode';
+   g_con_mae_bd_ohh_FileReference   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDHeader/FileReference';
+   g_con_mae_bd_ohh_MessageOrig     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDHeader/MessageOriginator';
+   g_con_mae_bd_ohh_TeleTypeCode    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDHeader/TeleTypeCode';
+   g_con_mae_bd_ohh_TimeRefGroup    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummary/OHDHeader/TimeReferenceGroup';
+   g_con_mae_bd_ohe_FreqTravIDNum   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummaryExtension/FrequentFlyerNumber/FrequentTravellerIDNumber';
+   g_con_mae_bd_ohe_TierIdent       CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummaryExtension/FrequentFlyerNumber/TierIdentifier';
+   g_con_mae_bd_ohe_PassengerAddr   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnHandBaggageSummaryExtension/PassengerAddress';
+   g_con_mae_bd_of1_AirportCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[1]/AirportCode';
+   g_con_mae_bd_of1_ClassOfTravel   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[1]/ClassOfTravel';
+   g_con_mae_bd_of1_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[1]/Flight/Airline';
+   g_con_mae_bd_of1_Date            CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[1]/Flight/Date';
+   g_con_mae_bd_of1_FlightNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[1]/Flight/FlightNumber';
+   g_con_mae_bd_of2_AirportCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[2]/AirportCode';
+   g_con_mae_bd_of2_ClassOfTravel   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[2]/ClassOfTravel';
+   g_con_mae_bd_of2_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[2]/Flight/Airline';
+   g_con_mae_bd_of2_Date            CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[2]/Flight/Date';
+   g_con_mae_bd_of2_FlightNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[2]/Flight/FlightNumber';
+   g_con_mae_bd_of3_AirportCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[3]/AirportCode';
+   g_con_mae_bd_of3_ClassOfTravel   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[3]/ClassOfTravel';
+   g_con_mae_bd_of3_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[3]/Flight/Airline';
+   g_con_mae_bd_of3_Date            CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[3]/Flight/Date';
+   g_con_mae_bd_of3_FlightNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[3]/Flight/FlightNumber';
+   g_con_mae_bd_of4_AirportCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[4]/AirportCode';
+   g_con_mae_bd_of4_ClassOfTravel   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[4]/ClassOfTravel';
+   g_con_mae_bd_of4_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[4]/Flight/Airline';
+   g_con_mae_bd_of4_Date            CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[4]/Flight/Date';
+   g_con_mae_bd_of4_FlightNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[4]/Flight/FlightNumber';
+   g_con_mae_bd_of5_AirportCode     CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[5]/AirportCode';
+   g_con_mae_bd_of5_ClassOfTravel   CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[5]/ClassOfTravel';
+   g_con_mae_bd_of5_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[5]/Flight/Airline';
+   g_con_mae_bd_of5_Date            CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[5]/Flight/Date';
+   g_con_mae_bd_of5_FlightNumber    CONSTANT pdm_message_attributes.name%type  := 'BagData/OnwardFlightInformation[5]/Flight/FlightNumber';
+   g_con_mae_bd_oofi_AirportCode    CONSTANT pdm_message_attributes.name%type  := 'BagData/OperationalOutboundFlightInformation/AirportCode';
+   g_con_mae_bd_oofi_ClassTravel    CONSTANT pdm_message_attributes.name%type  := 'BagData/OperationalOutboundFlightInformation/ClassOfTravel';
+   g_con_mae_bd_oofi_Airline        CONSTANT pdm_message_attributes.name%type  := 'BagData/OperationalOutboundFlightInformation/Flight/Airline';
+   g_con_mae_bd_oofi_Date           CONSTANT pdm_message_attributes.name%type  := 'BagData/OperationalOutboundFlightInformation/Flight/Date';
+   g_con_mae_bd_oofi_FlightNumber   CONSTANT pdm_message_attributes.name%type  := 'BagData/OperationalOutboundFlightInformation/Flight/FlightNumber';
+   g_con_mae_bd_AddGivenNames       CONSTANT pdm_message_attributes.name%type  := 'BagData/PassengerName/AdditionalGivenNames';
+   g_con_mae_bd_GivenName           CONSTANT pdm_message_attributes.name%type  := 'BagData/PassengerName/GivenName';
+   g_con_mae_bd_NoSameSurname       CONSTANT pdm_message_attributes.name%type  := 'BagData/PassengerName/NoSameSurname';
+   g_con_mae_bd_Surname             CONSTANT pdm_message_attributes.name%type  := 'BagData/PassengerName/Surname';
+   g_con_mae_bd_ScanTimeStamp       CONSTANT pdm_message_attributes.name%type  := 'BagData/PassengerScanEvent/ScanTimeStamp';
+   g_con_mae_bd_ScanLocation        CONSTANT pdm_message_attributes.name%type  := 'BagData/PassengerScanEvent/ScanLocation';
+   g_con_mae_bd_ScanResult          CONSTANT pdm_message_attributes.name%type  := 'BagData/PassengerScanEvent/ScanResult';
+   g_con_mae_bd_AgentId             CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformation/AgentIdentification';
+   g_con_mae_bd_DateTime            CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformation/DateTime';
+   g_con_mae_bd_ReadingLocation     CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformation/ReadingLocation';
+   g_con_mae_bd_ScannerId           CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformation/ScannerIdentification';
+   g_con_mae_bd_SecondaryCode       CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformation/SecondaryCode';
+   g_con_mae_bd_SentToLocation      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformation/SentToLocation';
+   g_con_mae_bd_pie_ActiveProcess   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ActiveProcess';
+   g_con_mae_bd_pie_ar_ActName      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ActivityReference/ActivityName';
+   g_con_mae_bd_pie_ar_CPDName      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ActivityReference/CommonProcessDefinitionName';
+   g_con_mae_bd_pie_ar_ProDefName   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ActivityReference/ProcessDefinitionName';
+   g_con_mae_bd_pie_ar_ppi_Name     CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ActivityReference/ProcessPlanID/Name';
+   g_con_mae_bd_pie_ar_ppi_Versn    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ActivityReference/ProcessPlanID/Version';
+   g_con_mae_bd_pie_Airline         CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/Airline';
+   g_con_mae_bd_pie_OperatorID      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/OperatorID';
+   g_con_mae_bd_pie_OperatorHndlr   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/OperatorHandler';
+   g_con_mae_bd_pie_AssignedTask    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/AssignedTask';
+   g_con_mae_bd_pie_B_Timeliness    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/BatchBuildTimeliness';
+   g_con_mae_bd_pie_BatchID         CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/BatchID';
+   g_con_mae_bd_pie_CurHandlArea    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentHandlingAreaID';
+   g_con_mae_bd_pie_CurStationID    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentStationID';
+   g_con_mae_bd_pie_StorageLocID    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentStorageLocation/StorageLocationID';
+   g_con_mae_bd_pie_ULDOwnerCode    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentStorageLocation/ULDIdentificationCode/ULDOwnerCode';
+   g_con_mae_bd_pie_ULDSerial       CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentStorageLocation/ULDIdentificationCode/ULDSerialNumber';
+   g_con_mae_bd_pie_ULDType         CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentStorageLocation/ULDIdentificationCode/ULDTypeCode';
+   g_con_mae_bd_pie_XPos            CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentStorageLocation/XPos';
+   g_con_mae_bd_pie_YPos            CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/CurrentStorageLocation/YPos';
+   g_con_mae_bd_pie_DestHandlArea   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/DestinationHandlingAreaID';
+   g_con_mae_bd_pie_DestStationID   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/DestinationStationID';
+   g_con_mae_bd_pie_ExecutedTask    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ExecutedTask';
+   g_con_mae_bd_pie_FB_Timeliness   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/FlightBuildTimeliness';
+   g_con_mae_bd_pie_HandheldID      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/HandheldID';
+   g_con_mae_bd_pie_Handler         CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/Handler';
+   g_con_mae_bd_pie_IdReason        CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/IdentificationReason';
+   g_con_mae_bd_pie_IdState         CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/IdentificationState';
+   g_con_mae_bd_pie_LastError       CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/LastLogisticsError';
+   g_con_mae_bd_pie_ManualIdTask    CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/ManualIdTask';
+   g_con_mae_bd_pie_OpContrAction   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/OperationalControlAction';
+   g_con_mae_bd_pie_OpContrMsg      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/OperationalControlMessage';
+   g_con_mae_bd_pie_QualState       CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/QualificationState';
+   g_con_mae_bd_pie_RecogState      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/RecognitionState';
+   g_con_mae_bd_pie_si_PPIName      CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/SegregationID/ProcessPlanIDName';
+   g_con_mae_bd_pie_si_ProdName     CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/SegregationID/ProductName';
+   g_con_mae_bd_pie_SysAuthToLoad   CONSTANT pdm_message_attributes.name%type  := 'BagData/ProcessingInformationExtension/SystemAuthorityToLoad';
+   g_con_mae_bd_CarriageMedium      CONSTANT pdm_message_attributes.name%type  := 'BagData/RemoteCheckinDetails/CarriageMedium';
+   g_con_mae_bd_CheckInDateTime     CONSTANT pdm_message_attributes.name%type  := 'BagData/RemoteCheckinDetails/CheckInDateTime';
+   g_con_mae_bd_CheckInLocDesc      CONSTANT pdm_message_attributes.name%type  := 'BagData/RemoteCheckinDetails/CheckInLocationDescription';
+   g_con_mae_bd_CheckInLocId        CONSTANT pdm_message_attributes.name%type  := 'BagData/RemoteCheckinDetails/CheckInLocationIdentifier';
+   g_con_mae_bd_TransportID         CONSTANT pdm_message_attributes.name%type  := 'BagData/RemoteCheckinDetails/TransportID';
+   g_con_mae_bd_UpdatedIndicator    CONSTANT pdm_message_attributes.name%type  := 'BagData/UpdatedIndicator';
+   g_con_mae_bd_AckReq              CONSTANT pdm_message_attributes.name%type  := 'BagData/VersionAndSupplementaryData/AcknowledgementRequest';
+   g_con_mae_bd_AirportCode         CONSTANT pdm_message_attributes.name%type  := 'BagData/VersionAndSupplementaryData/AirportCode';
+   g_con_mae_bd_BaggageSourceInd    CONSTANT pdm_message_attributes.name%type  := 'BagData/VersionAndSupplementaryData/BaggageSourceIndicator';
+   g_con_mae_bd_DataDictVersionNr   CONSTANT pdm_message_attributes.name%type  := 'BagData/VersionAndSupplementaryData/DataDictionaryVersionNumber';
+   g_con_mae_bd_Encryption          CONSTANT pdm_message_attributes.name%type  := 'BagData/VersionAndSupplementaryData/Encryption';
+   g_con_mae_bd_MessageRefNr        CONSTANT pdm_message_attributes.name%type  := 'BagData/VersionAndSupplementaryData/MessageReferenceNumber';
+   g_con_mae_bd_PartNumber          CONSTANT pdm_message_attributes.name%type  := 'BagData/VersionAndSupplementaryData/PartNumber';
+   g_con_mae_LPC_Extension          CONSTANT pdm_message_attributes.name%type  := 'PackageIdentifier/BaggageTag/LPC_Extension';
+   g_con_mae_TrnsfrInputFuncMode    CONSTANT pdm_message_attributes.name%type  := 'TransferInputFunctionMode';
+
+   -- Process status message (sorted alphabetically on value of constant)
+   g_con_mae_ps_HandlingArea        CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/HandlingArea';
+   g_con_mae_ps_LPC                 CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/PackageIdentifier/BaggageTag/LPC';
+   g_con_mae_ps_LPC_Extension       CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/PackageIdentifier/BaggageTag/LPC_Extension';
+   g_con_mae_ps_ProductionProg      CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/ProductionProgress';
+   g_con_mae_ps_RoutingProg         CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/RoutingProgress';
+   g_con_mae_ps_lpd_PlanName        CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/LoadedProcessDetails/ProcessPlanName';
+   g_con_mae_ps_lpd_ProcessName     CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/LoadedProcessDetails/ProcessDefinitionName';
+   g_con_mae_ps_lpd_ProductName     CONSTANT pdm_message_attributes.name%type  := 'ProcessStatus/LoadedProcessDetails/ProductName';
+
+   -- TaskInstruction message  (sorted alphabetically on value of constant)
+   g_con_mae_ac_ActivityName        CONSTANT pdm_message_attributes.name%type  := 'ActiveActivityReference/ActivityName';
+   g_con_mae_ac_CPDName             CONSTANT pdm_message_attributes.name%type  := 'ActiveActivityReference/CommonProcessDefinitionName';
+   g_con_mae_ac_ProcessDefName      CONSTANT pdm_message_attributes.name%type  := 'ActiveActivityReference/ProcessDefinitionName';
+   g_con_mae_ac_ProcPlanID_Name     CONSTANT pdm_message_attributes.name%type  := 'ActiveActivityReference/ProcessPlanID/Name';
+   g_con_mae_ac_ProcPlanID_Versn    CONSTANT pdm_message_attributes.name%type  := 'ActiveActivityReference/ProcessPlanID/Version';
+   g_con_mae_ar_ActivityName        CONSTANT pdm_message_attributes.name%type  := 'ActivityReference/ActivityName';
+   g_con_mae_ar_CPDName             CONSTANT pdm_message_attributes.name%type  := 'ActivityReference/CommonProcessDefinitionName';
+   g_con_mae_ar_ProcessDefName      CONSTANT pdm_message_attributes.name%type  := 'ActivityReference/ProcessDefinitionName';
+   g_con_mae_ar_ProcPlanID_Name     CONSTANT pdm_message_attributes.name%type  := 'ActivityReference/ProcessPlanID/Name';
+   g_con_mae_ar_ProcPlanID_Versn    CONSTANT pdm_message_attributes.name%type  := 'ActivityReference/ProcessPlanID/Version';
+   g_con_mae_AirportTag_LPC         CONSTANT pdm_message_attributes.name%type  := 'AirportTag/LPC';
+   g_con_mae_bi_LPC                 CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/BaggageTag/LPC';
+   g_con_mae_bi_LPC_Extension       CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/BaggageTag/LPC_Extension';
+   g_con_mae_BagStatus              CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/BagStatus';
+   g_con_mae_bi_Airline             CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/FlightNr/Airline';
+   g_con_mae_bi_FlightNr            CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/FlightNr/FlightNumber';
+   g_con_mae_bi_LPCCollectionID     CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/LPCCollectionID';
+   g_con_mae_bi_MeasuredVolume      CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/MeasuredVolume';
+   g_con_mae_bi_PhysicalClass       CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/PhysicalClass';
+   g_con_mae_bi_sc1_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID1]/FailedScreeningLevel';
+   g_con_mae_bi_sc1_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID1]/PseudoID';
+   g_con_mae_bi_sc1_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID1]/ReachedScreeningLevel';
+   g_con_mae_bi_sc1_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID1]/RequiredScreeningLevel';
+   g_con_mae_bi_sc1_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID1]/ScreeningProcess/ID';
+   g_con_mae_bi_sc1_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID1]/ScreeningProcess/Name';
+   g_con_mae_bi_sc2_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID2]/FailedScreeningLevel';
+   g_con_mae_bi_sc2_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID2]/PseudoID';
+   g_con_mae_bi_sc2_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID2]/ReachedScreeningLevel';
+   g_con_mae_bi_sc2_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID2]/RequiredScreeningLevel';
+   g_con_mae_bi_sc2_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID2]/ScreeningProcess/ID';
+   g_con_mae_bi_sc2_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID2]/ScreeningProcess/Name';
+   g_con_mae_bi_sc3_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID3]/FailedScreeningLevel';
+   g_con_mae_bi_sc3_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID3]/PseudoID';
+   g_con_mae_bi_sc3_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID3]/ReachedScreeningLevel';
+   g_con_mae_bi_sc3_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID3]/RequiredScreeningLevel';
+   g_con_mae_bi_sc3_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID3]/ScreeningProcess/ID';
+   g_con_mae_bi_sc3_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID3]/ScreeningProcess/Name';
+   g_con_mae_bi_sc4_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID4]/FailedScreeningLevel';
+   g_con_mae_bi_sc4_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID4]/PseudoID';
+   g_con_mae_bi_sc4_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID4]/ReachedScreeningLevel';
+   g_con_mae_bi_sc4_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID4]/RequiredScreeningLevel';
+   g_con_mae_bi_sc4_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID4]/ScreeningProcess/ID';
+   g_con_mae_bi_sc4_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID4]/ScreeningProcess/Name';
+   g_con_mae_bi_sc5_FailedScrLvl    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID5]/FailedScreeningLevel';
+   g_con_mae_bi_sc5_PseudoID        CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID5]/PseudoID';
+   g_con_mae_bi_sc5_ReachedScrLvl   CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID5]/ReachedScreeningLevel';
+   g_con_mae_bi_sc5_ReqScrLvl       CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID5]/RequiredScreeningLevel';
+   g_con_mae_bi_sc5_ScrProc_ID      CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID5]/ScreeningProcess/ID';
+   g_con_mae_bi_sc5_ScrProc_Name    CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Screening[ID5]/ScreeningProcess/Name';
+   g_con_mae_bi_SDD                 CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/SDD';
+   g_con_mae_bi_Height              CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Size/Height';
+   g_con_mae_bi_Length              CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Size/Length';
+   g_con_mae_bi_Width               CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Size/Width';
+   g_con_mae_bi_STD                 CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/STD';
+   g_con_mae_bi_Weight              CONSTANT pdm_message_attributes.name%type  := 'Bag_Info/Weight';
+   g_con_mae_BatchID                CONSTANT pdm_message_attributes.name%type  := 'BatchID';
+   g_con_mae_BuildStationID         CONSTANT pdm_message_attributes.name%type  := 'BuildStationID';
+   g_con_mae_DestHandlingArea       CONSTANT pdm_message_attributes.name%type  := 'DestinationHandlingArea';
+   g_con_mae_FinalExpdStationID     CONSTANT pdm_message_attributes.name%type  := 'FinalExpectedStationID';
+   g_con_mae_handler                CONSTANT pdm_message_attributes.name%type  := 'Handler';
+   g_con_mae_releaseprio            CONSTANT pdm_message_attributes.name%type  := 'ReleasePriority';
+   g_con_mae_releaserate            CONSTANT pdm_message_attributes.name%type  := 'ReleaseRate';
+   g_con_mae_sc1_RequiredScrLvl     CONSTANT pdm_message_attributes.name%type  := 'Screening[ID1]/RequiredScreeningLevel';
+   g_con_mae_sc1_ScrProc_ID         CONSTANT pdm_message_attributes.name%type  := 'Screening[ID1]/ScreeningProcess/ID';
+   g_con_mae_sc1_ScrProc_Name       CONSTANT pdm_message_attributes.name%type  := 'Screening[ID1]/ScreeningProcess/Name';
+   g_con_mae_sc2_RequiredScrLvl     CONSTANT pdm_message_attributes.name%type  := 'Screening[ID2]/RequiredScreeningLevel';
+   g_con_mae_sc2_ScrProc_ID         CONSTANT pdm_message_attributes.name%type  := 'Screening[ID2]/ScreeningProcess/ID';
+   g_con_mae_sc2_ScrProc_Name       CONSTANT pdm_message_attributes.name%type  := 'Screening[ID2]/ScreeningProcess/Name';
+   g_con_mae_sc3_RequiredScrLvl     CONSTANT pdm_message_attributes.name%type  := 'Screening[ID3]/RequiredScreeningLevel';
+   g_con_mae_sc3_ScrProc_ID         CONSTANT pdm_message_attributes.name%type  := 'Screening[ID3]/ScreeningProcess/ID';
+   g_con_mae_sc3_ScrProc_Name       CONSTANT pdm_message_attributes.name%type  := 'Screening[ID3]/ScreeningProcess/Name';
+   g_con_mae_sc4_RequiredScrLvl     CONSTANT pdm_message_attributes.name%type  := 'Screening[ID4]/RequiredScreeningLevel';
+   g_con_mae_sc4_ScrProc_ID         CONSTANT pdm_message_attributes.name%type  := 'Screening[ID4]/ScreeningProcess/ID';
+   g_con_mae_sc4_ScrProc_Name       CONSTANT pdm_message_attributes.name%type  := 'Screening[ID4]/ScreeningProcess/Name';
+   g_con_mae_sc5_RequiredScrLvl     CONSTANT pdm_message_attributes.name%type  := 'Screening[ID5]/RequiredScreeningLevel';
+   g_con_mae_sc5_ScrProc_ID         CONSTANT pdm_message_attributes.name%type  := 'Screening[ID5]/ScreeningProcess/ID';
+   g_con_mae_sc5_ScrProc_Name       CONSTANT pdm_message_attributes.name%type  := 'Screening[ID5]/ScreeningProcess/Name';
+   g_con_mae_procplanidname         CONSTANT pdm_message_attributes.name%type  := 'SegregationID/ProcessPlanIDName';
+   g_con_mae_productname            CONSTANT pdm_message_attributes.name%type  := 'SegregationID/ProductName';
+   g_con_mae_StationID              CONSTANT pdm_message_attributes.name%type  := 'StationID';
+   g_con_mae_StorageStationID       CONSTANT pdm_message_attributes.name%type  := 'StorageStationID';
+   g_con_mae_TaskType               CONSTANT pdm_message_attributes.name%type  := 'TaskType';
+   g_con_mae_TimeLimit              CONSTANT pdm_message_attributes.name%type  := 'TimeLimit';
+   g_con_mae_TimeLimitActive        CONSTANT pdm_message_attributes.name%type  := 'TimeLimitActivePhase';
+
+-- XPATH expressions Source attributes ------------------------------------------------------------------------
+
+   -- PackageData message
+   g_con_pd_bd_iad_attr             CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/InternalAirlineData';
+   g_con_pd_StatusCode_attr         CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/BaggageIrregularities/BaggageStatusCode';
+   g_con_pd_LoadSeqNr_attr          CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/LoadSequence/LoadSequenceNumber';
+   g_con_pd_StowageDeviceId_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/LoadingData/StowageDeviceId';
+   g_con_pd_LoadingLocation_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/LoadingData/LoadingLocation';
+   g_con_pd_OutboundFlight_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/OperationalOutboundFlightInformation/Flight/Airline';
+   g_con_pd_InboundFlight_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/InboundFlightInformation/Flight/Airline';
+   g_con_pd_OnwardFlight1_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/OnwardFlightInformation[1]/Flight/Airline';
+   g_con_pd_lpc_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/PackageIdentifier/BaggageTag/LPC';
+
+   -- Internal PackageData
+   g_con_pd_bd_iad_full_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'PackageData/BagData/InternalAirlineDataFull';
+
+   -- PackageInfo message
+   g_con_pi_bd_iad_attr             CONSTANT  pdm_attribute_definitions.path%type  := 'PackageInfo/BagData/InternalAirlineData';
+   g_con_pi_lpc_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'PackageInfo/PackageIdentifier/BaggageTag/LPC';
+   g_con_pi_lpc_extension_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'PackageInfo/PackageIdentifier/BaggageTag/LPC_Extension';
+
+   -- Internal PackageInfo
+   g_con_pi_bd_iad_full_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'PackageInfo/BagData/InternalAirlineDataFull';
+
+   -- TaskReport message
+   g_con_tasktype_attr              CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/TaskType';
+   g_con_bir_flightnr_attr          CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/BIR_Info/FlightNr';
+   g_con_sdd_attr                   CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/BIR_Info/SDD';
+   g_con_deregreason_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/DeRegisterReason';
+   g_con_ltf_flightnr_attr          CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/Result/Detail/LinkToFlightResult/FlightNr';
+   g_con_routeresult_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/Result/Detail/RouteResult';
+   g_con_xpath_error                CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/Result/Error';
+
+   -- TASK TYPEs
+   g_con_tte_Dump                   CONSTANT  pdm_task_types.name%type := 'Dump';
+   g_con_tte_ManualDeliver          CONSTANT  pdm_task_types.name%type := 'ManualDeliver';
+   g_con_tte_ManualScan             CONSTANT  pdm_task_types.name%type := 'ManualScan';
+   g_con_tte_ManualStore            CONSTANT  pdm_task_types.name%type := 'ManualStore';
+   g_con_tte_ProblemBagStore        CONSTANT  pdm_task_types.name%type := 'ProblemBagStore';
+   g_con_tte_Reclaim                CONSTANT  pdm_task_types.name%type := 'Reclaim';
+   g_con_tte_Release                CONSTANT  pdm_task_types.name%type := 'Release';
+   g_con_tte_RequestAirportTag      CONSTANT  pdm_task_types.name%type := 'RequestAirportTag';
+   g_con_tte_RequestTask            CONSTANT  pdm_task_types.name%type := 'RequestTask';
+   g_con_tte_Retag                  CONSTANT  pdm_task_types.name%type := 'Retag';
+   g_con_tte_RouteToCache           CONSTANT  pdm_task_types.name%type := 'RouteToCache';
+   g_con_tte_RouteToL4              CONSTANT  pdm_task_types.name%type := 'RouteToL4';
+   g_con_tte_RouteToMC              CONSTANT  pdm_task_types.name%type := 'RouteToMC';
+   g_con_tte_RouteToOutput          CONSTANT  pdm_task_types.name%type := 'RouteToOutputPoint';
+   g_con_tte_RouteToPB              CONSTANT  pdm_task_types.name%type := 'RouteToPB';
+   g_con_tte_RouteToRelabel         CONSTANT  pdm_task_types.name%type := 'RouteToRelabel';
+   g_con_tte_Store                  CONSTANT  pdm_task_types.name%type := 'Store';
+   g_con_tte_StoreProduct           CONSTANT  pdm_task_types.name%type := 'StoreProduct';
+
+   -- STATION.TYPEs
+   g_con_stn_type_Store             CONSTANT  pdm_stations.type%type := 'Store';
+
+   -- Baggage tag in the RetagResult
+   g_con_retagLPC_attr              CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/Result/Detail/RetagResult/BaggageTag/LPC';
+   g_con_retagLPCExt_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/Result/Detail/RetagResult/BaggageTag/LPC_Extension';
+
+   -- Baggage tags (max. 3) in the ScanResult
+   g_con_it_scanresult_attr         CONSTANT PDM_NT_SCANRESULT_ATTR
+                                                            := PDM_NT_SCANRESULT_ATTR
+                                                                 ( PDM_OT_BAGGAGETAG_ATTR
+                                                                      ( 'TaskReport/Result/Detail/ScanResult/BaggageTag[1]/LPC'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[1]/LPC_Extension'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[1]/Handler'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[1]/Airline'
+                                                                      )
+                                                                  , PDM_OT_BAGGAGETAG_ATTR
+                                                                      ( 'TaskReport/Result/Detail/ScanResult/BaggageTag[2]/LPC'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[2]/LPC_Extension'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[2]/Handler'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[2]/Airline'
+                                                                      )
+                                                                  , PDM_OT_BAGGAGETAG_ATTR
+                                                                      ( 'TaskReport/Result/Detail/ScanResult/BaggageTag[3]/LPC'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[3]/LPC_Extension'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[3]/Handler'
+                                                                      , 'TaskReport/Result/Detail/ScanResult/BaggageTag[3]/Airline'
+                                                                      )
+                                                                  );
+
+   -- Internal TaskReport
+   g_con_bir_airline_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/BIR_Info/Airline';
+   g_con_bir_flightdate_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/BIR_Info/Date';
+   g_con_bir_flightnumber_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/BIR_Info/FlightNumber';
+   g_con_ltf_airline_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/Result/Detail/LinkToFlightResult/Airline';
+   g_con_ltf_flightnumber_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/Result/Detail/LinkToFlightResult/FlightNumber';
+   g_con_executedtasktype_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/ExecutedTaskType';
+   g_con_routeresult_noerror_attr   CONSTANT  pdm_attribute_definitions.path%type  := 'TaskReport/RouteResultNoError';
+
+-- XPATH expressions Functional Attributes ------------------------------------------------------------------------
+
+   -- Internal functional
+   g_con_derivedpaestatus_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/DerivedPackageStatus';
+   g_con_ghost_attr                 CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/Ghost';
+   g_con_latest_bagdata_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/LatestBagData';
+   g_con_status_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/Status';
+   g_con_delivered_attr             CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/Delivered';
+   g_con_packagedatadeleted_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/PackageDataDeleted';
+   g_con_bagdatachosen_attr         CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/BagDataSystemSelected';
+   g_con_nofbagdata_attr            CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Administration/nofBagData';
+   g_con_dereg_activeprocess_attr   CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Deregistration/ActiveProcess';
+   g_con_dereg_prodprogress_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Deregistration/ProductionProgress';
+   g_con_bid_attr                   CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/BID';
+   g_con_bid_extension_attr         CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/BID_Extension';
+   g_con_pid_attr                   CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/PID';
+   g_con_lpc_attr_func              CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/LPC';
+   g_con_lpc_extension_attr_func    CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/LPC_Extension';
+   g_con_ident_manual_attr          CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/Manual';
+   g_con_pd_id1_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/PD_ID1';
+   g_con_pd_id2_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/PD_ID2';
+   g_con_pd_id3_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/PD_ID3';
+   g_con_vfbta1_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/VFBTA1';
+   g_con_vfbta2_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/VFBTA2';
+   g_con_vfbta3_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Identifier/VFBTA3';
+   g_con_action_attr                CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/Action';
+   g_con_activeactivity_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ActiveActivity';
+   g_con_activephase_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ActivePhase';
+   g_con_activecpd_attr             CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ActiveCommonProcessDefinition';
+   g_con_activeprocess_attr         CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ActiveProcess';
+   g_con_activeppnidname_attr       CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ActiveProcessPlanIDName';
+   g_con_activeppnidversion_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ActiveProcessPlanIDVersion';
+   g_con_activityname_attr          CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedFlight/ActivityName';
+   g_con_cpdname_attr               CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedFlight/CommonProcessDefinitionName';
+   g_con_processname_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedFlight/ProcessName';
+   g_con_processplanidname_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedFlight/ProcessPlanIDName';
+   g_con_processplanidvrsn_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedFlight/ProcessPlanIDVersion';
+   g_con_productname_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedFlight/ProductName';
+   g_con_assignedcpd_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedCommonProcessDefinition';
+   g_con_assignedprocess_attr       CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/AssignedProcess';
+   g_con_next_handlingarea_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/NextHandlingArea';
+   g_con_next_stationid_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/NextStation';
+   g_con_storagestationid_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/StorageStation';
+   g_con_timelimit_attr             CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/TimeLimit';
+   g_con_timelimit_active_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/TimeLimitActivePhase';
+   g_con_finalexpstationid_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/FinalExpectedStationID';
+   g_con_finalexphandlarea_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/FinalExpectedHandlingArea';
+   g_con_expbuildstationid_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ExpectedBuildStationID';
+   g_con_expbuildhandlarea_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/ExpectedBuildHandlingArea';
+   g_con_buildstationid_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/BuildStationID';
+   g_con_handlerproduct_attr        CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/MatchResult/HandlerProduct';
+   g_con_input_stationid_attr       CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/Input_StationID';
+   g_con_segr_pcsplanidname_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/LoadedSegregationID/ProcessPlanIDName';
+   g_con_segr_pcsdefname_attr       CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/LoadedSegregationID/ProcessDefinitionName';
+   g_con_segr_productname_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/LoadedSegregationID/ProductName';
+   g_con_lpc_status_attr            CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/LPC_Status';
+   g_con_resume_stationid_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/Resume_StationID';
+   g_con_routingexcept_hdld_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/RoutingExceptionHandled';
+   g_con_AirportTagLPC_attr         CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/Special/AirportTagLPC';
+   g_con_PropReleaseRate_attr       CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/ActivityProperties/ReleaseRate';
+   g_con_PropAirline_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/FlightIdentification/Airline';
+   g_con_PropFlightNumber_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/FlightIdentification/FlightNumber';
+   g_con_PropDate_attr              CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/FlightIdentification/Date';
+   g_con_PropSchedDateTime_attr     CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/ScheduledDateTime';
+   g_con_PropAirport_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/Airport';
+   g_con_PropHandlingArea_attr      CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/HandlingArea';
+   g_con_PropStand_attr             CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/Stand';
+   g_con_PropOnBlocks_attr          CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/ActualOnBlocksDateTime';
+   g_con_PropOffBlocks_attr         CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/ActualOffBlocksDateTime';
+   g_con_PropHandler_attr           CONSTANT  pdm_attribute_definitions.path%type  := 'Internal/FlightProperties/Handler';
+
+   -- Derived Attributes
+   g_con_baggage_handler_attr       CONSTANT  pdm_attribute_definitions.path%type  := 'Identification/Derivations/Handler';
+   g_con_deriv_prodprogress_attr    CONSTANT  pdm_attribute_definitions.path%type  := 'Reporting/Derivations/ProductionProgress';
+   g_con_baggage_hdlrairline_attr   CONSTANT  pdm_attribute_definitions.path%type  := 'Flight/Derivations/HandlerAirline';
+   g_con_BagDataScore_attr          CONSTANT  pdm_attribute_definitions.path%type  := 'Flight/Derivations/BagDataScore';
+
+   SUBTYPE st_id IS NUMBER( 10 ); -- common TABLE.ID type
+
+   SUBTYPE st_id_char IS VARCHAR2( 10 ); -- common TABLE.ID type converted to VARCHAR2
+
+   SUBTYPE st_pd_id IS VARCHAR2( 30 );
+
+   SUBTYPE st_lpc IS VARCHAR2( 30 );
+
+   SUBTYPE st_lpc_extension IS VARCHAR2( 10 );
+
+   SUBTYPE st_attribute IS XMLTYPE;
+
+   TYPE it_pd_id IS TABLE OF st_pd_id
+      INDEX BY BINARY_INTEGER;
+
+   TYPE  baggagetag_rec IS RECORD
+                 ( lpc            pdm_package_attributes.value%TYPE
+                 , lpc_extension  pdm_package_attributes.value%TYPE
+                 );
+
+   TYPE it_baggagetag IS TABLE OF baggagetag_rec  -- List of baggagetags
+      INDEX BY BINARY_INTEGER;
+
+   TYPE it_id IS TABLE OF st_id  -- List of table id's
+      INDEX BY BINARY_INTEGER;
+
+   exc_internal_error                        EXCEPTION;
+   PRAGMA EXCEPTION_INIT( exc_internal_error, -600 );
+END pdm_constant;
+/
+
+
+package body pdm_constant
+is
+end pdm_constant;
+/

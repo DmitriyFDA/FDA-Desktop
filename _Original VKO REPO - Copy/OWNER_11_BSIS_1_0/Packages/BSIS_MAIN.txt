@@ -1,0 +1,1567 @@
+create or replace PACKAGE bsis_main
+AUTHID DEFINER
+AS
+  /*
+  ** Update and check the value of the BagloadDeliveryIndicator. 
+  ** A boolean returns if a BagLoadResponse should be send.
+  ** This private package procedure is added to the package specification
+  ** to support unit testing of this procedure.
+  */
+  FUNCTION update_and_check_blr
+    ( i_msg_sve         IN     XMLTYPE
+    , i_bda_rec         IN     bsis_baggage_data%ROWTYPE
+    , i_org_msg_type    IN     VARCHAR2
+    , i_message_sent    IN     BOOLEAN
+    )
+    RETURN BOOLEAN;
+  /*
+  ** Cold startup: bring database back to empty state, remove all dynamic data
+  ** This procedure is only called from script: cold_startup_bsis.sql
+  */
+  PROCEDURE cold_startup;
+  /*
+  ** Process the incoming BagData message and store in BSIS
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE process_baggage_data_msg(i_msg IN XMLTYPE);
+  /*
+  ** Process a package data request messages
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE process_pd_request(i_msg IN XMLTYPE);
+  /*
+  ** Process a package data subscribe message
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE process_pd_subscribe(i_msg IN XMLTYPE);
+  /*
+  ** Process a package data unsubscribe message
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE process_pd_unsubscribe(i_msg IN XMLTYPE);
+  /*
+  ** Process_host_ack: process an Acknowledgement for a message delivered to the host party.
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE process_host_ack(i_msg IN XMLTYPE);
+  /*
+  ** Store incoming messages in a queue for decoupled processing
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE enqueue_bags(i_msg IN XMLTYPE);
+  /*
+  ** Process the incoming PassengerScanEvent message
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE process_pse_msg(i_msg IN XMLTYPE);
+  /*
+  ** Process bags messages in Queue
+  ** This is the worker job for which multiple ACL application elements may be defined
+  */
+  PROCEDURE process_bags_in_queue(jobnr IN NUMBER);
+  --
+END bsis_main;
+/
+
+
+
+
+package body bsis_main
+as
+  g_con_package             constant varchar2(13) := 'bsis_main';
+  g_con_preprocess_object   constant varchar(25)  := 'BSIS_PROJECT_HANDLERS';
+  g_con_preprocess_name     constant varchar(25)  := 'PREPROCESS_BAGGAGE_DATA';
+  g_preprocess_baggage_data boolean;
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure set_g_preprocess_baggage_data
+  is
+    l_con_proc_name      constant cmn_constant.st_proc_name
+                                  := g_con_package || '.set_g_preprocess_baggage_data';
+   cursor c_check_procedure is
+   select *
+   from sys.all_procedures p
+   where p.object_type = 'PACKAGE'
+   and   p.object_name = g_con_preprocess_object
+   and   p.procedure_name = g_con_preprocess_name;
+    r_check_procedure            c_check_procedure%rowtype;
+  begin
+    open c_check_procedure;
+    fetch c_check_procedure into r_check_procedure;
+     g_preprocess_baggage_data := c_check_procedure%found;
+    close c_check_procedure;
+   exception
+   when others then
+     g_preprocess_baggage_data := false;
+     close c_check_procedure;
+  end set_g_preprocess_baggage_data;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function preprocess_baggage_data(
+    io_msg_id_rec    in out bsis_interface.rt_msg_id,
+    io_baggage_data  in out nocopy xmltype
+  )
+  return boolean
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.preprocess_baggage_data';
+  
+    l_count                    number;
+    l_sql                      varchar2(1000);
+    l_flight_type              varchar2(1);
+    l_bda_rec_id               bsis_interface.rt_bda_id;
+    l_xml_data                 xmltype;
+    l_flight                   varchar2(30);
+    l_return                   number := 0;
+  begin
+    viu_module.enter_module( i_module => l_con_proc_name );
+  
+    if g_preprocess_baggage_data
+    then
+      l_bda_rec_id := io_msg_id_rec.bda_id_rec;
+      l_sql  := 'BEGIN :ret := ' || g_con_preprocess_object || '.' || g_con_preprocess_name || '(:lpc, :lpc_ext, :bid, :bid_ext, :msg_type, :msg_time, :xml_data, :flight); END;';
+  
+      execute immediate l_sql
+      using             out l_return,
+                        in l_bda_rec_id.lpc
+                       ,in l_bda_rec_id.lpc_extension
+                       ,in l_bda_rec_id.bid
+                       ,in l_bda_rec_id.bid_extension
+                       ,in io_msg_id_rec.org_msg_type
+                       ,in io_msg_id_rec.msg_time
+                       ,in out io_baggage_data
+                       ,out l_flight;
+  
+      if bsis_baggage_data_mgr.is_store_duplicate_lpn 
+      and l_flight is not null 
+      and not (io_msg_id_rec.has_outflight or io_msg_id_rec.has_inflight) 
+      then
+        l_flight_type := substr(l_flight, 1, 1);
+        l_flight := substr(l_flight, 2);
+        io_msg_id_rec.has_outflight := l_flight_type = 'O';
+        io_msg_id_rec.has_inflight := l_flight_type = 'I';
+        io_msg_id_rec.bda_id_rec.flight_id_rec.flight := l_flight;
+        if io_msg_id_rec.has_outflight or io_msg_id_rec.has_inflight
+        then
+          io_msg_id_rec.lpckey := bsis_public.determine_lpckey(i_lpc           => l_bda_rec_id.lpc
+                                                              ,i_lpc_ext       => l_bda_rec_id.lpc_extension
+                                                              ,i_flight        => l_flight
+                                                              ,i_has_outflight => io_msg_id_rec.has_outflight
+                                                              ,i_has_inflight  => io_msg_id_rec.has_inflight);
+             viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_datapreprocessed
+                                ,i_calling_procedure => l_con_proc_name
+                                ,i_severity          => viu_info.c_severity_notification
+                                ,i_additional_data   => 'LPC ' || l_bda_rec_id.lpc || l_bda_rec_id.lpc_extension || ' combined with flight ' || l_flight
+                                );
+        end if;
+      end if;
+    else
+      l_return := 0;
+    end if;
+    viu_module.leave_module( i_module => l_con_proc_name );
+  
+    return l_return <> 0;
+  exception
+    when others
+    then
+       viu_module.leave_module( i_module     => l_con_proc_name
+                              , i_debug_info => sqlerrm
+                              );
+       viu_info.raise_info;
+  end;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function obtain_bda_lock
+  ( i_lpc             in     varchar2 := null
+  , i_bid             in     varchar2 := null
+  , i_pid             in     varchar2 := null
+  )
+  return boolean
+  is
+    l_con_proc_name       constant cmn_constant.st_proc_name
+                                    := g_con_package || '.obtain_bda_lock';
+    l_lockid              number;
+    l_result              integer;
+    l_ind_lock_set	      boolean := false;
+    c_timeout             constant number := dbms_lock.maxwait; 
+  begin
+    
+    if i_lpc is not null
+    then
+      l_lockid := mod(to_number(i_lpc), 1000000);
+      l_result := dbms_lock.request(id => l_lockid
+                                  ,timeout => c_timeout
+                                  ,release_on_commit => false);
+      if l_result <> 0
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_lockfailed
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => 'No lock on LPC: ' || i_lpc || '. Result: ' || l_result
+                              );
+      else
+        l_ind_lock_set := true;
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cmnmessage
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_debug
+                              ,i_info_arguments    => 'Lock set for LPC:' || l_lockid
+                              ,i_additional_data   => 'Given parameters: LPC:' || nvl(i_lpc,'NULL') || ' i_bid:'|| nvl(i_bid,'NULL')||' i_pid:'|| nvl(i_pid,'NULL')
+                              );
+      end if;
+    end if;
+    if i_bid is not null
+    then
+      l_lockid := mod(to_number(i_bid), 1000000) + 1000000;
+      l_result := dbms_lock.request(id => l_lockid
+                                  ,timeout => c_timeout
+                                  ,release_on_commit => false);
+      if l_result <> 0
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_lockfailed
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => 'No lock on BID: ' || i_bid || '. Result: ' || l_result
+                              );
+      else
+        l_ind_lock_set := true;
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cmnmessage
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_debug
+                              ,i_info_arguments    => 'Lock set for BID:' || l_lockid
+                              ,i_additional_data   => 'Given parameters: LPC:' || nvl(i_lpc,'NULL') || ' i_bid:'|| nvl(i_bid,'NULL')||' i_pid:'|| nvl(i_pid,'NULL')
+                              );
+      end if;
+    end if;
+    if i_pid is not null
+    then
+      l_lockid := mod(to_number(i_pid), 1000000) + 2000000;
+      l_result := dbms_lock.request(id => l_lockid
+                                   ,timeout => c_timeout
+                                   ,release_on_commit => false);
+      if l_result <> 0
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_lockfailed
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => 'No lock on PID: ' || i_pid || '. Result: ' || l_result
+                              );
+      else
+        l_ind_lock_set := true;
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cmnmessage
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_debug
+                              ,i_info_arguments    => 'Lock set for PID:' || l_lockid
+                              ,i_additional_data   => 'Given parameters: LPC:' || nvl(i_lpc,'NULL') || ' i_bid:'|| nvl(i_bid,'NULL')||' i_pid:'|| nvl(i_pid,'NULL')
+                              );
+      end if;
+    end if;
+    return l_ind_lock_set;
+  exception
+    when others
+    then
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end obtain_bda_lock;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure release_bda_lock
+  ( i_lpc             in     varchar2 := null
+  , i_bid             in     varchar2 := null
+  , i_pid             in     varchar2 := null
+  )
+  is
+    l_con_proc_name       constant cmn_constant.st_proc_name
+                                    := g_con_package || '.release_bda_lock';
+    l_lockid              number;
+    l_result              integer;
+  begin
+    
+    if i_lpc is not null
+    then
+      l_lockid := mod(to_number(i_lpc), 1000000);
+      l_result := dbms_lock.release(id => l_lockid);
+      if l_result <> 0
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_lockfailed
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => 'Release lock on LPC failed: ' || i_lpc || '. Result: ' || l_result
+                              );
+      else
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cmnmessage
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_debug
+                              ,i_info_arguments    => 'Lock released for LPC:' || l_lockid
+                              ,i_additional_data   => 'Given parameters: LPC:' || nvl(i_lpc,'NULL') || ' i_bid:'|| nvl(i_bid,'NULL')|| ' i_pid:'|| nvl(i_pid,'NULL')
+                              );
+      end if;
+    end if;
+    if i_bid is not null
+    then
+      l_lockid := mod(to_number(i_bid), 1000000) + 1000000;
+      l_result := dbms_lock.release(id => l_lockid);
+      if l_result <> 0
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_lockfailed
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => 'Release lock on BID failed: ' || i_bid || '. Result: ' || l_result
+                              );
+      else
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cmnmessage
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_debug
+                              ,i_info_arguments    => 'Lock released for BID:' || l_lockid
+                              ,i_additional_data   => 'Given parameters: LPC:' || nvl(i_lpc,'NULL') || ' i_bid:'|| nvl(i_bid,'NULL')|| ' i_pid:'|| nvl(i_pid,'NULL')
+                              );
+      end if;
+    end if;
+    if i_pid is not null
+    then
+      l_lockid := mod(to_number(i_pid), 1000000) + 2000000;
+      l_result := dbms_lock.release(id => l_lockid);
+      if l_result <> 0
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_lockfailed
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => 'Release lock on PID failed: ' || i_pid || '. Result: ' || l_result
+                              );
+      else
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_cmnmessage
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_debug
+                              ,i_info_arguments    => 'Lock released for PID:' || l_lockid
+                              ,i_additional_data   => 'Given parameters: LPC:' || nvl(i_lpc,'NULL') || ' i_bid:'|| nvl(i_bid,'NULL')|| ' i_pid:'|| nvl(i_pid,'NULL')
+                              );
+      end if;
+    end if;
+  exception
+    when others
+    then
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end release_bda_lock;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function update_and_check_blr
+  (i_msg_sve         in     xmltype
+  ,i_bda_rec         in     bsis_baggage_data%rowtype
+  ,i_org_msg_type    in     varchar2
+  ,i_message_sent    in     boolean
+  )
+  return boolean
+  is
+    l_con_proc constant cmn_constant.st_proc_name := g_con_package || '.update_and_check_blr';
+    l_return   boolean;
+    
+  begin
+    if i_msg_sve is not null 
+    then
+      if i_org_msg_type = bsis_constant.g_con_msg_type_bagload 
+      then
+        if i_message_sent 
+        then
+          bsis_baggage_data_mgr.set_bagload_deliv_ind(i_bagload_deliv_ind => true
+                                                     ,i_bda_rec           => i_bda_rec
+                                                     );
+          l_return := true;
+        else
+          l_return :=  bsis_baggage_data_mgr.get_bagload_deliv_ind(i_bda_id_rec => null
+                                                                  ,i_bda_rec    => i_bda_rec
+                                                                  );
+        end if;
+      else
+        
+        bsis_baggage_data_mgr.set_bagload_deliv_ind(i_bagload_deliv_ind => false
+                                                  ,i_bda_rec           => i_bda_rec
+                                                  );
+        
+        l_return := false;
+      end if;
+    else
+      l_return := false;
+    end if;
+    
+    return l_return;
+  exception
+  when others
+  then
+    viu_info.raise_info(i_calling_procedure => l_con_proc);
+  end update_and_check_blr;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_baggage_data
+    ( i_pmd_name        in     varchar2
+    , i_src_pcs_id      in     varchar2
+    , i_src_inst_id     in     varchar2
+    , i_sequence_number in     number
+     ,i_msg_time        in     timestamp 
+    , i_msg_pck_id      in     xmltype
+    , i_pid_varchar2    in     varchar2
+    , i_org_msg_type    in     varchar2
+    , i_msg_src         in     xmltype := null
+    , i_msg_sve         in     xmltype := null
+    , i_vendor_string in bsis_baggage_data.vendor_string%type := null
+    )
+  is
+    l_con_proc_name       constant cmn_constant.st_proc_name
+                                    := g_con_package || '.process_baggage_data';
+    l_msg_id_rec          bsis_interface.rt_msg_id;
+    l_bda_rec             bsis_baggage_data%rowtype;
+    l_dat_xml             xmltype;
+    l_msg_handled         boolean := false;
+    l_iata_id_tab_change  bsis_interface.it_iata_id;
+    l_viu_additional_data varchar2(100);
+    l_rows_updated        pls_integer;
+    l_lpckey              varchar2(35);
+    l_lpcforlock          varchar2(35) := null;
+    l_has_outflight       boolean;
+    l_has_inflight        boolean;
+    l_src_data_src        char(1);
+    l_message_sent        boolean;
+    l_check_bagload_deliv_ind boolean;
+    l_pnr                 varchar2(6);
+    l_sequencenr          varchar2(3);
+    l_suppress            boolean;
+    l_bda_record_locked_ind   boolean := false;
+  begin
+    
+    bsis_interface.get_bda_msg(i_pmd_name     => bsis_constant.g_con_bdi_msg_root
+                              ,i_msg_pck_id   => i_msg_pck_id
+                              ,i_pid_varchar2 => i_pid_varchar2
+                              ,i_msg_src      => i_msg_src
+                              ,i_msg_sve      => i_msg_sve
+                              ,o_bda_msg      => l_dat_xml
+                              ,o_msg_id_rec   => l_msg_id_rec
+                              ,o_process_info => l_viu_additional_data
+                              );
+    bsis_interface.determine_msg_id_rec_values
+                              (i_msg           => l_dat_xml
+                              ,i_bda_id_rec    => l_msg_id_rec.bda_id_rec
+                              ,i_org_msg_type  => i_org_msg_type
+                              ,o_lpckey        => l_lpckey
+                              ,o_has_outflight => l_has_outflight
+                              ,o_has_inflight  => l_has_inflight
+                              ,o_src_data_src  => l_src_data_src
+                              ,o_pnr           => l_pnr
+                              ,o_sequencenr    => l_sequencenr
+                              );
+    
+    l_msg_id_rec.src_pcs_id     := i_src_pcs_id;    
+    l_msg_id_rec.msg_time       := i_msg_time;      
+    l_msg_id_rec.org_msg_type   := i_org_msg_type;  
+    l_msg_id_rec.vendor_string  := i_vendor_string; 
+    l_msg_id_rec.bda_id_rec.pid := i_pid_varchar2;  
+    l_msg_id_rec.lpckey         := l_lpckey;
+    l_msg_id_rec.has_outflight  := l_has_outflight;
+    l_msg_id_rec.has_inflight   := l_has_inflight;
+    l_msg_id_rec.src_data_src   := l_src_data_src;
+    l_msg_id_rec.pnr            := l_pnr;
+    l_msg_id_rec.sequencenr     := l_sequencenr;
+    
+    if l_dat_xml is not null
+    then
+      
+      
+      if l_msg_id_rec.bda_id_rec.lpc <> '0000000000'
+      then
+        l_lpcforlock := l_msg_id_rec.bda_id_rec.lpc;
+      end if;
+      l_bda_record_locked_ind := obtain_bda_lock(i_lpc => l_lpcforlock
+                    ,i_bid => l_msg_id_rec.bda_id_rec.bid
+                    ,i_pid => l_msg_id_rec.bda_id_rec.pid
+                    );
+      
+      l_suppress := preprocess_baggage_data
+                                 (io_msg_id_rec         => l_msg_id_rec
+                                 ,io_baggage_data       => l_dat_xml);
+      
+      if not l_suppress
+      then
+        
+        l_msg_handled := bsis_baggage_data_mgr.handle_baggage_data
+                                 (i_msg_id_rec         => l_msg_id_rec
+                                 ,i_baggage_data       => l_dat_xml
+                                 ,o_bda_rec            => l_bda_rec
+                                 ,o_iata_id_tab_change => l_iata_id_tab_change
+                                 );
+        
+        if  cmn_common.get_parameter_value(i_prr_name => bsis_constant.g_con_bda_logging) = 'Y'
+        and l_bda_rec.id is not null
+        then
+          bsis_baggage_data_mgr.insert_log_data
+               (i_msg_id_rec => l_msg_id_rec
+               ,i_bda_rec    => l_bda_rec
+               ,i_msg_src    => i_msg_src
+               ,i_msg_sve    => i_msg_sve
+               );
+        end if;
+      end if;
+      
+      
+
+
+
+
+
+
+
+
+
+
+
+
+      commit;
+      
+      
+      
+      
+      if l_bda_record_locked_ind and i_org_msg_type <> bsis_constant.g_con_msg_type_bagload
+      then
+        release_bda_lock(i_lpc => l_lpcforlock
+                   ,i_bid => l_msg_id_rec.bda_id_rec.bid
+                   ,i_pid => l_msg_id_rec.bda_id_rec.pid
+                   );
+        l_bda_record_locked_ind := false;
+      end if;
+      
+      if l_msg_handled
+      then
+        bsis_subscription_mgr.publish_bda
+                              (i_msg_id_rec         => l_msg_id_rec
+                              ,i_bda_rec            => l_bda_rec
+                              ,i_iata_id_tab_change => l_iata_id_tab_change
+                              ,o_message_sent        => l_message_sent
+                              );
+        l_check_bagload_deliv_ind := update_and_check_blr(i_msg_sve => i_msg_sve
+                                                         ,i_bda_rec => l_bda_rec
+                                                         ,i_org_msg_type => i_org_msg_type
+                                                         ,i_message_sent => l_message_sent);
+        if l_check_bagload_deliv_ind then
+          bsis_interface.send_brsp_message
+                              (i_src_pcs_id         => i_src_pcs_id
+                              ,i_src_inst_id        => i_src_inst_id
+                              ,i_sequence_number    => i_sequence_number
+                              ,i_msg_pck_id         => i_msg_pck_id
+                              );
+        end if;
+
+        
+        if i_org_msg_type = bsis_constant.g_con_msg_type_bum then
+          l_bda_rec.deleted_ind       := cmn_constant.g_con_yesno_yes;
+          l_rows_updated := bsis_bda_tapi_pck.bda_update_row (l_bda_rec.id, l_bda_rec);
+        end if;
+      
+        
+        
+        if l_bda_record_locked_ind
+        then
+          release_bda_lock(i_lpc => l_lpcforlock
+                      ,i_bid => l_msg_id_rec.bda_id_rec.bid
+                      ,i_pid => l_msg_id_rec.bda_id_rec.pid
+                      );
+          l_bda_record_locked_ind := false;
+        end if;
+      end if;
+    else 
+      if  i_msg_src is null
+      and i_msg_sve is null
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_emptysourceemptyservice
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => l_viu_additional_data
+                              );
+      elsif i_msg_src is not null
+      then
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_emptypackageidentifier
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   => l_viu_additional_data
+                              );
+      else
+        
+        viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_svedatawithoutbidandpid
+                              ,i_calling_procedure => l_con_proc_name
+                              ,i_severity          => viu_info.c_severity_warning
+                              ,i_additional_data   =>    l_viu_additional_data
+                                                      || ', LPC=' || l_msg_id_rec.bda_id_rec.lpc
+                              );
+      end if;
+    end if; 
+    
+  exception
+    when others
+    then
+      
+      if l_bda_record_locked_ind
+      then
+        release_bda_lock(i_lpc => l_lpcforlock
+                        ,i_bid => l_msg_id_rec.bda_id_rec.bid
+                        ,i_pid => l_msg_id_rec.bda_id_rec.pid
+                        );
+        l_bda_record_locked_ind := false;
+      end if;
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end process_baggage_data;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_baggage_data_msg (i_msg in xmltype)
+  is
+    l_con_proc_name constant cmn_constant.st_proc_name
+                              := g_con_package || '.process_baggage_data';
+    l_src_pcs_id      varchar2(50);
+    l_src_inst_id     varchar2(50);
+    l_sequence_number number;
+    l_msg_time        timestamp; 
+    l_vendor_string   bsis_baggage_data.vendor_string%type;
+    l_msg_pck_id      xmltype;
+    l_pid_varchar2    varchar2(10);
+    l_org_msg_type    varchar2(30);
+    l_msg_src         xmltype;
+    l_msg_sve         xmltype;
+    l_count           number(4);
+    begin
+    
+    
+    l_src_pcs_id := bsis_interface.get_src_pcs_id
+                       ( i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                       , i_msg      => i_msg
+                       );
+    
+    l_src_inst_id := bsis_interface.get_src_inst_id
+                       ( i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                       , i_msg      => i_msg
+                       );
+    
+    l_sequence_number := bsis_interface.get_sequence_number
+                       ( i_msg          => i_msg
+                       , i_root_element => bsis_constant.g_con_bdi_msg_root
+                       );
+    
+    l_msg_time := cmn_common.varchar_to_timestamp
+                   (i_timestamp => bsis_interface.get_msg_time
+                                      (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                      ,i_msg      => i_msg
+                                      )
+                   );
+    
+    l_vendor_string := bsis_interface.get_vendor_string(i_msg          => i_msg
+                                                     ,i_root_element => bsis_constant.g_con_bdi_msg_root
+                                                     );
+    
+
+
+    for r_pst in (select pty.id, pty.id_cust
+                from   cmn_parties pty, bsis_party_status pst
+                where  pty.id_cust = l_src_pcs_id
+                and    pty.id      = pst.pty_id
+               )
+    loop
+      bsis_lifesign.update_last_msg_received
+                          (i_pty_id_cust => r_pst.id_cust
+                          ,i_pty_id      => r_pst.id
+                          );
+    end loop;
+    
+    
+    <<loop_bagdata>>
+    for r_msg in (select t.packageidentifier
+                ,      t.pid
+                ,      t.originalmessagetype
+                ,      t.bsisbagsource
+                ,      t.bsisbagservice
+                from   xmltable('/Bags/BagData'
+                       passing  i_msg
+                       columns  packageidentifier   xmltype      path '/BagData/PackageIdentifier'
+                               ,pid                 varchar2(10) path '/BagData/PID'
+                               ,originalmessagetype varchar2(30) path '/BagData/OriginalMessageType'
+                               ,bsisbagsource       xmltype      path '/BagData/BSISBagSource'
+                               ,bsisbagservice      xmltype      path '/BagData/BSISBagService'
+                               ) t
+               )
+    loop
+      
+      
+      
+      begin
+         process_baggage_data(i_pmd_name        => bsis_constant.g_con_bdi_msg_root
+                             ,i_src_pcs_id      => l_src_pcs_id
+                             ,i_src_inst_id     => l_src_inst_id
+                             ,i_sequence_number => l_sequence_number
+                             ,i_msg_time        => l_msg_time
+                             ,i_msg_pck_id      => r_msg.packageidentifier
+                             ,i_pid_varchar2    => r_msg.pid
+                             ,i_org_msg_type    => r_msg.originalmessagetype
+                             ,i_msg_src         => r_msg.bsisbagsource
+                             ,i_msg_sve         => r_msg.bsisbagservice
+                             ,i_vendor_string   => l_vendor_string
+                             );
+         l_msg_pck_id    := r_msg.packageidentifier;
+         l_pid_varchar2  := r_msg.pid;
+         l_org_msg_type  := r_msg.originalmessagetype;
+         l_msg_src       := r_msg.bsisbagsource;
+         l_msg_sve       := r_msg.bsisbagservice;
+         
+         commit;
+      exception
+      when others then
+         
+         
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+      end;
+    end loop loop_bagdata;
+    
+
+
+
+
+
+    select count(bda.id)
+    into   l_count
+    from   bsis_baggage_data bda
+    where  bda.bid            = bsis_interface.get_element_value(l_msg_pck_id, '/PackageIdentifier/BaggageIdentifier/BID/text()')
+    and    bda.bid_extension  = bsis_interface.get_element_value(l_msg_pck_id, '/PackageIdentifier/BaggageIdentifier/BID_Extension/text()')
+    and    bda.deleted_ind    = 'N';
+    
+    if l_count > 1  then
+      
+      if to_number(l_pid_varchar2) > 0 then
+        delete from bsis_baggage_data bda
+        where  bda.bid            = bsis_interface.get_element_value(l_msg_pck_id, '/PackageIdentifier/BaggageIdentifier/BID/text()')
+        and    bda.bid_extension  = bsis_interface.get_element_value(l_msg_pck_id, '/PackageIdentifier/BaggageIdentifier/BID_Extension/text()')
+        and    bda.pid            = l_pid_varchar2
+        and    bda.src_data       is null
+        and    bda.deleted_ind    = 'N';
+      else
+        delete from bsis_baggage_data bda
+        where  bda.bid            = bsis_interface.get_element_value(l_msg_pck_id, '/PackageIdentifier/BaggageIdentifier/BID/text()')
+        and    bda.bid_extension  = bsis_interface.get_element_value(l_msg_pck_id, '/PackageIdentifier/BaggageIdentifier/BID_Extension/text()')
+        and    bda.pid            is null
+        and    bda.src_data       is null
+        and    bda.deleted_ind    = 'N';
+      end if;
+      
+      
+      process_baggage_data(i_pmd_name        => bsis_constant.g_con_bdi_msg_root
+                          ,i_src_pcs_id      => l_src_pcs_id
+                          ,i_src_inst_id     => l_src_inst_id
+                          ,i_sequence_number => l_sequence_number
+                          ,i_msg_time        => l_msg_time
+                          ,i_msg_pck_id      => l_msg_pck_id
+                          ,i_pid_varchar2    => l_pid_varchar2
+                          ,i_org_msg_type    => l_org_msg_type
+                          ,i_msg_src         => l_msg_src
+                          ,i_msg_sve         => l_msg_sve
+                          ,i_vendor_string   => l_vendor_string);
+      
+      commit;
+    end if; 
+  exception
+    when others
+    then
+      viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+      rollback;
+  end process_baggage_data_msg;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_pd_request (i_msg in xmltype)
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name
+                                  := g_con_package || '.process_pd_request';
+    l_msg_id_rec               bsis_interface.rt_msg_id;
+  begin
+    l_msg_id_rec := bsis_interface.get_msg_id( i_pmd_name => bsis_constant.g_con_pdi_pd_request
+                                             , i_msg      => i_msg
+                                             );
+    bsis_subscription_mgr.publish_bre(i_msg_id_rec => l_msg_id_rec);
+    
+    commit;
+    dbms_session.free_unused_user_memory;
+    
+  exception
+    when others
+    then
+       viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+       rollback;
+  end process_pd_request;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_pd_subscribe (i_msg in xmltype)
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name
+                                := g_con_package || '.process_pd_subscribe';
+    l_msg_id_rec      bsis_interface.rt_msg_id;
+    l_sequence_number number;
+  begin
+    
+    l_msg_id_rec := bsis_interface.get_msg_id( i_pmd_name => bsis_constant.g_con_pdi_pd_subscribe
+                                             , i_msg      => i_msg
+                                             );
+    
+    l_sequence_number := bsis_interface.get_sequence_number( i_msg          => i_msg
+                                                           , i_root_element => bsis_constant.g_con_pdi_pd_subscribe
+                                                           );
+    
+    
+    bsis_subscription_mgr.start_resync(i_msg_id_rec => l_msg_id_rec);
+    
+    
+    if bsis_subscription_mgr.sse_all(i_msg_id_rec => l_msg_id_rec)
+    then
+      if cmn_common.get_parameter_value(i_prr_name => bsis_constant.g_con_send_pd_subscribe_resp) = 'Y'
+      then
+        
+        bsis_interface.send_pdrsp_message(i_msg_id_rec         => l_msg_id_rec,
+                                          i_sequence_number    => l_sequence_number
+                                         );
+      end if;
+    else
+      viu_info.operator_info
+                       (i_ifo_nr                 => viu_constant.c_ifo_subscribefailed,
+                        i_calling_procedure      => l_con_proc_name,
+                        i_severity               => viu_info.c_severity_notification
+                       );
+    end if;
+    
+    commit;
+    dbms_session.free_unused_user_memory;
+    
+  exception
+    when others
+    then
+      viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+      rollback;
+  end process_pd_subscribe;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_pd_unsubscribe (i_msg in xmltype)
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name
+                              := g_con_package || '.process_pd_unsubscribe';
+    l_msg_id_rec               bsis_interface.rt_msg_id;
+  begin
+    l_msg_id_rec := bsis_interface.get_msg_id( i_pmd_name => bsis_constant.g_con_pdi_pd_unsubscribe
+                                             , i_msg      => i_msg
+                                             );
+    
+    if l_msg_id_rec.bda_id_rec.lpc is not null
+    then
+      
+      if not bsis_subscription_mgr.unsubscribe(i_msg_id_rec => l_msg_id_rec)
+      then
+        viu_info.operator_info
+                          (i_ifo_nr                 => viu_constant.c_ifo_unsubscribefailed,
+                           i_calling_procedure      => l_con_proc_name,
+                           i_severity               => viu_info.c_severity_notification
+                          );
+      end if;
+    else
+      
+      if not bsis_subscription_mgr.sse_all(i_msg_id_rec => l_msg_id_rec)
+      then
+         viu_info.operator_info
+                           (i_ifo_nr                 => viu_constant.c_ifo_unsubscribefailed,
+                            i_calling_procedure      => l_con_proc_name,
+                            i_severity               => viu_info.c_severity_notification
+                           );
+      end if;
+    end if;
+    
+    commit;
+    dbms_session.free_unused_user_memory;
+    
+  exception
+    when others
+    then
+      viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+      rollback;
+  end process_pd_unsubscribe;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure cold_startup
+  is
+    l_success  boolean;
+    l_pty_self cmn_parties.id_cust%type;
+    l_pty_type cmn_parties.type%type;
+  begin
+    for r_ssr in (select ssr.id from cmn_subscribers ssr)
+    loop
+     cmn_queue.purge_queue_table(i_subscriber_id => r_ssr.id);
+    end loop;
+    
+    l_pty_type := cmn_common.get_parameter_value(cmn_constant.g_con_pve_cmn_party_ident);
+    
+    select pty.id_cust
+    into   l_pty_self
+    from   cmn_parties pty
+    where  pty.type = l_pty_type;
+    
+    acl_application_control.handle_request( i_aet_id_cust => l_pty_self
+                      , i_ace_id_cust => 'stop'
+                      , o_success     => l_success
+                      );
+    
+    
+    execute immediate 'TRUNCATE TABLE bsis_guaranteed_delivery DROP STORAGE';
+    execute immediate 'TRUNCATE TABLE bsis_subscriber_buffer_msgs DROP STORAGE';
+      
+    execute immediate 'TRUNCATE TABLE bsis_subscriptions DROP STORAGE';
+    execute immediate 'TRUNCATE TABLE bsis_baggage_data_log DROP STORAGE';
+    execute immediate 'TRUNCATE TABLE bsis_baggage_data_att_source DROP STORAGE';
+    
+    execute immediate 'ALTER TABLE bsis_subscriptions MODIFY CONSTRAINT bsis_ssn_bda_fk DISABLE';
+    execute immediate 'TRUNCATE TABLE bsis_baggage_data DROP STORAGE';
+    execute immediate 'ALTER TABLE bsis_subscriptions MODIFY CONSTRAINT bsis_ssn_bda_fk ENABLE';
+    
+    execute immediate 'TRUNCATE TABLE acl_aet_statuses DROP STORAGE';
+    execute immediate 'TRUNCATE TABLE acl_application_processes DROP STORAGE';
+    
+    execute immediate 'ALTER TABLE ACL_AET_STATUSES MODIFY CONSTRAINT ACL_ASS_ACT_FK DISABLE';
+    execute immediate 'ALTER TABLE ACL_APPLICATION_PROCESSES MODIFY CONSTRAINT ACL_APS_ACT_INITIATED_BY_FK DISABLE';
+    execute immediate 'ALTER TABLE ACL_APPLICATION_PROCESSES MODIFY CONSTRAINT ACL_APS_ACT_STOPPED_BY_FK DISABLE';
+    execute immediate 'ALTER TABLE ACL_APPLICATION_PROCESSES MODIFY CONSTRAINT ACL_APS_ACT_ABORTED_BY_FK DISABLE';
+    
+    execute immediate 'TRUNCATE TABLE acl_aet_control_requests DROP STORAGE';
+    
+    execute immediate 'ALTER TABLE ACL_AET_STATUSES MODIFY CONSTRAINT ACL_ASS_ACT_FK ENABLE';
+    execute immediate 'ALTER TABLE ACL_APPLICATION_PROCESSES MODIFY CONSTRAINT ACL_APS_ACT_INITIATED_BY_FK ENABLE';
+    execute immediate 'ALTER TABLE ACL_APPLICATION_PROCESSES MODIFY CONSTRAINT ACL_APS_ACT_STOPPED_BY_FK ENABLE';
+    execute immediate 'ALTER TABLE ACL_APPLICATION_PROCESSES MODIFY CONSTRAINT ACL_APS_ACT_ABORTED_BY_FK ENABLE';
+    
+    execute immediate 'TRUNCATE TABLE cmn_lifesign_party_statuses DROP STORAGE';
+    execute immediate 'TRUNCATE TABLE cmn_lifesign_req_received DROP STORAGE';
+    execute immediate 'TRUNCATE TABLE cmn_lifesign_req_sent DROP STORAGE';
+    
+      
+    
+    
+    commit;
+    
+    acl_application_control.handle_request( i_aet_id_cust => l_pty_self
+                      , i_ace_id_cust => 'start'
+                      , o_success     => l_success
+                      );
+  end;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_host_ack(i_msg in xmltype)
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name
+                                  := g_con_package || '.process_host_ack';
+  begin
+    bsis_interface.process_host_ack(i_msg);
+    commit;
+  exception
+    when others
+    then
+      rollback;
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end process_host_ack;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure enqueue_bags(i_msg in xmltype)
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name
+                                  := g_con_package || '.enqueue_bags';
+    l_queue_number number;
+  begin
+    select que.id
+    into   l_queue_number
+    from   cmn_queues que
+    where  que.name   = 'BAGS_IN_QUEUE';
+    
+    if l_queue_number is not null
+    then
+       cmn_queue.enqueue_message(l_queue_number, i_msg);
+    else
+       
+       bsis_main.process_baggage_data_msg(i_msg);
+    end if;
+    commit;
+  exception
+    when others
+    then
+      rollback;
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end enqueue_bags;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_bags_in_queue(jobnr in number)
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_bags_in_queue' ;
+    l_msg                      xmltype;
+    l_subscriber_id            number;
+    l_message_count            number := 0;
+    l_queue_name               cmn_queues.name%type;
+  begin
+    
+
+
+
+
+    if jobnr is null
+    then
+      l_queue_name := 'BRS_BAGS_IN_QUEUE';
+    else
+      l_queue_name := 'BAGS_IN_QUEUE';
+    end if;
+    
+    select ssr.id
+    into   l_subscriber_id
+    from   cmn_queues      que
+    ,      cmn_subscribers ssr
+    where  que.name        = l_queue_name
+    and    que.id          = ssr.que_id;
+    
+    
+    while (l_message_count < 2000)
+    loop
+      
+      
+      l_msg := cmn_queue.dequeue_message ( i_subscriber_id    => l_subscriber_id
+                                         , i_wait_period      => 5
+                                         , i_immediate_commit => true
+                                         , i_navigation       => dbms_aq.first_message
+                                         , i_visibility       => dbms_aq.immediate
+                                         );
+      if l_msg is not null
+      then
+        bsis_main.process_baggage_data_msg(l_msg);
+      end if;
+      
+      commit;
+      l_message_count := l_message_count + 1;
+      
+      acl_application_control.check_halt_signal;
+      
+    end loop;
+  exception
+    when others
+    then
+      rollback;
+      viu_info.handle_info (i_calling_procedure   => l_con_proc_name,
+                            i_additional_data     => sqlerrm);
+  end process_bags_in_queue;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_pse(i_org_msg_type    in varchar2
+                       ,i_src_pcs_id      in varchar2
+                       ,i_msg_time        in timestamp 
+                       ,i_pse_src         in xmltype
+                       ,i_pnr_code        in varchar2
+                       ,i_sequence_number in varchar2
+                       ,i_airline         in varchar2
+                       ,i_flightnumber    in varchar2
+                       ,i_flightdate      in varchar2)
+  is
+    l_con_proc_name         constant cmn_constant.st_proc_name
+                                      := g_con_package || '.process_pse';
+    l_msg_handled           boolean := false;
+    l_msg_id_rec            bsis_interface.rt_msg_id;
+    l_bda_rec               bsis_baggage_data%rowtype;
+    l_found                 boolean;
+    l_message_sent          boolean;
+    l_iata_id_tab_change    bsis_interface.it_iata_id;
+    l_first_run             boolean := true;
+    l_bda_record_locked_ind boolean := false;
+  
+    cursor c_pse
+    is
+    select bda.*
+    from   bsis_baggage_data bda
+    where (bda.deleted_ind = 'N'
+    or    (bda.deleted_ind = 'Y' and  bda.last_src_data_upd > i_msg_time)
+          )
+    and   i_sequence_number = bda.checkinsequencenr
+    and   i_airline || i_flightnumber || '_' || i_flightdate = bda.flight;
+  
+    r_pse  c_pse%rowtype;
+  begin
+    open c_pse;
+    loop
+      fetch c_pse into r_pse;
+      if c_pse%notfound then
+        if l_first_run then
+          viu_info.operator_info
+                    (i_ifo_nr            => viu_constant.c_ifo_psewithoutbsm
+                    ,i_calling_procedure => l_con_proc_name
+                    ,i_severity          => viu_info.c_severity_warning
+                    ,i_additional_data   => 'Flight = ' || i_airline || i_flightnumber || '_' || i_flightdate || 'Sequence number = ' || i_sequence_number || 'PNR code = ' || i_pnr_code
+                    );
+        end if;
+        exit;
+      else
+        l_first_run := false;
+
+        l_bda_record_locked_ind := obtain_bda_lock(i_lpc => r_pse.lpc
+                       ,i_bid => r_pse.bid
+                       ,i_pid => r_pse.pid
+                       );
+
+        l_msg_id_rec.msg_time       := i_msg_time;      
+        l_msg_id_rec.vendor_string  := r_pse.vendor_string; 
+        l_msg_id_rec.lpckey         := r_pse.lpckey;
+        l_msg_id_rec.bda_id_rec.lpc := r_pse.lpc;
+        l_msg_id_rec.src_data_src   := r_pse.src_data_src;
+        l_msg_id_rec.pnr            := r_pse.pnr;
+        l_msg_id_rec.sequencenr     := r_pse.checkinsequencenr;
+        l_msg_id_rec.src_pcs_id     := i_src_pcs_id;    
+        l_msg_id_rec.dat_elt_typ_src          := cmn_constant.g_con_yesno_yes;
+        l_msg_id_rec.dat_elt_typ_sve          := cmn_constant.g_con_yesno_no;
+        l_msg_id_rec.bda_id_rec.flight_id_rec := bsis_interface.get_flight_id
+                                                (i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                                                ,i_msg      => r_pse.src_data
+                                                );
+
+        l_found := bsis_baggage_data_mgr.get_bda_rec(i_msg_id_rec => l_msg_id_rec
+                                                      ,o_bda_rec    => l_bda_rec
+                                                      );
+        
+        l_msg_handled := bsis_baggage_data_mgr.update_baggage_data
+                              (i_baggage_data_new   => i_pse_src
+                              ,i_msg_id_rec         => l_msg_id_rec
+                              ,io_baggage_data_old  => l_bda_rec
+                              ,o_iata_id_tab_change => l_iata_id_tab_change
+                              );
+
+        
+        if  cmn_common.get_parameter_value(i_prr_name => bsis_constant.g_con_bda_logging) = 'Y'
+        and l_bda_rec.id is not null
+        then
+          bsis_baggage_data_mgr.insert_log_data
+              (i_msg_id_rec => l_msg_id_rec
+              ,i_bda_rec    => l_bda_rec
+              ,i_msg_src    => i_pse_src
+              ,i_msg_sve    => null
+              );
+        end if;
+        
+        commit;
+        
+        
+        if l_msg_handled
+        then
+          bsis_subscription_mgr.publish_bda
+                                (i_msg_id_rec         => l_msg_id_rec
+                                ,i_bda_rec            => l_bda_rec
+                                ,i_iata_id_tab_change => l_iata_id_tab_change
+                                ,o_message_sent       => l_message_sent
+                                );
+        end if;
+      end if;
+      
+      if l_bda_record_locked_ind
+      then
+        release_bda_lock(i_lpc => r_pse.lpc
+                    ,i_bid => r_pse.bid
+                    ,i_pid => r_pse.pid
+                    );
+        l_bda_record_locked_ind := false;
+      end if;
+
+    end loop;
+    close c_pse;
+    
+  exception
+    when others
+    then
+      if c_pse%isopen
+      then
+        close c_pse;
+      end if;
+
+      if l_bda_record_locked_ind
+      then
+        release_bda_lock(i_lpc => r_pse.lpc
+                        ,i_bid => r_pse.bid
+                        ,i_pid => r_pse.pid
+                        );
+        l_bda_record_locked_ind := false;
+      end if;
+	
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end process_pse;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_pse_msg (i_msg in xmltype)
+  is
+    l_con_proc_name constant cmn_constant.st_proc_name
+                                := g_con_package || '.process_pse_msg';
+    l_src_pcs_id    varchar2(50);
+    l_src_inst_id   varchar2(50);
+    l_msg_time      timestamp; 
+  begin
+    
+    
+    l_src_pcs_id := bsis_interface.get_src_pcs_id
+                         ( i_pmd_name => 'PSE'
+                         , i_msg      => i_msg
+                         );
+  
+    
+    l_src_inst_id := bsis_interface.get_src_inst_id
+                         ( i_pmd_name => bsis_constant.g_con_bdi_msg_root
+                         , i_msg      => i_msg
+                         );
+    
+    l_msg_time := cmn_common.varchar_to_timestamp
+                     (i_timestamp => bsis_interface.get_msg_time
+                                        (i_pmd_name => bsis_constant.g_con_bdi_pse_root
+                                        ,i_msg      => i_msg
+                                        )
+                     );
+    
+
+
+
+    for r_pst in (select pty.id, pty.id_cust
+                  from   cmn_parties pty, bsis_party_status pst
+                  where  pty.id_cust = l_src_pcs_id
+                  and    pty.id      = pst.pty_id
+                 )
+    loop
+      bsis_lifesign.update_last_msg_received
+                          (i_pty_id_cust => r_pst.id_cust
+                          ,i_pty_id      => r_pst.id
+                          );
+    end loop;
+    
+    for r_msg in (select t.originalmessagetype
+                  ,      t.pnrcode
+                  ,      t.checkinsequencenumber
+                  ,      t.airline
+                  ,      t.flightnumber
+                  ,      t.flightdate
+                  ,      t.bsispsesource
+                  from   xmltable('/PSE/Data'
+                         passing  i_msg
+                         columns  originalmessagetype   varchar2(30) path '/Data/OriginalMessageType'
+                                 ,pnrcode               varchar2(6)  path '/Data/BSISBagSource/PNRCode'
+                                 ,checkinsequencenumber varchar2(5)  path '/Data/BSISBagSource/CheckInSequenceNumber'
+                                 ,airline               varchar2(3)  path '/Data/BSISBagSource/Flight/Airline'
+                                 ,flightnumber          varchar2(5)  path '/Data/BSISBagSource/Flight/FlightNumber'
+                                 ,flightdate            varchar2(50) path '/Data/BSISBagSource/Flight/Date'
+                                 ,bsispsesource         xmltype      path '/Data/BSISBagSource'
+                                 ) t
+                 )
+    loop
+      process_pse(i_org_msg_type    => r_msg.originalmessagetype
+                ,i_src_pcs_id      => l_src_pcs_id
+                ,i_msg_time        => l_msg_time
+                ,i_pse_src         => r_msg.bsispsesource
+                ,i_pnr_code        => r_msg.pnrcode
+                ,i_sequence_number => r_msg.checkinsequencenumber
+                ,i_airline         => r_msg.airline
+                ,i_flightnumber    => r_msg.flightnumber
+                ,i_flightdate      => r_msg.flightdate
+                );
+    end loop;
+    
+    
+    commit;
+  
+  exception
+    when others
+    then
+       viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+       rollback;
+  end process_pse_msg;
+  
+begin
+  begin
+    set_g_preprocess_baggage_data;
+  end;
+end bsis_main;
+/

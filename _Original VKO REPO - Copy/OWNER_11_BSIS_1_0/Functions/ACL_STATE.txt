@@ -1,0 +1,18 @@
+function acl_state(i_id_cust in varchar2) return varchar2 is
+
+l_state varchar2(50) := '';
+l_error number := 0;
+l_main_app varchar2(100) := '';
+begin
+  begin
+    l_state := lower(acl_application_control.select_status(i_id_cust));
+  exception when others then
+    l_error := sqlcode;
+    if l_error = -20147 then
+      l_state := 'non-app';
+    else
+      l_state := 'ORA'||to_char(l_error);
+    end if;
+  end;
+  return l_state;
+end;

@@ -1,0 +1,17 @@
+procedure plog(p_msg clob, p_level varchar2 default 'info') is
+l_severity number := viu_info.c_severity_notification;
+l_level varchar2(50) := upper(p_level);
+begin
+  if l_level like 'ERR%' then
+    l_severity := viu_info.c_severity_error;
+  elsif l_level like 'WARN%' then
+    l_severity := viu_info.c_severity_warning;
+  end if;
+  viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidimensionplog
+                        , i_calling_procedure  => 'PLOG'
+                        , i_severity           => l_severity
+                        , i_info_arguments     => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                        , i_additional_data    => p_msg
+                        );
+end;
+/

@@ -1,0 +1,37 @@
+procedure dimprocrunning(p_id in number default 0, p_tag in varchar2 default 'DIM') is
+v_msg      varchar2(32767);
+v_max_id   number(19);
+cursor c_log(c_max_id number) is
+  select  id, info_arguments, additional_data from dimension_log_v where id > c_max_id - 10 and id > p_id;
+begin
+  begin
+    select nvl(max(id),0) into v_max_id from dimension_log_v;
+
+    htp.print('<HTML><HEAD><META HTTP-EQUIV="Refresh" CONTENT="5"></HEAD><BODY>');
+    htp.print('<div style="position: absolute; top: 50px; left: 100px;">');
+    htp.print('<h3>Processing '||p_tag||'</h3>');
+    htp.print('<BUTTON ACCESSKEY="." onClick="document.location=''BPIR_HOME'';">Home</BUTTON>');
+    htp.print('<br><br><br>');
+
+    htp.print('<TABLE border=2 bordercolor="#8B4513" bgcolor="#FFEBCD" cellspacing=2 cellpadding=1><TR><TH ColSpan=3>DIMENSION_LOG_V</TH></TR>');
+    for c_rec in c_log(v_max_id) loop
+      htp.print('<TR>');
+      htp.print('<TD>'||to_char(c_rec.id)||'</TD>');
+      htp.print('<TD>'||c_rec.info_arguments||'</TD>');
+      htp.print('<TD>'||c_rec.additional_data||'</TD>');
+      htp.print('</TR>');
+    end loop;
+
+    htp.print('</TABLE>(Refreshing every 5 seconds)<br></div></BODY>');
+
+  exception when others then
+    htp.print(ui_menu.head_from_link('Process '||p_tag));
+    v_msg := v_msg||sqlerrm;
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

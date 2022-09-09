@@ -1,0 +1,2176 @@
+create or replace PACKAGE BHS_Availability IS
+  G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'BHS_Availability';
+
+  type gen_stats_rec is record
+  ( EVENTSECONDS   FACT_GENERALSTATUS_SUMMARIES.EVENTSECONDS%type
+  , AREAID         FACT_GENERALSTATUS_SUMMARIES.AREAID%type
+  , ZONEID         FACT_GENERALSTATUS_SUMMARIES.ZONEID%type
+  , EQUIPMENTID    FACT_GENERALSTATUS_SUMMARIES.EQUIPMENTID%type
+  , SUBJECT        FACT_GENERALSTATUS_SUMMARIES.SUBJECT%type
+  , STATUS         FACT_GENERALSTATUS_SUMMARIES.STATUS%type
+  , OPERATIONAL_ON FACT_GENERALSTATUS_SUMMARIES.OPERATIONAL_ON%type
+  , OPERATIONAL    FACT_GENERALSTATUS_SUMMARIES.OPERATIONAL%type
+  , AVAILABLE      FACT_GENERALSTATUS_SUMMARIES.AVAILABLE%type );
+
+  type tab_gen_stats IS TABLE OF gen_stats_rec;
+  g_gen_stats_before_M5 tab_gen_stats;
+
+  function std_status(p_status in varchar2) return varchar2;
+
+  function application_subject(p_applicationelementID in varchar2) return varchar2;
+  function generalstatus2misaddress(p_generalstatus in varchar2) return varchar2;
+  function misaddress2generalstatus(p_misaddress in varchar2) return varchar2;
+
+  function subject(p_areaid in varchar2, p_zoneid in varchar2, p_equipmentid in varchar2) return varchar2;
+  function status_text(p_subject in varchar2, p_generalstatus in varchar2) return varchar2;
+
+  function operational_on(p_status_text in varchar2) return number;
+  function operational(p_status_text in varchar2) return number;
+  function available(p_status_text in varchar2) return number;
+
+  procedure sum_statusreports_general;
+  procedure sum_applstatusreport_general;
+
+  procedure measure_operability
+  ( i_areaid in FACT_GENERALSTATUS_SUMMARIES.AREAID%type
+  , i_zoneid in FACT_GENERALSTATUS_SUMMARIES.ZONEID%type
+  , i_equipmentid in FACT_GENERALSTATUS_SUMMARIES.AREAID%type
+  , i_m5_periodid in number
+  , o_operational_on out number, o_operational out number, o_available out number, o_dieback_seconds out number );
+
+  procedure sum_generalstatus_m5;
+
+  PROCEDURE copy_completed_alarms;
+
+  PROCEDURE sum_availability_group;
+  
+  PROCEDURE sum_availability_bhs;
+  
+  PROCEDURE sum_bhs_availability_d1;
+
+END BHS_Availability;
+/
+
+
+
+package body bhs_availability is
+
+   
+   type rec_availability_group is record(group_name   bpi_availability_groups.group_name%type
+                                        ,group_type   bpi_availability_groups.group_type%type
+                                        ,k_factor     bpi_availability_groups.k_factor%type
+                                        );
+
+   type t_candidate_timeline_group  is table of fact_group_availability%rowtype index by pls_integer;
+   type t_candidate_timeline_bhs    is table of fact_bhs_availability%rowtype index by pls_integer;
+
+   g_con_period_d1  constant number := 86400; 
+
+function std_status(p_status in varchar2) return varchar2 is
+
+
+l_status varchar2(50) := upper(p_status);
+begin
+  l_status := replace(l_status, ' ', '');
+  l_status := replace(l_status, '_', '');
+  l_status := replace(l_status, '-', '');
+  return l_status;
+end;
+
+function subject(p_areaid in varchar2, p_zoneid in varchar2, p_equipmentid in varchar2) return varchar2 is
+l_subject varchar2(50) := '';
+begin
+  begin
+    select statistical_subject into l_subject from dim_iscs
+    where id = bpi_util.isc_id(p_areaid,p_zoneid,p_equipmentid);
+  exception when others then
+    l_subject := null;
+  end;
+  return l_subject;
+end;
+
+
+function application_subject(p_applicationelementid in varchar2) return varchar2 is
+l_subject varchar2(50) := '';
+begin
+  begin
+    select componenttypeid into l_subject from dim_applications
+    where applicationelementid = p_applicationelementid;
+  exception when others then
+    l_subject := null;
+  end;
+  return l_subject;
+end;
+
+function generalstatus2misaddress(p_generalstatus in varchar2) return varchar2 is
+l_generalstatus varchar2(10):= trim(replace(p_generalstatus, ' ', ''));  
+l_text varchar2(10) := '?.?';
+begin
+  if    l_generalstatus =   '1,0' then l_text := '0.0';
+  elsif l_generalstatus =   '2,0' then l_text := '0.1';
+  elsif l_generalstatus =   '4,0' then l_text := '0.2';
+  elsif l_generalstatus =   '8,0' then l_text := '0.3';
+  elsif l_generalstatus =  '16,0' then l_text := '0.4';
+  elsif l_generalstatus =  '32,0' then l_text := '0.5';
+  elsif l_generalstatus =  '64,0' then l_text := '0.6';
+  elsif l_generalstatus = '128,0' then l_text := '0.7';
+  elsif l_generalstatus =   '0,1' then l_text := '1.0';
+  elsif l_generalstatus =   '0,2' then l_text := '1.1';
+  elsif l_generalstatus =   '0,4' then l_text := '1.2';
+  elsif l_generalstatus =   '0,8' then l_text := '1.3';
+  elsif l_generalstatus =  '0,16' then l_text := '1.4';
+  elsif l_generalstatus =  '0,32' then l_text := '1.5';
+  elsif l_generalstatus =  '0,64' then l_text := '1.6';
+  elsif l_generalstatus = '0,128' then l_text := '1.7';
+  else l_text := '?.?';
+  end if;
+  return l_text;
+end;
+
+function misaddress2generalstatus(p_misaddress in varchar2) return varchar2 is
+l_misaddress varchar2(10):= trim(replace(p_misaddress, ' ', ''));  
+l_text varchar2(10) := '?.?';
+begin
+  if    l_misaddress = '0.0' then l_text :=   '1,0';
+  elsif l_misaddress = '0.1' then l_text :=   '2,0';
+  elsif l_misaddress = '0.2' then l_text :=   '4,0';
+  elsif l_misaddress = '0.3' then l_text :=   '8,0';
+  elsif l_misaddress = '0.4' then l_text :=  '16,0';
+  elsif l_misaddress = '0.5' then l_text :=  '32,0';
+  elsif l_misaddress = '0.6' then l_text :=  '64,0';
+  elsif l_misaddress = '0.7' then l_text := '128,0';
+  elsif l_misaddress = '1.0' then l_text :=   '0,1';
+  elsif l_misaddress = '1.1' then l_text :=   '0,2';
+  elsif l_misaddress = '1.2' then l_text :=   '0,4';
+  elsif l_misaddress = '1.3' then l_text :=   '0,8';
+  elsif l_misaddress = '1.4' then l_text :=  '0,16';
+  elsif l_misaddress = '1.5' then l_text :=  '0,32';
+  elsif l_misaddress = '1.6' then l_text :=  '0,64';
+  elsif l_misaddress = '1.7' then l_text := '0,128';
+  else l_text := '?,?';
+  end if;
+  return l_text;
+end;
+
+function status_text(p_subject in varchar2, p_generalstatus in varchar2) return varchar2 is
+l_text varchar2(50) := 'Unknown';
+begin
+  begin
+    if p_subject is not null then
+      select symbolicname into l_text from dim_generalstatus
+      where componenttypeid like p_subject||'%'  and mis_address = generalstatus2misaddress(p_generalstatus)
+      and rownum = 1;
+    end if;
+    l_text := std_status(l_text);
+  exception
+    when no_data_found then
+      l_text := 'Unknown';
+    when others then
+      l_text := trim(substr(sqlerrm,1,10));
+  end;
+  return l_text;
+end;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function operational_on(p_status_text in varchar2) return number is
+l_val number := 0;
+begin
+  if p_status_text in ('STARTING', 'STARTED', 'ENERGYSAVING', 'DIEBACK', 'FULL', 'STOPPING') then
+    l_val := 1;
+  else
+    l_val := 0;
+  end if;
+  return l_val;
+end;
+
+function operational(p_status_text in varchar2) return number is
+l_val number := 0;
+begin
+  if p_status_text = 'STOPPED' then
+    l_val := 1;
+  else
+    l_val := operational_on(p_status_text);
+  end if;
+  return l_val;
+end;
+
+function available(p_status_text in varchar2) return number is
+l_val number := 0;
+begin
+  if p_status_text in ('WARNING', 'REDUNDANCY') then
+    l_val := 1;
+  else
+    l_val :=  operational(p_status_text);
+  end if;
+  return l_val;
+end;
+ 
+
+procedure sum_statusreports_general is
+l_max_id number(19) := 0;
+l_curr_id number(19) := 0;
+l_count number := 0;
+l_msg viu_info_logs.additional_data%type;
+l_conf_rec metric_config%rowtype;
+l_con_proc_name constant varchar2(61) := g_con_package||'.sum_statusreports_general';
+l_subject varchar2(50);
+l_status varchar2(50);
+l_eventts timestamp;
+l_eventseconds number(23,0);
+cursor c_stats(c_id number, c_maxrecs number) is
+  select * from
+  ( select * from wc_statusreport
+    where key > c_id and generalstatus is not null
+    and areaid is not null and zoneid is not null
+    order by key )
+  where rownum <= c_maxrecs;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc_name
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+
+    else
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_generalstatus_summaries;
+        
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' STARTED. Processing status reports with ID greater than '||to_char(l_max_id)
+                         );
+             
+        for c_rec in c_stats(l_max_id, l_conf_rec.max_measurements) loop
+          l_curr_id := c_rec.key;
+          l_eventts := bpi_util.convert_eventtime(c_rec.eventtime, c_rec.eventts);
+          l_eventseconds := period.seconds_since_millennium(l_eventts);
+          l_subject := subject(c_rec.areaid, c_rec.zoneid, c_rec.equipmentid);
+          l_status := status_text(l_subject, c_rec.generalstatus);
+          
+          begin
+              insert into fact_generalstatus_summaries
+              ( id
+              , insertts
+              , eventts
+              , eventtime
+              , eventseconds
+              , m5_periodid
+              , areaid
+              , zoneid
+              , equipmentid
+              , subject
+              , generalstatus
+              , mis_address
+              , status
+              , operational_on
+              , operational
+              , available )
+              values
+             ( c_rec.key
+             , sys_extract_utc(systimestamp)
+             , l_eventts
+             , c_rec.eventtime
+             , l_eventseconds
+             , period.periodid(l_eventseconds, 'M5')
+             , c_rec.areaid
+             , c_rec.zoneid
+             , nvl(c_rec.equipmentid, '-')
+             , nvl(l_subject, '-')
+             , c_rec.generalstatus
+             , generalstatus2misaddress(c_rec.generalstatus)
+             , l_status
+             , operational_on(l_status)
+             , operational(l_status)
+             , available(l_status) );
+         
+         exception when others then
+            l_msg := l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+            viu_info.operator_info( i_ifo_nr    => viu_constant.c_ifo_bpiexceptioninsert
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => 'FACT_GENERALSTATUS_SUMMARIES '||'record with ID: '||to_char(l_curr_id)
+                         , i_additional_data        => l_msg
+                         );
+         end;
+
+          l_count := l_count + 1;
+        end loop;
+
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc_name);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' status reports.'
+                         );
+      exception when others then
+        l_msg := l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+
+        bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+      end;
+    end if;
+  exception when others then
+    l_msg := l_con_proc_name||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    bpi_log.raise_fatal_error(l_con_proc_name, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+procedure sum_applstatusreport_general
+is
+   l_con_proc_name constant varchar2(61) := g_con_package||'.sum_applstatusreport_general';
+   
+   type typ_exception_info is table of number index by varchar2(200);
+   
+   l_exception_info   typ_exception_info;
+   l_max_id           number(19) := 0;
+   l_curr_id          number(19) := 0;
+   l_count            number := 0;
+   l_conf_rec         metric_config%rowtype;
+   l_app_subject      varchar2(50);
+   l_status           varchar2(50);
+   l_eventts          timestamp;
+   l_eventseconds     number(23,0);
+   l_app_id           varchar2(200);
+   l_dim_error        number(1) := 0;
+   
+   cursor c_stats(c_id number, c_maxrecs number)
+   is
+      select *
+      from ( select *
+             from   wc_applicationstatusreport
+             where  key > c_id
+             and    generalstate is not null
+             and    applicationelementid is not null
+             order by key
+           )
+      where rownum <= c_maxrecs;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc_name );
+   
+   begin
+      begin
+         select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc_name);
+      exception
+         when others then
+            l_conf_rec.status := 0;
+      end;
+      
+      
+      if l_conf_rec.status != 1
+      then
+         viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                           , i_calling_procedure  => l_con_proc_name
+                           , i_severity           => viu_info.c_severity_notification
+                           , i_info_arguments     => null
+                           , i_additional_data    => l_con_proc_name||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+       
+      else
+         begin
+            select nvl(max(id), 0) into l_max_id from fact_appstatus_summaries;
+            viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                             , i_calling_procedure      => l_con_proc_name
+                             , i_severity               => viu_info.c_severity_notification
+                             , i_info_arguments         => null
+                             , i_additional_data        => l_con_proc_name||' STARTED. Processing status reports with ID greater than '||to_char(l_max_id)
+                             );
+            for c_rec in c_stats(l_max_id, l_conf_rec.max_measurements)
+            loop
+               l_curr_id      := c_rec.key;
+               l_eventts      := bpi_util.convert_eventtime(c_rec.eventtime, c_rec.eventts);
+               l_eventseconds := period.seconds_since_millennium(l_eventts);
+               l_app_subject  := application_subject(c_rec.applicationelementid);
+               l_status       := status_text(l_app_subject, c_rec.generalstate);
+               if l_app_subject is not null
+               then
+                  begin
+                     insert into fact_appstatus_summaries
+                         ( id
+                         , insertts
+                         , eventts
+                         , eventtime
+                         , eventseconds
+                         , m5_periodid
+                         , applicationid
+                         , subject
+                         , generalstatus
+                         , mis_address
+                         , status
+                         , operational_on
+                         , operational
+                         , available )
+                     values
+                        ( c_rec.key
+                        , sys_extract_utc(systimestamp)
+                        , l_eventts
+                        , c_rec.eventtime
+                        , l_eventseconds
+                        , period.periodid(l_eventseconds, 'M5')
+                        , c_rec.applicationelementid
+                        , l_app_subject
+                        , c_rec.generalstate
+                        , generalstatus2misaddress(c_rec.generalstate)
+                        , l_status
+                        , operational_on(l_status)
+                        , operational(l_status)
+                        , available(l_status) );
+               
+                     l_count := l_count + 1;
+               
+                  exception
+                     when others then
+                        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpiexceptioninsert
+                                              , i_calling_procedure => l_con_proc_name
+                                              , i_severity          => viu_info.c_severity_warning
+                                              , i_info_arguments    => 'FACT_APPSTATUS_SUMMARIES '||'record with ID: '||to_char(l_curr_id)
+                                              , i_additional_data   => l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||' APPLICATIONID: '||c_rec.applicationelementid||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                              );
+                  end;
+               elsif not l_exception_info.exists(c_rec.applicationelementid)
+               then
+                  l_exception_info(c_rec.applicationelementid) := null;
+               end if;
+            end loop;
+            commit;
+            
+            l_app_id := l_exception_info.first;
+            
+            while l_app_id is not null
+            loop
+               l_dim_error := bpi_util.viu_info_lookup(l_con_proc_name,l_app_id);
+               if l_dim_error = 0
+               then
+                  viu_info.operator_info ( i_ifo_nr            => viu_constant.c_ifo_bpiexceptioninsert
+                                         , i_calling_procedure => l_con_proc_name
+                                         , i_severity          => viu_info.c_severity_warning
+                                         , i_additional_data   => l_con_proc_name||' ERROR on APPLICATIONELEMENTID: '||l_app_id||', '||chr(10)||'DIM_APPLICATION table has missing data!'
+                                         );
+               end if;
+               l_app_id := l_exception_info.next(l_app_id);
+            end loop;
+            
+            
+            if l_count >= l_conf_rec.max_measurements
+            then
+               metrics.unfinished( i_proc => l_con_proc_name);
+            end if;
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_notification
+                                  , i_info_arguments    => null
+                                  , i_additional_data   => l_con_proc_name||' finished successfully. Processed '||to_char(l_count)||' status reports.'
+                                  );
+         exception
+            when others then
+               bpi_log.raise_fatal_error(l_con_proc_name
+                                        ,l_con_proc_name||' ERROR on ID: '||to_char(l_curr_id)||', '||' APPLICATIONID: '||l_app_id||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                        );
+         end;
+      end if;
+   exception
+      when others then
+         bpi_log.raise_fatal_error(l_con_proc_name
+                                  ,l_con_proc_name||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                  );
+   end;
+   
+   bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+
+procedure measure_operability
+( i_areaid in fact_generalstatus_summaries.areaid%type
+, i_zoneid in fact_generalstatus_summaries.zoneid%type
+, i_equipmentid in fact_generalstatus_summaries.areaid%type
+, i_m5_periodid in number
+, o_operational_on out number, o_operational out number, o_available out number, o_dieback_seconds out number ) is
+type ops_measurement is record (secondes number, on_ number, oper_ number, avail_ number, dieback_ number);
+type ops_measurements is table of ops_measurement index by pls_integer;
+l_con_proc_name constant varchar2(61) := g_con_package||'.measure_operability';
+l_msg viu_info_logs.additional_data%type;
+l_on number := 0;
+l_oper number := 0;
+l_avail number := 0;
+l_dieback number := 0;
+l_ops ops_measurements;
+l_count pls_integer := 0;
+j pls_integer := 0;
+rec_found boolean := false;
+begin
+  o_operational_on := 0;
+  o_operational := 0;
+  o_available := 0;
+  o_dieback_seconds := 0;
+  l_ops.delete;
+  begin
+    
+    
+    j := 0;
+    while not rec_found and j < g_gen_stats_before_m5.count loop
+      j := j + 1;
+      if  (g_gen_stats_before_m5(j).areaid = i_areaid)
+      and (g_gen_stats_before_m5(j).zoneid = i_zoneid)
+      and (g_gen_stats_before_m5(j).equipmentid = i_equipmentid) then
+        l_on := g_gen_stats_before_m5(j).operational_on;
+        l_oper := g_gen_stats_before_m5(j).operational;
+        l_avail := g_gen_stats_before_m5(j).available;
+        l_dieback := 0;
+        if g_gen_stats_before_m5(j).status = 'DIEBACK' then l_dieback := 1; end if;
+        rec_found := true;
+      end if;
+    end loop;
+    if not rec_found then
+      l_msg := 'No previous record found . M5_PERIODID='||to_char(i_m5_periodid)||', ('||to_char(i_areaid)||','
+      ||to_char(i_zoneid)||','||to_char(i_equipmentid)||')';
+      viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror, l_con_proc_name, viu_info.c_severity_debug, 'SEARCH', l_msg);
+      
+      l_on := 1;
+      l_oper := 1;
+      l_avail := 1;
+      l_dieback := 0;
+    end if;
+
+  exception when others then
+    
+    l_on := 1;
+    l_oper := 1;
+    l_avail := 1;
+    l_dieback := 0;
+  end;
+  begin
+    l_count := 1;
+    l_ops(1).secondes := 0;
+    l_ops(1).on_ := l_on;
+    l_ops(1).oper_ := l_oper;
+    l_ops(1).avail_ := l_avail;
+    l_ops(1).dieback_ := l_dieback;
+
+    
+    
+    for c_rec in (with
+                     last_state_per_eventsecond as
+                    (select gss1.areaid
+                     ,      gss1.zoneid
+                     ,      gss1.equipmentid
+                     ,      max(gss1.eventts)  as eventts
+                     from   fact_generalstatus_summaries  gss1
+                     where  gss1.areaid       = i_areaid
+                     and    gss1.zoneid       = i_zoneid
+                     and    gss1.equipmentid  = i_equipmentid
+                     and    gss1.m5_periodid  = i_m5_periodid
+                     group by gss1.areaid
+                     ,        gss1.zoneid
+                     ,        gss1.equipmentid
+                     ,        gss1.eventseconds
+                    )
+                  select gss2.eventseconds
+                  ,      gss2.operational_on
+                  ,      gss2.operational
+                  ,      gss2.available
+                  ,      case when gss2.status = 'DIEBACK' then 1 else 0 end   as dieback
+                  from   fact_generalstatus_summaries  gss2
+                         join last_state_per_eventsecond  lse
+                           on     lse.eventts      = gss2.eventts
+                              and lse.areaid       = gss2.areaid
+                              and lse.zoneid       = gss2.zoneid
+                              and lse.equipmentid  = gss2.equipmentid
+                  order by gss2.eventseconds
+                 )
+    loop
+      l_count := l_count + 1;
+      l_ops(l_count).secondes := c_rec.eventseconds - i_m5_periodid;
+      l_ops(l_count).on_ := c_rec.operational_on;
+      l_ops(l_count).oper_ := c_rec.operational;
+      l_ops(l_count).avail_ := c_rec.available;
+      l_ops(l_count).dieback_ := c_rec.dieback;
+    end loop;
+
+    l_count := l_count + 1;
+    l_ops(l_count).secondes := 300;
+    l_ops(l_count).on_ := l_ops(l_count-1).on_;
+    l_ops(l_count).oper_ := l_ops(l_count-1).oper_;
+    l_ops(l_count).avail_ := l_ops(l_count-1).avail_;
+    l_ops(l_count).dieback_ := l_ops(l_count-1).dieback_;
+
+    for i in 2..l_count loop
+      if l_ops(i-1).on_ = 1 then
+        o_operational_on := o_operational_on + (l_ops(i).secondes - l_ops(i-1).secondes);
+      end if;
+      if l_ops(i-1).oper_ = 1 then
+        o_operational := o_operational + (l_ops(i).secondes - l_ops(i-1).secondes);
+      end if;
+      if l_ops(i-1).avail_ = 1 then
+        o_available := o_available + (l_ops(i).secondes - l_ops(i-1).secondes);
+      end if;
+      if l_ops(i-1).dieback_ = 1 then
+        o_dieback_seconds := o_dieback_seconds + (l_ops(i).secondes - l_ops(i-1).secondes);
+      end if;
+    end loop;
+    o_operational_on := o_operational_on/300;
+    o_operational := o_operational/300;
+    o_available := o_available/300;
+  exception when others then
+    l_msg := 'measure_operability failed. M5_PERIODID='||to_char(i_m5_periodid)||', ISC('||to_char(i_areaid)||','
+          ||to_char(i_zoneid)||','||to_char(i_equipmentid)||'):'||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror, l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+end;
+
+
+procedure sum_generalstatus_m5 is
+l_con_proc_name constant varchar2(61) := g_con_package||'.sum_generalstatus_m5';
+l_msg viu_info_logs.additional_data%type;
+l_m5_periodid_start number;
+l_m5_periodid_end number;
+l_m5_periodid_last number;
+l_ins_count number := 0;
+l_upd_count number := 0;
+l_overlap number := 5; 
+l_on number;
+l_oper number;
+l_avail number;
+l_dieback number;
+l_rowcount number;
+p number := 0;
+
+cursor c_updates_this_period(c_m5periodid number) is
+  select areaid, zoneid, equipmentid, subject
+  , count(id) as report_count
+  , sum (case when status = 'DIEBACK' then 1 else 0 end) as dieback_count
+  , sum (case when status = 'ENERGYSAVING' then 1 else 0 end) as energysaving_count
+  , sum (case when status = 'ERROR' then 1 else 0 end) as error_count
+  , sum (case when status = 'EXTENDED' then 1 else 0 end) as extended_count
+  , sum (case when status = 'FULL' then 1 else 0 end) as full_count
+  , sum (case when status = 'OFFLINE' then 1 else 0 end) as offline_count
+  , sum (case when status = 'POWERUP' then 1 else 0 end) as powerup_count
+  , sum (case when status = 'REDUNDANCY' then 1 else 0 end) as redundancy_count
+  , sum (case when status = 'SAFETYSTOP' then 1 else 0 end) as safetystop_count
+  , sum (case when status = 'SPARE' then 1 else 0 end) as spare_count
+  , sum (case when status = 'STARTED' then 1 else 0 end) as started_count
+  , sum (case when status = 'STARTING' then 1 else 0 end) as starting_count
+  , sum (case when status = 'STOPPED' then 1 else 0 end) as stopped_count
+  , sum (case when status = 'STOPPING' then 1 else 0 end) as stopping_count
+  , sum (case when status = 'UNKNOWN' then 1 else 0 end) as unknown_count
+  , sum (case when status = 'WARNING' then 1 else 0 end) as warning_count
+  from fact_generalstatus_summaries
+  where m5_periodid = c_m5periodid
+  and (subject is not null and subject <> '-')
+  group by areaid, zoneid, equipmentid, subject;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc_name );
+
+  begin
+    begin
+      l_overlap := cmn_common.get_parameter_value('AvailabilityM5PeriodOverlap');
+      
+      if l_overlap <> trunc(l_overlap) then
+        l_overlap := trunc(l_overlap) + 1;
+      end if;
+    exception when others then
+      l_overlap := 5;
+    end;
+
+    select max(m5_periodid) into l_m5_periodid_last from fact_generalstatus_agg_m5;
+
+    l_m5_periodid_end := period.periodid(sys_extract_utc(systimestamp), 'M5');
+    l_m5_periodid_start := l_m5_periodid_end - (l_overlap * 300); 
+    
+
+    if l_m5_periodid_last is not null then
+      l_m5_periodid_start := least(l_m5_periodid_last, l_m5_periodid_start);
+    end if;
+
+    l_msg := l_con_proc_name||' started. Using AvailabilityM5PeriodOverlap '||to_char(l_overlap)
+            ||'. Starting from M5 period '||to_char(l_m5_periodid_start)||' onward.';
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+    
+    for i in l_m5_periodid_start/300..l_m5_periodid_end/300 loop
+
+      p := i * 300; 
+
+      
+      select a.eventseconds, a.areaid, a.zoneid, a.equipmentid, a.subject, a.status, a.operational_on, a.operational, a.available
+      bulk collect into g_gen_stats_before_m5
+      from fact_generalstatus_summaries a
+      where eventseconds = ( select max(eventseconds) from fact_generalstatus_summaries
+                     where areaid = a.areaid and zoneid = a.zoneid and equipmentid = a.equipmentid
+                     and eventseconds < p );
+
+      
+      delete from fact_generalstatus_agg_m5 where m5_periodid = p;
+
+      for j in 1..g_gen_stats_before_m5.count loop
+        l_on := g_gen_stats_before_m5(j).operational_on;
+        l_oper := g_gen_stats_before_m5(j).operational;
+        l_avail := g_gen_stats_before_m5(j).available;
+        l_dieback := 0;
+        if g_gen_stats_before_m5(j).status = 'DIEBACK' then
+          l_dieback := 300;
+        end if;
+
+        if (l_on = 0) or(l_oper = 0) or(l_avail = 0) or (l_dieback = 300) then
+          
+          
+          begin
+          
+              insert into fact_generalstatus_agg_m5
+              ( m5_periodid
+              , areaid
+              , zoneid
+              , equipmentid
+              , subject
+              , insertts
+              , eventts
+              , h1_periodid
+              , operational_on
+              , operational
+              , available
+              , dieback_seconds )
+              values
+              ( p
+              , g_gen_stats_before_m5(j).areaid
+              , g_gen_stats_before_m5(j).zoneid
+              , g_gen_stats_before_m5(j).equipmentid
+              , g_gen_stats_before_m5(j).subject
+              , sys_extract_utc(systimestamp)
+              , period.to_stamp(p, 'M5')
+              , period.periodid(p, 'H1')
+              , l_on
+              , l_oper
+              , l_avail
+              , l_dieback );
+
+            l_ins_count := l_ins_count + 1;
+          
+          exception when others then
+            l_msg := 'INSERT FACT_GENERALSTATUS_AGG_M5 Failed. M5_PERIODID='||to_char(p)||', ('||to_char(g_gen_stats_before_m5(j).areaid)||','
+              ||to_char(g_gen_stats_before_m5(j).zoneid)||','||to_char(g_gen_stats_before_m5(j).equipmentid)||','||to_char(g_gen_stats_before_m5(j).subject)||'):'||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+
+            viu_info.operator_info( i_ifo_nr    => viu_constant.c_ifo_bpiexceptioninsert
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_warning
+                         , i_info_arguments         => 'FACT_GENERALSTATUS_AGG_M5'
+                         , i_additional_data        => l_msg
+                         );
+          end;
+        end if;
+      end loop;
+
+      commit;
+
+      
+      for c_rec in c_updates_this_period(p) loop
+
+        measure_operability(c_rec.areaid, c_rec.zoneid,c_rec.equipmentid, p, l_on, l_oper, l_avail, l_dieback);
+
+        begin
+          insert into fact_generalstatus_agg_m5
+          ( m5_periodid
+          , areaid
+          , zoneid
+          , equipmentid
+          , subject
+          , insertts
+          , eventts
+          , h1_periodid
+          , report_count
+          , dieback_count
+          , energysaving_count
+          , error_count
+          , extended_count
+          , full_count
+          , offline_count
+          , powerup_count
+          , redundancy_count
+          , safetystop_count
+          , spare_count
+          , started_count
+          , starting_count
+          , stopped_count
+          , stopping_count
+          , unknown_count
+          , warning_count
+          , operational_on
+          , operational
+          , available
+          , dieback_seconds )
+          values
+          ( p
+          , c_rec.areaid
+          , c_rec.zoneid
+          , c_rec.equipmentid
+          , c_rec.subject
+          , sys_extract_utc(systimestamp)
+          , period.to_stamp(p, 'M5')
+          , period.periodid(p, 'H1')
+          , c_rec.report_count
+          , c_rec.dieback_count
+          , c_rec.energysaving_count
+          , c_rec.error_count
+          , c_rec.extended_count
+          , c_rec.full_count
+          , c_rec.offline_count
+          , c_rec.powerup_count
+          , c_rec.redundancy_count
+          , c_rec.safetystop_count
+          , c_rec.spare_count
+          , c_rec.started_count
+          , c_rec.starting_count
+          , c_rec.stopped_count
+          , c_rec.stopping_count
+          , c_rec.unknown_count
+          , c_rec.warning_count
+          , l_on
+          , l_oper
+          , l_avail
+          , l_dieback );
+
+          l_ins_count := l_ins_count + 1;
+
+        exception when dup_val_on_index then
+          begin
+            
+            update fact_generalstatus_agg_m5
+            set insertts = sys_extract_utc(systimestamp)
+            , report_count = c_rec.report_count
+            , dieback_count = c_rec.dieback_count
+            , energysaving_count = c_rec.energysaving_count
+            , error_count = c_rec.error_count
+            , extended_count = c_rec.extended_count
+            , full_count = c_rec.full_count
+            , offline_count = c_rec.offline_count
+            , powerup_count = c_rec.powerup_count
+            , redundancy_count = c_rec.redundancy_count
+            , safetystop_count = c_rec.safetystop_count
+            , spare_count = c_rec.spare_count
+            , started_count = c_rec.started_count
+            , starting_count = c_rec.starting_count
+            , stopped_count = c_rec.stopped_count
+            , stopping_count = c_rec.stopping_count
+            , unknown_count = c_rec.unknown_count
+            , warning_count = c_rec.warning_count
+            , operational_on = l_on
+            , operational = l_oper
+            , available = l_avail
+            , dieback_seconds = l_dieback
+            where m5_periodid = p
+            and areaid = c_rec.areaid
+            and zoneid = c_rec.zoneid
+            and equipmentid = c_rec.equipmentid
+            and subject = c_rec.subject;
+
+            l_rowcount := sql%rowcount;
+            l_upd_count := l_upd_count + 1;
+
+            l_msg := 'UPDATE FACT_GENERALSTATUS_AGG_M5 ('||to_char(l_rowcount)||'). M5_PERIODID='||to_char(p)||', ('||to_char(c_rec.areaid)||','
+            ||to_char(c_rec.zoneid)||','||to_char(c_rec.equipmentid)||','||to_char(c_rec.subject)||')';
+            viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror, l_con_proc_name, viu_info.c_severity_debug, 'UPDATE', l_msg);
+
+            if l_rowcount <> 1 then
+              l_msg := 'UPDATE FACT_GENERALSTATUS_AGG_M5 ('||to_char(l_rowcount)||') Failed. M5_PERIODID='||to_char(p)||', ('||to_char(c_rec.areaid)||','
+              ||to_char(c_rec.zoneid)||','||to_char(c_rec.equipmentid)||','||to_char(c_rec.subject)||')';
+              viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror, l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+            end if;
+
+          exception when others then
+            l_msg := 'UPDATE FACT_GENERALSTATUS_AGG_M5 Failed. M5_PERIODID='||to_char(p)||', ('||to_char(c_rec.areaid)||','
+              ||to_char(c_rec.zoneid)||','||to_char(c_rec.equipmentid)||','||to_char(c_rec.subject)||'):'||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+            viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror, l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+
+          end;
+        end;
+      end loop;
+
+      begin
+        insert into fact_generalstatus_agg_m5
+          ( m5_periodid
+          , areaid
+          , zoneid
+          , equipmentid
+          , subject
+          , insertts
+          , eventts
+          , h1_periodid )
+          values
+          ( p
+          , '*'
+          , '*'
+          , '*'
+          , '*'
+          , sys_extract_utc(systimestamp)
+          , period.to_stamp(p, 'M5')
+          , period.periodid(p, 'H1') );
+
+        l_ins_count := l_ins_count + 1;
+
+      exception when dup_val_on_index then
+        null;
+      end;
+
+    end loop;
+    
+    commit;
+
+    l_msg := l_con_proc_name||' finished successfully. Inserted '||to_char(l_ins_count)||' and updated '||to_char(l_upd_count)
+            ||' records from M5_PERIODID '||to_char(l_m5_periodid_start)||' onward.';
+
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc_name, viu_info.c_severity_notification, null, l_msg);
+
+  exception when others then
+    l_msg := 'M5_PERIODID:'||to_char(l_m5_periodid_start)
+           ||':'||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    viu_info.operator_info(viu_constant.c_ifo_trcavailabilityerror, l_con_proc_name, viu_info.c_severity_error, null, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc_name );
+end;
+
+procedure copy_completed_alarms
+is
+   l_con_proc         constant varchar2(61) := g_con_package||'.copy_completed_alarms';
+   
+   type err_t is table of err$_fact_availability_alarms%rowtype index by pls_integer;
+   l_err              err_t;
+   
+   l_metric_config    metric_config%rowtype;
+   
+   l_max_rows         metric_config.max_measurements%type;
+   l_max_id           fact_availability_alarms.id%type         := 0;
+   l_count            number                                   := 0;
+   l_lag_time         timestamp;
+   l_exclude_time     timestamp;
+   l_current_time     timestamp;
+   l_until_dt         fact_equipmentevent_summaries.dt_created%type;
+   
+  
+begin
+   bpi_trace.enter_module(i_module => l_con_proc );
+
+   
+   l_metric_config := metrics.get_metric_config(i_metric_procedure => l_con_proc);
+   
+   case
+      
+      when l_metric_config.metric_id is null
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', METRIC Configuration not found for '||l_con_proc
+                             );
+      
+      
+      
+      when nvl(l_metric_config.period_type,'#') != 'M5'
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', PERIOD_TYPE must be configured as M5'
+                             );
+      
+      when nvl(l_metric_config.status,0) != 1
+      then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).'
+                     );
+      else
+
+         begin
+            
+            l_current_time := sys_extract_utc(systimestamp);
+            
+            
+            if nvl(l_metric_config.lag, 0) > 0
+            then
+               l_lag_time := l_current_time - numtodsinterval(l_metric_config.lag, 'DAY');
+            end if;
+            
+            
+            if nvl(l_metric_config.exclude_current_period,0) = 1
+            then
+               l_exclude_time := period.startts(l_current_time, l_metric_config.period_type);
+            end if;
+            
+            
+            l_until_dt := least(l_current_time
+                               ,nvl(l_lag_time    ,l_current_time + 1)
+                               ,nvl(l_exclude_time,l_current_time + 1)
+                               );
+
+            l_max_rows := l_metric_config.max_measurements;
+            
+            select nvl(max(id), 0)
+            into   l_max_id
+            from   fact_availability_alarms
+            ;
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' STARTED. Processing completed Alarms with ID greater than '||to_char(l_max_id)
+                          );
+            
+            delete from err$_fact_availability_alarms;
+            
+            
+            
+            insert into fact_availability_alarms
+            select *
+            from  (select esy.id
+                   ,      esy.isc_id
+                   ,      esy.areaid
+                   ,      esy.zoneid
+                   ,      esy.equipmentid
+                   ,      baa.componenttypeid
+                   ,      esy.mis_address
+                   ,      dss.symbolicname
+                   ,      'N' as ind_exclude
+                   ,      esy.message_nr
+                   ,      esy.process_id
+                   ,      esy.dt_created
+                   ,      esy.dt_created as updatets
+                   ,      esy.dt_came_in
+                   ,      esy.dt_ack_by_operator
+                   ,      esy.dt_went_out
+                   ,      esy.duration_ack
+                   ,      esy.duration_went_out
+                   ,      esy.error_type
+                   ,      esy.severity
+                   ,      esy.description
+                   ,      esy.eventseconds
+                   ,      esy.alarm_comment
+                   ,      agp.group_type
+                   ,      agp.group_name
+                   ,      agp.k_factor
+                   from   fact_equipmentevent_summaries esy
+                          join dim_iscs isc
+                            on     isc.areaid      = esy.areaid
+                               and isc.zoneid      = esy.zoneid
+                               and isc.equipmentid = esy.equipmentid
+                          join bpi_availability_alarms   baa
+                            on     baa.componenttypeid = isc.statistical_subject
+                               and baa.mis_address     = esy.mis_address
+                          left outer join dim_detailstatus   dss
+                                       on     dss.componenttypeid = isc.statistical_subject
+                                          and dss.mis_address     = esy.mis_address
+                          left outer join bpi_avail_group_zones agz
+                                       on     agz.areaid = esy.areaid
+                                          and agz.zoneid = esy.zoneid
+                          left outer join bpi_availability_groups agp
+                                       on     agz.group_name = agp.group_name
+                   where  esy.id > l_max_id
+                   and    esy.completed = 1
+                   and    esy.dt_created < l_until_dt
+                   order by esy.id asc
+                  )
+            where rownum <= l_max_rows
+            log errors into err$_fact_availability_alarms reject limit unlimited
+            ;
+            l_count    := sql%rowcount;
+             
+            commit;
+    
+            
+            select *
+            bulk collect into l_err
+            from   err$_fact_availability_alarms
+            order by ora_err_number$
+            ;
+            
+            if l_err.count > 0
+            then
+               for i in l_err.first..l_err.last
+               loop
+                  bpi_log.handle_error( i_con_proc => l_con_proc
+                                      , i_msg      => l_con_proc         ||' ERROR. Insert FACT_AVAILABILITY_ALARMS failed. '
+                                                      ||' ID='           ||to_char(l_err(i).id)
+                                                      ||', '             ||l_err(i).ora_err_mesg$
+                                      );
+               end loop;
+            end if;
+            
+            if l_count >= l_metric_config.max_measurements
+            then
+               metrics.unfinished(i_proc => l_con_proc);
+            end if;
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' finished successfully. Inserted '||to_char(l_count)||' FACT_AVAILABILITY_ALARMS.'
+                          );
+
+         exception
+            when others then
+               bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                        ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                        );
+         end;
+
+   end case;
+   
+   bpi_trace.leave_module(i_module => l_con_proc );
+exception
+   when others then
+      bpi_log.raise_fatal_error( i_con_proc => l_con_proc);
+end copy_completed_alarms;
+
+procedure create_timeline_group
+( p_time_window_start   in      fact_group_availability.availability_dt%type
+, p_time_window_end     in      fact_group_availability.availability_dt%type
+, p_agp                 in      rec_availability_group
+, o_candidate_timeline  out     t_candidate_timeline_group
+)
+is
+   l_con_proc                 constant  varchar2(61) := g_con_package||'.create_timeline_group';
+   l_con_key_datetime_format  constant  varchar2(61) := 'yyyymmdd_hh24miss.ff3';
+   l_con_start                constant  varchar2(1)  := 'S';
+   l_con_end                  constant  varchar2(1)  := 'E';
+   
+   type rec_alarms            is record(message_key    varchar2(100)
+                                       ,alarm_ts       fact_availability_alarms.dt_came_in%type
+                                       ,ind_start_end  varchar2(1)
+                                       );
+   type t_alarms              is table of rec_alarms index by pls_integer;
+   type t_open_alarms         is table of varchar2(50) index by varchar2(50) not null;
+   
+   l_open_alarms              t_open_alarms;
+   l_alarms                   t_alarms;
+   
+   l_current_availability     fact_group_availability.ind_available%type;
+   l_idx                      pls_integer := 0;
+begin
+   
+   
+   
+   
+   
+   for r_open_alarms in ( select process_id||'_'||to_char(message_nr)||'_'||to_char(dt_came_in,l_con_key_datetime_format) as message_key
+                          from   fact_availability_alarms
+                          where  ind_exclude  = cmn_constant.g_con_yesno_no
+                          and    group_name   = p_agp.group_name
+                          and    dt_came_in  <= p_time_window_start
+                          and    dt_went_out >  p_time_window_start
+                        )
+   loop
+      l_open_alarms(r_open_alarms.message_key) := r_open_alarms.message_key;
+   end loop;
+   
+   o_candidate_timeline(1).group_name      := p_agp.group_name;
+   o_candidate_timeline(1).group_type      := p_agp.group_type;
+   o_candidate_timeline(1).availability_dt := p_time_window_start;
+   o_candidate_timeline(1).k_factor        := p_agp.k_factor;
+   
+   if l_open_alarms.count > 0
+   then
+      o_candidate_timeline(1).ind_available := cmn_constant.g_con_yesno_no;
+   else
+      o_candidate_timeline(1).ind_available := cmn_constant.g_con_yesno_yes;
+   end if;
+   
+   l_current_availability := o_candidate_timeline(1).ind_available;
+   
+   
+   
+   select *
+   bulk collect into l_alarms
+   from (select process_id||'_'||to_char(message_nr)||'_'||to_char(dt_came_in,l_con_key_datetime_format) as message_key
+         ,      dt_came_in   as alarm_ts
+         ,      l_con_start  as ind_start_end
+         from   fact_availability_alarms  aam
+         where  aam.ind_exclude = cmn_constant.g_con_yesno_no
+         and    aam.group_name  = p_agp.group_name
+         and    aam.dt_came_in  > p_time_window_start
+         and    aam.dt_came_in  < p_time_window_end
+         union all
+         select process_id||'_'||to_char(message_nr)||'_'||to_char(dt_came_in,l_con_key_datetime_format) as message_key
+         ,      dt_went_out as alarm_ts
+         ,      l_con_end   as ind_start_end
+         from   fact_availability_alarms  aam
+         where  aam.ind_exclude = cmn_constant.g_con_yesno_no
+         and    aam.group_name  = p_agp.group_name
+         and    aam.dt_went_out > p_time_window_start
+         and    aam.dt_went_out < p_time_window_end
+        )
+   order by alarm_ts asc
+   ,        ind_start_end desc
+   ;
+   
+   for i in 1..l_alarms.count
+   loop
+      
+      if  l_alarms(i).ind_start_end = l_con_start
+      then
+         
+         l_open_alarms(l_alarms(i).message_key) := l_alarms(i).message_key;
+         
+         
+         
+         if l_current_availability = cmn_constant.g_con_yesno_yes
+         then
+            l_idx := o_candidate_timeline.count + 1;
+            
+            o_candidate_timeline(l_idx).group_name      := p_agp.group_name;
+            o_candidate_timeline(l_idx).group_type      := p_agp.group_type;
+            o_candidate_timeline(l_idx).availability_dt := l_alarms(i).alarm_ts;
+            o_candidate_timeline(l_idx).k_factor        := p_agp.k_factor;
+            o_candidate_timeline(l_idx).ind_available   := cmn_constant.g_con_yesno_no;
+            
+            l_current_availability := cmn_constant.g_con_yesno_no;
+         end if;
+      end if;
+      
+      
+      if  l_alarms(i).ind_start_end = l_con_end
+      then
+         
+         l_open_alarms.delete(l_alarms(i).message_key);
+         
+         
+         
+         
+         if  l_open_alarms.count    = 0
+         and l_current_availability = cmn_constant.g_con_yesno_no
+         then
+            l_idx := o_candidate_timeline.count + 1;
+            
+            o_candidate_timeline(l_idx).group_name      := p_agp.group_name;
+            o_candidate_timeline(l_idx).group_type      := p_agp.group_type;
+            o_candidate_timeline(l_idx).availability_dt := l_alarms(i).alarm_ts;
+            o_candidate_timeline(l_idx).k_factor        := p_agp.k_factor;
+            o_candidate_timeline(l_idx).ind_available   := cmn_constant.g_con_yesno_yes;
+            
+            l_current_availability := cmn_constant.g_con_yesno_yes;
+         end if;
+      end if;
+   end loop;
+   
+end create_timeline_group;
+
+procedure sum_availability_group
+is
+   l_con_proc         constant varchar2(61) := g_con_package||'.sum_availability_group';
+   l_seconds_in_day   constant pls_integer  := 86400;
+   
+   l_candidate_timeline  t_candidate_timeline_group;
+   
+   l_metric_config    metric_config%rowtype;
+   
+   l_processing_time_last      fact_group_availability.availability_dt%type;
+   l_processing_time_start     fact_group_availability.availability_dt%type;
+   l_processing_time_end       fact_group_availability.availability_dt%type;
+   l_time_window_start         fact_group_availability.availability_dt%type;
+   l_time_window_end           fact_group_availability.availability_dt%type;
+   l_time_window_nr_days       number  := 1;
+   l_insert_count              integer := 0;
+   l_exception_count           integer := 0;
+   l_overlap                   number  := 1; 
+  
+begin
+   bpi_trace.enter_module(i_module => l_con_proc );
+
+   
+   l_metric_config := metrics.get_metric_config(i_metric_procedure => l_con_proc);
+   
+   case
+      
+      when l_metric_config.metric_id is null
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', METRIC Configuration not found for '||l_con_proc
+                             );
+      
+      when nvl(l_metric_config.period_type,'#') != 'D1'
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', PERIOD_TYPE must be configured as D1'
+                             );
+      
+      when nvl(l_metric_config.status,0) != 1
+      then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).'
+                     );
+      else
+
+         begin
+            
+            begin
+               l_overlap := cmn_common.get_parameter_value('AlarmAvailD1PeriodOverlap');
+               
+               if l_overlap <> trunc(l_overlap)
+               then
+                  l_overlap := trunc(l_overlap) + 1;
+               end if;
+            exception
+               when others then
+                  l_overlap := 1;
+            end;
+            
+            select trunc(max(availability_dt))
+            into   l_processing_time_last
+            from   fact_group_availability
+            ;
+            
+            
+            l_processing_time_end   := trunc(sys_extract_utc(systimestamp));
+            l_processing_time_start := l_processing_time_end - numtodsinterval(l_overlap, 'DAY'); 
+            
+            
+            if l_processing_time_last is not null
+            then
+               l_processing_time_start := least(l_processing_time_last, l_processing_time_start);
+            end if;
+            
+            l_time_window_nr_days := extract (day from l_processing_time_end - l_processing_time_start);
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' started. Using AlarmAvailD1PeriodOverlap '||to_char(l_overlap)
+                                                   ||' Day(s). Starting from Day '||to_char(l_processing_time_start,'dd-mm-yyyy hh24:mi:ss.ff3')||' onward.'
+                          );
+            
+            for i in 1..l_time_window_nr_days
+            loop
+               
+               l_time_window_start := l_processing_time_start + numtodsinterval(i-1, 'DAY');
+               l_time_window_end   := l_processing_time_start + numtodsinterval(i  , 'DAY');
+               
+               
+               
+               for r_agp in (select distinct agp.group_name
+                             ,      agp.group_type
+                             ,      agp.k_factor
+                             from   bpi_availability_groups agp
+                            )
+               loop
+                  
+                  create_timeline_group( p_time_window_start  => l_time_window_start
+                                       , p_time_window_end    => l_time_window_end
+                                       , p_agp                => r_agp
+                                       , o_candidate_timeline => l_candidate_timeline
+                                       );
+                  
+                  delete from fact_group_availability
+                  where availability_dt >= l_time_window_start
+                  and   availability_dt <  l_time_window_end
+                  and   group_name       = r_agp.group_name
+                  ;
+                  
+                  declare
+                     bulk_errors   exception;
+                     pragma        exception_init(bulk_errors, -24381);
+                  begin
+                     l_exception_count := 0;
+                     
+                     forall j in 1..l_candidate_timeline.count save exceptions
+                        insert into fact_group_availability
+                        ( group_name
+                        , availability_dt
+                        , insertts
+                        , group_type
+                        , ind_available
+                        , k_factor
+                        )
+                        values
+                        ( l_candidate_timeline(j).group_name
+                        , l_candidate_timeline(j).availability_dt
+                        , sys_extract_utc(systimestamp)
+                        , l_candidate_timeline(j).group_type
+                        , l_candidate_timeline(j).ind_available
+                        , l_candidate_timeline(j).k_factor
+                        );
+                  
+                  exception
+                     when bulk_errors then
+                        l_exception_count := sql%bulk_exceptions.count;
+                        
+                        for indx in 1 .. sql%bulk_exceptions.count
+                        loop
+                           bpi_log.warn( i_con_proc => l_con_proc
+                                       , i_data     => l_con_proc||', An error occurred during iteration '||sql%bulk_exceptions (indx).error_index
+                                                                 ||' for availability group '||l_candidate_timeline(sql%bulk_exceptions (indx).error_index).group_name
+                                                                 ||' at availability dt='    ||to_char(l_candidate_timeline(sql%bulk_exceptions (indx).error_index).availability_dt,'dd-mm-yyyy hh24:mi:ss.ff3')
+                                                                 ||' with ind_available='    ||l_candidate_timeline(sql%bulk_exceptions (indx).error_index).ind_available
+                                                                 ||' : '                     ||sqlerrm(-sql%bulk_exceptions (indx).error_code)
+                                       );
+                        end loop;
+                  end;
+                  
+                  l_insert_count := l_insert_count + (l_candidate_timeline.count - l_exception_count);
+                  
+                  commit;
+               end loop;
+               
+            end loop;
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' finished successfully. Inserted '||to_char(l_insert_count)||' FACT_GROUP_AVAILABILITY.'
+                          );
+
+         exception
+            when others then
+               bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                        ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                        );
+         end;
+
+   end case;
+   
+   bpi_trace.leave_module(i_module => l_con_proc );
+exception
+   when others then
+      bpi_log.raise_fatal_error( i_con_proc => l_con_proc);
+end sum_availability_group;
+
+procedure create_timeline_bhs
+( p_time_window_start     in   fact_bhs_availability.availability_dt%type
+, p_time_window_end       in   fact_bhs_availability.availability_dt%type
+, o_candidate_timeline    out  t_candidate_timeline_bhs
+)
+is
+   l_con_proc                 constant  varchar2(61) := g_con_package||'.create_timeline_bhs';
+   l_con_key_datetime_format  constant  varchar2(61) := 'yyyymmdd_hh24miss.ff3';
+   l_con_full_availability    constant  number       :=  1;
+   
+   type rec_group             is record(group_name           fact_group_availability.group_name%type
+                                       ,group_available_dt   fact_group_availability.availability_dt%type
+                                       ,group_ind_available  fact_group_availability.ind_available%type
+                                       ,k_factor             fact_group_availability.k_factor%type
+                                       );
+   type t_groups              is table of rec_group    index by pls_integer;
+   type t_unavailable_groups  is table of fact_group_availability.k_factor%type index by varchar2(50) not null;
+   
+   l_unavailable_groups       t_unavailable_groups;
+   l_groups                   t_groups;
+   
+   l_sum_k_factor             fact_bhs_availability.availability%type := 0;
+   l_current_availability_dt  fact_bhs_availability.availability_dt%type;
+   l_idx                      pls_integer := 0;
+   
+   
+   l_initiating_group         fact_group_availability.group_name%type;
+   
+   procedure calculate_k_factor
+   (p_group_name in fact_group_availability.group_name%type
+   ,p_group_state in varchar2
+   ,p_recursive in varchar2)
+   
+   is
+   
+   
+
+
+      l_parent_found       boolean;
+
+      function check_parent (p_child_group         in  fact_group_availability.group_name%type)
+      return
+         boolean
+      is
+         l_unavailable_parent       boolean := false;
+      begin
+         
+         for r_parent_group in (select parent_group
+                                from   bpi_avail_group_relations
+                                where  parent_group <> l_initiating_group
+                                connect by prior parent_group = child_group
+                                start with child_group = p_child_group
+                               )
+         loop
+            
+            if l_unavailable_groups.exists(r_parent_group.parent_group)
+            then
+               l_unavailable_parent := true;
+               exit;
+            end if;
+         end loop;
+         
+         return l_unavailable_parent;
+      exception
+         when others then
+            bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                     ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                     );
+      end;
+
+      procedure handle_childs
+      (p_parent_group        in  fact_group_availability.group_name%type
+      ,p_parent_group_state  in  varchar2
+      )
+      is
+      begin
+         for r_child_group in (select child_group
+                               from   bpi_avail_group_relations
+                               where  parent_group = p_parent_group
+                              )
+         loop
+            if l_unavailable_groups.exists(r_child_group.child_group)
+            then
+               
+               if not check_parent(p_child_group => r_child_group.child_group)
+               then
+                  
+                  if p_parent_group_state = cmn_constant.g_con_yesno_yes
+                  then
+                     
+                     l_sum_k_factor := l_sum_k_factor + l_unavailable_groups(r_child_group.child_group);
+                  else
+                     
+                     l_sum_k_factor := l_sum_k_factor - l_unavailable_groups(r_child_group.child_group);
+                  end if;
+               end if;
+            else
+               
+               calculate_k_factor(p_group_name  => r_child_group.child_group
+                                 ,p_group_state => p_parent_group_state
+                                 ,p_recursive   => cmn_constant.g_con_yesno_yes
+                                 );
+            end if;
+         end loop;
+      exception
+         when others then
+            bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                     ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                     );
+      end handle_childs;
+
+   
+   begin
+      if p_recursive = cmn_constant.g_con_yesno_no
+      then
+         
+         l_initiating_group := p_group_name;
+      end if;
+ 
+      
+      l_parent_found := false;
+      for r_parent_group in (select parent_group
+                             from   bpi_avail_group_relations
+                             connect by prior parent_group = child_group
+                             start with child_group = p_group_name)
+      loop
+         if l_unavailable_groups.exists(r_parent_group.parent_group)
+         then
+            l_parent_found := true;
+            exit;
+         end if;
+      end loop;
+      
+      if not l_parent_found
+      then
+         
+         if p_group_state = cmn_constant.g_con_yesno_yes
+         then
+            
+            
+            
+            if p_recursive = cmn_constant.g_con_yesno_no
+            then
+               l_sum_k_factor := l_sum_k_factor - l_unavailable_groups(p_group_name);
+               l_unavailable_groups.delete(p_group_name);
+            end if;
+            
+            
+            
+            handle_childs(p_parent_group => p_group_name
+                         ,p_parent_group_state => cmn_constant.g_con_yesno_yes
+                         );
+         elsif p_group_state = cmn_constant.g_con_yesno_no
+         then
+            
+            l_sum_k_factor := l_sum_k_factor +  l_unavailable_groups(p_group_name);
+            
+            
+            
+            handle_childs(p_parent_group => p_group_name
+                         ,p_parent_group_state => cmn_constant.g_con_yesno_no
+                         );
+         end if;
+      else
+         
+         
+         if p_group_state = cmn_constant.g_con_yesno_yes
+         then
+            l_unavailable_groups.delete(p_group_name);
+         else
+            
+            if p_recursive = cmn_constant.g_con_yesno_yes
+            then
+               
+               handle_childs(p_parent_group => p_group_name
+                            ,p_parent_group_state => cmn_constant.g_con_yesno_no
+                            );
+            end if;
+         end if;
+      end if;
+   exception
+      when others then
+         bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                  ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                  );
+   end;
+   
+begin
+   
+   
+   for r_unavailable_groups in ( select group_name
+                                 ,      k_factor
+                                 from   fact_group_availability
+                                 where  availability_dt = p_time_window_start
+                                 and    ind_available   = cmn_constant.g_con_yesno_no
+                               )
+   loop
+      l_unavailable_groups(r_unavailable_groups.group_name) := r_unavailable_groups.k_factor;
+      calculate_k_factor(p_group_name => r_unavailable_groups.group_name, p_group_state => cmn_constant.g_con_yesno_no, p_recursive => cmn_constant.g_con_yesno_no);
+   end loop;
+   
+   
+   
+   o_candidate_timeline(1).availability_dt := p_time_window_start;
+   l_current_availability_dt := o_candidate_timeline(1).availability_dt;
+
+   if l_unavailable_groups.count > 0
+   then
+      
+      o_candidate_timeline(1).ind_available := cmn_constant.g_con_yesno_no;
+      
+      
+      
+      o_candidate_timeline(1).availability := greatest(l_con_full_availability - l_sum_k_factor, 0);
+   else
+      
+      o_candidate_timeline(1).ind_available := cmn_constant.g_con_yesno_yes;
+      o_candidate_timeline(1).availability := l_con_full_availability;
+      l_sum_k_factor := 0;
+   end if;
+
+   
+   
+   
+   
+   
+   select *
+   bulk collect into l_groups
+   from (select group_name       as group_name
+         ,      availability_dt  as group_available_dt
+         ,      ind_available    as group_ind_available
+         ,      k_factor         as k_factor
+         from   fact_group_availability  ga
+         where  ga.availability_dt  > p_time_window_start
+         and    ga.availability_dt  < p_time_window_end
+        )
+   order by group_available_dt  asc
+   ,        group_ind_available asc
+   ;
+   
+   
+   for i in 1..l_groups.count
+   loop
+      
+      
+      if  l_groups(i).group_ind_available = cmn_constant.g_con_yesno_no
+      then
+         
+         l_unavailable_groups(l_groups(i).group_name) := l_groups(i).k_factor;
+         
+         calculate_k_factor(p_group_name => l_groups(i).group_name, p_group_state=>cmn_constant.g_con_yesno_no,p_recursive=>cmn_constant.g_con_yesno_no);
+         
+         
+         if l_current_availability_dt = l_groups(i).group_available_dt
+         then
+            l_idx := o_candidate_timeline.count;
+         else
+            
+            l_idx := o_candidate_timeline.count + 1;
+            o_candidate_timeline(l_idx).availability_dt := l_groups(i).group_available_dt;
+            o_candidate_timeline(l_idx).ind_available   := cmn_constant.g_con_yesno_no;
+         end if;
+         
+         o_candidate_timeline(l_idx).availability := greatest(l_con_full_availability - l_sum_k_factor, 0);
+         
+         l_current_availability_dt := o_candidate_timeline(l_idx).availability_dt;
+      end if;
+      
+      
+      if  l_groups(i).group_ind_available = cmn_constant.g_con_yesno_yes
+      then
+         
+         calculate_k_factor(p_group_name=>l_groups(i).group_name, p_group_state=>cmn_constant.g_con_yesno_yes, p_recursive=>cmn_constant.g_con_yesno_no);
+         
+         
+         if l_current_availability_dt = l_groups(i).group_available_dt
+         then
+            l_idx := o_candidate_timeline.count;
+         else
+            
+            l_idx := o_candidate_timeline.count + 1;
+            o_candidate_timeline(l_idx).availability_dt := l_groups(i).group_available_dt;
+         end if;
+         
+         if  l_unavailable_groups.count > 0
+         then
+            
+            o_candidate_timeline(l_idx).availability   := greatest(l_con_full_availability - l_sum_k_factor, 0);
+            
+            o_candidate_timeline(l_idx).ind_available  := cmn_constant.g_con_yesno_no;
+         else
+            
+            o_candidate_timeline(l_idx).availability    := l_con_full_availability;
+            
+            o_candidate_timeline(l_idx).ind_available   := cmn_constant.g_con_yesno_yes;
+            
+            l_sum_k_factor := 0;
+         end if;
+         
+         l_current_availability_dt := o_candidate_timeline(l_idx).availability_dt;
+      end if;
+   end loop;
+   
+exception
+   when others then
+      bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                               ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                               );
+end create_timeline_bhs;
+
+procedure sum_availability_bhs
+is
+   l_con_proc         constant varchar2(61) := g_con_package||'.sum_availability_bhs';
+   l_seconds_in_day   constant pls_integer  := 86400;
+   
+   l_candidate_timeline        t_candidate_timeline_bhs;
+   
+   l_metric_config             metric_config%rowtype;
+   
+   l_processing_time_last      fact_bhs_availability.availability_dt%type;
+   l_processing_time_start     fact_bhs_availability.availability_dt%type;
+   l_processing_time_end       fact_bhs_availability.availability_dt%type;
+   l_time_window_start         fact_bhs_availability.availability_dt%type;
+   l_time_window_end           fact_bhs_availability.availability_dt%type;
+   l_time_window_nr_days       number  := 1;
+   l_insert_count              integer := 0;
+   l_exception_count           integer := 0;
+   l_overlap                   number  := 1; 
+  
+begin
+   bpi_trace.enter_module(i_module => l_con_proc );
+
+   
+   l_metric_config := metrics.get_metric_config(i_metric_procedure => l_con_proc);
+   
+   case
+      
+      when l_metric_config.metric_id is null
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', METRIC Configuration not found for '||l_con_proc
+                             );
+      
+      when nvl(l_metric_config.period_type,'#') != 'D1'
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', PERIOD_TYPE must be configured as D1'
+                             );
+      
+      when nvl(l_metric_config.status,0) != 1
+      then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).'
+                     );
+      else
+
+         begin
+            
+            begin
+               l_overlap := cmn_common.get_parameter_value('AlarmAvailD1PeriodOverlap');
+               
+               if l_overlap <> trunc(l_overlap)
+               then
+                  l_overlap := trunc(l_overlap) + 1;
+               end if;
+            exception
+               when others then
+                  l_overlap := 1;
+            end;
+            
+            select trunc(max(availability_dt))
+            into   l_processing_time_last
+            from   fact_bhs_availability
+            ;
+            
+            
+            l_processing_time_end   := trunc(sys_extract_utc(systimestamp));
+            l_processing_time_start := l_processing_time_end - numtodsinterval(l_overlap, 'DAY'); 
+            
+            if l_processing_time_last is not null
+            then
+               l_processing_time_start := least(l_processing_time_last, l_processing_time_start);
+            end if;
+            
+            l_time_window_nr_days := extract (day from l_processing_time_end - l_processing_time_start);
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' started. Using AlarmAvailD1PeriodOverlap '||to_char(l_overlap)
+                                                   ||' Day(s). Starting from Day '||to_char(l_processing_time_start,'dd-mm-yyyy hh24:mi:ss.ff3')||' onward.'
+                          );
+            
+            for i in 1..l_time_window_nr_days
+            loop
+               
+               l_time_window_start := l_processing_time_start + numtodsinterval(i-1, 'DAY');
+               l_time_window_end   := l_processing_time_start + numtodsinterval(i  , 'DAY');
+               
+               
+               create_timeline_bhs( p_time_window_start  => l_time_window_start
+                                  , p_time_window_end    => l_time_window_end
+                                  , o_candidate_timeline => l_candidate_timeline
+                                  );
+               
+               delete from fact_bhs_availability
+               where availability_dt >= l_time_window_start
+               and   availability_dt <  l_time_window_end
+               ;
+               
+               declare
+                  bulk_errors   exception;
+                  pragma        exception_init(bulk_errors, -24381);
+               begin
+                  l_exception_count := 0;
+                  
+                  forall j in 1..l_candidate_timeline.count save exceptions
+                     insert into fact_bhs_availability
+                     ( availability_dt
+                     , ind_available
+                     , availability
+                     , insertts
+                     , d1_periodid
+                     )
+                     values
+                     ( l_candidate_timeline(j).availability_dt
+                     , l_candidate_timeline(j).ind_available
+                     , l_candidate_timeline(j).availability
+                     , sys_extract_utc(systimestamp)
+                     , period.periodid(l_candidate_timeline(j).availability_dt, 'D1')
+                     );
+            
+                  exception
+                     when bulk_errors then
+                        l_exception_count := sql%bulk_exceptions.count;
+                        
+                        for indx in 1 .. sql%bulk_exceptions.count
+                        loop
+                           bpi_log.warn( i_con_proc => l_con_proc
+                                       , i_data     => l_con_proc||', An error occurred during iteration '||sql%bulk_exceptions (indx).error_index
+                                                                 ||' for availability bhs'
+                                                                 ||' at availability dt='    ||to_char(l_candidate_timeline(sql%bulk_exceptions (indx).error_index).availability_dt,'dd-mm-yyyy hh24:mi:ss.ff3')
+                                                                 ||' with ind_available='    ||l_candidate_timeline(sql%bulk_exceptions (indx).error_index).ind_available
+                                                                 ||' : '                     ||sqlerrm(-sql%bulk_exceptions (indx).error_code)
+                                       );
+                        end loop;
+                  end;
+                  
+                  l_insert_count := l_insert_count + (l_candidate_timeline.count - l_exception_count);
+                  
+                  commit;
+               
+            end loop;
+            
+            bpi_log.notify(i_con_proc => l_con_proc
+                          ,i_data     => l_con_proc||' finished successfully. Inserted '||to_char(l_insert_count)||' FACT_BHS_AVAILABILITY.'
+                          );
+
+         exception
+            when others then
+               bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                        ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                        );
+         end;
+
+   end case;
+   
+   bpi_trace.leave_module(i_module => l_con_proc );
+exception
+   when others then
+      bpi_log.raise_fatal_error( i_con_proc => l_con_proc);
+end sum_availability_bhs;
+
+procedure calculate_bhs_availability_d1
+( p_periodid_window_d1      in   fact_bhs_availability.d1_periodid%type
+, o_bhs_availability_d1     out  fact_bhs_availability_d1%rowtype
+)
+is
+   l_con_proc               constant  varchar2(61) := g_con_package||'.calculate_bhs_availability_d1';
+   type rec_bhs             is record( availability_dt fact_bhs_availability.availability_dt%type
+                                     , d1_periodid     fact_bhs_availability.d1_periodid%type
+                                     , availability    fact_bhs_availability.availability%type
+                                     );
+   type t_bhs               is table of rec_bhs index by pls_integer;
+   l_bhs                    t_bhs;
+   l_idx                    pls_integer := 0;
+   l_bhs_availability       t_bhs;
+   l_duration               number := 0;
+   l_last_d1_availability   fact_bhs_availability.availability%type := 1;
+   l_availability           number := 0;
+   l_sum_availability       number := 0;
+   l_current_availability   fact_bhs_availability.availability%type := 1;
+   l_current_ts             fact_bhs_availability.availability_dt%type;
+   
+begin
+   
+   
+   begin
+      select nvl(availability, 1)
+      into   l_last_d1_availability
+      from   fact_bhs_availability
+      where  availability_dt = (select max(availability_dt)
+                                from   fact_bhs_availability
+                                where  d1_periodid < p_periodid_window_d1
+                               );
+   exception
+      when no_data_found then
+         l_last_d1_availability := 1;
+   end;
+   
+   
+   
+   select *
+   bulk collect into l_bhs
+   from ( select availability_dt as availability_dt
+        ,        d1_periodid     as d1_periodid
+        ,        availability    as availability
+          from   fact_bhs_availability
+          where  d1_periodid = p_periodid_window_d1
+    )
+   order by availability_dt asc;
+
+   
+   if l_bhs.count <> 0
+   then
+      for i in 1..l_bhs.count
+      loop
+         
+         
+         
+         if l_bhs(1).availability_dt <> period.to_stamp(l_bhs(i).d1_periodid, 'D1')
+         then
+            l_bhs_availability(1).availability_dt := period.to_stamp(p_periodid_window_d1, 'D1');
+            l_bhs_availability(1).availability    := nvl(l_last_d1_availability, 1);
+            l_bhs_availability(1).d1_periodid     := p_periodid_window_d1;
+         end if;
+         
+         l_idx := l_bhs_availability.count + 1;
+         l_bhs_availability(l_idx).availability_dt := l_bhs(i).availability_dt;
+         l_bhs_availability(l_idx).availability    := l_bhs(i).availability;
+         l_bhs_availability(l_idx).d1_periodid     := p_periodid_window_d1;
+      end loop;
+   else
+      l_bhs_availability(1).availability_dt := period.to_stamp(p_periodid_window_d1, 'D1');
+      l_bhs_availability(1).availability    := nvl(l_last_d1_availability, 1);
+      l_bhs_availability(1).d1_periodid     := p_periodid_window_d1;
+   end if;
+   
+   l_idx := l_bhs_availability.count + 1;
+   l_bhs_availability(l_idx).availability_dt := period.to_stamp(p_periodid_window_d1 + g_con_period_d1, 'D1');
+   
+   l_bhs_availability(l_idx).availability    := 1;
+   
+   l_bhs_availability(l_idx).d1_periodid     := p_periodid_window_d1;
+   
+   if l_bhs_availability.count > 0
+   then
+      for j in 1..l_bhs_availability.count
+      loop
+         
+         if j = 1
+         then
+            
+            l_current_ts := l_bhs_availability(j).availability_dt;
+            l_current_availability := l_bhs_availability(j).availability;
+
+         
+         
+         else
+            
+            l_duration := ( period.seconds_since_millennium(l_bhs_availability(j).availability_dt)
+                          - period.seconds_since_millennium(l_current_ts))/g_con_period_d1;
+            
+            l_availability := l_duration * l_current_availability;
+            
+            
+            l_current_availability := l_bhs_availability(j).availability;
+            l_current_ts           := l_bhs_availability(j).availability_dt;
+            
+            l_sum_availability     := (l_sum_availability + l_availability);
+         end if;
+      end loop;
+      o_bhs_availability_d1.d1_periodid  := p_periodid_window_d1;
+	  
+      o_bhs_availability_d1.availability := round(l_sum_availability,6);
+   else
+      o_bhs_availability_d1.d1_periodid  := p_periodid_window_d1;
+      o_bhs_availability_d1.availability := 1;
+   end if;
+
+exception
+   when others then
+      bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                               ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                               );
+end calculate_bhs_availability_d1;
+
+
+procedure sum_bhs_availability_d1
+is
+   l_con_proc            constant varchar2(61) := g_con_package||'.sum_bhs_availability_d1';
+   
+   l_d1_periodid_start   fact_bhs_availability.d1_periodid%type := 0;
+   l_d1_periodid_last    fact_bhs_availability.d1_periodid%type := 0;
+   l_d1_periodid_end     fact_bhs_availability.d1_periodid%type := 0;
+   l_d1_periodid         fact_bhs_availability.d1_periodid%type := 0;
+   l_count               number     := 0;
+   l_metric_config       metric_config%rowtype;
+   l_overlap             number     := 1;
+   l_bhs_availability_d1 fact_bhs_availability_d1%rowtype;
+
+begin
+   bpi_trace.enter_module(i_module => l_con_proc );
+
+   
+   l_metric_config := metrics.get_metric_config(i_metric_procedure => l_con_proc);
+   
+   case
+      
+      when l_metric_config.metric_id is null
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', METRIC Configuration not found for '||l_con_proc
+                             );
+      
+      when nvl(l_metric_config.period_type,'#') != 'D1'
+      then
+         bpi_log.handle_error( i_con_proc => l_con_proc
+                             , i_msg      => l_con_proc||', PERIOD_TYPE must be configured as D1'
+                             );
+      
+      when nvl(l_metric_config.status,0) != 1
+      then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).'
+                     );
+      else
+         begin
+            
+            begin
+               l_overlap := cmn_common.get_parameter_value('AlarmAvailD1PeriodOverlap');
+               
+               if l_overlap <> trunc(l_overlap)
+               then
+                  l_overlap := trunc(l_overlap) + 1;
+               end if;
+            exception
+               when others then
+                  l_overlap := 1;
+            end;
+
+         select max(d1_periodid) into l_d1_periodid_last from fact_bhs_availability_d1;
+         
+         
+         l_d1_periodid_end := period.periodid(sys_extract_utc(systimestamp), 'D1');
+         l_d1_periodid_start := l_d1_periodid_end - (l_overlap * g_con_period_d1); 
+         
+         
+         if l_d1_periodid_last is not null then
+            l_d1_periodid_start := least(l_d1_periodid_last, l_d1_periodid_start);
+         end if;
+
+         bpi_log.notify(i_con_proc => l_con_proc
+                       ,i_data     => l_con_proc||' STARTED. Using AlarmAvailD1PeriodOverlap '
+                                                ||to_char(l_overlap)||'. Processing BHS availability with PERIODID from '
+                                                ||to_char(l_d1_periodid_start)||' up to but not including '||to_char(l_d1_periodid_end)
+                                                ||', last was '||to_char(nvl(l_d1_periodid_last, 0))
+                       );
+         
+         l_d1_periodid := l_d1_periodid_start;
+         
+         while l_d1_periodid < l_d1_periodid_end
+         loop
+
+            calculate_bhs_availability_d1( p_periodid_window_d1  => l_d1_periodid
+                                         , o_bhs_availability_d1 => l_bhs_availability_d1
+                                         );
+            delete from fact_bhs_availability_d1 where d1_periodid = l_bhs_availability_d1.d1_periodid;
+            begin
+               insert into fact_bhs_availability_d1
+                           ( d1_periodid
+                           , availability
+                           , insertts
+                           )
+                      values
+                           ( l_bhs_availability_d1.d1_periodid
+                           , l_bhs_availability_d1.availability
+                           , sys_extract_utc(systimestamp)
+                           );
+           end;
+           
+           commit;
+           
+           l_count       := l_count + 1;
+           l_d1_periodid := l_d1_periodid + g_con_period_d1;
+
+         end loop;
+
+         bpi_log.notify(i_con_proc => l_con_proc
+                       ,i_data     => l_con_proc||' finished successfully. Inserted '||to_char(l_count)||' FACT_BHS_AVAILABILITY_D1.'
+                       );
+
+         exception
+            when others then
+               bpi_log.raise_fatal_error(i_con_proc => l_con_proc
+                                        ,i_msg      => 'ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace
+                                        );
+         end;
+         
+   end case;
+   
+   bpi_trace.leave_module(i_module => l_con_proc );
+exception
+   when others then
+      bpi_log.raise_fatal_error( i_con_proc => l_con_proc);
+end sum_bhs_availability_d1;
+
+end bhs_availability;
+/

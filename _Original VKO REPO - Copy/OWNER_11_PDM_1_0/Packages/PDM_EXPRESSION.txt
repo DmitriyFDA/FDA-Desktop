@@ -1,0 +1,3922 @@
+create or replace PACKAGE pdm_expression
+IS
+   /****************************************************************************
+   Name          : pdm_expression
+   Short name    : ESN
+   Description   : Package containing functionality for handling EXPRESSIONs
+
+   Change history:
+   Nr. Date       Author  Request Description
+   --- ---------- ------- ------- ---------------------------------------------
+     1 01-03-2012 nljval    13418 Modified TYPE it_emt
+     0 03-11-2010 nlpvd      2217 Creation
+   ****************************************************************************/
+
+   TYPE it_emt IS TABLE OF pdm_package_attributes.value%TYPE INDEX BY BINARY_INTEGER;
+
+   PROCEDURE create_expression ( i_xml_condition    IN  XMLTYPE
+                               , i_evt_id           IN  pdm_events.id%TYPE
+                               , i_esn_id_template  IN  pdm_expressions.id%TYPE
+                               , i_tle_id           IN  pdm_tpl_monitoring_types.id%TYPE
+                               , i_transform        IN  BOOLEAN
+                               , i_psn_id           IN  pdm_process_specifications.id%TYPE
+                               , o_esn_id           OUT pdm_expressions.id%TYPE
+                               );
+
+   -- This procedure should strictly be private. However, since it is called
+   -- recursively, either it, or PROCEDURE process_disjunc_conjunc_items should
+   -- be both declared and implemented in the body, making it impossible to
+   -- create a PKS-stub for unit testing.
+   PROCEDURE process_condition_item ( i_xml_disjunction IN  XMLTYPE
+                                    , i_xml_conjunction IN  XMLTYPE
+                                    , i_xml_evaluate    IN  XMLTYPE
+                                    , i_esn_id_parent   IN  pdm_expressions.id%TYPE
+                                    , i_evt_id          IN  pdm_events.id%TYPE
+                                    , i_tle_id          IN  pdm_tpl_monitoring_types.id%TYPE
+                                    , i_transform       IN  BOOLEAN
+                                    , i_psn_id          IN  pdm_process_specifications.id%TYPE
+                                    , o_esn_id          OUT pdm_expressions.id%TYPE
+                                    );
+
+END pdm_expression;
+/
+
+
+
+
+package body pdm_expression
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   g_con_package   constant varchar2 (50) := 'pdm_expression';
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_ote( o_rt_ote_stringmatch   out  pdm_operation_types%rowtype
+                    , o_rt_ote_multipurpose  out  pdm_operation_types%rowtype
+                    )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_ote';
+      
+      l_found                    boolean;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_found := pdm_ote_tapi_pck.ote_select_row_uk1( i_ote_operation => pdm_constant.g_con_ote_stringmatch
+                                                    , o_rt_ote        => o_rt_ote_stringmatch
+                                                    );
+      if not l_found
+      then
+         viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'OPERATION TYPE with OPERATION: ' || pdm_constant.g_con_ote_stringmatch
+                  );
+      end if;
+
+      
+      l_found := pdm_ote_tapi_pck.ote_select_row_uk1( i_ote_operation => pdm_constant.g_con_ote_multipurpose
+                                                    , o_rt_ote        => o_rt_ote_multipurpose
+                                                    );
+
+      if not l_found
+      then
+         viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'OPERATION TYPE with OPERATION: ' || pdm_constant.g_con_ote_multipurpose
+                  );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_ote;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure split_eon_values( i_nt_adn_id     in  pdm_nt_adn_id
+                             , i_eon_value     in  pdm_evaluate_operations.value%type
+                             , o_nt_eon_values out pdm_nt_eon_values
+                             )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.split_eon_values';
+
+      l_pos                    pls_integer;
+      l_workstring             pdm_evaluate_operations.value%type;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      o_nt_eon_values := pdm_nt_eon_values();
+
+      
+      l_workstring    := i_eon_value;
+      while length(l_workstring) > 0
+      loop
+         l_pos := instr(l_workstring, pdm_constant.g_con_eon_value_separator);
+
+         
+         if l_pos = 0
+         then
+            
+            
+            l_pos := length(l_workstring) + 1;
+         end if;
+
+         
+         o_nt_eon_values.extend;
+         o_nt_eon_values(o_nt_eon_values.count) := pdm_ot_eon_value( substr( l_workstring
+                                                                           , 1
+                                                                           , l_pos - 1
+                                                                           )
+                                                                   , null
+                                                                   );
+
+         
+         if o_nt_eon_values.count <= i_nt_adn_id.count
+         then
+            o_nt_eon_values(o_nt_eon_values.count).adn_id := i_nt_adn_id(o_nt_eon_values.count);
+         end if;
+
+         
+         l_workstring := substr(l_workstring, l_pos + length(pdm_constant.g_con_eon_value_separator));
+         
+      end loop;
+
+      
+      if o_nt_eon_values.count <> i_nt_adn_id.count
+      then
+         viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_inconsistentdata
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'Number of attributes ('                 ||
+                                           nvl(to_char(i_nt_adn_id.count), 'NULL') ||
+                                           ') and values in '                       ||
+                                           nvl(i_eon_value, 'NULL')                ||
+                                           ' differ'
+                  );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end split_eon_values;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure reorder_unique_eon_values( i_nt_eon_values in  pdm_nt_eon_values
+                                      , o_nt_adn_id     out pdm_nt_adn_id
+                                      , o_eon_value     out pdm_evaluate_operations.value%type
+                                      )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.reorder_unique_eon_values';
+
+      l_nt_eon_values  pdm_nt_eon_values := pdm_nt_eon_values();
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      o_nt_adn_id := pdm_nt_adn_id();
+
+      
+      select            pdm_ot_eon_value( value, adn_id )
+      bulk collect into l_nt_eon_values
+      from              ( select distinct value
+                          ,               adn_id
+                          from            table(i_nt_eon_values)
+                        )
+      order by          adn_id, value;
+
+      
+      for i in 1 .. l_nt_eon_values.count
+      loop
+         o_eon_value := ( case
+                              when i = 1
+                              then
+                                 null
+                              else
+                                 o_eon_value ||
+                                 pdm_constant.g_con_eon_value_separator
+                           end
+                         )
+                         || l_nt_eon_values(i).value;
+                         
+         o_nt_adn_id.extend;
+         o_nt_adn_id(i) := l_nt_eon_values(i).adn_id;
+
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end reorder_unique_eon_values;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure replace_concat_adn_eon_value( io_nt_adn_id in out pdm_nt_adn_id
+                                         , io_eon_value in out pdm_evaluate_operations.value%type
+                                         )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.replace_concat_adn_eon_value';
+
+      
+      cursor c_adn
+      is
+         select *
+         from   pdm_attribute_definitions adn
+         where  adn.agp_id is not null
+         ;
+
+
+      l_nt_agr_concat_adn_id pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_adn_id_new        pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_adn_id_result     pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_adn_id_new    pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_eon_values_split  pdm_nt_eon_values := pdm_nt_eon_values();
+      l_nt_eon_values_new    pdm_nt_eon_values := pdm_nt_eon_values();
+      l_concat_value         pdm_evaluate_operations.value%type;
+      l_eon_values_splitted  boolean := false;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      for r_adn in c_adn
+      loop
+
+         
+         if not l_eon_values_splitted
+         then
+
+            
+            
+            split_eon_values( i_nt_adn_id     => io_nt_adn_id
+                            , i_eon_value     => io_eon_value
+                            , o_nt_eon_values => l_nt_eon_values_split
+                            );
+
+            
+            l_eon_values_splitted := true;
+         end if;
+
+         
+         select   agr.adn_id
+         bulk collect into l_nt_agr_concat_adn_id
+         from     pdm_attribute_group_members agr
+         where    agr.agp_id = r_adn.agp_id
+         order by agr.sequence
+         ;
+
+         
+         
+         
+         if     l_nt_agr_concat_adn_id.count > 0
+            and l_nt_agr_concat_adn_id submultiset of io_nt_adn_id
+         then
+
+            
+            l_concat_value := null;
+
+            
+            for i in l_nt_agr_concat_adn_id.first..l_nt_agr_concat_adn_id.last
+            loop
+
+               
+               for j in l_nt_eon_values_split.first..l_nt_eon_values_split.last
+               loop
+
+                  
+                  
+                  if l_nt_agr_concat_adn_id(i) = l_nt_eon_values_split(j).adn_id
+                  then
+
+                    
+                     l_concat_value := case
+                                          when l_concat_value is null
+                                             then l_nt_eon_values_split(j).value
+                                          else
+                                             l_concat_value                          ||
+                                             pdm_constant.g_con_adn_concat_separator ||
+                                             l_nt_eon_values_split(j).value
+                                       end;
+
+                  end if;
+               end loop; 
+            end loop; 
+
+            
+            
+            l_nt_eon_values_new.extend;
+            l_nt_eon_values_new(l_nt_eon_values_new.count) := pdm_ot_eon_value( l_concat_value
+                                                                              , r_adn.id
+                                                                              );
+                                    
+            
+            
+            l_nt_adn_id_new.extend;
+            l_nt_adn_id_new(l_nt_adn_id_new.count) := r_adn.id;
+
+         end if; 
+      end loop; 
+
+      
+      if l_nt_eon_values_new.count > 0
+      then
+
+         
+         
+         select   distinct(agr.adn_id)
+         bulk collect into l_nt_agr_adn_id_new
+         from     pdm_attribute_group_members agr
+         where    agr.agp_id in (select adn.agp_id
+                                 from   pdm_attribute_definitions adn
+                                 where  adn.id in (select adn2.column_value
+                                                   from   table(l_nt_adn_id_new)adn2
+                                                  )
+                                 )
+         order by agr.adn_id
+         ;
+   
+         
+         
+         
+         
+         l_nt_adn_id_result := io_nt_adn_id multiset except distinct l_nt_agr_adn_id_new;
+   
+         
+         if l_nt_adn_id_result.count > 0
+         then
+   
+            
+            for i in l_nt_adn_id_result.first..l_nt_adn_id_result.last
+            loop
+                  
+                  for j in l_nt_eon_values_split.first..l_nt_eon_values_split.last
+                  loop
+   
+                     
+                     
+                     if l_nt_adn_id_result(i) = l_nt_eon_values_split(j).adn_id
+                     then
+   
+                        
+                        
+                        l_nt_eon_values_new.extend;
+                        l_nt_eon_values_new(l_nt_eon_values_new.count) := pdm_ot_eon_value( l_nt_eon_values_split(j).value
+                                                                                          , l_nt_eon_values_split(j).adn_id
+                                                                                          );
+                     end if;
+                  end loop;
+            end loop;
+         end if;
+   
+         
+         reorder_unique_eon_values( i_nt_eon_values => l_nt_eon_values_new
+                                  , o_nt_adn_id     => io_nt_adn_id
+                                  , o_eon_value     => io_eon_value
+                                  );
+      end if; 
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end replace_concat_adn_eon_value;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure filter_attribute_data( io_nt_adn_id in out pdm_nt_adn_id
+                                  , io_eon_value in out pdm_evaluate_operations.value%type
+                                  )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.filter_attribute_data';
+
+      l_nt_eon_values_split    pdm_nt_eon_values := pdm_nt_eon_values();
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if io_nt_adn_id.count > 1
+      then
+      
+         split_eon_values( i_nt_adn_id     => io_nt_adn_id
+                         , i_eon_value     => io_eon_value
+                         , o_nt_eon_values => l_nt_eon_values_split
+                         );
+                         
+         reorder_unique_eon_values( i_nt_eon_values => l_nt_eon_values_split
+                                  , o_nt_adn_id     => io_nt_adn_id
+                                  , o_eon_value     => io_eon_value
+                                  );
+
+         replace_concat_adn_eon_value( io_nt_adn_id => io_nt_adn_id
+                                     , io_eon_value => io_eon_value
+                                     );
+
+      end if;
+      
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end filter_attribute_data;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure build_agr_list( i_adn_id         in      pdm_attribute_definitions.id%type
+                           , i_ote_operation  in      pdm_operation_types.operation%type
+                           , i_agr_ote_id     in      pdm_attribute_group_members.ote_id%type
+                           , o_nt_agr_adn_id     out  pdm_nt_adn_id
+                           , o_nt_agr_ote_id     out  pdm_nt_ote_id
+                           )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.build_agr_list';
+
+      cursor c_adn( b_adn_id  pdm_attribute_definitions.id%type )
+      is
+      select     adn.id
+      ,          connect_by_isleaf   is_leaf
+      from       pdm_attribute_definitions adn
+      start with adn.id     = b_adn_id
+      connect by adn.adn_id = prior adn.id
+      order by   adn.id
+      ;
+      
+      l_index    pls_integer;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      o_nt_agr_adn_id := pdm_nt_adn_id();
+      o_nt_agr_ote_id := pdm_nt_ote_id();
+
+      
+      
+      l_index := 0;
+      for r_adn in c_adn( b_adn_id => i_adn_id )
+      loop
+         l_index := l_index + 1;
+
+         
+         
+         if  i_ote_operation not in ( pdm_constant.g_con_ote_existence, pdm_constant.g_con_ote_nonexistence)
+         and l_index > 1
+         then
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_evaluateoperationinvalid
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_additional_data   =>
+                                    'Operation ' || i_ote_operation || ' not allowed on attribute definition nodes'
+                               );
+         else
+            
+            if r_adn.is_leaf = 1
+            then
+               o_nt_agr_adn_id.extend;
+               o_nt_agr_adn_id(o_nt_agr_adn_id.count) := r_adn.id;
+               
+               o_nt_agr_ote_id.extend;
+               o_nt_agr_ote_id(o_nt_agr_ote_id.count) := i_agr_ote_id;
+            end if;
+         end if;
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end build_agr_list;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function create_attribute_group( i_nt_agr_adn_id  in  pdm_nt_adn_id
+                                  , i_nt_agr_ote_id  in  pdm_nt_ote_id
+                                  , i_evt_id         in  pdm_events.id%type
+                                  )
+   return pdm_attribute_groups.id%type
+   is
+      
+      pragma autonomous_transaction;
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_attribute_group';
+
+      l_rt_agp pdm_attribute_groups%rowtype;
+      l_rt_agr pdm_attribute_group_members%rowtype;
+      l_index  pls_integer;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_rt_agp.cnt_existence    := 0;
+      l_rt_agp.cnt_nonexistence := 0;
+      l_rt_agp.cnt_stringmatch  := 0;
+      l_rt_agp.cnt_regexp       := 0;
+      l_rt_agp.cnt_substring    := 0;
+
+      
+      for l_index in 1 .. i_nt_agr_ote_id.count
+      loop
+         case
+            when i_nt_agr_ote_id(l_index) = pdm_constant.g_con_ote_id_existence    then l_rt_agp.cnt_existence    := l_rt_agp.cnt_existence    + 1;
+            when i_nt_agr_ote_id(l_index) = pdm_constant.g_con_ote_id_nonexistence then l_rt_agp.cnt_nonexistence := l_rt_agp.cnt_nonexistence + 1;
+            when i_nt_agr_ote_id(l_index) = pdm_constant.g_con_ote_id_stringmatch  then l_rt_agp.cnt_stringmatch  := l_rt_agp.cnt_stringmatch  + 1;
+            when i_nt_agr_ote_id(l_index) = pdm_constant.g_con_ote_id_regexp       then l_rt_agp.cnt_regexp       := l_rt_agp.cnt_regexp       + 1;
+            when i_nt_agr_ote_id(l_index) = pdm_constant.g_con_ote_id_substring    then l_rt_agp.cnt_substring    := l_rt_agp.cnt_substring    + 1;
+            else null;
+         end case;
+      end loop;
+
+      l_rt_agp.evt_id := i_evt_id;
+      pdm_agp_tapi_pck.agp_insert_row( io_rt_agp => l_rt_agp );
+
+      
+      for l_index in 1 .. i_nt_agr_adn_id.count
+      loop
+         l_rt_agr := null;
+         l_rt_agr.agp_id   := l_rt_agp.id;
+         l_rt_agr.adn_id   := i_nt_agr_adn_id(l_index);
+         l_rt_agr.ote_id   := i_nt_agr_ote_id(l_index);
+         l_rt_agr.sequence := l_index;
+
+         pdm_agr_tapi_pck.agr_insert_row( io_rt_agr => l_rt_agr );
+
+      end loop;
+
+      
+      commit;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_rt_agp.id;
+
+   exception
+      when others
+      then
+         
+         rollback;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_attribute_group;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_attribute_group( i_nt_agr_adn_id  in  pdm_nt_adn_id
+                               , i_nt_agr_ote_id  in  pdm_nt_ote_id
+                               , i_evt_id         in  pdm_events.id%type
+                               )
+   return pdm_attribute_groups.id%type
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_attribute_group';
+
+      cursor c_agp
+      ( b_nt_agr_adn_id  pdm_nt_adn_id
+      , b_nt_agr_ote_id  pdm_nt_ote_id
+      )
+      is
+      select agp_id
+      from   ( select agr.agp_id agp_id
+               ,      listagg(agr.adn_id ||','||agr.ote_id || ';') within group (order by case ote.operation
+                                                                                             when pdm_constant.g_con_ote_stringmatch  then 1
+                                                                                             when pdm_constant.g_con_ote_existence    then 2
+                                                                                             when pdm_constant.g_con_ote_nonexistence then 3
+                                                                                             else 4
+                                                                                          end
+                                                                                        , agr.sequence
+                                                                                )  adn_list
+               from   pdm_attribute_group_members agr
+               ,      pdm_operation_types         ote
+               ,      pdm_attribute_definitions   adn
+               where  agr.ote_id = ote.id
+               and    agr.adn_id = adn.id
+               group  by agr.agp_id
+             ) agr
+      where  agr.adn_list = ( select listagg( nt_adn_list.column_value ||','||nt_ote_list.column_value || ';') within group (order by rownum)
+                              from   ( select rownum        rn
+                                       ,      column_value
+                                       from   table(b_nt_agr_adn_id)
+                                     ) nt_adn_list
+                              ,      ( select rownum        rn
+                                       ,      column_value
+                                       from   table(b_nt_agr_ote_id)
+                                     ) nt_ote_list
+                              where  nt_adn_list.rn = nt_ote_list.rn
+                             )
+      ;
+      
+      r_agp    c_agp%rowtype;
+      l_found  boolean;
+      l_agp_id pdm_attribute_groups.id%type;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      open  c_agp( b_nt_agr_adn_id => i_nt_agr_adn_id
+                 , b_nt_agr_ote_id => i_nt_agr_ote_id
+                 );
+      fetch c_agp
+      into  r_agp;
+      l_found := c_agp%found;
+      close c_agp;
+
+      if l_found
+      then
+         l_agp_id := r_agp.agp_id;
+
+      else
+
+         l_agp_id := pdm_expression.create_attribute_group( i_nt_agr_adn_id => i_nt_agr_adn_id
+                                                          , i_nt_agr_ote_id => i_nt_agr_ote_id
+                                                          , i_evt_id        => i_evt_id
+                                                          );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_agp_id;
+
+   exception
+      when others
+      then
+         if c_agp%isopen
+         then
+            close c_agp;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_attribute_group;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_evaluate_operation( i_ote_id    in  pdm_operation_types.id%type
+                                      , i_agp_id    in  pdm_attribute_groups.id%type
+                                      , i_eon_value in  pdm_evaluate_operations.value%type
+                                      , i_evt_id    in  pdm_events.id%type
+                                      , o_eon_id    out pdm_evaluate_operations.id%type
+                                      )
+
+   is
+      
+      pragma autonomous_transaction;
+
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_evaluate_operation';
+
+      cursor c_eon( b_ote_id    in pdm_operation_types.id%type
+                  , b_agp_id    in pdm_attribute_groups.id%type
+                  , b_eon_value in pdm_evaluate_operations.value%type
+                  )
+      is
+      select id
+      from   pdm_evaluate_operations eon
+      where  eon.ote_id = b_ote_id
+      and    eon.agp_id = b_agp_id
+      and    ( eon.value  = b_eon_value
+               or
+               ( b_eon_value is null and eon.value is null)
+             );
+
+      l_rt_eon pdm_evaluate_operations%rowtype;
+      l_found  boolean;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      begin
+         
+         l_rt_eon.ote_id := i_ote_id;
+         l_rt_eon.agp_id := i_agp_id;
+         l_rt_eon.value  := i_eon_value;
+         l_rt_eon.status := pdm_constant.g_con_eon_status_prepared;
+         l_rt_eon.evt_id := i_evt_id;
+
+         pdm_eon_tapi_pck.eon_insert_row( io_rt_eon => l_rt_eon );
+         o_eon_id := l_rt_eon.id;
+
+      exception
+         when viu_constant.exc_insertfailed then
+
+             
+             
+             
+             
+             
+             viu_info.handle_info( i_ifo_nr            => viu_constant.c_ifo_insertfailed
+                                 , i_calling_procedure => l_con_proc_name
+                                 , i_severity          => viu_info.severity_notification
+                                 , i_additional_data   =>    'i_ote_id: '      || i_ote_id
+                                                          || ', i_agp_id: '    || i_agp_id
+                                                          || ', i_eon_value: ' || i_eon_value
+                                 );
+
+            
+            open  c_eon( b_ote_id    => i_ote_id
+                       , b_agp_id    => i_agp_id
+                       , b_eon_value => i_eon_value
+                       );
+            fetch c_eon
+            into  o_eon_id;
+            l_found := c_eon%found;
+            close c_eon;
+
+            
+            if not l_found
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_expectedeonnotfound
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.severity_error
+                                  , i_additional_data   =>   'i_ote_id: '      || i_ote_id
+                                                          || ', i_agp_id: '    || i_agp_id
+                                                          || ', i_eon_value: ' || i_eon_value
+                                  );
+            end if;
+      end;
+
+      
+      commit;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         
+         rollback;
+
+         if c_eon%isopen
+         then
+            close c_eon;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_evaluate_operation;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_evaluate_operation( i_ote_id    in pdm_operation_types.id%type
+                                  , i_agp_id    in pdm_attribute_groups.id%type
+                                  , i_eon_value in pdm_evaluate_operations.value%type
+                                  , i_evt_id    in pdm_events.id%type
+                                  , i_psn_id    in pdm_process_specifications.id%type
+                                  )
+   return pdm_evaluate_operations.id%type
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_evaluate_operation';
+
+      cursor c_eon( b_ote_id    in pdm_operation_types.id%type
+                  , b_agp_id    in pdm_attribute_groups.id%type
+                  , b_eon_value in pdm_evaluate_operations.value%type
+                  )
+      is
+      select id
+      from   pdm_evaluate_operations eon
+      where  eon.ote_id = b_ote_id
+      and    eon.agp_id = b_agp_id
+      and    ( eon.value  = b_eon_value
+               or
+               ( b_eon_value is null and eon.value is null)
+             );
+
+      r_eon    c_eon%rowtype;
+      l_rt_pon pdm_process_spec_ev_operations%rowtype;
+      l_found  boolean;
+      l_eon_id pdm_evaluate_operations.id%type;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      open  c_eon( b_ote_id    => i_ote_id
+                 , b_agp_id    => i_agp_id
+                 , b_eon_value => i_eon_value
+                 );
+      fetch c_eon
+      into  r_eon;
+      l_found := c_eon%found;
+      close c_eon;
+
+      
+      if l_found
+      then
+         l_eon_id := r_eon.id;
+      else
+         create_evaluate_operation( i_ote_id    => i_ote_id
+                                  , i_agp_id    => i_agp_id
+                                  , i_eon_value => i_eon_value
+                                  , i_evt_id    => i_evt_id
+                                  , o_eon_id    => l_eon_id
+                                  );
+
+      end if; 
+
+      
+      
+      
+      if i_psn_id is not null
+      then
+
+         
+         
+         
+         l_found := pdm_pon_tapi_pck.pon_select_row( i_pon_psn_id => i_psn_id
+                                                   , i_pon_eon_id => l_eon_id
+                                                   , o_rt_pon     => l_rt_pon
+                                                   );
+         if not l_found
+         then
+
+            
+            l_rt_pon.psn_id := i_psn_id;
+            l_rt_pon.eon_id := l_eon_id;
+            pdm_pon_tapi_pck.pon_insert_row( io_rt_pon => l_rt_pon );
+         end if;
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_eon_id;
+   exception
+      when others
+      then
+         if c_eon%isopen
+         then
+            close c_eon;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_evaluate_operation;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function transform_esn_or_child_or( io_rt_esn in out pdm_expressions%rowtype )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.transform_esn_or_child_or';
+
+      
+      cursor c_child_esn( b_esn_id in pdm_expressions.id%type )
+      is
+      select *
+      from   pdm_expressions esn
+      where  esn_id = b_esn_id;
+
+      
+      
+      cursor c_grandchild_esn( b_esn_id in pdm_expressions.id%type )
+      is
+      select *
+      from   pdm_expressions esn
+      where  esn_id = b_esn_id;
+
+      l_result                   boolean := false;
+      l_dummy                    boolean;
+      l_dummy_count              integer;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if io_rt_esn.operator_type = pdm_constant.g_con_esn_operator_type_or
+      then
+         
+         for r_child_esn in c_child_esn( b_esn_id => io_rt_esn.id )
+         loop
+            if r_child_esn.operator_type = pdm_constant.g_con_esn_operator_type_or
+            then
+               
+               for r_grandchild_esn in c_grandchild_esn( b_esn_id => r_child_esn.id )
+               loop
+                  
+                  r_grandchild_esn.esn_id := io_rt_esn.id;
+
+                  l_dummy_count := pdm_esn_tapi_pck.esn_update_row( i_esn_id  => r_grandchild_esn.id
+                                                                  , io_rt_esn => r_grandchild_esn
+                                                                  );
+               end loop;
+
+               
+               l_dummy := pdm_esn_tapi_pck.esn_delete_row( i_esn_id => r_child_esn.id);
+
+               if not l_result
+               then
+                  l_result := true;
+               end if;
+            end if;
+         end loop;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_result;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end transform_esn_or_child_or;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function transform_esn_and_child_string( io_rt_esn in out pdm_expressions%rowtype
+                                          , i_evt_id  in     pdm_events.id%type
+                                          , i_psn_id  in     pdm_process_specifications.id%type
+                                          )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.transform_esn_and_child_string';
+
+      
+      
+      cursor c_child_esn( b_esn_id in pdm_expressions.id%type )
+      is
+      select esn.id
+      ,      esn.esn_id
+      ,      veon.eon_id
+      ,      veon.agr_list
+      ,      veon.eon_value
+      from   pdm_expressions esn
+             left join ( select eon.id    eon_id
+                         ,      eon.value eon_value
+                         ,      cast(collect( pdm_ot_agr( agr.ote_id
+                                                        , ago.operation
+                                                        , agr.adn_id
+                                                        )
+                                              order by case ago.operation
+                                                          when pdm_constant.g_con_ote_stringmatch  then 1
+                                                          when pdm_constant.g_con_ote_existence    then 2
+                                                          when pdm_constant.g_con_ote_nonexistence then 3
+                                                          else 4
+                                                       end
+                                              ,        agr.sequence
+                                            ) as pdm_nt_agr) agr_list
+                         from   pdm_evaluate_operations     eon
+                         ,      pdm_attribute_group_members agr
+                         ,      pdm_operation_types         ote
+                         ,      pdm_operation_types         ago
+                         where  eon.agp_id    = agr.agp_id
+                         and    eon.ote_id    = ote.id
+                         and    agr.ote_id    = ago.id
+                         and    ote.operation = pdm_constant.g_con_ote_multipurpose
+                         group  by eon.id
+                         ,      eon.value
+                       ) veon
+             on veon.eon_id = esn.eon_id
+      where  esn.esn_id = b_esn_id;
+
+      l_nt_agr_adn_id            pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_ote_id            pdm_nt_ote_id := pdm_nt_ote_id();
+      l_nt_esn_id                pdm_nt_esn_id := pdm_nt_esn_id();
+      l_nt_agr                   pdm_nt_agr    := pdm_nt_agr();
+      l_nt_agr_temp              pdm_nt_agr    := pdm_nt_agr();
+      l_nof_children             integer := 0;
+      l_nof_eon_children         integer := 0;
+      l_concat_value             pdm_evaluate_operations.value%type;
+      l_agp_id                   pdm_attribute_groups.id%type;
+      l_eon_id                   pdm_evaluate_operations.id%type;
+      l_rt_ote_stringmatch       pdm_operation_types%rowtype;
+      l_rt_ote_multipurpose      pdm_operation_types%rowtype;
+      l_rt_esn                   pdm_expressions%rowtype;
+      l_dummy                    integer;
+      l_result                   boolean := false;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if io_rt_esn.operator_type = pdm_constant.g_con_esn_operator_type_and
+      then
+         
+         get_ote(o_rt_ote_stringmatch  => l_rt_ote_stringmatch
+                ,o_rt_ote_multipurpose => l_rt_ote_multipurpose
+                );
+
+         
+         
+
+         
+         
+         for r_child_esn in c_child_esn( b_esn_id => io_rt_esn.id )
+         loop
+            l_nof_children := l_nof_children + 1;
+
+            if r_child_esn.eon_id is not null
+            then
+               l_nof_eon_children := l_nof_eon_children + 1;
+
+               if r_child_esn.agr_list.count > 0
+               then
+                  
+                  
+                  for i in r_child_esn.agr_list.first..r_child_esn.agr_list.last
+                  loop
+                     if r_child_esn.agr_list(i).ote_id = l_rt_ote_stringmatch.id
+                     then
+                        l_nt_agr_adn_id.extend(1);
+                        l_nt_agr_adn_id(l_nt_agr_adn_id.count) := r_child_esn.agr_list(i).adn_id;
+                     else
+                        l_nt_agr.extend(1);
+                        l_nt_agr(l_nt_agr.count) := r_child_esn.agr_list(i);
+                     end if;
+                  end loop;
+               end if;
+
+               
+               l_nt_esn_id.extend(1);
+               l_nt_esn_id(l_nt_esn_id.count) := r_child_esn.id;
+
+               
+               
+               l_concat_value := case
+                                    when l_concat_value is null
+                                       then r_child_esn.eon_value
+                                    when r_child_esn.eon_value is null
+                                       then l_concat_value
+                                    else
+                                       l_concat_value                         ||
+                                       pdm_constant.g_con_eon_value_separator ||
+                                       r_child_esn.eon_value
+                                 end;
+            end if;
+         end loop;
+
+         
+         if l_nof_eon_children > 1
+         then
+            
+            filter_attribute_data( io_nt_adn_id => l_nt_agr_adn_id
+                                 , io_eon_value => l_concat_value
+                                 );
+            
+            if l_nt_agr_adn_id.count > 0
+            then
+               for i in l_nt_agr_adn_id.first..l_nt_agr_adn_id.last
+               loop
+                  l_nt_agr_ote_id.extend(1);
+                  l_nt_agr_ote_id(l_nt_agr_ote_id.count) := l_rt_ote_stringmatch.id;
+               end loop;
+            end if;
+            
+            if l_nt_agr.count > 0
+            then
+               
+               select            pdm_ot_agr( ote_id
+                                           , operation
+                                           , adn_id
+                                           )
+               bulk collect into l_nt_agr_temp
+               from              ( select distinct ote_id
+                                   ,               operation
+                                   ,               adn_id
+                                   from   table(l_nt_agr)
+                                 )
+               order by          case operation
+                                    when pdm_constant.g_con_ote_existence    then 1
+                                    when pdm_constant.g_con_ote_nonexistence then 2
+                                    else 3
+                                 end
+               ,                 adn_id;
+               l_nt_agr := l_nt_agr_temp;
+
+               
+               for i in l_nt_agr.first..l_nt_agr.last
+               loop
+                  l_nt_agr_adn_id.extend(1);
+                  l_nt_agr_adn_id(l_nt_agr_adn_id.count) := l_nt_agr(i).adn_id;
+                  l_nt_agr_ote_id.extend(1);
+                  l_nt_agr_ote_id(l_nt_agr_ote_id.count) := l_nt_agr(i).ote_id;
+               end loop;
+            end if;
+
+            
+            l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_agr_adn_id
+                                                          , i_nt_agr_ote_id => l_nt_agr_ote_id
+                                                          , i_evt_id        => i_evt_id
+                                                          );
+
+            
+            l_eon_id := pdm_expression.get_evaluate_operation
+                           ( i_ote_id    => l_rt_ote_multipurpose.id
+                           , i_agp_id    => l_agp_id
+                           , i_eon_value => l_concat_value
+                           , i_evt_id    => i_evt_id
+                           , i_psn_id    => i_psn_id
+                           );
+
+            
+            if l_nof_eon_children = l_nof_children
+            then
+               
+               
+               io_rt_esn.eon_id        := l_eon_id;
+               io_rt_esn.operator_type := null;
+
+               l_dummy := pdm_esn_tapi_pck.esn_update_row( i_esn_id  => io_rt_esn.id
+                                                         , io_rt_esn => io_rt_esn
+                                                         );
+
+            else
+               
+               l_rt_esn.eon_id := l_eon_id;
+               l_rt_esn.esn_id := io_rt_esn.id;
+               l_rt_esn.tle_id := io_rt_esn.tle_id;
+
+               pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => l_rt_esn );
+
+            end if;
+
+            
+            
+            for l_index in 1 .. l_nt_esn_id.count
+            loop
+               delete from pdm_expressions
+               where  id = l_nt_esn_id(l_index);
+            end loop;
+
+            l_result := true;
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_result;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end transform_esn_and_child_string;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function transform_esn_and_or_string( io_rt_esn in out pdm_expressions%rowtype
+                                       , i_evt_id  in     pdm_events.id%type
+                                       , i_psn_id  in     pdm_process_specifications.id%type
+                                       )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.transform_esn_and_or_string';
+
+      type agr_list_tt  is table of pdm_nt_agr                          index by binary_integer;
+      type eon_value_tt is table of pdm_evaluate_operations.value%type  index by binary_integer;
+      type index_tt     is table of pdm_evaluate_operations.value%type  index by binary_integer;
+
+      type agr_lists_tt  is table of agr_list_tt  index by binary_integer;
+      type eon_values_tt is table of eon_value_tt index by binary_integer;
+      type indices_tt    is table of index_tt     index by binary_integer;
+
+      
+      cursor c_child_esn( b_esn_id in pdm_expressions.id%type )
+      is
+      select esnch.id            child_id
+      ,      esnch.operator_type child_operator_type
+      ,      esngc.id            grandchild_id
+      ,      esngc.operator_type grandchild_operator_type
+      ,      esngc.eon_id        grandchild_eon_id
+      ,      veon.operation      eon_operation
+      ,      veon.eon_value      eon_value
+      ,      veon.agr_list       agr_list
+      from   pdm_expressions esnch
+             left join pdm_expressions esngc
+                       left join ( select eon.id        eon_id
+                                   ,      eon.value     eon_value
+                                   ,      ote.operation operation
+                                   ,      cast(collect( pdm_ot_agr( agr.ote_id
+                                                                  , ago.operation
+                                                                  , agr.adn_id
+                                                                  )
+                                                        order by case ago.operation
+                                                                    when pdm_constant.g_con_ote_stringmatch  then 1
+                                                                    when pdm_constant.g_con_ote_existence    then 2
+                                                                    when pdm_constant.g_con_ote_nonexistence then 3
+                                                                    else 4
+                                                                 end
+                                                        ,        agr.sequence
+                                                      ) as pdm_nt_agr) agr_list
+                                   from   pdm_evaluate_operations     eon
+                                   ,      pdm_attribute_group_members agr
+                                   ,      pdm_operation_types         ote
+                                   ,      pdm_operation_types         ago
+                                   where  eon.agp_id = agr.agp_id
+                                   and    eon.ote_id = ote.id
+                                   and    agr.ote_id = ago.id
+                                   group  by eon.id
+                                   ,      eon.value
+                                   ,      ote.operation
+                                 ) veon
+                       on veon.eon_id = esngc.eon_id
+             on   esngc.esn_id = esnch.id
+      where  esnch.esn_id = b_esn_id
+      order  by esnch.id
+      ,      esngc.id;
+
+      l_tt_agr                   agr_lists_tt;
+      l_tt_eon_value             eon_values_tt;
+      l_tt_admin                 indices_tt;
+
+      l_nt_agr_adn_id            pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_ote_id            pdm_nt_ote_id := pdm_nt_ote_id();
+      l_nt_agr                   pdm_nt_agr    := pdm_nt_agr();
+      l_nt_agr_ordered           pdm_nt_agr    := pdm_nt_agr();
+      l_nt_esn_id                pdm_nt_esn_id := pdm_nt_esn_id();
+      l_nof_or_children          pls_integer := 0;
+      l_agp_id                   pdm_attribute_groups.id%type;
+      l_eon_id                   pdm_evaluate_operations.id%type;
+      l_rt_ote_stringmatch       pdm_operation_types%rowtype;
+      l_rt_ote_multipurpose      pdm_operation_types%rowtype;
+      l_rt_esn                   pdm_expressions%rowtype;
+
+      l_dummy                    pls_integer;
+      l_continue                 boolean := true;
+
+      r_child_esn                c_child_esn%rowtype;
+
+      l_current_child_esn        pdm_expressions.id%type := 0;
+      l_main_index               binary_integer := 1;
+      l_ref_index                binary_integer := 0;
+      l_new_subindex             binary_integer;
+      l_result                   boolean := false;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if io_rt_esn.operator_type = pdm_constant.g_con_esn_operator_type_and
+      then
+         
+         get_ote(o_rt_ote_stringmatch  => l_rt_ote_stringmatch
+                ,o_rt_ote_multipurpose => l_rt_ote_multipurpose
+                );
+
+         
+         
+         
+         
+         l_tt_agr      (l_main_index)(1) := pdm_nt_agr();
+         l_tt_eon_value(l_main_index)(1) := null;
+         l_tt_admin    (l_main_index)(1) := null;
+
+         
+         
+         
+         
+         
+         open  c_child_esn( b_esn_id => io_rt_esn.id );
+         fetch c_child_esn
+         into  r_child_esn;
+
+         while c_child_esn%found and l_continue
+         loop
+
+            if r_child_esn.child_operator_type      != pdm_constant.g_con_esn_operator_type_or
+            or r_child_esn.grandchild_operator_type is not null
+            or r_child_esn.grandchild_eon_id        is null
+            or r_child_esn.eon_operation            != pdm_constant.g_con_ote_multipurpose
+            then
+               l_continue := false;
+
+            else
+
+               if r_child_esn.child_id != l_current_child_esn
+               then
+                  
+                  
+                  l_main_index := abs( l_main_index - 1 );
+                  l_ref_index  := abs( l_ref_index - 1 );
+
+                  
+                  if l_tt_admin.exists(l_main_index)
+                  then
+                     l_tt_agr(l_main_index).delete;
+                     l_tt_eon_value(l_main_index).delete;
+                     l_tt_admin(l_main_index).delete;
+                  end if;
+
+                  
+                  l_nof_or_children   := l_nof_or_children + 1;
+
+                  
+                  l_current_child_esn := r_child_esn.child_id;
+
+                  
+                  l_nt_esn_id.extend(1);
+                  l_nt_esn_id(l_nt_esn_id.count) := r_child_esn.child_id;
+               end if;
+
+               
+               l_nt_esn_id.extend(1);
+               l_nt_esn_id(l_nt_esn_id.count) := r_child_esn.grandchild_id;
+
+               
+               
+               for i in 1 .. l_tt_admin(l_ref_index).count
+               loop
+
+                  
+                  if l_tt_admin.exists(l_main_index)
+                  then
+                     l_new_subindex := l_tt_admin(l_main_index).count + 1;
+                  else
+                     l_new_subindex := 1;
+                  end if;
+
+                  
+                  l_nt_agr_adn_id.delete;
+                  l_nt_agr.delete;
+                  l_nt_agr_ordered.delete;
+
+                  
+                  l_tt_admin (l_main_index)(l_new_subindex) := l_new_subindex;
+
+                  
+                  
+                  l_tt_eon_value(l_main_index)(l_new_subindex) :=
+                       case
+                          when l_tt_eon_value(l_ref_index)(i) is null
+                             then r_child_esn.eon_value
+                          when r_child_esn.eon_value is null
+                             then l_tt_eon_value(l_ref_index)(i)
+                          else l_tt_eon_value(l_ref_index)(i) ||
+                               pdm_constant.g_con_eon_value_separator ||
+                               r_child_esn.eon_value
+                       end;
+
+                 
+                  if l_tt_agr(l_ref_index)(i).count > 0
+                  then
+                     for j in l_tt_agr(l_ref_index)(i).first..l_tt_agr(l_ref_index)(i).last
+                     loop
+                        if l_tt_agr(l_ref_index)(i)(j).ote_id = l_rt_ote_stringmatch.id
+                        then
+                           
+                           l_nt_agr_adn_id.extend(1);
+                           l_nt_agr_adn_id(l_nt_agr_adn_id.count) := l_tt_agr(l_ref_index)(i)(j).adn_id;
+                        else
+                           
+                           l_nt_agr.extend(1);
+                           l_nt_agr(l_nt_agr.count) := l_tt_agr(l_ref_index)(i)(j);
+                        end if;
+                     end loop;
+                  end if;
+
+                 
+                  if r_child_esn.agr_list.count > 0
+                  then
+                     for j in r_child_esn.agr_list.first..r_child_esn.agr_list.last
+                     loop
+                        if r_child_esn.agr_list(j).ote_id = l_rt_ote_stringmatch.id
+                        then
+                           
+                           l_nt_agr_adn_id.extend(1);
+                           l_nt_agr_adn_id(l_nt_agr_adn_id.count) := r_child_esn.agr_list(j).adn_id;
+                        else
+                           
+                           l_nt_agr.extend(1);
+                           l_nt_agr(l_nt_agr.count) := r_child_esn.agr_list(j);
+                        end if;
+                     end loop;
+                  end if;
+
+                  
+                  filter_attribute_data( io_nt_adn_id => l_nt_agr_adn_id
+                                       , io_eon_value => l_tt_eon_value(l_main_index)(l_new_subindex)
+                                       );
+
+                  
+                  if not l_tt_agr.exists(l_main_index)
+                  or not l_tt_agr(l_main_index).exists(l_new_subindex)
+                  then
+                     l_tt_agr(l_main_index)(l_new_subindex) := pdm_nt_agr();
+                  end if;
+
+                  
+                  if l_nt_agr_adn_id.count > 0
+                  then
+                     for j in l_nt_agr_adn_id.first..l_nt_agr_adn_id.last
+                     loop
+                        l_tt_agr(l_main_index)(l_new_subindex).extend(1);
+                        l_tt_agr(l_main_index)(l_new_subindex)(j) := pdm_ot_agr(l_rt_ote_stringmatch.id
+                                                                               ,l_rt_ote_stringmatch.operation
+                                                                               ,l_nt_agr_adn_id(j)
+                                                                               );
+                     end loop;
+                  end if;
+
+                  
+                  
+                  if l_nt_agr.count > 0
+                  then
+                     
+                     select            pdm_ot_agr( ote_id
+                                                 , operation
+                                                 , adn_id
+                                                 )
+                     bulk collect into l_nt_agr_ordered
+                     from              ( select distinct ote_id
+                                         ,               operation
+                                         ,               adn_id
+                                         from   table(l_nt_agr)
+                                       )
+                     order by          case operation
+                                          when pdm_constant.g_con_ote_existence    then 1
+                                          when pdm_constant.g_con_ote_nonexistence then 2
+                                          else 3
+                                       end
+                     ,                 adn_id;
+
+                     
+                     for j in l_nt_agr_ordered.first..l_nt_agr_ordered.last
+                     loop
+                        l_tt_agr(l_main_index)(l_new_subindex).extend(1);
+                        l_tt_agr(l_main_index)(l_new_subindex)(l_tt_agr(l_main_index)(l_new_subindex).count) := l_nt_agr_ordered(j);
+                     end loop;
+                  end if;
+
+               end loop;
+
+               fetch c_child_esn
+               into  r_child_esn;
+
+            end if;
+         end loop;
+
+         close c_child_esn;
+
+         
+         if l_continue and l_nof_or_children > 1
+         then
+
+            
+            for i in 1 .. l_tt_agr(l_main_index).count
+            loop
+               
+               l_nt_agr_adn_id.delete;
+               l_nt_agr_ote_id.delete;
+
+               
+               for j in l_tt_agr(l_main_index)(i).first..l_tt_agr(l_main_index)(i).last
+               loop
+                  l_nt_agr_adn_id.extend(1);
+                  l_nt_agr_adn_id(l_nt_agr_adn_id.count) := l_tt_agr(l_main_index)(i)(j).adn_id;
+                  l_nt_agr_ote_id.extend(1);
+                  l_nt_agr_ote_id(l_nt_agr_ote_id.count) := l_tt_agr(l_main_index)(i)(j).ote_id;
+               end loop;
+
+               
+               l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_agr_adn_id
+                                                             , i_nt_agr_ote_id => l_nt_agr_ote_id
+                                                             , i_evt_id        => i_evt_id
+                                                             );
+
+               
+               l_eon_id := pdm_expression.get_evaluate_operation
+                              ( i_ote_id    => l_rt_ote_multipurpose.id
+                              , i_agp_id    => l_agp_id
+                              , i_eon_value => l_tt_eon_value(l_main_index)(i)
+                              , i_evt_id    => i_evt_id
+                              , i_psn_id    => i_psn_id
+                              );
+
+               
+               l_rt_esn := null;
+               l_rt_esn.esn_id := io_rt_esn.id;
+               l_rt_esn.tle_id := io_rt_esn.tle_id;
+               l_rt_esn.eon_id := l_eon_id;
+
+               pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => l_rt_esn );
+            end loop;
+
+            
+            io_rt_esn.operator_type := pdm_constant.g_con_esn_operator_type_or;
+            l_dummy := pdm_esn_tapi_pck.esn_update_row( i_esn_id  => io_rt_esn.id
+                                                      , io_rt_esn => io_rt_esn
+                                                      );
+
+            
+            
+            for l_index in 1 .. l_nt_esn_id.count
+            loop
+               delete from pdm_expressions
+               where  id = l_nt_esn_id(l_index);
+            end loop;
+
+            l_result := true;
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_result;
+   exception
+      when others
+      then
+         if c_child_esn%isopen
+         then
+            close c_child_esn;
+         end if;
+
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end transform_esn_and_or_string;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function transform_esn_and_str_or_str( io_rt_esn in out pdm_expressions%rowtype
+                                        , i_evt_id  in     pdm_events.id%type
+                                        , i_psn_id  in     pdm_process_specifications.id%type
+                                        )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.transform_esn_and_str_or_str';
+
+      type agr_list_tt  is table of pdm_nt_agr                         index by binary_integer;
+      type eon_value_tt is table of pdm_evaluate_operations.value%type index by binary_integer;
+      type esn_list_tt  is table of pdm_expressions.id%type            index by binary_integer;
+
+      
+      cursor c_child_esn( b_esn_id in pdm_expressions.id%type )
+      is
+      select esnch.id             child_id
+      ,      esnch.eon_id         child_eon_id
+      ,      esnch.operator_type  child_operator_type
+      ,      esngc.operator_type  grandchild_operator_type
+      ,      esngc.id             grandchild_id
+      ,      esngc.eon_id         grandchild_eon_id
+      ,      veon.operation       grandchild_eon_operation
+      ,      veon.eon_value       grandchild_eon_value
+      ,      veon.agr_list        grandchild_agr_list
+      ,      veon2.operation      child_eon_operation
+      ,      veon2.eon_value      child_eon_value
+      ,      veon2.agr_list       child_agr_list
+      from   pdm_expressions esnch
+             left join ( select eon.id        eon_id
+                         ,      eon.value     eon_value
+                         ,      ote.operation operation
+                         ,      cast(collect( pdm_ot_agr( agr.ote_id
+                                                        , ago.operation
+                                                        , agr.adn_id
+                                                        )
+                                              order by case ago.operation
+                                                          when pdm_constant.g_con_ote_stringmatch  then 1
+                                                          when pdm_constant.g_con_ote_existence    then 2
+                                                          when pdm_constant.g_con_ote_nonexistence then 3
+                                                          else 4
+                                                       end
+                                              ,        agr.sequence
+                                            ) as pdm_nt_agr) agr_list
+                         from   pdm_evaluate_operations     eon
+                         ,      pdm_attribute_group_members agr
+                         ,      pdm_operation_types         ote
+                         ,      pdm_operation_types         ago
+                         where  eon.agp_id = agr.agp_id
+                         and    eon.ote_id = ote.id
+                         and    agr.ote_id = ago.id
+                         group  by eon.id
+                         ,      eon.value
+                         ,      ote.operation
+                       ) veon2
+             on veon2.eon_id = esnch.eon_id
+             left join pdm_expressions esngc
+                       left join ( select eon.id        eon_id
+                                   ,      eon.value     eon_value
+                                   ,      ote.operation operation
+                                   ,      cast(collect( pdm_ot_agr( agr.ote_id
+                                                                  , ago.operation
+                                                                  , agr.adn_id
+                                                                  )
+                                                        order by case ago.operation
+                                                                    when pdm_constant.g_con_ote_stringmatch  then 1
+                                                                    when pdm_constant.g_con_ote_existence    then 2
+                                                                    when pdm_constant.g_con_ote_nonexistence then 3
+                                                                    else 4
+                                                                 end
+                                                        ,        agr.sequence
+                                                      ) as pdm_nt_agr) agr_list
+                                   from   pdm_evaluate_operations     eon
+                                   ,      pdm_attribute_group_members agr
+                                   ,      pdm_operation_types         ote
+                                   ,      pdm_operation_types         ago
+                                   where  eon.agp_id = agr.agp_id
+                                   and    eon.ote_id = ote.id
+                                   and    agr.ote_id = ago.id
+                                   group  by eon.id
+                                   ,      eon.value
+                                   ,      ote.operation
+                                 ) veon
+                       on veon.eon_id = esngc.eon_id
+             on   esngc.esn_id = esnch.id
+      where  esnch.esn_id = b_esn_id
+      order  by esnch.eon_id nulls last
+      ,      esnch.id
+      ,      esngc.id;
+
+      l_tt_agr                   agr_list_tt;
+      l_tt_eon_value             eon_value_tt;
+      l_tt_esn_id                esn_list_tt;
+      l_nt_main_agr_adn_id       pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_adn_id            pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_ote_id            pdm_nt_ote_id := pdm_nt_ote_id();
+      l_nt_main_agr              pdm_nt_agr    := pdm_nt_agr();
+      l_nt_agr                   pdm_nt_agr    := pdm_nt_agr();
+      l_nt_agr_ordered           pdm_nt_agr    := pdm_nt_agr();
+      l_nt_esn_id                pdm_nt_esn_id := pdm_nt_esn_id();
+      l_nof_or_children          integer := 0;
+      l_nof_eon_children         integer := 0;
+      l_agp_id                   pdm_attribute_groups.id%type;
+      l_eon_id                   pdm_evaluate_operations.id%type;
+      l_rt_ote_stringmatch       pdm_operation_types%rowtype;
+      l_rt_ote_multipurpose      pdm_operation_types%rowtype;
+      l_rt_esn                   pdm_expressions%rowtype;
+      l_continue                 boolean := true;
+      r_child_esn                c_child_esn%rowtype;
+      l_main_eon_value           pdm_evaluate_operations.value%type;
+      l_eon_value_new            pdm_evaluate_operations.value%type;
+      l_result                   boolean := false;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if io_rt_esn.operator_type = pdm_constant.g_con_esn_operator_type_and
+      then
+         
+         get_ote(o_rt_ote_stringmatch  => l_rt_ote_stringmatch
+                ,o_rt_ote_multipurpose => l_rt_ote_multipurpose
+                );
+         
+         
+         
+         open  c_child_esn( b_esn_id => io_rt_esn.id );
+         fetch c_child_esn
+         into  r_child_esn;
+
+         while c_child_esn%found and l_continue
+         loop
+
+            if ( 
+                 l_nof_eon_children = 0
+                 and ( r_child_esn.child_eon_operation is null
+                       or
+                       r_child_esn.child_eon_operation != pdm_constant.g_con_ote_multipurpose
+                     )
+               )
+            or ( 
+                 l_nof_eon_children > 0
+                 and ( r_child_esn.child_operator_type is null
+                       or
+                       r_child_esn.child_operator_type != pdm_constant.g_con_esn_operator_type_or
+                       or
+                       r_child_esn.grandchild_eon_operation is null
+                       or
+                       r_child_esn.grandchild_eon_operation != pdm_constant.g_con_ote_multipurpose
+                     )
+               )
+            then
+               l_continue := false;
+
+            else
+               if r_child_esn.child_eon_operation is not null
+               then
+                  
+
+                  l_nof_eon_children := l_nof_eon_children + 1;
+
+                  
+                  l_main_eon_value := r_child_esn.child_eon_value;
+
+                 
+                  if r_child_esn.child_agr_list.count > 0
+                  then
+                     for i in r_child_esn.child_agr_list.first..r_child_esn.child_agr_list.last
+                     loop
+                        if r_child_esn.child_agr_list(i).ote_id = l_rt_ote_stringmatch.id
+                        then
+                           
+                           l_nt_main_agr_adn_id.extend(1);
+                           l_nt_main_agr_adn_id(l_nt_main_agr_adn_id.count) := r_child_esn.child_agr_list(i).adn_id;
+                        else
+                           
+                           l_nt_main_agr.extend(1);
+                           l_nt_main_agr(l_nt_main_agr.count) := r_child_esn.child_agr_list(i);
+                        end if;
+                     end loop;
+                  end if;
+
+                  
+                  l_nt_esn_id.extend(1);
+                  l_nt_esn_id(l_nt_esn_id.count) := r_child_esn.child_id;
+
+               else
+                  
+
+                  l_nof_or_children := l_nof_or_children + 1;
+
+                  
+                  l_tt_eon_value(l_nof_or_children) := r_child_esn.grandchild_eon_value;
+
+                  
+                  l_tt_agr(l_nof_or_children) := pdm_nt_agr();
+                  
+                  if r_child_esn.grandchild_agr_list.count > 0
+                  then
+                     for i in r_child_esn.grandchild_agr_list.first..r_child_esn.grandchild_agr_list.last
+                     loop
+                        l_tt_agr(l_nof_or_children).extend(1);
+                        l_tt_agr(l_nof_or_children)(l_tt_agr(l_nof_or_children).count) := r_child_esn.grandchild_agr_list(i);
+                     end loop;
+                  end if;
+
+                  
+                  l_tt_esn_id(l_nof_or_children)    := r_child_esn.child_id;
+
+                  
+                  l_nt_esn_id.extend(1);
+                  l_nt_esn_id(l_nt_esn_id.count) := r_child_esn.grandchild_id;
+
+               end if;
+
+               fetch c_child_esn
+               into  r_child_esn;
+
+            end if;
+         end loop;
+
+         close c_child_esn;
+
+         
+         
+         if  l_continue
+         and l_nof_or_children  > 0
+         and l_nof_eon_children = 1
+         then
+
+            
+            for i in 1 .. l_nof_or_children
+            loop
+               
+               
+               l_eon_value_new := case
+                                     when l_main_eon_value is null
+                                        then l_tt_eon_value(i)
+                                     when l_tt_eon_value(i) is null
+                                        then l_main_eon_value
+                                     else l_main_eon_value                       ||
+                                          pdm_constant.g_con_eon_value_separator ||
+                                          l_tt_eon_value(i)
+                                  end;
+
+               
+               l_nt_agr_adn_id := l_nt_main_agr_adn_id;
+               l_nt_agr        := l_nt_main_agr;
+
+               
+               if l_tt_agr(i).count > 0
+               then
+                  for j in l_tt_agr(i).first..l_tt_agr(i).last
+                  loop
+                     if l_tt_agr(i)(j).ote_id = l_rt_ote_stringmatch.id
+                     then
+                        
+                        l_nt_agr_adn_id.extend(1);
+                        l_nt_agr_adn_id(l_nt_agr_adn_id.count) := l_tt_agr(i)(j).adn_id;
+                     else
+                        
+                        l_nt_agr.extend(1);
+                        l_nt_agr(l_nt_agr.count) := l_tt_agr(i)(j);
+                     end if;
+                  end loop;
+               end if;
+
+               
+               filter_attribute_data( io_nt_adn_id => l_nt_agr_adn_id
+                                    , io_eon_value => l_eon_value_new
+                                    );
+
+               
+               l_nt_agr_ote_id.delete;
+
+               
+               if l_nt_agr_adn_id.count > 0
+               then
+                  for j in l_nt_agr_adn_id.first..l_nt_agr_adn_id.last
+                  loop
+                     l_nt_agr_ote_id.extend(1);
+                     l_nt_agr_ote_id(l_nt_agr_ote_id.count) := l_rt_ote_stringmatch.id;
+                  end loop;
+               end if;
+
+               
+               
+               if l_nt_agr.count > 0
+               then
+                  
+                  select            pdm_ot_agr( ote_id
+                                              , operation
+                                              , adn_id
+                                              )
+                  bulk collect into l_nt_agr_ordered
+                  from              ( select distinct ote_id
+                                      ,               operation
+                                      ,               adn_id
+                                      from   table(l_nt_agr)
+                                    )
+                  order by          case operation
+                                       when pdm_constant.g_con_ote_existence    then 1
+                                       when pdm_constant.g_con_ote_nonexistence then 2
+                                       else 3
+                                    end
+                  ,                 adn_id;
+
+                 
+                  for j in l_nt_agr_ordered.first..l_nt_agr_ordered.last
+                  loop
+                     l_nt_agr_adn_id.extend(1);
+                     l_nt_agr_adn_id(l_nt_agr_adn_id.count) := l_nt_agr_ordered(j).adn_id;
+                     l_nt_agr_ote_id.extend(1);
+                     l_nt_agr_ote_id(l_nt_agr_ote_id.count) := l_nt_agr_ordered(j).ote_id;
+                  end loop;
+               end if;
+
+               
+               l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_agr_adn_id
+                                                             , i_nt_agr_ote_id => l_nt_agr_ote_id
+                                                             , i_evt_id        => i_evt_id
+                                                             );
+
+               
+               l_eon_id := pdm_expression.get_evaluate_operation
+                              ( i_ote_id    => l_rt_ote_multipurpose.id
+                              , i_agp_id    => l_agp_id
+                              , i_eon_value => l_eon_value_new
+                              , i_evt_id    => i_evt_id
+                              , i_psn_id    => i_psn_id
+                              );
+
+               
+               l_rt_esn := null;
+               l_rt_esn.esn_id := l_tt_esn_id(i);
+               l_rt_esn.tle_id := io_rt_esn.tle_id;
+               l_rt_esn.eon_id := l_eon_id;
+
+               pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => l_rt_esn );
+            end loop;
+
+            
+            
+            for l_index in 1 .. l_nt_esn_id.count
+            loop
+               delete from pdm_expressions
+               where  id = l_nt_esn_id(l_index);
+            end loop;
+
+            l_result := true;
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_result;
+   exception
+      when others
+      then
+         if c_child_esn%isopen
+         then
+            close c_child_esn;
+         end if;
+
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end transform_esn_and_str_or_str;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   function transform_esn_andor_andor( io_rt_esn in out pdm_expressions%rowtype )
+   return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.transform_esn_andor_andor';
+
+      
+      cursor c_child_esn( b_parent_esn_id in pdm_expressions.id%type )
+      is
+      select *
+      from   pdm_expressions esn
+      where  esn.esn_id = b_parent_esn_id;
+
+      l_nof_andor_children       integer := 0;
+      l_dummy                    boolean;
+      l_dummy_count              integer;
+      l_rt_esn                   pdm_expressions%rowtype;
+      l_continue                 boolean := true;
+      r_child_esn                c_child_esn%rowtype;
+      l_result                   boolean := false;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if io_rt_esn.operator_type in ( pdm_constant.g_con_esn_operator_type_and
+                                    , pdm_constant.g_con_esn_operator_type_or
+                                    )
+      then
+         
+         open  c_child_esn( b_parent_esn_id => io_rt_esn.id );
+         fetch c_child_esn
+         into  r_child_esn;
+
+         while c_child_esn%found
+         and   l_continue
+         loop
+            if l_nof_andor_children = 0
+               and
+               r_child_esn.operator_type in ( pdm_constant.g_con_esn_operator_type_and
+                                            , pdm_constant.g_con_esn_operator_type_or
+                                            )
+            then
+               l_nof_andor_children := l_nof_andor_children + 1;
+
+               l_rt_esn := r_child_esn;
+
+               fetch c_child_esn
+               into  r_child_esn;
+            else
+               l_continue := false;
+            end if;
+         end loop;
+
+         close c_child_esn;
+
+         if l_continue and l_nof_andor_children = 1
+         then
+            
+            l_rt_esn.esn_id := io_rt_esn.esn_id;
+            l_dummy_count := pdm_esn_tapi_pck.esn_update_row( i_esn_id  => l_rt_esn.id
+                                                            , io_rt_esn => l_rt_esn
+                                                            );
+
+            
+            l_dummy := pdm_esn_tapi_pck.esn_delete_row( i_esn_id => io_rt_esn.id );
+
+            
+            io_rt_esn := l_rt_esn;
+
+            l_result := true;
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+
+      return l_result;
+
+   exception
+      when others
+      then
+         if c_child_esn%isopen
+         then
+            close c_child_esn;
+         end if;
+
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end transform_esn_andor_andor;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure transform_expression( io_rt_esn in out pdm_expressions%rowtype
+                                 , i_evt_id  in     pdm_events.id%type
+                                 , i_psn_id  in     pdm_process_specifications.id%type
+                                 )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.transform_expression';
+
+      l_result                   boolean;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+
+      
+      
+      
+      
+      l_result := pdm_expression.transform_esn_and_child_string( io_rt_esn => io_rt_esn
+                                                               , i_evt_id  => i_evt_id
+                                                               , i_psn_id  => i_psn_id
+                                                               );
+
+      
+      
+      
+      
+      
+      
+      l_result := pdm_expression.transform_esn_and_str_or_str( io_rt_esn => io_rt_esn
+                                                             , i_evt_id  => i_evt_id
+                                                             , i_psn_id  => i_psn_id
+                                                             );
+
+      
+      
+      
+      
+      l_result := pdm_expression.transform_esn_andor_andor( io_rt_esn => io_rt_esn );
+
+      
+      
+      
+      
+      l_result := pdm_expression.transform_esn_or_child_or( io_rt_esn => io_rt_esn );
+
+      
+      
+      
+      
+      
+      
+      l_result := pdm_expression.transform_esn_and_or_string( io_rt_esn => io_rt_esn
+                                                            , i_evt_id  => i_evt_id
+                                                            , i_psn_id  => i_psn_id
+                                                            );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end transform_expression;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure copy_expression( i_rt_esn_template in  pdm_expressions%rowtype
+                            , i_esn_id_parent   in  pdm_expressions.id%type
+                            )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.copy_expression';
+
+      cursor c_child_esn( b_esn_id_parent in pdm_expressions.id%type )
+      is
+      select esn.*
+      from   pdm_expressions esn
+      where  esn.esn_id = b_esn_id_parent;
+
+      l_rt_esn_new               pdm_expressions%rowtype;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_rt_esn_new.esn_id        := i_esn_id_parent;
+      l_rt_esn_new.tle_id        := i_rt_esn_template.tle_id;
+      l_rt_esn_new.eon_id        := i_rt_esn_template.eon_id;
+      l_rt_esn_new.operator_type := i_rt_esn_template.operator_type;
+
+      pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => l_rt_esn_new );
+
+      
+      for r_child_esn in c_child_esn( b_esn_id_parent => i_rt_esn_template.id )
+      loop
+         pdm_expression.copy_expression( i_rt_esn_template => r_child_esn
+                                       , i_esn_id_parent   => l_rt_esn_new.id
+                                       );
+
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end copy_expression;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure merge_expressions( i_esn_id          in  pdm_expressions.id%type
+                              , i_esn_id_template in  pdm_expressions.id%type
+                              , i_evt_id          in  pdm_events.id%type
+                              , i_transform       in  boolean
+                              , i_psn_id          in  pdm_process_specifications.id%type
+                              , o_esn_id_new      out pdm_expressions.id%type
+                              )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.merge_expressions';
+
+      l_rt_esn_new               pdm_expressions%rowtype;
+      l_rt_esn_child             pdm_expressions%rowtype;
+      l_rt_esn_template          pdm_expressions%rowtype;
+      l_found                    boolean;
+      l_dummy_count              integer;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      if i_esn_id_template is null
+      then
+         
+         o_esn_id_new := i_esn_id;
+
+      else
+         
+         l_found := pdm_esn_tapi_pck.esn_select_row( i_esn_id => i_esn_id
+                                                   , o_rt_esn => l_rt_esn_child
+                                                   );
+
+         if l_found
+         then
+            
+            l_rt_esn_new.tle_id        := l_rt_esn_child.tle_id;
+            l_rt_esn_new.operator_type := pdm_constant.g_con_esn_operator_type_and;
+
+            pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => l_rt_esn_new );
+
+            
+            l_rt_esn_child.esn_id := l_rt_esn_new.id;
+
+            l_dummy_count := pdm_esn_tapi_pck.esn_update_row( i_esn_id  => i_esn_id
+                                                            , io_rt_esn => l_rt_esn_child
+                                                            );
+
+            
+            l_found := pdm_esn_tapi_pck.esn_select_row( i_esn_id => i_esn_id_template
+                                                      , o_rt_esn => l_rt_esn_template
+                                                      );
+
+            if l_found
+            then
+               
+               copy_expression( i_rt_esn_template => l_rt_esn_template
+                              , i_esn_id_parent   => l_rt_esn_new.id
+                              );
+
+               
+               if i_transform
+               then
+                  
+                  pdm_expression.transform_expression( io_rt_esn => l_rt_esn_new
+                                                     , i_evt_id  => i_evt_id
+                                                     , i_psn_id  => i_psn_id
+                                                     );
+               end if;
+
+               o_esn_id_new := l_rt_esn_new.id;
+            else
+               viu_info.raise_info
+                        ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                        , i_calling_procedure => l_con_proc_name
+                        , i_severity          => viu_info.c_severity_error
+                        , i_additional_data   => 'Template expression with ID: ' || i_esn_id_template
+                        );
+            end if;
+         else
+            viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_error
+                     , i_additional_data   => 'Expression with ID: ' || i_esn_id
+                     );
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end merge_expressions;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_elements ( i_xml_evaluate    in  xmltype
+                          , i_ote_operation   in  pdm_operation_types.operation%type
+                          , o_it_emt          out it_emt
+                          )
+
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_elements';
+
+      l_emt_value                pdm_package_attributes.value%type;
+      l_xpath_nth_element        varchar2 (200);
+      l_idx_element              number  := 1;
+      l_last_element             boolean := false;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if i_ote_operation = pdm_constant.g_con_ote_incollection
+      then
+         while (not l_last_element)
+         loop
+            l_xpath_nth_element :=
+                  pdm_constant.g_con_xpath_incollection_elem
+               || '['
+               || to_char (l_idx_element)
+               || ']';
+            l_emt_value :=
+               cmn_xml_util.extract_value (i_xml   => i_xml_evaluate,
+                                           i_xpath => l_xpath_nth_element
+                                          );
+
+            
+            if (l_emt_value is null)
+            then
+               l_last_element := true;
+            else
+
+               
+               o_it_emt(l_idx_element) := l_emt_value;
+
+               l_idx_element := l_idx_element + 1;
+            end if;
+         end loop;
+
+         
+         if l_idx_element = 1
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_evaluateoperationinvalid
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               );
+         end if;
+
+      end if;
+
+      
+      if i_ote_operation = pdm_constant.g_con_ote_regexp
+      then
+         l_emt_value :=
+            cmn_xml_util.extract_value (i_xml   => i_xml_evaluate,
+                                        i_xpath => pdm_constant.g_con_xpath_regexp_expression
+                                       );
+
+         
+         if (l_emt_value is null)
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_evaluateoperationinvalid
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               );
+         else
+            
+            o_it_emt(l_idx_element) := l_emt_value;
+         end if;
+
+      end if;
+
+      
+      if i_ote_operation = pdm_constant.g_con_ote_substring
+      then
+         l_emt_value :=
+            cmn_xml_util.extract_value (i_xml   => i_xml_evaluate,
+                                        i_xpath => pdm_constant.g_con_xpath_substring_const
+                                       );
+
+         
+         if (l_emt_value is null)
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_evaluateoperationinvalid
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               );
+         else
+            
+            o_it_emt(l_idx_element) := l_emt_value;
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_elements;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure register_esn_with_only_leaves ( i_esn_id  in  pdm_expressions.id%type )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.register_esn_with_only_leaves';
+
+      cursor c_leaf( b_esn_id in pdm_expressions.id%type )
+      is
+         with
+            
+            
+            esn_having_leaf as
+              (select     esn1.esn_id        parent_esn_id
+               ,          connect_by_isleaf  child_type
+               from       pdm_expressions    esn1
+               start with esn1.id = b_esn_id
+               connect by esn1.esn_id = prior esn1.id
+              )
+            
+         ,  grp_cnt_esn as
+              (select parent_esn_id
+               ,      child_type
+               ,      count(child_type)  count_children
+               from   esn_having_leaf
+               group by parent_esn_id
+               ,        child_type
+              )
+            
+         ,  esn_with_only_leaves as
+              (select parent_esn_id
+               from   grp_cnt_esn
+               where  child_type = 1
+               minus
+               select parent_esn_id
+               from   grp_cnt_esn
+               where  child_type = 0
+              )
+         
+         select esn2.id
+         ,      esn2.tle_id
+         ,      esn2.ind_process_specification
+         ,      esn2.esn_id
+         ,      esn2.eon_id
+         ,      esn2.operator_type
+         ,      gce.count_children  count_exclusive_leaves
+         from   grp_cnt_esn           gce
+         ,      esn_with_only_leaves  ewl
+         ,      pdm_expressions       esn2
+         where  gce.parent_esn_id = ewl.parent_esn_id
+         and    ewl.parent_esn_id = esn2.id
+         ;
+      
+      l_rt_esn                   pdm_expressions%rowtype;
+      l_nr_rows_updated          number;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      
+      for r_leaf in c_leaf ( b_esn_id => i_esn_id )
+      loop
+         l_rt_esn := null;
+         
+         l_rt_esn.id                        := r_leaf.id;
+         l_rt_esn.tle_id                    := r_leaf.tle_id;
+         l_rt_esn.ind_process_specification := r_leaf.ind_process_specification;
+         l_rt_esn.esn_id                    := r_leaf.esn_id;
+         l_rt_esn.eon_id                    := r_leaf.eon_id;
+         l_rt_esn.operator_type             := r_leaf.operator_type;
+         l_rt_esn.count_exclusive_leaves    := r_leaf.count_exclusive_leaves;
+         
+         l_nr_rows_updated := pdm_esn_tapi_pck.esn_update_row ( i_esn_id  => l_rt_esn.id
+                                                               ,io_rt_esn => l_rt_esn);
+      end loop;
+
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end register_esn_with_only_leaves;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_evaluate_incollection ( i_adn_id   in      pdm_attribute_definitions.id%type
+                                          , i_rt_ote   in      pdm_operation_types%rowtype
+                                          , i_evt_id   in      pdm_events.id%type
+                                          , i_it_emt   in      it_emt
+                                          , i_psn_id   in      pdm_process_specifications.id%type
+                                          , io_rt_esn  in out  pdm_expressions%rowtype
+                                          )
+   is
+      l_con_proc_name            constant  cmn_constant.st_proc_name := g_con_package || '.create_evaluate_incollection';
+      l_con_max_length_tag       constant  number                    := 4000;
+      
+      l_nt_agr_adn_id            pdm_nt_adn_id;
+      l_nt_agr_ote_id            pdm_nt_ote_id;
+      l_rt_ote_stringmatch       pdm_operation_types%rowtype;
+      l_rt_ote_multipurpose      pdm_operation_types%rowtype;
+      l_rt_esn                   pdm_expressions%rowtype;
+      l_agp_id                   pdm_attribute_groups.id%type;
+      l_eon_id                   pdm_evaluate_operations.id%type;
+      l_found                    boolean := false;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_found := pdm_ote_tapi_pck.ote_select_row_uk1( i_ote_operation => pdm_constant.g_con_ote_stringmatch
+                                                    , o_rt_ote        => l_rt_ote_stringmatch
+                                                    );
+
+      if not l_found
+      then
+         viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'OPERATION TYPE with OPERATION: ' || pdm_constant.g_con_ote_stringmatch
+                  );
+      else
+         
+         l_found := pdm_ote_tapi_pck.ote_select_row_uk1( i_ote_operation => pdm_constant.g_con_ote_multipurpose
+                                                       , o_rt_ote        => l_rt_ote_multipurpose
+                                                       );
+
+         if not l_found
+         then
+            viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_error
+                     , i_additional_data   => 'OPERATION TYPE with OPERATION: ' || pdm_constant.g_con_ote_multipurpose
+                     );
+         else
+
+            
+            build_agr_list( i_adn_id        => i_adn_id
+                          , i_ote_operation => i_rt_ote.operation  
+                          , i_agr_ote_id    => l_rt_ote_stringmatch.id
+                          , o_nt_agr_adn_id => l_nt_agr_adn_id
+                          , o_nt_agr_ote_id => l_nt_agr_ote_id
+                          );
+            
+            l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_agr_adn_id
+                                                          , i_nt_agr_ote_id => l_nt_agr_ote_id
+                                                          , i_evt_id        => i_evt_id
+                                                          );
+
+
+            if i_it_emt.count > 1
+            then
+               
+               io_rt_esn.operator_type := pdm_constant.g_con_esn_operator_type_or;
+
+               pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => io_rt_esn );
+
+               
+               for l_index in i_it_emt.first .. i_it_emt.last
+               loop
+                  
+                  l_eon_id := pdm_expression.get_evaluate_operation( i_ote_id    => l_rt_ote_multipurpose.id
+                                                                   , i_agp_id    => l_agp_id
+                                                                   , i_evt_id    => i_evt_id
+                                                                   , i_eon_value => substr(i_it_emt(l_index), 1, l_con_max_length_tag)
+                                                                   , i_psn_id    => i_psn_id
+                                                                   );
+
+                  
+                  l_rt_esn := null;
+                  l_rt_esn.operator_type := null;
+                  l_rt_esn.tle_id        := io_rt_esn.tle_id;
+                  l_rt_esn.esn_id        := io_rt_esn.id;
+                  l_rt_esn.eon_id        := l_eon_id;
+
+                  pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => l_rt_esn );
+               end loop;
+
+            elsif i_it_emt.count = 1
+            then
+               
+               l_eon_id := pdm_expression.get_evaluate_operation( i_ote_id    => l_rt_ote_multipurpose.id
+                                                                , i_agp_id    => l_agp_id
+                                                                , i_evt_id    => i_evt_id
+                                                                , i_eon_value => substr( i_it_emt(i_it_emt.first)
+                                                                                       , 1
+                                                                                       , l_con_max_length_tag
+                                                                                       )
+                                                                , i_psn_id    => i_psn_id
+                                                                );
+
+               
+               io_rt_esn.operator_type := null;
+               io_rt_esn.eon_id        := l_eon_id;
+
+               pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => io_rt_esn );
+
+            end if;
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_evaluate_incollection;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_evaluate_existence ( i_adn_id   in      pdm_attribute_definitions.id%type
+                                       , i_rt_ote   in      pdm_operation_types%rowtype
+                                       , i_evt_id   in      pdm_events.id%type
+                                       , i_psn_id   in      pdm_process_specifications.id%type
+                                       , io_rt_esn  in out  pdm_expressions%rowtype
+                                       )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_evaluate_existence';
+      
+      l_nt_agr_adn_id            pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_adn_id                pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_ote_id            pdm_nt_ote_id := pdm_nt_ote_id();
+      l_nt_ote_id                pdm_nt_ote_id := pdm_nt_ote_id();
+      l_rt_ote_multipurpose      pdm_operation_types%rowtype;
+      l_rt_esn                   pdm_expressions%rowtype;
+      l_agp_id                   pdm_attribute_groups.id%type;
+      l_eon_id                   pdm_evaluate_operations.id%type;
+      l_found                    boolean := false;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_found := pdm_ote_tapi_pck.ote_select_row_uk1( i_ote_operation => pdm_constant.g_con_ote_multipurpose
+                                                    , o_rt_ote        => l_rt_ote_multipurpose
+                                                    );
+
+      if not l_found
+      then
+         viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'OPERATION TYPE with OPERATION: ' || pdm_constant.g_con_ote_multipurpose
+                  );
+      else
+         
+         
+         
+         build_agr_list( i_adn_id        => i_adn_id
+                       , i_ote_operation => i_rt_ote.operation
+                       , i_agr_ote_id    => i_rt_ote.id
+                       , o_nt_agr_adn_id => l_nt_agr_adn_id
+                       , o_nt_agr_ote_id => l_nt_agr_ote_id
+                       );
+
+         
+         
+         
+         
+         
+
+         if l_nt_agr_adn_id.count > 1
+         then
+            
+            io_rt_esn.operator_type := pdm_constant.g_con_esn_operator_type_or;
+
+            pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => io_rt_esn );
+
+            
+            l_nt_adn_id.extend(1);
+            l_nt_ote_id.extend(1);
+
+            
+            for l_index in l_nt_agr_adn_id.first .. l_nt_agr_adn_id.last
+            loop
+               
+               l_nt_adn_id(1) := l_nt_agr_adn_id(l_index);
+               l_nt_ote_id(1) := l_nt_agr_ote_id(l_index);
+
+               
+               l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_adn_id
+                                                             , i_nt_agr_ote_id => l_nt_ote_id
+                                                             , i_evt_id        => i_evt_id
+                                                             );
+
+               
+               l_eon_id := pdm_expression.get_evaluate_operation( i_ote_id    => l_rt_ote_multipurpose.id
+                                                                , i_agp_id    => l_agp_id
+                                                                , i_evt_id    => i_evt_id
+                                                                , i_eon_value => null
+                                                                , i_psn_id    => i_psn_id
+                                                                );
+
+               
+               l_rt_esn := null;
+               l_rt_esn.operator_type := null;
+               l_rt_esn.tle_id        := io_rt_esn.tle_id;
+               l_rt_esn.esn_id        := io_rt_esn.id;
+               l_rt_esn.eon_id        := l_eon_id;
+
+               pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => l_rt_esn );
+            end loop;
+
+         elsif l_nt_agr_adn_id.count = 1
+         then
+            
+            l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_agr_adn_id
+                                                          , i_nt_agr_ote_id => l_nt_agr_ote_id
+                                                          , i_evt_id        => i_evt_id
+                                                          );
+
+            
+            l_eon_id := pdm_expression.get_evaluate_operation( i_ote_id    => l_rt_ote_multipurpose.id
+                                                             , i_agp_id    => l_agp_id
+                                                             , i_evt_id    => i_evt_id
+                                                             , i_eon_value => null
+                                                             , i_psn_id    => i_psn_id
+                                                             );
+
+            
+            io_rt_esn.operator_type := null;
+            io_rt_esn.eon_id        := l_eon_id;
+
+            pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => io_rt_esn );
+
+         end if;
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_evaluate_existence;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_evaluate_nonexistence ( i_adn_id   in      pdm_attribute_definitions.id%type
+                                          , i_rt_ote   in      pdm_operation_types%rowtype
+                                          , i_evt_id   in      pdm_events.id%type
+                                          , i_psn_id   in      pdm_process_specifications.id%type
+                                          , io_rt_esn  in out  pdm_expressions%rowtype
+                                          )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_evaluate_nonexistence';
+      
+      l_nt_agr_adn_id            pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_ote_id            pdm_nt_ote_id := pdm_nt_ote_id();
+      l_rt_ote_multipurpose      pdm_operation_types%rowtype;
+      l_agp_id                   pdm_attribute_groups.id%type;
+      l_eon_id                   pdm_evaluate_operations.id%type;
+      l_found                    boolean := false;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_found := pdm_ote_tapi_pck.ote_select_row_uk1( i_ote_operation => pdm_constant.g_con_ote_multipurpose
+                                                    , o_rt_ote        => l_rt_ote_multipurpose
+                                                    );
+
+      if not l_found
+      then
+         viu_info.raise_info
+                  ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                  , i_calling_procedure => l_con_proc_name
+                  , i_severity          => viu_info.c_severity_error
+                  , i_additional_data   => 'OPERATION TYPE with OPERATION: ' || pdm_constant.g_con_ote_multipurpose
+                  );
+      else
+         
+         
+         
+         build_agr_list( i_adn_id        => i_adn_id
+                       , i_ote_operation => i_rt_ote.operation
+                       , i_agr_ote_id    => i_rt_ote.id
+                       , o_nt_agr_adn_id => l_nt_agr_adn_id
+                       , o_nt_agr_ote_id => l_nt_agr_ote_id
+                       );
+
+         
+         l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_agr_adn_id
+                                                       , i_nt_agr_ote_id => l_nt_agr_ote_id
+                                                       , i_evt_id        => i_evt_id
+                                                       );
+         
+         l_eon_id := pdm_expression.get_evaluate_operation( i_ote_id    => l_rt_ote_multipurpose.id
+                                                          , i_agp_id    => l_agp_id
+                                                          , i_evt_id    => i_evt_id
+                                                          , i_eon_value => null
+                                                          , i_psn_id    => i_psn_id
+                                                          );
+
+         
+         io_rt_esn.operator_type := null;
+         io_rt_esn.eon_id        := l_eon_id;
+
+         pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => io_rt_esn );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_evaluate_nonexistence;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_evaluate_others ( i_adn_id   in      pdm_attribute_definitions.id%type
+                                    , i_rt_ote   in      pdm_operation_types%rowtype
+                                    , i_evt_id   in      pdm_events.id%type
+                                    , i_it_emt   in      it_emt
+                                    , i_psn_id   in      pdm_process_specifications.id%type
+                                    , io_rt_esn  in out  pdm_expressions%rowtype
+                                    )
+   is
+
+      l_con_proc_name            constant  cmn_constant.st_proc_name := g_con_package || '.create_evaluate_others';
+      l_con_max_length_tag       constant  number                    := 4000;
+      
+      l_nt_agr_adn_id            pdm_nt_adn_id := pdm_nt_adn_id();
+      l_nt_agr_ote_id            pdm_nt_ote_id := pdm_nt_ote_id();
+      l_agp_id                   pdm_attribute_groups.id%type;
+      l_eon_id                   pdm_evaluate_operations.id%type;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+         
+         build_agr_list( i_adn_id        => i_adn_id
+                       , i_ote_operation => i_rt_ote.operation
+                       , i_agr_ote_id    => i_rt_ote.id
+                       , o_nt_agr_adn_id => l_nt_agr_adn_id
+                       , o_nt_agr_ote_id => l_nt_agr_ote_id
+                       );
+
+         
+         l_agp_id := pdm_expression.get_attribute_group( i_nt_agr_adn_id => l_nt_agr_adn_id
+                                                       , i_nt_agr_ote_id => l_nt_agr_ote_id
+                                                       , i_evt_id        => i_evt_id
+                                                       );
+         
+         l_eon_id := pdm_expression.get_evaluate_operation( i_ote_id    => i_rt_ote.id
+                                                          , i_agp_id    => l_agp_id
+                                                          , i_evt_id    => i_evt_id
+                                                          , i_eon_value => substr( i_it_emt(i_it_emt.first)
+                                                                                 , 1
+                                                                                 , l_con_max_length_tag
+                                                                                 )
+                                                          , i_psn_id    => i_psn_id
+                                                          );
+
+         
+         io_rt_esn.operator_type := null;
+         io_rt_esn.eon_id        := l_eon_id;
+
+         pdm_esn_tapi_pck.esn_insert_row( io_rt_esn => io_rt_esn );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_evaluate_others;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_evaluate ( i_xml_evaluate  in     xmltype
+                             , i_evt_id        in     pdm_events.id%type
+                             , i_psn_id        in     pdm_process_specifications.id%type
+                             , io_rt_esn       in out pdm_expressions%rowtype
+                             )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_evaluate';
+
+      cursor c_ote
+      is
+      select ote.id
+      ,      ote.operation
+      from   pdm_operation_types ote;
+
+      l_rt_ote                   c_ote%rowtype;
+      l_rt_adn                   pdm_attribute_definitions%rowtype;
+      l_adn_path                 pdm_attribute_definitions.path%type;
+      l_it_emt                   it_emt;
+      l_found                    boolean := false;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      
+      open  c_ote;
+      fetch c_ote
+      into  l_rt_ote;
+
+      while not l_found
+      and   c_ote%found
+      loop
+         l_adn_path := cmn_xml_util.extract_value
+                          (i_xml        => i_xml_evaluate,
+                           i_xpath      =>    pdm_constant.g_con_xpath_evaluateroot
+                                           || '/'
+                                           || l_rt_ote.operation
+                                           || pdm_constant.g_con_xpath_evaluate_attribute
+                          );
+         
+         if l_adn_path is not null
+         then
+            l_found := true;
+         else
+            
+            fetch c_ote into l_rt_ote;
+         end if;
+      end loop;
+
+      close c_ote;
+
+      
+      if l_adn_path is not null
+      then
+         
+         l_found := pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => l_adn_path
+                                                       , o_rt_adn   => l_rt_adn
+                                                       );
+
+         if not l_found
+         then
+            viu_info.raise_info
+                     ( i_ifo_nr            => viu_constant.c_ifo_selectreturnednorecords
+                     , i_calling_procedure => l_con_proc_name
+                     , i_severity          => viu_info.c_severity_error
+                     , i_additional_data   => 'ATTRIBUTE DEFINITION with PATH: ' || l_adn_path
+                     );
+         end if;
+
+         
+         pdm_expression.get_elements ( i_xml_evaluate  => i_xml_evaluate
+                                     , i_ote_operation => l_rt_ote.operation
+                                     , o_it_emt        => l_it_emt
+                                     );
+
+         
+         case l_rt_ote.operation
+            when pdm_constant.g_con_ote_incollection
+            then
+               create_evaluate_incollection ( i_adn_id  => l_rt_adn.id
+                                            , i_rt_ote  => l_rt_ote
+                                            , i_evt_id  => i_evt_id
+                                            , i_it_emt  => l_it_emt
+                                            , i_psn_id  => i_psn_id
+                                            , io_rt_esn => io_rt_esn
+                                            );
+            when pdm_constant.g_con_ote_existence
+            then
+               create_evaluate_existence ( i_adn_id  => l_rt_adn.id
+                                         , i_rt_ote  => l_rt_ote
+                                         , i_evt_id  => i_evt_id
+                                         , i_psn_id  => i_psn_id
+                                         , io_rt_esn => io_rt_esn
+                                         );
+            when pdm_constant.g_con_ote_nonexistence
+            then
+               create_evaluate_nonexistence ( i_adn_id  => l_rt_adn.id
+                                            , i_rt_ote  => l_rt_ote
+                                            , i_evt_id  => i_evt_id
+                                            , i_psn_id  => i_psn_id
+                                            , io_rt_esn => io_rt_esn
+                                            );
+            else 
+               create_evaluate_others ( i_adn_id  => l_rt_adn.id
+                                      , i_rt_ote  => l_rt_ote
+                                      , i_evt_id  => i_evt_id
+                                      , i_it_emt  => l_it_emt
+                                      , i_psn_id  => i_psn_id
+                                      , io_rt_esn => io_rt_esn
+                                      );
+
+         end case;
+
+      else
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_evaluateoperationinvalid
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_additional_data   => 'No valid combination of operation and attribute name was found in message'
+                            );
+      end if; 
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_ote%isopen
+         then
+            close c_ote;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_evaluate;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_disjunc_conjunc_items ( i_xml_condition_item in  xmltype
+                                           , i_xpath_item         in  varchar2
+                                           , i_esn_id             in  pdm_expressions.id%type
+                                           , i_evt_id             in  pdm_events.id%type
+                                           , i_tle_id             in  pdm_tpl_monitoring_types.id%type
+                                           , i_transform          in  boolean
+                                           , i_psn_id             in  pdm_process_specifications.id%type
+                                           )
+
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_disjunc_conjunc_items';
+
+      l_xpath_nth_item           varchar2 (200);
+      l_xml_item                 xmltype;
+      l_idx_item                 number  := 1;
+      l_last_item                boolean := false;
+      l_osn_id                   pdm_expressions.id%type;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      while (not l_last_item)
+      loop
+         l_xpath_nth_item :=
+               cmn_xml_util.get_root_element_name(i_xml_doc => i_xml_condition_item)
+            || i_xpath_item
+            || '['
+            || to_char (l_idx_item)
+            || ']';
+         l_xml_item :=
+            cmn_xml_util.extract_element (i_xml   => i_xml_condition_item,
+                                          i_xpath => l_xpath_nth_item
+                                         );
+
+         if (l_xml_item is null)
+         then
+            l_last_item := true;
+         else
+
+            if i_xpath_item = pdm_constant.g_con_xpath_disjunction
+            then
+               
+               process_condition_item ( i_xml_disjunction => l_xml_item
+                                      , i_xml_conjunction => null
+                                      , i_xml_evaluate    => null
+                                      , i_esn_id_parent   => i_esn_id
+                                      , i_evt_id          => i_evt_id
+                                      , i_tle_id          => i_tle_id
+                                      , i_transform       => i_transform
+                                      , i_psn_id          => i_psn_id
+                                      , o_esn_id          => l_osn_id
+                                      );
+            elsif i_xpath_item = pdm_constant.g_con_xpath_conjunction
+            then
+               
+               process_condition_item ( i_xml_disjunction => null
+                                      , i_xml_conjunction => l_xml_item
+                                      , i_xml_evaluate    => null
+                                      , i_esn_id_parent   => i_esn_id
+                                      , i_evt_id          => i_evt_id
+                                      , i_tle_id          => i_tle_id
+                                      , i_transform       => i_transform
+                                      , i_psn_id          => i_psn_id
+                                      , o_esn_id          => l_osn_id
+                                      );
+            elsif i_xpath_item = pdm_constant.g_con_xpath_evaluate
+            then
+               
+               process_condition_item ( i_xml_disjunction => null
+                                      , i_xml_conjunction => null
+                                      , i_xml_evaluate    => l_xml_item
+                                      , i_esn_id_parent   => i_esn_id
+                                      , i_evt_id          => i_evt_id
+                                      , i_tle_id          => i_tle_id
+                                      , i_transform       => i_transform
+                                      , i_psn_id          => i_psn_id
+                                      , o_esn_id          => l_osn_id
+                                      );
+            end if;
+
+            l_idx_item := l_idx_item + 1;
+         end if;
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end process_disjunc_conjunc_items;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure process_condition_item ( i_xml_disjunction in  xmltype
+                                    , i_xml_conjunction in  xmltype
+                                    , i_xml_evaluate    in  xmltype
+                                    , i_esn_id_parent   in  pdm_expressions.id%type
+                                    , i_evt_id          in  pdm_events.id%type
+                                    , i_tle_id          in  pdm_tpl_monitoring_types.id%type
+                                    , i_transform       in  boolean
+                                    , i_psn_id          in  pdm_process_specifications.id%type
+                                    , o_esn_id          out pdm_expressions.id%type
+                                    )
+
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.process_condition_item';
+
+      l_rt_esn                   pdm_expressions%rowtype;
+      l_xml_disjunc_conj         xmltype;
+      l_count                    number;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_rt_esn.esn_id := i_esn_id_parent;
+      l_rt_esn.tle_id := i_tle_id;
+
+      
+      if i_xml_evaluate is not null
+      then
+
+         pdm_expression.create_evaluate( i_xml_evaluate  => i_xml_evaluate
+                                       , i_evt_id        => i_evt_id
+                                       , i_psn_id        => i_psn_id
+                                       , io_rt_esn       => l_rt_esn
+                                       );
+
+      else
+         
+         if i_xml_disjunction is not null
+         then
+            l_rt_esn.operator_type := pdm_constant.g_con_esn_operator_type_or;
+            l_xml_disjunc_conj := i_xml_disjunction;
+         elsif i_xml_conjunction is not null
+         then
+            l_rt_esn.operator_type := pdm_constant.g_con_esn_operator_type_and;
+            l_xml_disjunc_conj := i_xml_conjunction;
+         end if;
+
+         
+         pdm_esn_tapi_pck.esn_insert_row(io_rt_esn => l_rt_esn);
+
+         
+         if l_xml_disjunc_conj is not null
+         then
+             process_disjunc_conjunc_items( i_xml_condition_item => l_xml_disjunc_conj
+                                          , i_xpath_item         => pdm_constant.g_con_xpath_disjunction
+                                          , i_esn_id             => l_rt_esn.id
+                                          , i_evt_id             => i_evt_id
+                                          , i_tle_id             => i_tle_id
+                                          , i_transform          => i_transform
+                                          , i_psn_id             => i_psn_id
+                                          );
+             process_disjunc_conjunc_items( i_xml_condition_item => l_xml_disjunc_conj
+                                          , i_xpath_item         => pdm_constant.g_con_xpath_conjunction
+                                          , i_esn_id             => l_rt_esn.id
+                                          , i_evt_id             => i_evt_id
+                                          , i_tle_id             => i_tle_id
+                                          , i_transform          => i_transform
+                                          , i_psn_id             => i_psn_id
+                                          );
+             process_disjunc_conjunc_items( i_xml_condition_item => l_xml_disjunc_conj
+                                          , i_xpath_item         => pdm_constant.g_con_xpath_evaluate
+                                          , i_esn_id             => l_rt_esn.id
+                                          , i_evt_id             => i_evt_id
+                                          , i_tle_id             => i_tle_id
+                                          , i_transform          => i_transform
+                                          , i_psn_id             => i_psn_id
+                                          );
+
+            
+            select count(*)
+            into   l_count
+            from   pdm_expressions esn
+            where  esn.esn_id = l_rt_esn.id
+            and    rownum <= 2;
+
+            if l_count < 2 and l_rt_esn.operator_type in ( pdm_constant.g_con_esn_operator_type_and
+                                                         , pdm_constant.g_con_esn_operator_type_or
+                                                         )
+            then
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_lessthan2childitems
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    pdm_constant.g_con_xpath_elementdisjunction
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_elementconjunction
+                                  );
+
+            
+            elsif i_transform
+            then
+               
+               pdm_expression.transform_expression( io_rt_esn => l_rt_esn
+                                                  , i_evt_id  => i_evt_id
+                                                  , i_psn_id  => i_psn_id
+                                                  );
+            end if;
+
+         end if;
+      end if;
+
+      
+      o_esn_id := l_rt_esn.id;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end process_condition_item;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_expression ( i_xml_condition   in  xmltype
+                               , i_evt_id          in  pdm_events.id%type
+                               , i_esn_id_template in  pdm_expressions.id%type
+                               , i_tle_id          in  pdm_tpl_monitoring_types.id%type
+                               , i_transform       in  boolean
+                               , i_psn_id          in  pdm_process_specifications.id%type
+                               , o_esn_id          out pdm_expressions.id%type
+                               )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_expression';
+
+      l_xml_disjunction          xmltype;
+      l_xml_conjunction          xmltype;
+      l_xml_evaluate             xmltype;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_xml_disjunction :=
+         cmn_xml_util.extract_element
+                             (i_xml        => i_xml_condition,
+                              i_xpath      => pdm_constant.g_con_xpath_cond_disjunction
+                             );
+
+      
+      if l_xml_disjunction is null
+      then
+
+         
+         l_xml_conjunction :=
+            cmn_xml_util.extract_element
+                                (i_xml        => i_xml_condition,
+                                 i_xpath      => pdm_constant.g_con_xpath_cond_conjunction
+                                );
+
+         
+         if l_xml_conjunction is null
+         then
+
+            
+            l_xml_evaluate :=
+               cmn_xml_util.extract_element
+                                   (i_xml        => i_xml_condition,
+                                    i_xpath      => pdm_constant.g_con_xpath_cond_evaluate
+                                   );
+
+            
+            if l_xml_evaluate is null
+            then
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    pdm_constant.g_con_xpath_elementdisjunction
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_elementconjunction
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_elementevaluate
+                                                                || '##'
+                                                                || pdm_constant.g_con_xpath_conditionroot
+                                  );
+            end if; 
+         end if; 
+      end if; 
+
+      
+      process_condition_item( i_xml_disjunction => l_xml_disjunction
+                            , i_xml_conjunction => l_xml_conjunction
+                            , i_xml_evaluate    => l_xml_evaluate
+                            , i_esn_id_parent   => null
+                            , i_evt_id          => i_evt_id
+                            , i_tle_id          => i_tle_id
+                            , i_transform       => i_transform
+                            , i_psn_id          => i_psn_id
+                            , o_esn_id          => o_esn_id
+                            );
+
+      
+      pdm_expression.merge_expressions( i_esn_id          => o_esn_id
+                                      , i_esn_id_template => i_esn_id_template
+                                      , i_evt_id          => i_evt_id
+                                      , i_transform       => i_transform
+                                      , i_psn_id          => i_psn_id
+                                      , o_esn_id_new      => o_esn_id
+                                      );
+
+      
+      
+      register_esn_with_only_leaves(i_esn_id => o_esn_id);
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_expression;
+
+begin
+   null;
+end pdm_expression;
+/

@@ -1,0 +1,503 @@
+create or replace PACKAGE GUI IS
+  TYPE OPT_ARR IS TABLE OF VARCHAR2(500) INDEX BY BINARY_INTEGER;
+  --PROCEDURE LOAD_IMG
+  -- (iname IN varchar2);
+  --PROCEDURE LOAD_PDF
+  -- (iname IN varchar2);
+  Procedure LOGOFF;
+  Procedure UPLOADED (caller IN VARCHAR2, name IN owa.vc_arr);
+  PROCEDURE read_doc(p_name IN varchar2);
+  FUNCTION APP_NAME
+   RETURN varchar2;
+  FUNCTION HEAD
+   ( p_path IN varchar2, p_header IN varchar2, p_buttons varchar2 default 'HBRLE', p_forceback varchar2 default null )
+   RETURN varchar2;
+  FUNCTION MENU
+   RETURN varchar2;
+  FUNCTION TAIL
+   ( p_buttons varchar2 default 'HBRLE', p_forceback varchar2 default null )
+   RETURN varchar2;
+  FUNCTION STD_BUTTONS
+   ( p_buttons varchar2 default 'HBRLE', p_forceback varchar2 default null )
+   RETURN varchar2;
+  FUNCTION butlnk(p_title in varchar2, p_link in varchar2) return VARCHAR2;
+  FUNCTION TABLE_INPUT_TAIL(p_action in varchar2) return VARCHAR2;
+  FUNCTION TABLE_INPUT_LINE
+   ( p_prompt IN VARCHAR2, p_var_name IN VARCHAR2, p_value IN VARCHAR2
+   , p_size IN NUMBER, p_optional IN BOOLEAN, p_updateable IN BOOLEAN
+   , p_radio_arr IN GUI.opt_arr, p_select_arr IN GUI.opt_arr
+   , p_balloon IN varchar2 default null )
+   RETURN varchar2;
+  FUNCTION lengte
+   (p_msg IN VARCHAR2) RETURN number;
+  Procedure insert_java_script(p_script_arr in opt_arr);
+END GUI;
+/
+
+
+
+
+package body gui is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure logoff is
+  v_app_home varchar2(50) := 'BPIR_HOME';
+  begin
+     
+     owa_util.mime_header('text/html', false, null);
+
+     
+     owa_cookie.send('WDB_GATEWAY_LOGOUT', 'YES', path=>'/');
+
+     
+     owa_util.http_header_close;
+     
+
+     owa_cache.disable;
+     
+
+
+
+
+
+
+
+
+
+     
+     htp.print('<HTML><HEAD>');
+
+     
+     
+
+     
+     
+
+     htp.print('</HEAD><BODY>');
+     htp.print('<p STYLE="font-size=33;font-family:sans-serif;font-weight:bold">');
+     htp.print(gui.app_name||' Logoff</p><br><b>Your browser may retain authentication credentials.<br>'
+     ||'To ensure a complete Logoff, close the web browser.</b><br><br><br>');
+     htp.print('<BUTTON STYLE="width:350;height:30;font-weight:bold" onClick="window.close()">Exit</BUTTON>');
+
+
+
+     htp.print('</BODY></HTML>');
+
+
+  end;
+
+
+  procedure uploaded (caller in varchar2, name in owa.vc_arr) is
+  v_txt  varchar2(200) := ' has been uploaded.';
+  begin
+     
+     htp.print('<HTML><HEAD>');
+
+     
+     htp.print('<META HTTP-EQUIV="REFRESH" CONTENT="0; URL='||caller||'">');
+
+     htp.print('</HEAD><BODY>');
+     if name(1) is null then
+       v_txt := 'No file'||v_txt;
+     else
+       v_txt := 'File '||name(1)||v_txt;
+     end if;
+     htp.print('<br><b>'||v_txt||'</b><br><br>');
+     htp.print('</BODY></HTML>');
+  end;
+
+
+  procedure read_doc(p_name in varchar2) is
+  v_file_name  varchar2(256);
+  v_pos        number(38) := 0;
+  v_file_len   number(38) := 0;
+  v_line       varchar2(32767);
+  v_byte       raw(1);
+  v_asc        integer;
+  v_line_no    number(14) := 0;
+  v_blob       blob;
+  e_too_long   exception;
+  e_empty      exception;
+  begin
+    htp.print(gui.head(gui.app_name||' > Reading file: '||p_name, 'Reading file: '||p_name));
+    htp.print('<div class="neutral">');
+    begin
+      select blob_content into v_blob from documents where name = p_name;
+      if v_blob is null then
+        raise e_empty;
+      end if;
+      v_file_len := dbms_lob.getlength(v_blob);
+      if v_file_len < 1 then
+        raise e_empty;
+      end if;
+      v_line := '';
+      while v_pos < v_file_len loop
+        v_pos := v_pos + 1;
+        v_byte := dbms_lob.substr(v_blob, 1, v_pos);
+        v_asc  := f_hex_to_num(v_byte);
+        if v_asc < 32 then
+          if (v_asc = 13) then
+            v_line_no := v_line_no + 1;
+            htp.print(to_char(v_line_no)||':'||v_line||'<br>');
+          end if;
+          v_line := '';
+        else
+          v_line := v_line||chr(v_asc);
+        end if;
+      end loop;
+    exception
+      when e_too_long then
+        htp.print('<br>ERROR: IS THIS AN ASCII TEXT FILE?<br><br>');
+      when e_empty then
+        htp.print('<br>ERROR: FILE NOT FOUND, OR FILE IS EMPTY.<br><br>');
+      when others then
+        htp.print('<br>'||sqlerrm||'<br><br>');
+    end;
+    htp.print(gui.tail);
+  end;
+
+
+  function app_name return varchar2 is
+  v_app_title  varchar2(200);
+  begin
+    begin
+      select id_cust into v_app_title from acl_application_elements where aet_type='ATN';
+    exception when others then
+      v_app_title := 'BPI';
+    end;
+    return v_app_title;
+  end;
+
+
+  function head
+  ( p_path in varchar2, p_header in varchar2, p_buttons varchar2 default 'HBRLE', p_forceback varchar2 default null )
+  return varchar2 is
+  v_msg        varchar2(32767);
+  v_app_title  varchar2(  200) := gui.app_name;
+  v_font_size varchar2(5) := '33';
+  begin
+
+    
+
+    v_msg := '<HTML><HEAD>';
+
+    v_msg := v_msg||'<META HTTP-EQUIV="Pragma" CONTENT="no-cache"><META HTTP-EQUIV="expires" CONTENT="0">'||chr(13)||chr(10);
+
+    v_msg := v_msg||'<script language="JavaScript" src="DOCS/softengine_java.js"></script>'||chr(13)||chr(10);
+    v_msg := v_msg||'<link rel="stylesheet" type="text/css" href="DOCS/softengine_styles.css">'||chr(13)||chr(10);
+    v_msg := v_msg||'<TITLE>'||p_path||'</TITLE></HEAD>'||chr(13)||chr(10);
+    v_msg := v_msg||'<BODY>'||chr(13)||chr(10);
+
+    v_msg := v_msg||'<p STYLE="font-size=33;font-family:sans-serif;font-weight:bold">'
+                  ||v_app_title||'</p>'||chr(13)||chr(10);
+
+    v_msg := v_msg||gui.menu;
+
+    v_msg := v_msg||'<br><br>'||gui.std_buttons(p_buttons, p_forceback);
+
+    v_msg := v_msg||'<SPAN TITLE="'||p_path||'">';
+    if length(p_header) > 40 then
+      v_font_size := '24';
+    end if;
+    v_msg := v_msg||'<br><br><br><p STYLE="font-size='||v_font_size||';font-family:sans-serif;font-weight:bold">'
+                  ||p_header||'</p></SPAN>'||chr(13)||chr(10);
+    return v_msg;
+  end;
+
+
+  function menu return varchar2 is
+  v_msg varchar2(32767) := '';
+
+    function m_link(v_title in varchar2, v_link in varchar2) return varchar2 is
+    begin  return ('<li><a href="'||v_link||'">'||v_title||'</a></li>'||chr(13)||chr(10)); end;
+
+    function d_line return varchar2 is
+    begin  return ('<li><a id="line" href="#"></a></li>'||chr(13)||chr(10)); end;
+
+    function ins_link(p_title in varchar2, p_table in varchar2) return varchar2 is
+    v_end_clause varchar2(100) := chr(38)||'p_max=1000'||chr(38)||'p_where='||chr(38)||'p_order_by=';
+    v_link       varchar2(200) := 'inspect_table?p_table_name='||p_table;
+    begin
+      return m_link(p_title, v_link||v_end_clause);
+    end;
+
+  begin
+
+    v_msg := v_msg||'<script type="text/javascript">'||chr(13)||chr(10);
+    v_msg := v_msg||'//<![CDATA['||chr(13)||chr(10);
+    v_msg := v_msg||'var listMenu = new FSMenu(''listMenu'', true, ''visibility'', ''visible'', ''hidden'');'||chr(13)||chr(10);
+
+    
+    
+    
+    
+    
+
+    v_msg := v_msg||'listMenu.cssLitClass = ''highlighted'';'||chr(13)||chr(10);
+    v_msg := v_msg||'listMenu.animations[listMenu.animations.length] = animFade;'||chr(13)||chr(10);
+    v_msg := v_msg||'listMenu.animations[listMenu.animations.length] = animClipDown;'||chr(13)||chr(10);
+
+    
+    
+    v_msg := v_msg||'listMenu.animSpeed = 100;'||chr(13)||chr(10);
+
+    v_msg := v_msg||'var arrow = null;'||chr(13)||chr(10);
+    v_msg := v_msg||'if (document.createElement @@ document.documentElement)'||chr(13)||chr(10);
+    v_msg := v_msg||'{ arrow = document.createElement(''img''); arrow.src = ''DOCS/arrow.gif''; '||chr(13)||chr(10);
+    v_msg := v_msg||'  arrow.style.width = ''13''; arrow.style.height = ''13''; '||chr(13)||chr(10);
+    v_msg := v_msg||'  arrow.style.borderWidth = ''0''; arrow.className = ''subind''; }'||chr(13)||chr(10);
+    v_msg := v_msg||'addEvent(window, ''load'', new Function(''listMenu.activateMenu("listMenuRoot", arrow)''));'||chr(13)||chr(10);
+    v_msg := v_msg||'//]]>'||chr(13)||chr(10);
+    v_msg := v_msg||'</SCRIPT>'||chr(13)||chr(10);
+
+    
+    v_msg := replace(v_msg, '@', chr(38));
+
+    v_msg := v_msg||'<ul class="menulist" id="listMenuRoot">'||chr(13)||chr(10);
+    v_msg := v_msg||ui_menu.html_menu(gui.app_name);
+    v_msg := v_msg||'</ul>'||chr(13)||chr(10);
+
+    return v_msg;
+  end;
+
+
+  function tail
+    ( p_buttons varchar2 default 'HBRLE', p_forceback varchar2 default null )
+  return varchar2 is
+  v_msg varchar2(32767) := '';
+  begin
+    v_msg := '</div><br><br>';
+    v_msg := v_msg||gui.std_buttons(p_buttons, p_forceback);
+    return v_msg;
+  end;
+
+
+  function std_buttons
+   ( p_buttons varchar2 default 'HBRLE'
+   , p_forceback varchar2 default null
+   ) return varchar2 is
+  v_msg   varchar2(32767) := '';
+  v_back  varchar2( 800) := '';
+  v_locus varchar2( 800) := '';
+  v_jump  varchar2(   5) := '-1';
+  begin
+    if instr(p_buttons, 'H') > 0 then
+      v_msg := v_msg||'<BUTTON ACCESSKEY="." onClick="document.location=''BPIR_HOME'';">Home</BUTTON>'||chr(13)||chr(10);
+    end if;
+    if instr(p_buttons, 'B') > 0 then
+      
+      
+      
+
+      begin
+        v_back := owa_util.get_cgi_env('HTTP_REFERER');
+      exception
+        when others then v_back := null;
+      end;
+
+      if p_forceback is null then
+        v_back := ltrim(rtrim(v_back));
+        v_locus := substr(v_back, instr(v_back,'/',-1)+1);
+
+        
+        if instr(upper(v_locus), 'SHOW_LOGLEVEL') > 0 then
+          v_locus := null;
+          v_jump := '-2';
+        end if;
+        
+
+        if (v_back is null) or (v_locus is null) then
+          v_msg := v_msg||'<BUTTON onClick="history.go('||v_jump||')">Back</BUTTON>'||chr(13)||chr(10);
+        else
+          v_msg := v_msg||'<BUTTON onClick="document.location='''||v_locus||''';">Back</BUTTON>'||chr(13)||chr(10);
+        end if;
+      else
+        v_msg := v_msg||'<BUTTON onClick="document.location='''||p_forceback||''';">Back</BUTTON>'||chr(13)||chr(10);
+      end if;
+    end if;
+    if instr(p_buttons, 'R') > 0 then
+      v_msg := v_msg||'<BUTTON onClick="window.location.reload(true)">Refresh</BUTTON>'||chr(13)||chr(10);
+    end if;
+    if instr(p_buttons, 'L') > 0 then
+      
+      v_msg := v_msg||'<BUTTON onClick="document.location=''GUI.logoff'';">Logoff</BUTTON>'||chr(13)||chr(10);
+    end if;
+    if instr(p_buttons, 'E') > 0 then
+      v_msg := v_msg||'<BUTTON onClick="window.close()">Exit</BUTTON>'||chr(13)||chr(10);
+    end if;
+
+
+
+
+
+    return v_msg;
+  end;
+
+
+  function butlnk(p_title in varchar2, p_link in varchar2) return varchar2 is
+  
+  begin
+    
+    
+
+    return '<p class="navbuttons"><a href="'||p_link||'">'||p_title||'</a></p>';
+   
+  end;
+
+
+  function table_input_tail(p_action in varchar2) return varchar2 is
+  v_msg varchar2(5000);
+  begin
+    v_msg := '</TABLE><br>';
+    if upper(p_action)='INSERT' then
+      v_msg := v_msg||'<SPAN TITLE="Press this button to insert and save the new record.">'
+                    ||'<INPUT TYPE=submit class="bigbut" NAME=p_action VALUE="'
+                    ||initcap(p_action)||'"></SPAN><br>';
+    elsif upper(p_action)='UPDATE' then
+      v_msg := v_msg||'<SPAN TITLE="Press this button to save the updated record.">'
+                    ||'<INPUT TYPE=submit class="bigbut" NAME=p_action VALUE="'
+                    ||initcap(p_action)||'"></SPAN><br>';
+    elsif upper(p_action)='DELETE' then
+      v_msg := v_msg||'<SPAN TITLE="Press this button to confirm removal of this record.">'
+                    ||'<INPUT TYPE=submit class="bigbut" NAME=p_action VALUE="'
+                    ||initcap(p_action)||'"></SPAN><br>';
+    elsif upper(p_action)='SELECT' then
+      v_msg := '';
+    else
+      null;
+    end if;
+    return v_msg||chr(13)||chr(10);
+  end;
+ 
+
+  function table_input_line
+   ( p_prompt in varchar2, p_var_name in varchar2, p_value in varchar2
+   , p_size in number, p_optional in boolean, p_updateable in boolean
+   , p_radio_arr in gui.opt_arr, p_select_arr in gui.opt_arr
+   , p_balloon in varchar2 default null ) return varchar2 is
+  v_msg varchar2(32767);
+  v_val varchar2(50);
+  v_opt varchar2(500);
+  v_str varchar2(500);
+  v_pos number(3);
+  v_checked boolean;
+  begin
+    v_msg := '<tr><td align=RIGHT valign=MIDDLE';
+    if (not p_optional) and (p_updateable) then
+      v_msg := v_msg||' STYLE="color:red">';
+    else
+      v_msg := v_msg||'>';
+    end if;
+    if p_balloon is not null then
+      v_msg := v_msg||'<SPAN TITLE="'||p_balloon||'">';
+    end if;
+    v_msg := v_msg||p_prompt||'<td align=LEFT>';
+    if (p_radio_arr(0) is null) and (p_select_arr(0) is null) then
+      if p_size > 0 then
+        if p_size > 60 then
+          v_msg := v_msg||'<TEXTAREA name='||p_var_name
+                  ||' COLS=50 ROWS=3 ';
+          if not p_updateable then
+            v_msg := v_msg||'onFocus=this.blur() STYLE="color:blue">';
+          else
+            v_msg := v_msg||'>';
+          end if;
+          v_msg := v_msg||p_value||'</TEXTAREA>';
+        else
+          v_msg := v_msg||'<input type=text name='||p_var_name
+                 ||' value="'||p_value||'" size='||to_char(p_size)||' ';
+          if not p_updateable then
+            v_msg := v_msg||'onFocus=this.blur() STYLE="color:blue">';
+          else
+            v_msg := v_msg||'>';
+          end if;
+        end if;
+      end if;
+    else
+      if (p_radio_arr(0) is not null) then
+        for i in nvl(p_radio_arr.first, 1) .. nvl(p_radio_arr.last, 0) loop
+          v_checked := false;
+          v_str := p_radio_arr(i);
+          v_pos := instr(v_str, ',');
+          v_val := ltrim(rtrim(substr(v_str, 1, v_pos-1)));
+          v_opt := ltrim(rtrim(substr(v_str, v_pos+1)));
+          v_msg := v_msg||'<input type=radio name='||p_var_name||' value="'||v_val||'"';
+          if v_val = ltrim(p_value) then
+            v_msg := v_msg||' CHECKED';
+            v_checked := true;
+          end if;
+          if (not p_updateable) and (not v_checked) then
+            if not (v_val = ltrim(p_value)) then
+              v_msg := v_msg||' DISABLED> '||v_opt;
+            end if;
+          else
+            v_msg := v_msg||'> '||v_opt;
+          end if;
+        end loop;
+      elsif (p_select_arr(0) is not null) then
+        v_msg := v_msg||'<SELECT NAME="'||p_var_name||'">';
+        for i in nvl(p_select_arr.first, 1) .. nvl(p_select_arr.last, 0) loop
+          v_str := p_select_arr(i);
+          v_pos := instr(v_str, ',');
+          v_val := ltrim(rtrim(substr(v_str, 1, v_pos-1)));
+          v_msg := v_msg||'<OPTION VALUE="'||v_val||'"';
+          if v_val = ltrim(p_value) then
+            v_msg := v_msg||' SELECTED';
+          end if;
+          v_msg := v_msg||'> '||v_str||'</OPTION>';
+        end loop;
+        v_msg := v_msg||'</SELECT>';
+      end if;
+    end if;
+    if p_balloon is not null then
+      v_msg := v_msg||'</SPAN>';
+    end if;
+    return v_msg||chr(13)||chr(10);
+  end;
+
+
+  function lengte
+   ( p_msg in varchar2 ) return number is
+  begin
+    if p_msg is null then
+      return 0;
+    else
+      return length(p_msg);
+    end if;
+  end;
+
+
+  procedure insert_java_script(p_script_arr in opt_arr) is
+  begin
+    htp.print('<SCRIPT>');
+    for i in 1..p_script_arr.count loop
+      
+      
+      htp.print(replace(p_script_arr(i), '@', chr(38)));
+    end loop;
+    htp.print('</SCRIPT>');
+  end;
+
+end gui;
+/

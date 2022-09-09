@@ -1,0 +1,8 @@
+function get_stationtype( i_stn_id_cust in pdm_package_attributes.value%type)
+return pdm_stations.type%type
+is
+begin
+   return 'x';
+
+end get_stationtype;
+/

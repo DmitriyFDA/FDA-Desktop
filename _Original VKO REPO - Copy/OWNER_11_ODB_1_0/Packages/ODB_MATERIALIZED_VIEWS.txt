@@ -1,0 +1,35 @@
+create or replace PACKAGE odb_materialized_views
+IS
+   PROCEDURE refresh;
+
+END odb_materialized_views;
+/
+
+package body odb_materialized_views
+is
+   
+
+
+
+
+
+   
+
+
+
+
+
+
+
+
+   procedure refresh
+   as
+   begin
+	 
+     null;
+     
+
+   end;
+    
+end odb_materialized_views;
+/

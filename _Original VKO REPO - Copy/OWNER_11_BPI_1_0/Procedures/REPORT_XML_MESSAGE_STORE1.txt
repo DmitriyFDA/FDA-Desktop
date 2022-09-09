@@ -1,0 +1,55 @@
+procedure report_xml_message_store1(p_period in varchar2 default ' ',  p_msgn in varchar2 default ' ') is
+v_msg      varchar2(32767);
+v_dt1      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24');
+v_dt2      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24');
+v_sdate date;
+v_edate date;
+v_where    varchar2( 200);
+v_rootnode varchar2( 100);
+v_clause   varchar2(2000);
+v_title    varchar2( 200) := 'Report XML Message Store '||p_period||', dd '||ts2str(sysdate);
+begin
+  begin
+    
+    htp.print(ui_menu.head_from_link('REP_XML_MESSAGE_STORE'));
+
+    v_msg := 'Calculating start date time. ';
+    v_dt1 := substr(p_period, 1, 11)||':00';
+    v_sdate := to_date(v_dt1,'YYYYMMDD.HH24:MI');
+    v_msg := 'Calculating end date time. ';
+    v_dt2 := substr(p_period, 13, 11)||':00';
+    v_edate := to_date(v_dt2,'YYYYMMDD.HH24:MI');
+    
+
+    v_rootnode := trim(p_msgn);
+    if v_rootnode is not null then
+      v_clause := 'ROOTNODE = '''||v_rootnode||''' AND ';
+    else
+      v_clause := null;
+    end if;
+
+
+    if (v_clause is null) and (abs(v_sdate - v_edate) > 1) then
+      v_msg := 'ERROR: Requested Period: '||v_dt1||' to '||v_dt2
+             ||'. With no constriction of Message Type, a period must not exceed 24 hours.';
+      htp.print(v_msg||'<br>');
+      htp.print(gui.tail);
+    else
+      
+      
+      
+      showxmlmessagestore(p_period, p_msgn);
+      htp.print('<br><br>');
+      htp.print(gui.tail);
+    end if;
+
+  exception when others then
+    v_msg := v_msg||sqlerrm;
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

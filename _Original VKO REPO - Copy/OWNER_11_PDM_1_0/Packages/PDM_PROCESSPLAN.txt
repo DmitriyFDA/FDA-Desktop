@@ -1,0 +1,4440 @@
+create or replace PACKAGE pdm_processplan
+IS
+   /****************************************************************************
+   Name          : pdm_processplan
+   Short name    : PPN
+   Description   : Package containing functionality for handling the message
+                   processPlanMessage.
+   
+   Change history:
+   Nr. Date       Author  Request Description
+   --- ---------- ------- ------- ---------------------------------------------
+     1
+     0 03-11-2010 nlpvd      2217 Creation
+   ****************************************************************************/
+
+   PROCEDURE hdl_message ( i_message IN XMLTYPE  );
+
+   PROCEDURE main_processplanlist( i_aet_id IN acl_application_elements.id%TYPE );
+
+   PROCEDURE create_psn_task( i_evt_id   IN pdm_events.id%TYPE
+                            , i_rt_psn   IN pdm_process_specifications%ROWTYPE
+                            );
+
+   PROCEDURE create_eon_tasks( i_evt_id             IN pdm_events.id%TYPE
+                             , i_ind_created_by_cpd IN pdm_evaluate_operation_tasks.ind_created_by_cpd%TYPE
+                             );
+
+   TYPE it_pdt IS TABLE OF pdm_products.id%TYPE INDEX BY BINARY_INTEGER;
+
+END pdm_processplan;
+/
+
+
+
+
+package body pdm_processplan
+is
+   
+
+
+
+
+   g_con_package   constant varchar2 (50) := 'pdm_processplan';
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function create_processplanlist( i_pty_id_cust in cmn_parties.id_cust%type
+                                  , i_event_time  in cmn_constant.st_timestamp := null
+                                  )
+      return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                          := g_con_package || '.create_processplanlist';
+
+      
+      cursor c_tpn
+      is
+      select    vtpn.tpp_id_cust as tpp_id_cust
+      from      pdm_v_tpl_process_specs vtpn
+      where     vtpn.pns_id = pdm_constant.g_con_pns_status_current
+      order  by tpp_id_cust
+      ;
+
+      
+      cursor c_psn ( b_tpp_id_cust in pdm_tpl_process_spec_types.id_cust%type)
+      is
+      select xmlagg( xmlelement( "ProcessPlan"
+                               , xmlelement("Name"   , psn.id_cust)
+                               , xmlelement("Version", psn.version)
+                               )
+                     order by psn.id_cust
+                    )
+      from     pdm_process_specifications psn
+      where    psn.type    =  b_tpp_id_cust
+      and      psn.pns_id  in ( pdm_constant.g_con_pns_status_future
+                              , pdm_constant.g_con_pns_status_current
+                              )
+      ;
+
+      l_xml_header               xmltype;
+      l_msg_xml                  xmltype;
+      l_psn                      xmltype;
+      l_tpn                      xmltype;
+      l_tpn_concat               xmltype;
+      l_handling_area            varchar2(30);
+      l_event_time               varchar2(30);
+
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name);
+
+      
+      l_event_time := cmn_common.timestamp_to_varchar (i_event_time);
+
+      
+      l_xml_header := pdm_common.create_header
+                         ( i_target_process_id_cust => i_pty_id_cust
+                         , i_target_instance_id     => null
+                         );
+
+      
+      l_handling_area := cmn_common.get_parameter_value( i_prr_name => pdm_constant.g_con_prr_handling_area );
+
+      for rec_tpn in c_tpn
+      loop
+         
+         l_psn := null;
+
+         
+         open  c_psn( b_tpp_id_cust => rec_tpn.tpp_id_cust);
+         fetch c_psn
+         into  l_psn;
+         close c_psn;
+
+         
+         select xmlelement( "ProcessPlans"
+                          , xmlelement( "CommonProcessDefinitionName", rec_tpn.tpp_id_cust)
+                          , l_psn
+                          )
+         into l_tpn
+         from dual;
+
+         
+         select xmlconcat (l_tpn_concat,l_tpn)
+         into l_tpn_concat
+         from dual;
+
+      end loop;
+
+      
+      select xmlroot( xmlelement( "ProcessPlanListMessage"
+                                , xmlelement( "EventTime"
+                                            , l_event_time
+                                            )
+                                , l_xml_header
+                                , xmlelement( "ProcessPlanList"
+                                            , xmlelement ("HandlingArea", l_handling_area)
+                                            , l_tpn_concat
+                                            )
+                                )
+                    , version cmn_constant.g_con_xmlroot
+                    )
+      into   l_msg_xml
+      from   dual;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_msg_xml;
+   exception
+      when others
+      then
+         if c_psn%isopen
+         then
+            close c_psn;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end create_processplanlist;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure send_processplanlist( i_evt_id      in pdm_events.id%type
+                                 , i_pty_id_cust in cmn_parties.id_cust%type
+                                 , i_event_time  in cmn_constant.st_timestamp
+                                 )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.send_processplanlist';
+      l_message                  xmltype;
+      l_rt_eme                   pdm_event_messages%rowtype;
+      l_rt_imd                   cmn_ifc_msg_definitions%rowtype;
+      l_dummy                    boolean;
+
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name);
+
+      
+      l_message := create_processplanlist( i_pty_id_cust => i_pty_id_cust
+                                         , i_event_time  => i_event_time
+                                         );
+
+      
+      l_dummy := cmn_imd_tapi_pck.imd_select_row_uk
+                         ( i_imd_name => pdm_constant.g_con_processplanlistmessage
+                         , o_rt_imd   => l_rt_imd
+                         );
+
+      
+      cmn_interface.send_message( i_message              => l_message
+                                , i_pty_id_cust          => i_pty_id_cust
+                                , i_pty_instance_id_cust => null
+                                , i_imd_id               => l_rt_imd.id
+                                );
+
+      
+      l_rt_eme.ims_id := cmn_interface.get_message_id
+                            ( i_direction => cmn_constant.g_con_msg_direction_outgoing
+                            );
+
+      l_rt_eme.imd_id       := l_rt_imd.id;
+      l_rt_eme.date_created := i_event_time;
+      l_rt_eme.event_time   := i_event_time;
+      l_rt_eme.evt_id       := i_evt_id;
+      pdm_eme_tapi_pck.eme_insert_row( io_rt_eme => l_rt_eme );
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end send_processplanlist;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure main_processplanlist( i_aet_id in acl_application_elements.id%type )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.main_processplanlist';
+
+      l_rt_evt    pdm_events%rowtype;
+      l_timestamp cmn_constant.st_timestamp;
+
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      l_timestamp := cmn_common.default_timestamp;
+
+      
+      l_rt_evt.date_created := l_timestamp;
+      l_rt_evt.aet_id := i_aet_id;
+      pdm_evt_tapi_pck.evt_insert_row( io_rt_evt => l_rt_evt );
+
+      
+      
+      pdm_processplan.send_processplanlist( i_evt_id      => l_rt_evt.id
+                                          , i_pty_id_cust => pdm_common.get_process_id
+                                                ( i_ptr_name => pdm_constant.g_con_opm_party_process_id )
+                                          , i_event_time  => l_timestamp
+                                          );
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+      
+      commit;
+
+   exception
+      when viu_constant.exc_aclprocessstopped
+      then
+         
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+      when others
+      then
+         
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.handle_info;
+   end main_processplanlist;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure copy_tpl_spec_attr( i_psn_id in pdm_process_specifications.id%type
+                               , i_tpn_id in pdm_tpl_process_specifications.id%type
+                               )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.copy_tpl_spec_attr';
+
+      cursor c_tpa
+      is
+      select *
+      from   pdm_tpl_proc_spec_attributes tpa
+      where  tpa.tpn_id = i_tpn_id;
+
+      l_rt_psa pdm_process_spec_attributes%rowtype;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      
+      for l_rec_tpa in c_tpa
+      loop
+
+         
+         l_rt_psa := null;
+
+         
+         l_rt_psa.psn_id := i_psn_id;
+         l_rt_psa.adn_id := l_rec_tpa.adn_id;
+         pdm_psa_tapi_pck.psa_insert_row (io_rt_psa => l_rt_psa);
+
+      end loop;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end copy_tpl_spec_attr;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_parameter( i_rt_psn        in pdm_process_specifications%rowtype
+                             , i_rt_pcs        in pdm_processes%rowtype
+                             , i_rt_aty        in pdm_activities%rowtype
+                             , i_rt_pse        in pdm_phases%rowtype
+                             , i_xml_parameter in xmltype
+                             )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_parameter';
+
+      
+      cursor c_ppr_exists( b_psn_id pdm_process_specifications.id%type
+                         , b_pcs_id pdm_processes.id%type
+                         , b_aty_id pdm_activities.id%type
+                         , b_pse_id pdm_phases.id%type
+                         , b_adn_id pdm_attribute_definitions.id%type
+                         )
+      is
+         select 1
+         from   pdm_process_parameters ppr
+         where  
+                b_psn_id = ppr.psn_id
+         and    
+                (
+                (b_pcs_id is null and ppr.pcs_id is null)
+                or
+                b_pcs_id = ppr.pcs_id
+         	      )
+         and    
+                (
+                (b_aty_id is null and ppr.aty_id is null)
+                or
+                b_aty_id = ppr.aty_id
+         	      )
+         and    
+                (
+                (b_pse_id is null and ppr.pse_id is null)
+                or
+                b_pse_id = ppr.pse_id
+         	      )
+         and    ppr.adn_id = b_adn_id
+         and    rownum = 1;
+
+      l_rt_adn                 pdm_attribute_definitions%rowtype;
+      l_adn_path               pdm_attribute_definitions.path%type;
+      l_found                  boolean;
+      l_dummy                  number;
+
+      l_tpr_id                 pdm_tpl_process_parameters.id%type;
+
+      l_last_value             boolean := false;
+      l_idx_value              number  := 1;
+      l_xpath_nth_value        varchar2 (200);
+      l_ppr_value              pdm_process_parameters.value%type;
+      l_rt_ppr                 pdm_process_parameters%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_adn_path :=
+         cmn_xml_util.extract_value( i_xml   => i_xml_parameter
+                                   , i_xpath => pdm_constant.g_con_xpath_parameter_attribut
+                                   );
+
+      
+      l_found := pdm_adn_tapi_pck.adn_select_row_uk1( i_adn_path => l_adn_path
+                                                    , o_rt_adn   => l_rt_adn
+                                                    );
+
+      
+      if not l_found
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_dbrecordnotexist
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    =>    'PDM_ATTRIBUTE_DEFINITIONS'
+                                                     || '##'
+                                                     || pdm_constant.g_con_xpath_parameter_attribut
+                                                     || ': '
+                                                     || l_adn_path
+                            );
+      end if;
+
+      
+      open c_ppr_exists( b_psn_id => i_rt_psn.id
+                       , b_pcs_id => i_rt_pcs.id
+                       , b_aty_id => i_rt_aty.id
+                       , b_pse_id => i_rt_pse.id
+                       , b_adn_id => l_rt_adn.id
+                       );
+      fetch c_ppr_exists into l_dummy;
+      l_found := c_ppr_exists%found;
+      close c_ppr_exists;
+
+      if l_found
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_parameteralreadydefined
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => l_adn_path
+                            , i_additional_data   =>      'PSN.ID=' || i_rt_psn.id
+                                                     || ', PCS.ID=' || i_rt_pcs.id
+                                                     || ', ATY.ID=' || i_rt_aty.id
+                                                     || ', PSE.ID=' || i_rt_pse.id
+                                                     || ', ADN.ID=' || l_rt_adn.id
+                            );
+      end if;
+
+      
+      begin
+
+         
+         if     i_rt_aty.id is not null
+            and i_rt_pse.id is null
+         then
+            
+            select tpr.id
+            into   l_tpr_id
+            from ( select   tpr.id
+                   from     pdm_activities             aty
+                   ,        pdm_processes              pcs
+                   ,        pdm_process_specifications psn
+                   ,        pdm_tpl_families           tfy
+                   ,        pdm_tpl_process_parameters tpr
+                   where    aty.id     = i_rt_aty.id
+                   and      aty.pcs_id = pcs.id
+                   and      pcs.psn_id = psn.id
+                   and      psn.tpn_id = tfy.tpn_id
+                   and      tfy.id     = tpr.tfy_id
+                   and      tpr.adn_id = l_rt_adn.id
+                   and      tpr.value is null
+                   order by tfy.id
+                 ) tpr
+            where  rownum = 1;
+         else
+            
+            select tpr.id
+            into   l_tpr_id
+            from   pdm_tpl_process_parameters tpr
+            where  (
+                      
+                      (
+                          i_rt_pcs.id is null
+                      and tpr.tpn_id  =  i_rt_psn.tpn_id
+                      )
+                      or 
+                      (
+                          i_rt_pcs.id is not null
+                      and i_rt_aty.id is null
+                      and tpr.tps_id  =  i_rt_pcs.tps_id
+                      )
+                      or 
+                      (
+                          i_rt_pse.id is not null
+                      and tpr.tpe_id  =  i_rt_pse.tpe_id
+                      )
+                   )
+            and    tpr.adn_id = l_rt_adn.id
+            and    tpr.value is null;
+
+         end if; 
+
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_notplprocessparamfound
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    => l_adn_path
+                               , i_additional_data   =>      'PSN.ID=' || i_rt_psn.id
+                                                        || ', PCS.ID=' || i_rt_pcs.id
+                                                        || ', ATY.ID=' || i_rt_aty.id
+                                                        || ', PSE.ID=' || i_rt_pse.id
+                                                        || ', ADN.ID=' || l_rt_adn.id
+                               );
+      end; 
+
+      
+      while not l_last_value
+      loop
+         
+         l_xpath_nth_value :=
+               pdm_constant.g_con_xpath_parameter_value
+            || '['
+            || to_char( l_idx_value )
+            || ']';
+         l_ppr_value :=
+            cmn_xml_util.extract_value( i_xml   => i_xml_parameter
+                                      , i_xpath => l_xpath_nth_value
+                                      );
+
+         
+         if l_ppr_value is null
+         then
+            
+            if l_idx_value = 1
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_cmninvalidxmlreceived
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_error
+                                  , i_additional_data   => cmn_common.get_clob_val( i_xml_parameter )
+                                  );
+            end if;
+
+            l_last_value := true;
+         else
+            
+            l_rt_ppr := null;
+
+            
+            l_rt_ppr.tpr_id := l_tpr_id;
+            l_rt_ppr.psn_id := i_rt_psn.id;
+            l_rt_ppr.pcs_id := i_rt_pcs.id;
+            l_rt_ppr.aty_id := i_rt_aty.id;
+            l_rt_ppr.pse_id := i_rt_pse.id;
+            l_rt_ppr.adn_id := l_rt_adn.id;
+            l_rt_ppr.value  := l_ppr_value;
+            pdm_ppr_tapi_pck.ppr_insert_row( io_rt_ppr => l_rt_ppr );
+         end if;
+
+         l_idx_value := l_idx_value + 1;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_ppr_exists%isopen
+         then
+            close c_ppr_exists;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_parameter;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_action_resource( i_xml_action in xmltype
+                                   , i_atn_id     in pdm_actions.id%type
+                                   )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_action_resource';
+
+      cursor c_psn_atn ( i_atn_id in pdm_actions.id%type)
+      is
+      select psn.type    as psn_type
+            ,psn.id_cust as psn_id_cust
+            ,pcs.type    as pcs_type
+            ,aty.id_cust as aty_id_cust
+            ,pse.type    as pse_type
+            ,pse.id_cust as pse_id_cust
+            ,atn.type    as atn_type
+      from   pdm_process_specifications psn
+            ,pdm_processes              pcs
+            ,pdm_activities             aty
+            ,pdm_phases                 pse
+            ,pdm_actions                atn
+      where  psn.id = pcs.psn_id
+      and    pcs.id = aty.pcs_id
+      and    aty.id = pse.aty_id
+      and    pse.id = atn.pse_id
+      and    atn.id = i_atn_id
+      ;
+
+      l_rt_psn_atn               c_psn_atn%rowtype;
+      l_rte_id_cust              pdm_resource_types.id_cust%type;
+      l_are_id_cust              pdm_action_resources.id_cust%type;
+      l_rt_rte                   pdm_resource_types%rowtype;
+      l_rt_are                   pdm_action_resources%rowtype;
+      l_xpath_nth_resource       varchar2 (200);
+
+      l_idx_resource             number  := 1;
+      l_last_resource            boolean := false;
+      l_found                    boolean;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_rte_id_cust :=
+         cmn_xml_util.extract_value
+                             (i_xml        => i_xml_action,
+                              i_xpath      => pdm_constant.g_con_xpath_ppn_action_restype
+                             );
+      if l_rte_id_cust is not null
+      then
+
+         
+         l_found := pdm_rte_tapi_pck.rte_select_row_uk1( i_rte_id_cust => l_rte_id_cust
+                                                       , o_rt_rte      => l_rt_rte
+                                                       );
+         if not l_found
+         then
+            open  c_psn_atn ( i_atn_id => i_atn_id);
+            fetch c_psn_atn
+            into  l_rt_psn_atn;
+            close c_psn_atn;
+
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_dbrecordnotexist
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         => 'PDM_RESOURCE_TYPES'
+                                                             || '##'
+                                                             || pdm_constant.g_con_xpath_ppn_processplan
+                                                             || '/'
+                                                             || l_rt_psn_atn.psn_type
+                                                             || '/'
+                                                             || l_rt_psn_atn.psn_id_cust
+                                                             || '/'
+                                                             || l_rt_psn_atn.pcs_type
+                                                             || '/'
+                                                             || l_rt_psn_atn.aty_id_cust
+                                                             || '/'
+                                                             || l_rt_psn_atn.pse_type
+                                                             || '/'
+                                                             || l_rt_psn_atn.pse_id_cust
+                                                             || '/'
+                                                             || l_rt_psn_atn.atn_type
+                                                             || pdm_constant.g_con_xpath_ppn_resourcetype
+                                                             || ': '
+                                                             || l_rte_id_cust
+                               );
+         else
+
+            
+            while (not l_last_resource)
+            loop
+               l_xpath_nth_resource :=
+                     pdm_constant.g_con_xpath_ppn_action_resid
+                  || '['
+                  || to_char (l_idx_resource)
+                  || ']';
+               l_are_id_cust :=
+                  cmn_xml_util.extract_value (i_xml   => i_xml_action,
+                                              i_xpath => l_xpath_nth_resource
+                                             );
+
+               
+               if (l_are_id_cust is null)
+               then
+                  l_last_resource := true;
+               else
+
+                     
+                     l_rt_are := null;
+
+                     
+                     l_rt_are.atn_id   := i_atn_id;
+                     l_rt_are.id_cust  := l_are_id_cust;
+                     l_rt_are.rte_id   := l_rt_rte.id;
+                     l_rt_are.sequence := l_idx_resource;
+                     pdm_are_tapi_pck.are_insert_row (io_rt_are => l_rt_are);
+
+                  l_idx_resource := l_idx_resource + 1;
+               end if; 
+            end loop; 
+
+            
+            if l_idx_resource = 1
+            then
+               open  c_psn_atn ( i_atn_id => i_atn_id);
+               fetch c_psn_atn
+               into  l_rt_psn_atn;
+               close c_psn_atn;
+
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_resourceid
+                                                                || '##'
+                                                                || pdm_constant.g_con_xpath_ppn_processplan
+                                                                || '/'
+                                                                || l_rt_psn_atn.psn_type
+                                                                || '/'
+                                                                || l_rt_psn_atn.psn_id_cust
+                                                                || '/'
+                                                                || l_rt_psn_atn.pcs_type
+                                                                || '/'
+                                                                || l_rt_psn_atn.aty_id_cust
+                                                                || '/'
+                                                                || l_rt_psn_atn.pse_type
+                                                                || '/'
+                                                                || l_rt_psn_atn.pse_id_cust
+                                                                || '/'
+                                                                || l_rt_psn_atn.atn_type
+                                  );
+            end if;
+         end if; 
+      end if; 
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_psn_atn%isopen
+         then
+            close c_psn_atn;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_action_resource;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_action( i_xml_phase in xmltype
+                          , i_pse_id    in pdm_phases.id%type
+                          , i_tpe_id    in pdm_tpl_phases.id%type
+                          )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_action';
+
+      cursor c_psn_pse ( i_pse_id in pdm_phases.id%type)
+      is
+      select psn.type    as psn_type
+            ,psn.id_cust as psn_id_cust
+            ,pcs.type    as pcs_type
+            ,aty.id_cust as aty_id_cust
+            ,pse.type    as pse_type
+            ,pse.id_cust as pse_id_cust
+      from   pdm_process_specifications psn
+            ,pdm_processes              pcs
+            ,pdm_activities             aty
+            ,pdm_phases                 pse
+      where  psn.id = pcs.psn_id
+      and    pcs.id = aty.pcs_id
+      and    aty.id = pse.aty_id
+      and    pse.id = i_pse_id
+      ;
+
+      l_rt_psn_pse               c_psn_pse%rowtype;
+      l_atn_actiondefname        pdm_actions.type%type;
+      l_rt_tan                   pdm_tpl_actions%rowtype;
+      l_rt_atn                   pdm_actions%rowtype;
+      l_xpath_nth_action         varchar2 (200);
+      l_xml_action               xmltype;
+      l_idx_action               number  := 1;
+      l_last_action              boolean := false;
+      l_found                    boolean;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      while (not l_last_action)
+      loop
+         l_xpath_nth_action :=
+               pdm_constant.g_con_xpath_ppn_phase_action
+            || '['
+            || to_char (l_idx_action)
+            || ']';
+         l_xml_action :=
+            cmn_xml_util.extract_element (i_xml   => i_xml_phase,
+                                          i_xpath => l_xpath_nth_action
+                                         );
+
+         if (l_xml_action is null)
+         then
+            l_last_action := true;
+         else
+
+            
+            l_atn_actiondefname :=
+               cmn_xml_util.extract_value
+                                   (i_xml        => l_xml_action,
+                                    i_xpath      => pdm_constant.g_con_xpath_ppn_action_defname
+                                   );
+
+            
+            l_found := pdm_tan_tapi_pck.tan_select_row_uk1( i_tan_tpe_id => i_tpe_id
+                                                          , i_tan_type   => l_atn_actiondefname
+                                                          , o_rt_tan     => l_rt_tan
+                                                          );
+            if not l_found
+            then
+               open  c_psn_pse ( i_pse_id => i_pse_id);
+               fetch c_psn_pse
+               into  l_rt_psn_pse;
+               close c_psn_pse;
+
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_dbrecordnotexist
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    'PDM_TPL_ACTIONS'
+                                                                || '##'
+                                                                || pdm_constant.g_con_xpath_ppn_processplan
+                                                                || '/'
+                                                                || l_rt_psn_pse.psn_type
+                                                                || '/'
+                                                                || l_rt_psn_pse.psn_id_cust
+                                                                || '/'
+                                                                || l_rt_psn_pse.pcs_type
+                                                                || '/'
+                                                                || l_rt_psn_pse.aty_id_cust
+                                                                || '/'
+                                                                || l_rt_psn_pse.pse_type
+                                                                || '/'
+                                                                || l_rt_psn_pse.pse_id_cust
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_ppn_actiondefname
+                                                                || ': '
+                                                                || l_atn_actiondefname
+                                  );
+            else
+
+               
+               l_rt_atn := null;
+
+               
+               l_rt_atn.pse_id := i_pse_id;
+
+               
+               l_rt_atn.tan_id := l_rt_tan.id;
+
+               
+               l_rt_atn.type := l_rt_tan.type;
+
+               
+               l_rt_atn.sequence := l_idx_action;
+
+               
+               if l_atn_actiondefname = pdm_constant.g_con_non_primary_action
+               then
+                  l_rt_atn.ind_primary := cmn_constant.g_con_yesno_no;
+               else
+                  l_rt_atn.ind_primary := cmn_constant.g_con_yesno_yes;
+               end if;
+
+               
+               pdm_atn_tapi_pck.atn_insert_row (io_rt_atn => l_rt_atn);
+
+               
+               create_action_resource ( i_xml_action => l_xml_action
+                                      , i_atn_id     => l_rt_atn.id
+                                      );
+
+               l_idx_action := l_idx_action + 1;
+            end if;
+         end if;
+      end loop; 
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_psn_pse%isopen
+         then
+            close c_psn_pse;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_action;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_phase_parameter( i_rt_psn    in pdm_process_specifications%rowtype
+                                   , i_rt_pcs    in pdm_processes%rowtype
+                                   , i_rt_aty    in pdm_activities%rowtype
+                                   , i_rt_pse    in pdm_phases%rowtype
+                                   , i_xml_phase in xmltype
+                                   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_phase_parameter';
+
+      l_last_parameter         boolean := false;
+      l_idx_parameter          number  := 1;
+      l_xpath_nth_parameter    varchar2 (200);
+      l_xml_parameter          xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      while not l_last_parameter
+      loop
+         
+         l_xpath_nth_parameter :=
+               pdm_constant.g_con_xpath_ppn_phase_param
+            || '['
+            || to_char( l_idx_parameter )
+            || ']';
+         l_xml_parameter :=
+            cmn_xml_util.extract_element( i_xml   => i_xml_phase
+                                        , i_xpath => l_xpath_nth_parameter
+                                        );
+
+         
+         if l_xml_parameter is null
+         then
+            l_last_parameter := true;
+         else
+            
+            create_parameter( i_rt_psn        => i_rt_psn
+                            , i_rt_pcs        => i_rt_pcs
+                            , i_rt_aty        => i_rt_aty
+                            , i_rt_pse        => i_rt_pse
+                            , i_xml_parameter => l_xml_parameter
+                            );
+         end if;
+
+         l_idx_parameter := l_idx_parameter + 1;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_phase_parameter;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure copy_tpl_phase_parameter( i_psn_id in pdm_process_specifications.id%type
+                                     , i_pcs_id in pdm_processes.id%type
+                                     , i_aty_id in pdm_activities.id%type
+                                     , i_pse_id in pdm_phases.id%type
+                                     , i_tpe_id in pdm_tpl_phases.id%type
+                                     )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.copy_tpl_phase_parameter';
+
+      cursor c_tpr( b_tpe_id pdm_tpl_phases.id%type )
+      is
+         select *
+         from   pdm_tpl_process_parameters tpr
+         where  tpr.tpe_id = b_tpe_id
+         and    tpr.value is not null
+         ;
+      l_rt_ppr                 pdm_process_parameters%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      for r_tpr in c_tpr( b_tpe_id => i_tpe_id )
+      loop
+         
+         l_rt_ppr := null;
+
+         
+         l_rt_ppr.tpr_id := r_tpr.id;
+         l_rt_ppr.psn_id := i_psn_id;
+         l_rt_ppr.pcs_id := i_pcs_id;
+         l_rt_ppr.aty_id := i_aty_id;
+         l_rt_ppr.pse_id := i_pse_id;
+         l_rt_ppr.adn_id := r_tpr.adn_id;
+         l_rt_ppr.value  := r_tpr.value;
+         pdm_ppr_tapi_pck.ppr_insert_row( io_rt_ppr => l_rt_ppr );
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end copy_tpl_phase_parameter;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_phase( i_xml_activity in xmltype
+                         , i_rt_psn       in pdm_process_specifications%rowtype
+                         , i_rt_pcs       in pdm_processes%rowtype
+                         , i_rt_aty       in pdm_activities%rowtype
+                         , i_tps_id       in pdm_tpl_processes.id%type
+                         )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_phase';
+
+      l_pse_phasedefname         pdm_phases.type%type;
+      l_rt_tpe                   pdm_tpl_phases%rowtype;
+      l_rt_pse                   pdm_phases%rowtype;
+      l_xpath_nth_phase          varchar2 (200);
+      l_xml_phase                xmltype;
+      l_idx_phase                number  := 1;
+      l_last_phase               boolean := false;
+      l_found                    boolean;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      while (not l_last_phase)
+      loop
+         l_xpath_nth_phase :=
+               pdm_constant.g_con_xpath_ppn_activity_phase
+            || '['
+            || to_char (l_idx_phase)
+            || ']';
+         l_xml_phase :=
+            cmn_xml_util.extract_element (i_xml   => i_xml_activity,
+                                          i_xpath => l_xpath_nth_phase
+                                         );
+
+         if (l_xml_phase is null)
+         then
+            l_last_phase := true;
+         else
+
+            
+            l_pse_phasedefname :=
+               cmn_xml_util.extract_value
+                                   (i_xml        => l_xml_phase,
+                                    i_xpath      => pdm_constant.g_con_xpath_ppn_phase_defname
+                                   );
+
+            
+            l_found := pdm_tpe_tapi_pck.tpe_select_row_uk1( i_tpe_tps_id => i_tps_id
+                                                          , i_tpe_type   => l_pse_phasedefname
+                                                          , o_rt_tpe     => l_rt_tpe
+                                                          );
+            if not l_found
+            then
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_dbrecordnotexist
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    'PDM_TPL_PHASES'
+                                                                || '##'
+                                                                || pdm_constant.g_con_xpath_ppn_processplan
+                                                                || '/'
+                                                                || i_rt_psn.type
+                                                                || '/'
+                                                                || i_rt_psn.id_cust
+                                                                || '/'
+                                                                || i_rt_pcs.type
+                                                                || '/'
+                                                                || i_rt_aty.id_cust
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_ppn_phasedefname
+                                                                || ': '
+                                                                || l_pse_phasedefname
+                                  );
+            else
+
+               
+               l_rt_pse := null;
+
+               
+               l_rt_pse.aty_id := i_rt_aty.id;
+
+               
+               l_rt_pse.tpe_id := l_rt_tpe.id;
+
+               
+               l_rt_pse.type := l_rt_tpe.type;
+
+               
+               l_rt_pse.id_cust :=
+                  cmn_xml_util.extract_value
+                                      (i_xml        => l_xml_phase,
+                                       i_xpath      => pdm_constant.g_con_xpath_ppn_phase_name
+                                      );
+
+               
+               l_rt_pse.timeframe_start := cmn_common.varchar_to_timestamp
+                                              (cmn_xml_util.extract_value
+                                                 ( i_xml   => l_xml_phase
+                                                 , i_xpath => pdm_constant.g_con_xpath_ppn_phase_active
+                                                 )
+                                              );
+
+               
+               l_rt_pse.timeframe_end := cmn_common.varchar_to_timestamp
+                                              (cmn_xml_util.extract_value
+                                                 ( i_xml   => l_xml_phase
+                                                 , i_xpath => pdm_constant.g_con_xpath_ppn_phase_expire
+                                                 )
+                                              );
+
+               
+               if l_rt_pse.timeframe_end <= l_rt_pse.timeframe_start
+               then
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_pseendnotafterstart
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_error
+                                     , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_processplan
+                                                                   || '/'
+                                                                   || i_rt_psn.type
+                                                                   || '/'
+                                                                   || i_rt_psn.id_cust
+                                                                   || '/'
+                                                                   || i_rt_pcs.type
+                                                                   || '/'
+                                                                   || i_rt_aty.id_cust
+                                                                   || '/'
+                                                                   || pdm_constant.g_con_xpath_ppn_phasedefname
+                                                                   || ': '
+                                                                   || l_rt_pse.type
+                                                                   || ', '
+                                                                   || pdm_constant.g_con_xpath_ppn_phasename
+                                                                   || ': '
+                                                                   || l_rt_pse.id_cust
+                                                                   || '##'
+                                                                   || cmn_common.timestamp_to_varchar
+                                                                         (l_rt_pse.timeframe_end)
+                                                                   || '##'
+                                                                   || cmn_common.timestamp_to_varchar
+                                                                         (l_rt_pse.timeframe_start)
+                                     );
+
+               
+               elsif l_rt_pse.timeframe_start < i_rt_psn.timeframe_start
+               then
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_psestartbeforepsnstart
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_error
+                                     , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_processplan
+                                                                   || '/'
+                                                                   || i_rt_psn.type
+                                                                   || '/'
+                                                                   || i_rt_psn.id_cust
+                                                                   || '/'
+                                                                   || i_rt_pcs.type
+                                                                   || '/'
+                                                                   || i_rt_aty.id_cust
+                                                                   || '/'
+                                                                   || pdm_constant.g_con_xpath_ppn_phasedefname
+                                                                   || ': '
+                                                                   || l_rt_pse.type
+                                                                   || ', '
+                                                                   || pdm_constant.g_con_xpath_ppn_phasename
+                                                                   || ': '
+                                                                   || l_rt_pse.id_cust
+                                                                   || '##'
+                                                                   || cmn_common.timestamp_to_varchar
+                                                                         (l_rt_pse.timeframe_start)
+                                                                   || '##'
+                                                                   || cmn_common.timestamp_to_varchar
+                                                                         (i_rt_psn.timeframe_start)
+                                     );
+
+               
+               elsif l_rt_pse.timeframe_end > i_rt_psn.timeframe_end
+               then
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_pseendafterpsnend
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_error
+                                     , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_processplan
+                                                                   || '/'
+                                                                   || i_rt_psn.type
+                                                                   || '/'
+                                                                   || i_rt_psn.id_cust
+                                                                   || '/'
+                                                                   || i_rt_pcs.type
+                                                                   || '/'
+                                                                   || i_rt_aty.id_cust
+                                                                   || '/'
+                                                                   || pdm_constant.g_con_xpath_ppn_phasedefname
+                                                                   || ': '
+                                                                   || l_rt_pse.type
+                                                                   || ', '
+                                                                   || pdm_constant.g_con_xpath_ppn_phasename
+                                                                   || ': '
+                                                                   || l_rt_pse.id_cust
+                                                                   || '##'
+                                                                   || cmn_common.timestamp_to_varchar
+                                                                         (l_rt_pse.timeframe_end)
+                                                                   || '##'
+                                                                   || cmn_common.timestamp_to_varchar
+                                                                         (i_rt_psn.timeframe_end)
+                                     );
+               end if;
+
+               
+               pdm_pse_tapi_pck.pse_insert_row (io_rt_pse => l_rt_pse);
+
+               
+               copy_tpl_phase_parameter( i_psn_id => i_rt_psn.id
+                                       , i_pcs_id => i_rt_pcs.id
+                                       , i_aty_id => i_rt_aty.id
+                                       , i_pse_id => l_rt_pse.id
+                                       , i_tpe_id => l_rt_tpe.id
+                                       );
+
+               
+               create_phase_parameter( i_rt_psn    => i_rt_psn
+                                     , i_rt_pcs    => i_rt_pcs
+                                     , i_rt_aty    => i_rt_aty
+                                     , i_rt_pse    => l_rt_pse
+                                     , i_xml_phase => l_xml_phase
+                                     );
+
+               
+               create_action ( i_xml_phase => l_xml_phase
+                             , i_pse_id    => l_rt_pse.id
+                             , i_tpe_id    => l_rt_tpe.id
+                             );
+
+               l_idx_phase := l_idx_phase + 1;
+            end if; 
+         end if;
+      end loop; 
+
+      
+      if l_idx_phase = 1
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_phase
+                                                          || '##'
+                                                          || pdm_constant.g_con_xpath_ppn_processplan
+                                                          || '/'
+                                                          || i_rt_psn.type
+                                                          || '/'
+                                                          || i_rt_psn.id_cust
+                                                          || '/'
+                                                          || i_rt_pcs.type
+                                                          || '/'
+                                                          || i_rt_aty.id_cust
+                            );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_phase;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_applied_products( i_xml_appliedto in  xmltype
+                                 , i_rt_psn        in  pdm_process_specifications%rowtype
+                                 , o_it_pdt        out it_pdt
+                                 )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_applied_products';
+
+      cursor c_fly_psy ( i_psn_id      in pdm_process_spec_families.psn_id%type
+                       , i_fly_id_cust in pdm_families.id_cust%type)
+      is
+      select fly.id                     as fly_id
+      from   pdm_families               fly
+            ,pdm_process_spec_families  psy
+      where  psy.psn_id  = i_psn_id
+      and    psy.fly_id  = fly.id
+      and    fly.id_cust = i_fly_id_cust;
+
+      l_rt_fly_psy               c_fly_psy%rowtype;
+      l_rt_pdt                   pdm_products%rowtype;
+      l_fly_id_cust              pdm_families.id_cust%type;
+      l_pdt_id_cust              pdm_products.id_cust%type;
+      l_found                    boolean;
+      l_xpath_nth_product        varchar2 (200);
+      l_idx_product              number  := 1;
+      l_last_product             boolean := false;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_fly_id_cust :=
+         cmn_xml_util.extract_value
+                             (i_xml        => i_xml_appliedto,
+                              i_xpath      => pdm_constant.g_con_xpath_appliedto_family
+                             );
+      if l_fly_id_cust is not null
+      then
+
+         
+         open  c_fly_psy ( i_psn_id      => i_rt_psn.id
+                         , i_fly_id_cust => l_fly_id_cust);
+         fetch c_fly_psy
+         into  l_rt_fly_psy;
+         close c_fly_psy;
+
+         
+         if l_rt_fly_psy.fly_id is null
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         =>    pdm_constant.g_con_xpath_family
+                                                             || ': '
+                                                             || l_fly_id_cust
+                                                             ||'##'
+                                                             || pdm_constant.g_con_xpath_ppn_processplan
+                                                             || '/'
+                                                             || i_rt_psn.type
+                                                             || '/'
+                                                             || i_rt_psn.id_cust
+                               );
+         else
+
+            
+            while (not l_last_product)
+            loop
+               l_xpath_nth_product :=
+                     pdm_constant.g_con_xpath_appliedto_product
+                  || '['
+                  || to_char (l_idx_product)
+                  || ']';
+               l_pdt_id_cust :=
+                  cmn_xml_util.extract_value (i_xml   => i_xml_appliedto,
+                                              i_xpath => l_xpath_nth_product
+                                             );
+
+               
+               if (l_pdt_id_cust is null)
+               then
+                  l_last_product := true;
+               else
+
+                  
+                  l_found := pdm_pdt_tapi_pck.pdt_select_row_uk1( i_pdt_fly_id  => l_rt_fly_psy.fly_id
+                                                                , i_pdt_id_cust => l_pdt_id_cust
+                                                                , o_rt_pdt      => l_rt_pdt
+                                                                );
+                  if not l_found
+                  then
+                     viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                                        , i_calling_procedure      => l_con_proc_name
+                                        , i_severity               => viu_info.c_severity_error
+                                        , i_info_arguments         =>    pdm_constant.g_con_xpath_product
+                                                                      || ': '
+                                                                      || l_pdt_id_cust
+                                                                      ||'##'
+                                                                      || pdm_constant.g_con_xpath_ppn_processplan
+                                                                      || '/'
+                                                                      || i_rt_psn.type
+                                                                      || '/'
+                                                                      || i_rt_psn.id_cust
+                                                                      || '/'
+                                                                      || l_fly_id_cust
+                                        );
+                  else
+
+                     
+                     o_it_pdt(l_idx_product) := l_rt_pdt.id;
+                  end if;
+
+                  l_idx_product := l_idx_product + 1;
+               end if; 
+            end loop; 
+
+            
+            if l_idx_product = 1
+            then
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    pdm_constant.g_con_xpath_appliedto
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_productname
+                                                                ||'##'
+                                                                || pdm_constant.g_con_xpath_ppn_processplan
+                                                                || '/'
+                                                                || i_rt_psn.type
+                                                                || '/'
+                                                                || i_rt_psn.id_cust
+                                  );
+            end if;
+
+         end if; 
+      end if; 
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_fly_psy%isopen
+         then
+            close c_fly_psy;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end get_applied_products;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_activity_parameter( i_rt_psn       in pdm_process_specifications%rowtype
+                                      , i_rt_pcs       in pdm_processes%rowtype
+                                      , i_rt_aty       in pdm_activities%rowtype
+                                      , i_xml_activity in xmltype
+                                      )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_activity_parameter';
+
+      l_last_parameter         boolean := false;
+      l_idx_parameter          number  := 1;
+      l_xpath_nth_parameter    varchar2 (200);
+      l_xml_parameter          xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      while not l_last_parameter
+      loop
+         
+         l_xpath_nth_parameter :=
+               pdm_constant.g_con_xpath_ppn_activity_param
+            || '['
+            || to_char( l_idx_parameter )
+            || ']';
+         l_xml_parameter :=
+            cmn_xml_util.extract_element( i_xml   => i_xml_activity
+                                        , i_xpath => l_xpath_nth_parameter
+                                        );
+
+         
+         if l_xml_parameter is null
+         then
+            l_last_parameter := true;
+         else
+            
+            create_parameter( i_rt_psn        => i_rt_psn
+                            , i_rt_pcs        => i_rt_pcs
+                            , i_rt_aty        => i_rt_aty
+                            , i_rt_pse        => null
+                            , i_xml_parameter => l_xml_parameter
+                            );
+         end if;
+
+         l_idx_parameter := l_idx_parameter + 1;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_activity_parameter;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_activity_property( i_rt_psn         in pdm_process_specifications%rowtype
+                                  , i_rt_pcs         in pdm_processes%rowtype
+                                  , i_rt_aty         in pdm_activities%rowtype
+                                  , i_xml_properties in xmltype
+                                  , i_xpath          in varchar2
+                                  , i_adn_path       in pdm_attribute_definitions.path%type
+                                  )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.hdl_activity_property';
+
+      l_ppr_value               pdm_process_parameters.value%type;
+      l_rt_ppr                  pdm_process_parameters%rowtype;
+      l_rt_adn                  pdm_attribute_definitions%rowtype;
+      l_dummy                   boolean;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_ppr_value :=
+         cmn_xml_util.extract_value( i_xml   => i_xml_properties
+                                   , i_xpath => i_xpath
+                                   );
+
+      
+      if l_ppr_value is not null
+      then
+         
+         l_dummy := pdm_adn_tapi_pck.adn_select_row_uk1 ( i_adn_path => i_adn_path
+                                                        , o_rt_adn   => l_rt_adn
+                                                        );
+
+         
+         l_rt_ppr.tpr_id := null;
+         l_rt_ppr.psn_id := i_rt_psn.id;
+         l_rt_ppr.pcs_id := i_rt_pcs.id;
+         l_rt_ppr.aty_id := i_rt_aty.id;
+         l_rt_ppr.pse_id := null;
+         l_rt_ppr.adn_id := l_rt_adn.id;
+         l_rt_ppr.value  := l_ppr_value;
+         pdm_ppr_tapi_pck.ppr_insert_row( io_rt_ppr => l_rt_ppr );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end hdl_activity_property;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_activity_properties( i_rt_psn       in pdm_process_specifications%rowtype
+                                    , i_rt_pcs       in pdm_processes%rowtype
+                                    , i_rt_aty       in pdm_activities%rowtype
+                                    , i_xml_activity in xmltype
+                                    )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.hdl_activity_properties';
+
+      l_xml_properties          xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_xml_properties :=
+         cmn_xml_util.extract_element
+                             (i_xml   => i_xml_activity,
+                              i_xpath => pdm_constant.g_con_xpath_ppn_activity_prop
+                             );
+
+      
+      if l_xml_properties is not null
+      then
+         hdl_activity_property( i_rt_psn          => i_rt_psn
+                              , i_rt_pcs          => i_rt_pcs
+                              , i_rt_aty          => i_rt_aty
+                              , i_xml_properties  => l_xml_properties
+                              , i_xpath           => pdm_constant.g_con_xpath_actpropreleaserate
+                              , i_adn_path        => pdm_constant.g_con_propreleaserate_attr
+                              );
+      end if; 
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end hdl_activity_properties;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_activity( i_xml_process in xmltype
+                            , i_rt_psn      in pdm_process_specifications%rowtype
+                            , i_rt_pcs      in pdm_processes%rowtype
+                            , i_tps_id      in pdm_tpl_processes.id%type
+                            )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_activity';
+
+      l_rt_aty                   pdm_activities%rowtype;
+      l_rt_apt                   pdm_activity_products%rowtype;
+      l_xml_appliedto            xmltype;
+      l_it_pdt                   it_pdt;
+      l_xpath_nth_activity       varchar2 (200);
+      l_xml_activity             xmltype;
+      l_idx_activity             number  := 1;
+      l_last_activity            boolean := false;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      while (not l_last_activity)
+      loop
+         l_xpath_nth_activity :=
+               pdm_constant.g_con_xpath_ppn_process_act
+            || '['
+            || to_char (l_idx_activity)
+            || ']';
+         l_xml_activity :=
+            cmn_xml_util.extract_element (i_xml   => i_xml_process,
+                                          i_xpath => l_xpath_nth_activity
+                                         );
+
+         
+         if (l_xml_activity is null)
+         then
+            l_last_activity := true;
+         else
+
+            
+            l_rt_aty := null;
+
+            
+            l_rt_aty.pcs_id := i_rt_pcs.id;
+
+            
+            l_rt_aty.id_cust :=
+               cmn_xml_util.extract_value
+                                   (i_xml        => l_xml_activity,
+                                    i_xpath      => pdm_constant.g_con_xpath_ppn_activity_name
+                                   );
+
+            
+            pdm_aty_tapi_pck.aty_insert_row (io_rt_aty => l_rt_aty);
+
+
+            
+            hdl_activity_properties( i_rt_psn       => i_rt_psn
+                                   , i_rt_pcs       => i_rt_pcs
+                                   , i_rt_aty       => l_rt_aty
+                                   , i_xml_activity => l_xml_activity
+                                   );
+
+            
+            create_activity_parameter( i_rt_psn       => i_rt_psn
+                                     , i_rt_pcs       => i_rt_pcs
+                                     , i_rt_aty       => l_rt_aty
+                                     , i_xml_activity => l_xml_activity
+                                     );
+
+            
+            l_xml_appliedto :=
+               cmn_xml_util.extract_element
+                                   (i_xml        => l_xml_activity,
+                                    i_xpath      => pdm_constant.g_con_xpath_ppn_activity_apto
+                                   );
+            if l_xml_appliedto is not null
+            then
+
+               
+               get_applied_products( i_xml_appliedto => l_xml_appliedto
+                                   , i_rt_psn        => i_rt_psn
+                                   , o_it_pdt        => l_it_pdt
+                                   );
+
+               
+               for l_idx_product in l_it_pdt.first .. l_it_pdt.last
+               loop
+                  l_rt_apt.pdt_id := l_it_pdt(l_idx_product);
+                  l_rt_apt.aty_id := l_rt_aty.id;
+                  pdm_apt_tapi_pck.apt_insert_row (io_rt_apt => l_rt_apt);
+               end loop;
+            end if;
+
+            create_phase( i_xml_activity => l_xml_activity
+                        , i_rt_psn       => i_rt_psn
+                        , i_rt_pcs       => i_rt_pcs
+                        , i_rt_aty       => l_rt_aty
+                        , i_tps_id       => i_tps_id
+                        );
+
+            l_idx_activity := l_idx_activity + 1;
+         end if; 
+      end loop; 
+
+      
+      if l_idx_activity = 1
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_activity
+                                                          || '##'
+                                                          || pdm_constant.g_con_xpath_ppn_processplan
+                                                          || '/'
+                                                          || i_rt_psn.type
+                                                          || '/'
+                                                          || i_rt_psn.id_cust
+                                                          || '/'
+                                                          || i_rt_pcs.type
+                            );
+
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_activity;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_process_parameter( i_rt_psn      in pdm_process_specifications%rowtype
+                                     , i_rt_pcs      in pdm_processes%rowtype
+                                     , i_xml_process in xmltype
+                                     )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_process_parameter';
+
+      l_last_parameter         boolean := false;
+      l_idx_parameter          number  := 1;
+      l_xpath_nth_parameter    varchar2 (200);
+      l_xml_parameter          xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      while not l_last_parameter
+      loop
+         
+         l_xpath_nth_parameter :=
+               pdm_constant.g_con_xpath_ppn_process_param
+            || '['
+            || to_char( l_idx_parameter )
+            || ']';
+         l_xml_parameter :=
+            cmn_xml_util.extract_element( i_xml   => i_xml_process
+                                        , i_xpath => l_xpath_nth_parameter
+                                        );
+
+         
+         if l_xml_parameter is null
+         then
+            l_last_parameter := true;
+         else
+            
+            create_parameter( i_rt_psn        => i_rt_psn
+                            , i_rt_pcs        => i_rt_pcs
+                            , i_rt_aty        => null
+                            , i_rt_pse        => null
+                            , i_xml_parameter => l_xml_parameter
+                            );
+         end if;
+
+         l_idx_parameter := l_idx_parameter + 1;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_process_parameter;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure copy_tpl_process_parameter( i_psn_id in pdm_process_specifications.id%type
+                                       , i_pcs_id in pdm_processes.id%type
+                                       , i_tps_id in pdm_tpl_processes.id%type
+                                       )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.copy_tpl_process_parameter';
+
+      cursor c_tpr( b_tps_id pdm_tpl_processes.id%type )
+      is
+         select *
+         from   pdm_tpl_process_parameters tpr
+         where  tpr.tps_id = b_tps_id
+         and    tpr.value is not null
+         ;
+      l_rt_ppr                 pdm_process_parameters%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      for r_tpr in c_tpr( b_tps_id => i_tps_id )
+      loop
+         
+         l_rt_ppr := null;
+
+         
+         l_rt_ppr.tpr_id := r_tpr.id;
+         l_rt_ppr.psn_id := i_psn_id;
+         l_rt_ppr.pcs_id := i_pcs_id;
+         l_rt_ppr.aty_id := null;
+         l_rt_ppr.pse_id := null;
+         l_rt_ppr.adn_id := r_tpr.adn_id;
+         l_rt_ppr.value  := r_tpr.value;
+         pdm_ppr_tapi_pck.ppr_insert_row( io_rt_ppr => l_rt_ppr );
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end copy_tpl_process_parameter;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_process( i_xml_processplan in xmltype
+                           , i_rt_psn          in pdm_process_specifications%rowtype
+                           , i_tpn_id          in pdm_tpl_process_specifications.id%type
+                           )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_process';
+
+      cursor c_tlt ( i_tps_id in pdm_tpl_process_products.tps_id%type)
+      is
+      select *
+      from   pdm_tpl_process_products tlt
+      where  tlt.tps_id = i_tps_id;
+
+      cursor c_pdt ( i_tpt_id in pdm_tpl_products.id%type)
+      is
+      select *
+      from   pdm_products pdt
+      where  pdt.tpt_id = i_tpt_id;
+      
+      cursor c_tps ( b_tpn_id   in pdm_tpl_process_specifications.id%type
+                   , b_type     in pdm_tpl_processes.type%type
+                   )
+      is
+      select *
+      from   pdm_tpl_processes tps
+      where  tps.tpn_id = b_tpn_id
+      and    tps.type   = b_type
+      ;
+      
+      l_rt_pcs                   pdm_processes%rowtype;
+      l_rt_pen                   pdm_process_expressions%rowtype;
+      l_rt_tps                   pdm_tpl_processes%rowtype;
+      l_rt_ppt                   pdm_process_products%rowtype;
+      l_rt_pdt                   pdm_products%rowtype;
+      l_pcs_procdefname          pdm_processes.type%type;
+      l_xml_condition            xmltype;
+      l_xml_appliedto            xmltype;
+      l_it_pdt                   it_pdt;
+      l_xpath_nth_process        varchar2 (200);
+      l_xml_process              xmltype;
+      l_idx_process              number  := 1;
+      l_found                    boolean;
+      l_last_process             boolean := false;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      while (not l_last_process)
+      loop
+         l_xpath_nth_process :=
+               pdm_constant.g_con_xpath_ppn_prplan_process
+            || '['
+            || to_char (l_idx_process)
+            || ']';
+         l_xml_process :=
+            cmn_xml_util.extract_element (i_xml   => i_xml_processplan,
+                                          i_xpath => l_xpath_nth_process
+                                         );
+
+         
+         if (l_xml_process is null)
+         then
+            l_last_process := true;
+         else
+
+            
+            l_pcs_procdefname :=
+               cmn_xml_util.extract_value
+                                   (i_xml        => l_xml_process,
+                                    i_xpath      => pdm_constant.g_con_xpath_ppn_proc_defname
+                                   );
+
+            
+            open  c_tps ( b_tpn_id => i_tpn_id
+                        , b_type   => l_pcs_procdefname
+                        );
+            fetch c_tps
+            into  l_rt_tps;
+            l_found := c_tps%found;
+            close c_tps;
+
+            if not l_found
+            then
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_dbrecordnotexist
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    'PDM_TPL_PROCESSES'
+                                                                || '##'
+                                                                || pdm_constant.g_con_xpath_ppn_processplan
+                                                                || '/'
+                                                                || i_rt_psn.type
+                                                                || '/'
+                                                                || i_rt_psn.id_cust
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_ppn_procdefname
+                                                                || ': '
+                                                                || l_pcs_procdefname
+                                  );
+            else
+
+               
+               l_rt_pcs := null;
+
+               
+               l_rt_pcs.psn_id := i_rt_psn.id;
+
+               
+               l_rt_pcs.tps_id := l_rt_tps.id;
+
+               
+               l_rt_pcs.type := l_rt_tps.type;
+
+               
+               l_rt_pcs.priority := l_rt_tps.priority;
+
+               
+               pdm_pcs_tapi_pck.pcs_insert_row (io_rt_pcs => l_rt_pcs);
+
+               
+               l_xml_condition :=
+                  cmn_xml_util.extract_element
+                                      (i_xml        => l_xml_process,
+                                       i_xpath      => pdm_constant.g_con_xpath_ppn_process_cond
+                                      );
+
+               
+               if l_xml_condition is not null
+               then
+                  
+                  pdm_expression.create_expression ( i_xml_condition   => l_xml_condition
+                                                   , i_evt_id          => i_rt_psn.evt_id_created
+                                                   , i_esn_id_template => l_rt_tps.esn_id
+                                                   , i_tle_id          => i_rt_psn.tle_id
+                                                   , i_transform       => false
+                                                   , o_esn_id          => l_rt_pen.esn_id
+                                                   , i_psn_id          => i_rt_psn.id
+                                                   );
+                  l_rt_pen.pcs_id := l_rt_pcs.id;
+
+                  
+                  pdm_pen_tapi_pck.pen_insert_row (io_rt_pen => l_rt_pen);
+
+               
+               elsif l_rt_tps.esn_id is not null
+               then
+                  
+                  l_rt_pen.esn_id := l_rt_tps.esn_id;
+                  l_rt_pen.pcs_id := l_rt_pcs.id;
+                  pdm_pen_tapi_pck.pen_insert_row (io_rt_pen => l_rt_pen);
+               end if;
+
+               
+               copy_tpl_process_parameter( i_psn_id => i_rt_psn.id
+                                         , i_pcs_id => l_rt_pcs.id
+                                         , i_tps_id => l_rt_tps.id
+                                         );
+
+               
+               create_process_parameter( i_rt_psn      => i_rt_psn
+                                       , i_rt_pcs      => l_rt_pcs
+                                       , i_xml_process => l_xml_process
+                                       );
+
+               
+               for l_rec_tlt in c_tlt (i_tps_id => l_rt_tps.id)
+               loop
+
+                  
+
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  
+                  l_rt_pdt := null;
+
+                  
+                  open  c_pdt ( i_tpt_id => l_rec_tlt.tpt_id);
+                  fetch c_pdt
+                  into  l_rt_pdt;
+                  close c_pdt;
+
+                   
+                  l_rt_ppt.pdt_id := l_rt_pdt.id;
+                  l_rt_ppt.pcs_id := l_rt_pcs.id;
+                  pdm_ppt_tapi_pck.ppt_insert_row (io_rt_ppt => l_rt_ppt);
+               end loop;
+
+
+               
+               l_xml_appliedto :=
+                  cmn_xml_util.extract_element
+                                      (i_xml        => l_xml_process,
+                                       i_xpath      => pdm_constant.g_con_xpath_ppn_process_apto
+                                      );
+               if l_xml_appliedto is not null
+               then
+
+                  
+                  get_applied_products( i_xml_appliedto => l_xml_appliedto
+                                      , i_rt_psn        => i_rt_psn
+                                      , o_it_pdt        => l_it_pdt
+                                      );
+
+                  
+                  for l_idx_product in l_it_pdt.first .. l_it_pdt.last
+                  loop
+                     l_rt_ppt.pdt_id := l_it_pdt(l_idx_product);
+                     l_rt_ppt.pcs_id := l_rt_pcs.id;
+                     pdm_ppt_tapi_pck.ppt_insert_row (io_rt_ppt => l_rt_ppt);
+                  end loop;
+               end if;
+
+               
+               create_activity( i_xml_process => l_xml_process
+                              , i_rt_psn      => i_rt_psn
+                              , i_rt_pcs      => l_rt_pcs
+                              , i_tps_id      => l_rt_tps.id
+                              );
+
+            end if; 
+
+            l_idx_process := l_idx_process + 1;
+         end if; 
+      end loop; 
+
+      
+      if l_idx_process= 1
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_process
+                                                          || '##'
+                                                          || pdm_constant.g_con_xpath_ppn_processplan
+                                                          || '/'
+                                                          || i_rt_psn.type
+                                                          || '/'
+                                                          || i_rt_psn.id_cust
+                            );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_pdt%isopen
+         then
+            close c_pdt;
+         end if;
+         if c_tps%isopen
+         then
+            close c_tps;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_process;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure copy_family( i_psn_id     in pdm_process_specifications.id%type
+                        , i_tpn_id     in pdm_tpl_process_specifications.id%type
+                        )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.copy_family';
+
+      cursor c_tfy
+      is
+      select *
+      from   pdm_tpl_families tfy
+      where  tfy.tpn_id     = i_tpn_id
+      and    tfy.ind_static = cmn_constant.g_con_yesno_yes;
+
+      cursor c_fly ( i_tfy_id in pdm_tpl_families.id%type)
+      is
+      select *
+      from   pdm_families fly
+      where  fly.tfy_id = i_tfy_id;
+
+      cursor c_tpt ( i_tfy_id in pdm_tpl_families.id%type)
+      is
+      select *
+      from   pdm_tpl_products tpt
+      where  tpt.tfy_id = i_tfy_id;
+
+      l_rt_fly                   pdm_families%rowtype;
+      l_rt_psy                   pdm_process_spec_families%rowtype;
+      l_rt_pdt                   pdm_products%rowtype;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      
+      for l_rec_tfy in c_tfy
+      loop
+
+         
+
+         
+         
+         
+         
+         l_rt_fly := null;
+
+         
+         open  c_fly (i_tfy_id => l_rec_tfy.id);
+         fetch c_fly
+         into  l_rt_fly;
+         close c_fly;
+         if l_rt_fly.id is null
+         then
+            
+            l_rt_fly.tfy_id := l_rec_tfy.id;
+
+            
+            l_rt_fly.id_cust := l_rec_tfy.id_cust;
+
+            
+            pdm_fly_tapi_pck.fly_insert_row (io_rt_fly => l_rt_fly);
+
+            
+            for l_rec_tpt in c_tpt (i_tfy_id => l_rec_tfy.id)
+            loop
+
+               
+               l_rt_pdt := null;
+
+               
+               l_rt_pdt.fly_id := l_rt_fly.id;
+
+               
+               l_rt_pdt.tpt_id := l_rec_tpt.id;
+
+               
+               l_rt_pdt.id_cust := l_rec_tpt.id_cust;
+
+               
+               l_rt_pdt.sequence := l_rec_tpt.sequence;
+
+               
+               l_rt_pdt.esn_id := l_rec_tpt.esn_id;
+
+               
+               pdm_pdt_tapi_pck.pdt_insert_row (io_rt_pdt => l_rt_pdt);
+            end loop;
+
+         end if; 
+
+         
+         l_rt_psy.psn_id := i_psn_id;
+         l_rt_psy.fly_id := l_rt_fly.id;
+         pdm_psy_tapi_pck.psy_insert_row (io_rt_psy => l_rt_psy);
+
+      end loop; 
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_fly%isopen
+         then
+            close c_fly;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end copy_family;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_family( i_xml_processplan in xmltype
+                          , i_rt_psn          in pdm_process_specifications%rowtype
+                          , i_tpn_id          in pdm_tpl_process_specifications.id%type
+                          )
+   is
+
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.create_family';
+
+      cursor c_fly_psy ( i_psn_id      in pdm_process_spec_families.psn_id%type
+                       , i_fly_id_cust in pdm_families.id_cust%type)
+      is
+      select fly.id                     as fly_id
+      from   pdm_families               fly
+            ,pdm_process_spec_families  psy
+      where  psy.psn_id  = i_psn_id
+      and    psy.fly_id  = fly.id
+      and    fly.id_cust = i_fly_id_cust;
+
+      l_rt_fly_psy               c_fly_psy%rowtype;
+      l_rt_fly                   pdm_families%rowtype;
+      l_rt_psy                   pdm_process_spec_families%rowtype;
+      l_rt_tfy                   pdm_tpl_families%rowtype;
+      l_rt_pdt                   pdm_products%rowtype;
+      l_xpath_nth_family         varchar2 (200);
+      l_xml_family               xmltype;
+      l_idx_family               number  := 1;
+      l_last_family              boolean := false;
+      l_xpath_nth_product        varchar2 (200);
+      l_xml_product              xmltype;
+      l_idx_product              number  := 1;
+      l_last_product             boolean := false;
+      l_found                    boolean;
+      l_xml_condition            xmltype;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      while (not l_last_family)
+      loop
+         l_xpath_nth_family :=
+               pdm_constant.g_con_xpath_ppn_prplan_family
+            || '['
+            || to_char (l_idx_family)
+            || ']';
+         l_xml_family :=
+            cmn_xml_util.extract_element (i_xml   => i_xml_processplan,
+                                          i_xpath => l_xpath_nth_family
+                                         );
+
+         
+         if (l_xml_family is null)
+         then
+            l_last_family := true;
+         else
+
+            
+            l_rt_fly := null;
+
+            
+            
+            l_idx_product  := 1;
+            l_last_product := false;
+
+            
+            l_rt_fly.id_cust :=
+               cmn_xml_util.extract_value
+                                   (i_xml        => l_xml_family,
+                                    i_xpath      => pdm_constant.g_con_xpath_family_name
+                                   );
+
+            
+            l_found := pdm_tfy_tapi_pck.tfy_select_row_uk1( i_tfy_tpn_id  => i_tpn_id
+                                                          , i_tfy_id_cust => l_rt_fly.id_cust
+                                                          , o_rt_tfy      => l_rt_tfy
+                                                          );
+            if l_found and l_rt_tfy.ind_static = cmn_constant.g_con_yesno_no
+            then
+
+               
+               open  c_fly_psy ( i_psn_id      => i_rt_psn.id
+                               , i_fly_id_cust => l_rt_fly.id_cust);
+               fetch c_fly_psy
+               into  l_rt_fly_psy;
+               close c_fly_psy;
+
+               
+               if l_rt_fly_psy.fly_id is not null
+               then
+
+                  
+                  
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_entryalreadyexists
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_error
+                                     , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_processplan
+                                                                   || '/'
+                                                                   || i_rt_psn.type
+                                                                   || '/'
+                                                                   || i_rt_psn.id_cust
+                                                                   || '/'
+                                                                   || pdm_constant.g_con_xpath_family
+                                                                   || ': '
+                                                                   || l_rt_fly.id_cust
+                                     );
+               else
+                  
+                  l_rt_fly.tfy_id := l_rt_tfy.id;
+
+                  
+                  pdm_fly_tapi_pck.fly_insert_row (io_rt_fly => l_rt_fly);
+
+                  
+                  l_rt_psy.psn_id := i_rt_psn.id;
+                  l_rt_psy.fly_id := l_rt_fly.id;
+                  pdm_psy_tapi_pck.psy_insert_row (io_rt_psy => l_rt_psy);
+
+                  
+                  while (not l_last_product)
+                  loop
+                     l_xpath_nth_product :=
+                           pdm_constant.g_con_xpath_fam_prd
+                        || '['
+                        || to_char (l_idx_product)
+                        || ']';
+                     l_xml_product :=
+                        cmn_xml_util.extract_element (i_xml   => l_xml_family,
+                                                      i_xpath => l_xpath_nth_product
+                                                     );
+
+                     
+                     if (l_xml_product is null)
+                     then
+                        l_last_product := true;
+                     else
+
+                        
+                        l_rt_pdt := null;
+
+                        
+                        l_xml_condition :=
+                           cmn_xml_util.extract_element
+                                               (i_xml        => l_xml_product,
+                                                i_xpath      => pdm_constant.g_con_xpath_fam_prd_cond
+                                               );
+                        if l_xml_condition is not null
+                        then
+
+                           
+                           pdm_expression.create_expression ( i_xml_condition   => l_xml_condition
+                                                            , i_evt_id          => i_rt_psn.evt_id_created
+                                                            , i_esn_id_template => null
+                                                            , i_tle_id          => i_rt_psn.tle_id
+                                                            , i_transform       => false
+                                                            , o_esn_id          => l_rt_pdt.esn_id
+                                                            , i_psn_id          => i_rt_psn.id
+                                                            );
+                        end if;
+
+                        
+                        l_rt_pdt.fly_id := l_rt_fly.id;
+
+                        
+                        l_rt_pdt.id_cust :=
+                           cmn_xml_util.extract_value
+                                               (i_xml        => l_xml_product,
+                                                i_xpath      => pdm_constant.g_con_xpath_fam_prd_name
+                                               );
+
+                        
+                        l_rt_pdt.sequence := l_idx_product;
+
+                        
+                        pdm_pdt_tapi_pck.pdt_insert_row (io_rt_pdt => l_rt_pdt);
+
+                        l_idx_product := l_idx_product + 1;
+                     end if; 
+                  end loop; 
+
+                  
+                  if l_idx_product = 1
+                  then
+                     viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                                        , i_calling_procedure      => l_con_proc_name
+                                        , i_severity               => viu_info.c_severity_error
+                                        , i_info_arguments         =>    pdm_constant.g_con_xpath_product
+                                                                      ||'##'
+                                                                      || pdm_constant.g_con_xpath_ppn_processplan
+                                                                      || '/'
+                                                                      || i_rt_psn.type
+                                                                      || '/'
+                                                                      || i_rt_psn.id_cust
+                                                                      || '/'
+                                                                      || pdm_constant.g_con_xpath_family
+                                                                      || ': '
+                                                                      || l_rt_fly.id_cust
+                                        );
+                  end if;
+               end if; 
+
+            else
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_dbrecordnotexist
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         =>    'PDM_TPL_FAMILIES with IND_STATIC=N'
+                                                                || '##'
+                                                                || pdm_constant.g_con_xpath_ppn_processplan
+                                                                || '/'
+                                                                || i_rt_psn.type
+                                                                || '/'
+                                                                || i_rt_psn.id_cust
+                                                                || '/'
+                                                                || pdm_constant.g_con_xpath_family
+                                                                || ': '
+                                                                || l_rt_fly.id_cust
+                                  );
+            end if; 
+
+            l_idx_family := l_idx_family + 1;
+         end if; 
+      end loop; 
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_fly_psy%isopen
+         then
+            close c_fly_psy;
+         end if;
+
+         viu_module.leave_module ( i_module          => l_con_proc_name
+                                 ,  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end create_family;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_process_spec_property( i_rt_psn          in pdm_process_specifications%rowtype
+                                      , i_xml_properties  in xmltype
+                                      , i_xpath           in varchar2
+                                      , i_adn_path        in pdm_attribute_definitions.path%type
+                                      )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.hdl_process_spec_property';
+
+      l_ppr_value               pdm_process_parameters.value%type;
+      l_rt_ppr                  pdm_process_parameters%rowtype;
+      l_rt_adn                  pdm_attribute_definitions%rowtype;
+      l_dummy                   boolean;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_ppr_value :=
+         cmn_xml_util.extract_value( i_xml   => i_xml_properties
+                                   , i_xpath => i_xpath
+                                   );
+
+      
+      if l_ppr_value is not null
+      then
+         
+         l_dummy := pdm_adn_tapi_pck.adn_select_row_uk1 ( i_adn_path => i_adn_path
+                                                        , o_rt_adn   => l_rt_adn
+                                                        );
+
+         
+         l_rt_ppr.tpr_id := null;
+         l_rt_ppr.psn_id := i_rt_psn.id;
+         l_rt_ppr.pcs_id := null;
+         l_rt_ppr.aty_id := null;
+         l_rt_ppr.pse_id := null;
+         l_rt_ppr.adn_id := l_rt_adn.id;
+         l_rt_ppr.value  := l_ppr_value;
+         pdm_ppr_tapi_pck.ppr_insert_row( io_rt_ppr => l_rt_ppr );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end hdl_process_spec_property;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_process_spec_properties( i_rt_psn          in pdm_process_specifications%rowtype
+                                        , i_xml_processplan in xmltype
+                                        )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.hdl_process_spec_properties';
+
+      l_xml_properties          xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_xml_properties :=
+         cmn_xml_util.extract_element
+                             (i_xml   => i_xml_processplan,
+                              i_xpath => pdm_constant.g_con_xpath_ppn_prplan_prop
+                             );
+
+      
+      if l_xml_properties is not null
+      then
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_propairline
+                                  , i_adn_path        => pdm_constant.g_con_propairline_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_propflightnumber
+                                  , i_adn_path        => pdm_constant.g_con_propflightnumber_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_propdate
+                                  , i_adn_path        => pdm_constant.g_con_propdate_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_propscheddatetime
+                                  , i_adn_path        => pdm_constant.g_con_propscheddatetime_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_propairport
+                                  , i_adn_path        => pdm_constant.g_con_propairport_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_prophandlingarea
+                                  , i_adn_path        => pdm_constant.g_con_prophandlingarea_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_propstand
+                                  , i_adn_path        => pdm_constant.g_con_propstand_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_proponblocks
+                                  , i_adn_path        => pdm_constant.g_con_proponblocks_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_propoffblocks
+                                  , i_adn_path        => pdm_constant.g_con_propoffblocks_attr
+                                  );
+         hdl_process_spec_property( i_rt_psn          => i_rt_psn
+                                  , i_xml_properties  => l_xml_properties
+                                  , i_xpath           => pdm_constant.g_con_xpath_prophandler
+                                  , i_adn_path        => pdm_constant.g_con_prophandler_attr
+                                  );
+      end if; 
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end hdl_process_spec_properties;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_process_spec_parameter( i_rt_psn          in pdm_process_specifications%rowtype
+                                          , i_xml_processplan in xmltype
+                                          )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_process_spec_parameter';
+
+      l_last_parameter         boolean := false;
+      l_idx_parameter          number  := 1;
+      l_xpath_nth_parameter    varchar2 (200);
+      l_xml_parameter          xmltype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      while not l_last_parameter
+      loop
+         
+         l_xpath_nth_parameter :=
+               pdm_constant.g_con_xpath_ppn_prplan_param
+            || '['
+            || to_char( l_idx_parameter )
+            || ']';
+         l_xml_parameter :=
+            cmn_xml_util.extract_element( i_xml   => i_xml_processplan
+                                        , i_xpath => l_xpath_nth_parameter
+                                        );
+
+         
+         if l_xml_parameter is null
+         then
+            l_last_parameter := true;
+         else
+            
+            create_parameter( i_rt_psn        => i_rt_psn
+                            , i_rt_pcs        => null
+                            , i_rt_aty        => null
+                            , i_rt_pse        => null
+                            , i_xml_parameter => l_xml_parameter
+                            );
+         end if;
+
+         l_idx_parameter := l_idx_parameter + 1;
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_process_spec_parameter;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure copy_tpl_process_spec_param( i_psn_id in pdm_process_specifications.id%type
+                                        , i_tpn_id in pdm_tpl_process_specifications.id%type
+                                        )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.copy_tpl_process_spec_param';
+
+      cursor c_tpr( b_tpn_id pdm_tpl_process_specifications.id%type )
+      is
+         select *
+         from   pdm_tpl_process_parameters tpr
+         where  tpr.tpn_id = b_tpn_id
+         and    tpr.value is not null
+         ;
+      l_rt_ppr                 pdm_process_parameters%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      for r_tpr in c_tpr( b_tpn_id => i_tpn_id )
+      loop
+         
+         l_rt_ppr := null;
+
+         
+         l_rt_ppr.tpr_id := r_tpr.id;
+         l_rt_ppr.psn_id := i_psn_id;
+         l_rt_ppr.pcs_id := null;
+         l_rt_ppr.aty_id := null;
+         l_rt_ppr.pse_id := null;
+         l_rt_ppr.adn_id := r_tpr.adn_id;
+         l_rt_ppr.value  := r_tpr.value;
+         pdm_ppr_tapi_pck.ppr_insert_row( io_rt_ppr => l_rt_ppr );
+      end loop;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end copy_tpl_process_spec_param;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure validate_processplan( i_xml_processplan   in  xmltype
+                                 , i_session_timestamp in  timestamp
+                                 , i_rt_pgp            in  pdm_process_spec_groups%rowtype
+                                 , o_rt_psn_new        out pdm_process_specifications%rowtype
+                                 , o_rt_psn_existing   out pdm_process_specifications%rowtype
+                                 )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.validate_processplan';
+
+      cursor c_psn_future_current( i_psn_type in pdm_process_specifications.type%type
+                                 , i_id_cust  in pdm_process_specifications.id_cust%type
+                                 )
+      is
+         select *
+         from   pdm_process_specifications psn
+         where  psn.type    =  i_psn_type
+         and    psn.id_cust =  i_id_cust
+         and    psn.pns_id  in ( pdm_constant.g_con_pns_status_future
+                               , pdm_constant.g_con_pns_status_current
+                               )
+         ;
+      cursor c_psn_obsolete( i_psn_type in pdm_process_specifications.type%type
+                           , i_id_cust  in pdm_process_specifications.id_cust%type
+                           )
+      is
+         select   *
+         from     pdm_process_specifications psn
+         where    psn.type    = i_psn_type
+         and      psn.id_cust = i_id_cust
+         and      psn.pns_id  = pdm_constant.g_con_pns_status_obsolete
+         order by psn.version desc
+         ;
+      l_ppn_status             varchar2 (30);
+      l_ppn_version            varchar2 (30);
+      l_rt_psn_obsolete        pdm_process_specifications%rowtype;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_ppn_status := cmn_xml_util.extract_value
+                         ( i_xml   => i_xml_processplan
+                         , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_status
+                         );
+
+      
+      l_ppn_version := cmn_xml_util.extract_value
+                          ( i_xml   => i_xml_processplan
+                          , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_version
+                          );
+
+      
+      if    l_ppn_status is null
+         or l_ppn_status not in (pdm_constant.g_con_ppn_status_set, pdm_constant.g_con_ppn_status_deleted)
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_invalidprocessplanstatus
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    =>    i_rt_pgp.type
+                                                     || '##'
+                                                     || i_rt_pgp.id_cust
+                                                     || '##'
+                                                     || l_ppn_version
+                                                     || '##'
+                                                     || l_ppn_status
+                            );
+      end if;
+
+      
+      open  c_psn_future_current( i_psn_type => i_rt_pgp.type
+                                , i_id_cust  => i_rt_pgp.id_cust
+                                );
+      fetch c_psn_future_current
+      into  o_rt_psn_existing;
+      close c_psn_future_current;
+
+      
+      if l_ppn_status = pdm_constant.g_con_ppn_status_deleted
+      then
+         
+         if o_rt_psn_existing.id is null
+         then
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_processspecnotfound
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    =>    i_rt_pgp.type
+                                                        || '##'
+                                                        || i_rt_pgp.id_cust
+                                                        || '##'
+                                                        || l_ppn_version
+                               );
+         end if;
+
+         
+         if l_ppn_version <= o_rt_psn_existing.version
+         then
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_versionnothigher
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    =>    l_ppn_version
+                                                        || '##'
+                                                        || o_rt_psn_existing.version
+                                                        || '##'
+                                                        || o_rt_psn_existing.type
+                                                        || '##'
+                                                        || o_rt_psn_existing.id_cust
+                               );
+         end if;
+      
+      else
+         
+         o_rt_psn_new.pgp_id := i_rt_pgp.id;
+
+         
+         o_rt_psn_new.tpn_id := i_rt_pgp.tpn_id;
+
+         
+         o_rt_psn_new.type := i_rt_pgp.type;
+
+         
+         o_rt_psn_new.tle_id := i_rt_pgp.tle_id;
+
+         
+         o_rt_psn_new.id_cust := i_rt_pgp.id_cust;
+
+         
+         o_rt_psn_new.version := l_ppn_version;
+
+         
+         o_rt_psn_new.timeframe_start := cmn_common.varchar_to_timestamp
+                                            ( cmn_xml_util.extract_value
+                                                 ( i_xml   => i_xml_processplan
+                                                 , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_active
+                                                 )
+                                            );
+
+         
+         o_rt_psn_new.timeframe_end := cmn_common.varchar_to_timestamp
+                                          ( cmn_xml_util.extract_value
+                                               ( i_xml   => i_xml_processplan
+                                               , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_expire
+                                               )
+                                          );
+
+         
+         if o_rt_psn_existing.id is not null
+         then
+            
+            
+            if     o_rt_psn_existing.pns_id = pdm_constant.g_con_pns_status_current
+               and o_rt_psn_new.timeframe_start > i_session_timestamp
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_psncurrenttofuture
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_error
+                                  , i_info_arguments    =>    o_rt_psn_new.type
+                                                           || '##'
+                                                           || o_rt_psn_new.id_cust
+                                                           || '##'
+                                                           || o_rt_psn_new.version
+                                                           || '##'
+                                                           || cmn_common.timestamp_to_varchar
+                                                                 ( o_rt_psn_new.timeframe_start )
+                                  );
+            end if;
+
+            
+            if o_rt_psn_new.version <= o_rt_psn_existing.version
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_versionnothigher
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_error
+                                  , i_info_arguments    =>    o_rt_psn_new.version
+                                                           || '##'
+                                                           || o_rt_psn_existing.version
+                                                           || '##'
+                                                           || o_rt_psn_existing.type
+                                                           || '##'
+                                                           || o_rt_psn_existing.id_cust
+                                  );
+            end if;
+         
+         else
+            
+            open  c_psn_obsolete( i_psn_type => o_rt_psn_new.type
+                                , i_id_cust  => o_rt_psn_new.id_cust
+                                );
+            fetch c_psn_obsolete
+            into  l_rt_psn_obsolete;
+            close c_psn_obsolete;
+
+            
+            
+            if     l_rt_psn_obsolete.id is not null
+               and o_rt_psn_new.version <= l_rt_psn_obsolete.version
+            then
+               viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_versionnothigher
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_error
+                                  , i_info_arguments    =>    o_rt_psn_new.version
+                                                           || '##'
+                                                           || l_rt_psn_obsolete.version
+                                                           || '##'
+                                                           || l_rt_psn_obsolete.type
+                                                           || '##'
+                                                           || l_rt_psn_obsolete.id_cust
+                                  );
+            end if;
+         end if; 
+
+         
+         if o_rt_psn_new.timeframe_end <= o_rt_psn_new.timeframe_start
+         then
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_psnendnotafterstart
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    =>    o_rt_psn_new.type
+                                                        || '##'
+                                                        || o_rt_psn_new.id_cust
+                                                        || '##'
+                                                        || o_rt_psn_new.version
+                                                        || '##'
+                                                        || cmn_common.timestamp_to_varchar
+                                                              ( o_rt_psn_new.timeframe_end )
+                                                        || '##'
+                                                        || cmn_common.timestamp_to_varchar
+                                                              ( o_rt_psn_new.timeframe_start )
+                               );
+         end if;
+
+         
+         if i_session_timestamp >= o_rt_psn_new.timeframe_end
+         then
+            viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_processplanexpired
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_error
+                               , i_info_arguments    =>    o_rt_psn_new.type
+                                                        || '##'
+                                                        || o_rt_psn_new.id_cust
+                                                        || '##'
+                                                        || o_rt_psn_new.version
+                                                        || '##'
+                                                        || cmn_common.timestamp_to_varchar
+                                                              ( o_rt_psn_new.timeframe_end )
+                               );
+         end if;
+
+         
+         if i_session_timestamp >= o_rt_psn_new.timeframe_start
+         then
+            o_rt_psn_new.pns_id := pdm_constant.g_con_pns_status_current;
+         else
+            o_rt_psn_new.pns_id := pdm_constant.g_con_pns_status_future;
+         end if;
+      end if; 
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_psn_future_current%isopen
+         then
+            close c_psn_future_current;
+         end if;
+
+         if c_psn_obsolete%isopen
+         then
+            close c_psn_obsolete;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end validate_processplan;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_process_spec( i_xml_processplan   in     xmltype
+                                , i_evt_id            in     pdm_events.id%type
+                                , i_event_time        in     timestamp
+                                , i_session_timestamp in     timestamp
+                                , io_rt_psn           in out pdm_process_specifications%rowtype
+                                , i_rt_tpn            in     pdm_tpl_process_specifications%rowtype
+                                )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_process_spec';
+
+      cursor c_esn( b_esn_id in pdm_expressions.id%type )
+      is
+         select     esn.id
+         ,          connect_by_isleaf is_leaf
+         from       pdm_expressions esn
+         start with esn.id = b_esn_id
+         connect by esn.esn_id = prior esn.id
+         ;
+      l_rt_prn                 pdm_process_spec_expressions%rowtype;
+      l_rt_esn                 pdm_expressions%rowtype;
+      l_xml_condition          xmltype;
+      l_nr_rows_updated        number;
+      l_found                  boolean;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      io_rt_psn.evt_id_created := i_evt_id;
+
+      
+      io_rt_psn.event_time := i_event_time;
+
+      
+      io_rt_psn.date_created := i_session_timestamp;
+
+      
+      pdm_psn_tapi_pck.psn_insert_row( io_rt_psn => io_rt_psn );
+
+      
+      l_xml_condition :=
+         cmn_xml_util.extract_element
+                         ( i_xml   => i_xml_processplan
+                         , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_cond
+                         );
+
+      
+      if l_xml_condition is not null
+      then
+         
+         pdm_expression.create_expression( i_xml_condition   => l_xml_condition
+                                         , i_evt_id          => io_rt_psn.evt_id_created
+                                         , i_esn_id_template => i_rt_tpn.esn_id
+                                         , i_tle_id          => io_rt_psn.tle_id
+                                         , i_transform       => true
+                                         , o_esn_id          => io_rt_psn.esn_id
+                                         , i_psn_id          => io_rt_psn.id
+                                         );
+
+      
+      elsif i_rt_tpn.esn_id is not null
+      then
+         
+         io_rt_psn.esn_id := i_rt_tpn.esn_id;
+      end if;
+
+      
+      hdl_process_spec_properties( i_rt_psn          => io_rt_psn
+                                 , i_xml_processplan => i_xml_processplan
+                                 );
+
+      
+      copy_tpl_process_spec_param( i_psn_id => io_rt_psn.id
+                                 , i_tpn_id => i_rt_tpn.id
+                                 );
+
+      
+      create_process_spec_parameter( i_rt_psn          => io_rt_psn
+                                   , i_xml_processplan => i_xml_processplan
+                                   );
+
+      
+      if io_rt_psn.esn_id is not null
+      then
+
+         
+         l_nr_rows_updated := pdm_psn_tapi_pck.psn_update_row( i_psn_id  => io_rt_psn.id
+                                                             , io_rt_psn => io_rt_psn
+                                                             );
+
+         
+         l_rt_prn.psn_id := io_rt_psn.id;
+
+         
+         for r_esn in c_esn( b_esn_id => io_rt_psn.esn_id )
+         loop
+            
+            if r_esn.is_leaf = 1
+            then
+               
+               l_rt_prn.esn_id := r_esn.id;
+               pdm_prn_tapi_pck.prn_insert_row( io_rt_prn => l_rt_prn );
+
+               
+               
+               
+               l_found := pdm_esn_tapi_pck.esn_select_row( i_esn_id => r_esn.id
+                                                         , o_rt_esn => l_rt_esn
+                                                         );
+               if l_rt_esn.ind_process_specification = cmn_constant.g_con_yesno_no
+               then
+                  
+                  l_rt_esn.ind_process_specification := cmn_constant.g_con_yesno_yes;
+                  l_nr_rows_updated := pdm_esn_tapi_pck.esn_update_row( i_esn_id  => r_esn.id
+                                                                      , io_rt_esn => l_rt_esn
+                                                                      );
+               end if;
+            end if;
+         end loop;
+      end if;
+
+      
+      copy_tpl_spec_attr( i_psn_id => io_rt_psn.id
+                        , i_tpn_id => i_rt_tpn.id
+                        );
+
+      
+      copy_family( i_psn_id => io_rt_psn.id
+                 , i_tpn_id => i_rt_tpn.id
+                 );
+
+      
+      create_family( i_xml_processplan => i_xml_processplan
+                   , i_rt_psn          => io_rt_psn
+                   , i_tpn_id          => i_rt_tpn.id
+                   );
+
+      
+      create_process( i_xml_processplan => i_xml_processplan
+                    , i_rt_psn          => io_rt_psn
+                    , i_tpn_id          => i_rt_tpn.id
+                    );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_process_spec;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_psn_task( i_evt_id   in pdm_events.id%type
+                            , i_rt_psn   in pdm_process_specifications%rowtype
+                            )
+   is
+
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_psn_task';
+
+      
+      cursor c_ptk ( b_psn_id pdm_process_specifications.id%type )
+      is
+         select 1
+         from   pdm_v_ptk_active  ptk
+         where  ptk.psn_id = b_psn_id
+         and    rownum     = 1
+         ;
+
+      l_rt_ptk      pdm_process_spec_tasks%rowtype;
+      l_found       boolean;
+      l_dummy       boolean;
+      l_dummy_fetch number;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      
+      open  c_ptk ( b_psn_id => i_rt_psn.id );
+      fetch c_ptk into l_dummy_fetch;
+      l_found := c_ptk%found;
+      close c_ptk;
+     
+      if not l_found
+      then
+
+         
+         l_rt_ptk.psn_id              := i_rt_psn.id;
+         l_rt_ptk.activated_by_evt_id := i_evt_id;
+         l_rt_ptk.activated_date      := cmn_common.default_timestamp;
+         pdm_ptk_tapi_pck.ptk_insert_row( io_rt_ptk => l_rt_ptk );
+
+      end if;
+    
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_ptk%isopen
+         then
+            close c_ptk;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_psn_task;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_psn_tasks( i_evt_id          in pdm_events.id%type
+                             , i_rt_psn_new      in pdm_process_specifications%rowtype
+                             , i_rt_psn_existing in pdm_process_specifications%rowtype
+                             , i_pns_id_existing in pdm_process_specifications.pns_id%type
+                             )
+   is
+
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_psn_tasks';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if i_rt_psn_new.pns_id = pdm_constant.g_con_pns_status_current
+      then
+
+         
+         create_psn_task( i_evt_id   => i_evt_id
+                        , i_rt_psn   => i_rt_psn_new
+                        );
+                                 
+      end if;
+
+      
+      
+      
+      
+      
+      
+      
+      if i_pns_id_existing = pdm_constant.g_con_pns_status_current
+      then
+
+         
+         create_psn_task( i_evt_id   => i_evt_id
+                        , i_rt_psn   => i_rt_psn_existing
+                        );
+                                 
+      end if;
+
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_psn_tasks;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure create_eon_tasks( i_evt_id             in pdm_events.id%type
+                             , i_ind_created_by_cpd in pdm_evaluate_operation_tasks.ind_created_by_cpd%type
+                             )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.create_eon_tasks';
+
+      
+      cursor c_eon
+      is
+         select eon.id
+         from   pdm_evaluate_operations eon
+         where  eon.status = pdm_constant.g_con_eon_status_prepared
+         and    eon.id in (select  esn.eon_id
+                           from    pdm_expressions esn
+                           where   esn.eon_id = eon.id
+                          )
+         ;
+
+      l_rt_etk          pdm_evaluate_operation_tasks%rowtype;
+      l_rt_eon          pdm_evaluate_operations%rowtype;
+      l_rt_ote          pdm_operation_types%rowtype;
+      l_nr_rows_updated number;
+      l_dummy           boolean;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      for r_eon in c_eon
+      loop
+   
+         
+         
+         
+         l_dummy := pdm_ote_tapi_pck.ote_select_row_upd( i_ote_id => 1
+                                                       , o_rt_ote => l_rt_ote
+                                                       );
+         
+         l_dummy := pdm_eon_tapi_pck.eon_select_row( i_eon_id => r_eon.id
+                                                   , o_rt_eon => l_rt_eon
+                                                   );
+                                                       
+         
+         if l_rt_eon.status = pdm_constant.g_con_eon_status_prepared
+         then
+   
+            
+            l_rt_etk.id                  := null;
+            l_rt_etk.eon_id              := r_eon.id;
+            l_rt_etk.ind_created_by_cpd  := i_ind_created_by_cpd;
+            l_rt_etk.activated_by_evt_id := i_evt_id;
+            l_rt_etk.activated_date      := cmn_common.default_timestamp;
+            pdm_etk_tapi_pck.etk_insert_row( io_rt_etk => l_rt_etk );
+      
+            
+            l_rt_eon.status   := pdm_constant.g_con_eon_status_in_use;
+            l_nr_rows_updated := pdm_eon_tapi_pck.eon_update_row( i_eon_id  => l_rt_eon.id
+                                                                , io_rt_eon => l_rt_eon
+                                                                );
+         end if; 
+      end loop; 
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end create_eon_tasks;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure handle_process_spec( i_xml_processplan   in xmltype
+                                , i_evt_id            in pdm_events.id%type
+                                , i_event_time        in timestamp
+                                , i_session_timestamp in timestamp
+                                , i_rt_pgp            in pdm_process_spec_groups%rowtype
+                                , i_rt_tpn            in pdm_tpl_process_specifications%rowtype
+                                )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.handle_process_spec';
+
+      l_rt_psn_new             pdm_process_specifications%rowtype;
+      l_rt_psn_existing        pdm_process_specifications%rowtype;
+      l_pns_id_existing        pdm_process_specifications.pns_id%type;
+      l_nr_rows_updated        number;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      validate_processplan( i_xml_processplan   => i_xml_processplan
+                          , i_session_timestamp => i_session_timestamp
+                          , i_rt_pgp            => i_rt_pgp
+                          , o_rt_psn_new        => l_rt_psn_new
+                          , o_rt_psn_existing   => l_rt_psn_existing
+                          );
+
+      
+      if l_rt_psn_new.id_cust is not null
+      then
+         
+         create_process_spec( i_xml_processplan   => i_xml_processplan
+                            , i_evt_id            => i_evt_id
+                            , i_event_time        => i_event_time
+                            , i_session_timestamp => i_session_timestamp
+                            , io_rt_psn           => l_rt_psn_new
+                            , i_rt_tpn            => i_rt_tpn
+                            );
+      end if;
+
+      
+      if l_rt_psn_existing.id is not null
+      then
+         
+         l_pns_id_existing := l_rt_psn_existing.pns_id;
+
+         
+         l_rt_psn_existing.pns_id          := pdm_constant.g_con_pns_status_obsolete;
+         l_rt_psn_existing.evt_id_modified := i_evt_id;
+         l_nr_rows_updated := pdm_psn_tapi_pck.psn_update_row( i_psn_id  => l_rt_psn_existing.id
+                                                             , io_rt_psn => l_rt_psn_existing
+                                                             );
+      end if;
+
+      
+      create_eon_tasks( i_evt_id             => i_evt_id
+                      , i_ind_created_by_cpd => cmn_constant.g_con_yesno_no
+                      );
+
+      
+      create_psn_tasks( i_evt_id          => i_evt_id
+                      , i_rt_psn_new      => l_rt_psn_new
+                      , i_rt_psn_existing => l_rt_psn_existing
+                      , i_pns_id_existing => l_pns_id_existing
+                      );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end handle_process_spec;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure get_process_spec_group( i_xml_processplan in  xmltype
+                                   , i_evt_id          in  pdm_events.id%type
+                                   , o_rt_pgp          out pdm_process_spec_groups%rowtype
+                                   , o_rt_tpn          out pdm_tpl_process_specifications%rowtype
+                                   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.get_process_spec_group';
+
+      cursor c_tpn( b_tpp_id_cust pdm_tpl_process_spec_types.id_cust%type )
+      is
+         select tpn.*
+         from   pdm_tpl_process_specifications tpn
+         ,      pdm_tpl_process_spec_types     tpp
+         where  tpn.tpp_id  = tpp.id
+         and    tpp.id_cust = b_tpp_id_cust
+         and    tpn.pns_id  = pdm_constant.g_con_pns_status_current
+         ;
+
+      l_type                   pdm_process_specifications.type%type;
+      l_id_cust                pdm_process_specifications.id_cust%type;
+      l_version                pdm_process_specifications.version%type;
+      l_handling_area          varchar2 (30);
+      l_found                  boolean;
+      
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      l_type :=
+         cmn_xml_util.extract_value( i_xml   => i_xml_processplan
+                                   , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_comname
+                                   );
+
+      
+      l_id_cust :=
+         cmn_xml_util.extract_value( i_xml   => i_xml_processplan
+                                   , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_name
+                                   );
+
+      
+      l_version :=
+         cmn_xml_util.extract_value( i_xml   => i_xml_processplan
+                                   , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_version
+                                   );
+
+      
+      l_handling_area :=
+         cmn_xml_util.extract_value( i_xml   => i_xml_processplan
+                                   , i_xpath => pdm_constant.g_con_xpath_ppn_prplan_hanarea
+                                   );
+
+      
+      if    l_handling_area is null
+         or l_handling_area <> cmn_common.get_parameter_value( i_prr_name => pdm_constant.g_con_prr_handling_area )
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_invalidhandlingarea
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    => l_handling_area
+                            , i_additional_data   =>    'Received ProcessPlanMessage: type = '
+                                                     || l_type
+                                                     || ', id_cust = '
+                                                     || l_id_cust
+                                                     || ', version = '
+                                                     || l_version
+                            );
+      end if;
+
+      
+      open  c_tpn( b_tpp_id_cust => l_type );
+      fetch c_tpn
+      into  o_rt_tpn;
+      close c_tpn;
+
+      
+      if o_rt_tpn.id is null
+      then
+         viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_dbrecordnotexist
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_error
+                            , i_info_arguments    =>    'PDM_TPL_PROCESS_SPEC_TYPES'
+                                                     || '##'
+                                                     || pdm_constant.g_con_xpath_ppn_procdefname
+                                                     || ': '
+                                                     || l_type
+                            );
+      end if;
+
+      
+      l_found := pdm_pgp_tapi_pck.pgp_select_row_uk1( i_pgp_tpn_id  => o_rt_tpn.id
+                                                    , i_pgp_type    => l_type
+                                                    , i_pgp_id_cust => l_id_cust
+                                                    , o_rt_pgp      => o_rt_pgp
+                                                    );
+
+      
+      if not l_found
+      then
+         
+         o_rt_pgp.type    := l_type;
+         o_rt_pgp.tle_id  := o_rt_tpn.tle_id;
+         o_rt_pgp.id_cust := l_id_cust;
+         o_rt_pgp.tpn_id  := o_rt_tpn.id;
+         o_rt_pgp.evt_id  := i_evt_id;
+         pdm_pgp_tapi_pck.pgp_insert_row( io_rt_pgp => o_rt_pgp );
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_tpn%isopen
+         then
+            close c_tpn;
+         end if;
+
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_process_spec_group;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure hdl_message (i_message in xmltype)
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.hdl_message';
+
+      l_xml_processplan          xmltype;
+      l_session_timestamp        cmn_constant.st_timestamp;
+      l_event_time               cmn_constant.st_timestamp;
+      l_rt_evt                   pdm_events%rowtype;
+      l_rt_eme                   pdm_event_messages%rowtype;
+      l_rt_pgp                   pdm_process_spec_groups%rowtype;
+      l_rt_tpn                   pdm_tpl_process_specifications%rowtype;
+      l_ims_id                   cmn_ifc_messages.id%type;
+      l_rt_imd                   cmn_ifc_msg_definitions%rowtype;
+      l_dummy                    boolean;
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_session_timestamp := cmn_common.default_timestamp;
+
+      
+      l_event_time := cmn_common.varchar_to_timestamp
+                         ( i_timestamp => cmn_xml_util.extract_value
+                                             ( i_xml   => i_message
+                                             , i_xpath => pdm_constant.g_con_xpath_ppn_eventtime
+                                             )
+                         );
+
+      
+      l_ims_id := cmn_interface.get_message_id ( i_direction => cmn_constant.g_con_msg_direction_incoming );
+
+      l_dummy := cmn_imd_tapi_pck.imd_select_row_uk
+                         ( i_imd_name => pdm_constant.g_con_processplanmessage
+                         , o_rt_imd   => l_rt_imd
+                         );
+
+      pdm_common.create_evt_eme( i_event_time => l_event_time
+                               , i_timestamp  => l_session_timestamp
+                               , i_ims_id     => l_ims_id
+                               , i_imd_id     => l_rt_imd.id
+                               , o_rt_evt     => l_rt_evt
+                               );
+
+      
+      l_xml_processplan :=
+         cmn_xml_util.extract_element (i_xml   => i_message,
+                                       i_xpath => pdm_constant.g_con_xpath_ppn_processplan
+                                      );
+      if l_xml_processplan is null
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_occurrencenotfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_info_arguments         =>    pdm_constant.g_con_xpath_ppn_procplan
+                                                          ||'##'
+                                                          || pdm_constant.g_con_xpath_ppn_procplanmsg
+                            );
+      else
+         
+         get_process_spec_group( i_xml_processplan => l_xml_processplan
+                               , i_evt_id          => l_rt_evt.id
+                               , o_rt_pgp          => l_rt_pgp
+                               , o_rt_tpn          => l_rt_tpn
+                               );
+
+         
+         
+         commit;
+
+         
+         pdm_pgp_tapi_pck.pgp_lock_row( i_pgp_id => l_rt_pgp.id );
+
+         
+         handle_process_spec( i_xml_processplan   => l_xml_processplan
+                            , i_event_time        => l_event_time
+                            , i_session_timestamp => l_session_timestamp
+                            , i_evt_id            => l_rt_evt.id
+                            , i_rt_pgp            => l_rt_pgp
+                            , i_rt_tpn            => l_rt_tpn
+                            );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module     => l_con_proc_name,
+                                  i_debug_info => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end hdl_message;
+
+begin
+   null;
+end pdm_processplan;
+/

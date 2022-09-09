@@ -1,0 +1,2915 @@
+create or replace PACKAGE TOPO_dimensions IS
+  
+   PROCEDURE process_TOPO (i_node in DBMS_XMLDOM.domnode, i_source_id in number, o_error out number);
+   
+   function str_to_num(str varchar2) return number;
+   procedure split_isc(p_isc in varchar2, p_areaid out varchar2, p_zoneid out varchar2, p_equipmentid out varchar2);
+   function listdelimit(p_domnode DBMS_XMLDOM.domnode, p_tag varchar2, p_notagging varchar2) return varchar2;
+   function find_process_step(p_node_id dim_nodes.id%TYPE, p_route_segment_id dim_route_segments.id%TYPE) return varchar2;
+   function find_stype(p_node_id dim_nodes.id%TYPE) return varchar2;
+   FUNCTION extract_series(p_version_id number, p_node DBMS_XMLDOM.domnode, p_tr_id number) return number;
+   FUNCTION extract_parallel(p_version_id number, p_node DBMS_XMLDOM.domnode, p_tr_id number) return number;
+
+
+   procedure create_dim_tr_nodes; -- made public for testing purposes..
+   procedure fill_DIM_MAINTENANCE_KPI; -- also used in META_dimensions.pkg
+
+   procedure update_exiting_nodes;
+   
+END TOPO_dimensions;
+/
+
+
+
+
+package body topo_dimensions is
+
+g_con_package                 constant varchar2(30) := 'TOPO_dimensions';
+g_document_node               dbms_xmldom.domnode;
+g_dimension_source_id         number := 0;
+g_error                       number := 0;
+  
+g_tr_sequence number := 0;  
+g_par_sequence number := 0;
+g_ser_sequence number := 0;
+
+function str_to_num(str varchar2) return number is
+n number := 0;
+begin
+  begin
+    n := to_number(str);
+  exception when others then
+    n := null;
+  end;
+  return n;
+end;
+
+procedure split_isc(p_isc in varchar2, p_areaid out varchar2, p_zoneid out varchar2, p_equipmentid out varchar2) is
+p1 integer; p2 integer; p3 integer;
+begin
+  p1 := instr(p_isc, '.', 1);
+  p2 := instr(p_isc, '.', p1+1);
+  p3 := instr(p_isc, '.', p2+1);
+  if p3 = 0 then
+    p3 := length(p_isc) + 1;
+  end if;
+  if p1 > 0 and p2 > 0 and p3 > 0 then
+    p_areaid := stdnumstr(substr(p_isc, 1 ,p1-1));
+    p_zoneid := stdnumstr(substr(p_isc, p1+1 ,p2-p1-1));
+    p_equipmentid := stdnumstr(substr(p_isc, p2+1 ,p3-p2-1));
+  else
+    p_areaid := '';
+    p_zoneid := '';
+    p_equipmentid := '';
+  end if;
+end;
+
+
+
+
+
+
+
+
+
+
+function listdelimit(p_domnode dbms_xmldom.domnode, p_tag varchar2, p_notagging varchar2) return varchar2 is
+l_nodemap dbms_xmldom.domnamednodemap;
+l_nodelist dbms_xmldom.domnodelist;
+l_nodecount number;
+l_attributecount number;
+l_attrnode dbms_xmldom.domnode;
+l_attrname varchar2(100);
+l_attrvalue varchar2(4000);
+l_subnode dbms_xmldom.domnode;
+l_nodevalue varchar2(32000) := '';
+begin
+  l_nodelist := dbms_xslprocessor.selectnodes(p_domnode, p_tag);
+  l_nodecount := dbms_xmldom.getlength(l_nodelist);
+  if l_nodecount > 0 then
+    for j in 0..(l_nodecount - 1) loop
+      l_subnode := dbms_xmldom.item(l_nodelist, j);
+      l_nodemap := dbms_xmldom.getattributes(l_subnode);
+	  l_attributecount := dbms_xmldom.getlength(l_nodemap);
+      
+      for k in 0..l_attributecount-1 loop
+ 	    l_attrnode := dbms_xmldom.item(l_nodemap, k);
+	    l_attrname := dbms_xmldom.getnodename(l_attrnode);
+	    l_attrvalue := dbms_xmldom.getnodevalue(l_attrnode);
+	    if p_notagging = 'Y' then
+  	      l_nodevalue := l_nodevalue||l_attrvalue||',';
+	    else
+          l_nodevalue := l_nodevalue||l_attrname||'='||l_attrvalue||',';
+        end if;
+      end loop;
+      if p_notagging != 'Y' then
+        l_nodevalue := l_nodevalue||chr(10);
+      end if;
+    end loop;
+  end if;
+  return trim(substr(l_nodevalue,1,4000));
+end;
+
+
+procedure free_memory is
+begin
+  begin
+    dbms_xmldom.freenode(n => g_document_node);
+  exception when others then
+    null;
+  end;
+end;
+
+  function find_process_step(p_node_id dim_nodes.id%type, p_route_segment_id dim_route_segments.id%type) return varchar2 is
+  l_ps varchar2(50):= null;
+  begin
+    if p_node_id is null and p_route_segment_id is null then
+      return null;
+    end if;
+    begin
+      select process_step into l_ps from dim_nodes where id = p_node_id;
+      if l_ps is null or trim(l_ps) = '' then
+        select process_step into l_ps from dim_route_segments where id = p_route_segment_id;
+      end if;
+    exception when others then
+      l_ps := null;
+    end;
+    return l_ps;
+  end;
+
+
+  function find_stype(p_node_id dim_nodes.id%type) return varchar2 is
+  l_stype varchar2(50):= null;
+  begin
+    if p_node_id is null then
+      return null;
+    end if;
+    begin
+      select s.stype into l_stype from dim_stations s, dim_nodes n
+      where s.id = n.station_id and n.id = p_node_id;
+    exception when others then
+      l_stype := null;
+    end;
+    return l_stype;
+  end;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_isc(p_version_id number, p_node dbms_xmldom.domnode, p_parent_id varchar2) is
+  
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag1 varchar2(100);
+  l_tag2 varchar2(100);
+  v_rows_processed integer := 0;
+
+  
+  l_id varchar2(50) := '';
+  l_function varchar2(50) := '';
+  l_lengthvalue varchar2(50) := '';
+  l_mark_code varchar2(50) := '';
+  l_mechanical_drawing varchar2(50) := '';
+  l_family varchar2(50) := '';
+  l_subsystem_type varchar2(50) := '';
+  l_customer_id varchar2(50) := '';
+
+  l_statistical_subject varchar2(50) := '';
+  l_areaid varchar2(16) := '';
+  l_zoneid varchar2(8) := '';
+  l_equipmentid varchar2(8) := '';
+  l_integration_level varchar2(20) := '';
+
+  
+  l_angle1 varchar2(50) := '';
+  l_angle2 varchar2(50) := '';
+  l_block_id varchar2(50) := '';
+  l_shape varchar2(50) := '';
+  l_width varchar2(50) := '';
+  l_x1 varchar2(50) := '';
+  l_x2 varchar2(50) := '';
+  l_xcentre varchar2(50) := '';
+  l_y1 varchar2(50) := '';
+  l_y2 varchar2(50) := '';
+  l_ycentre varchar2(50) := '';
+  l_z1 varchar2(50) := '';
+  l_z2 varchar2(50) := '';
+  l_zcentre varchar2(50) := '';
+
+  
+  l_speed1 varchar2(50) := '';
+  l_bidirectional varchar2(50) := '';
+  
+   
+  l_downstream_id varchar2(50) := '';
+  l_downstream1_id varchar2(50) := '';
+  l_upstream_id varchar2(50) := '';
+  l_upstream1_id varchar2(50) := '';
+
+  
+  l_node_id number := null;
+
+  
+  l_status_segment_id number := null;
+  l_route_segment_id number := null;
+
+  l_first_attempt_node varchar2(50) := '';
+
+  begin
+
+    dbms_xslprocessor.valueof (p_node, '@id', l_id);
+    dbms_xslprocessor.valueof (p_node, '@function', l_function);
+    dbms_xslprocessor.valueof (p_node, '@length', l_lengthvalue);
+    dbms_xslprocessor.valueof (p_node, '@mark_code', l_mark_code);
+    dbms_xslprocessor.valueof (p_node, '@mechanical_drawing', l_mechanical_drawing);
+	dbms_xslprocessor.valueof (p_node, '@family', l_family);
+    dbms_xslprocessor.valueof (p_node, '@subsystem_type', l_subsystem_type);
+    dbms_xslprocessor.valueof (p_node, '@customer_id', l_customer_id);
+    dbms_xslprocessor.valueof (p_node, '@integration_level', l_integration_level);
+
+  
+	
+	
+	
+    
+    
+    
+    
+    if l_integration_level = 'element'
+    then
+    	return;
+    end if;
+
+	l_statistical_subject := l_family||'_'||l_mark_code||l_function;
+    
+    topo_dimensions.split_isc(l_id, l_areaid, l_zoneid, l_equipmentid);
+    
+	  l_node_list := dbms_xslprocessor.selectnodes(p_node,  'fif');
+	  l_node_count := dbms_xmldom.getlength(l_node_list);
+	  if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+      dbms_xslprocessor.valueof(l_sub_node, '@id', l_tag1);
+      dbms_xslprocessor.valueof(l_sub_node, '@isc_id', l_tag2);
+      if l_tag1 = 'downstream0' then l_downstream_id := l_tag2; end if;
+      if l_tag1 = 'downstream' then l_downstream_id := l_tag2; end if;
+      if l_tag1 = 'downstream1' then l_downstream1_id := l_tag2; end if;
+      if l_tag1 = 'upstream0' then l_upstream_id := l_tag2; end if;
+      if l_tag1 = 'upstream' then l_upstream_id := l_tag2; end if;
+      if l_tag1 = 'upstream1' then l_upstream1_id := l_tag2; end if;
+	  end loop;
+    end if;
+
+    l_node_list := dbms_xslprocessor.selectnodes(p_node, 'block');
+    l_node_count := dbms_xmldom.getlength(l_node_list);
+    if l_node_count > 0 then
+      for j in 0..(l_node_count - 1) loop
+        l_sub_node := dbms_xmldom.item (l_node_list, j);
+        dbms_xslprocessor.valueof(l_sub_node, '@id', l_block_id);
+        dbms_xslprocessor.valueof(l_sub_node, '@angle1', l_angle1);
+        dbms_xslprocessor.valueof(l_sub_node, '@angle2', l_angle2);
+        dbms_xslprocessor.valueof(l_sub_node, '@shape', l_shape);
+        dbms_xslprocessor.valueof(l_sub_node, '@width', l_width);
+        dbms_xslprocessor.valueof(l_sub_node, '@x1', l_x1);
+        dbms_xslprocessor.valueof(l_sub_node, '@x2', l_x2);
+        dbms_xslprocessor.valueof(l_sub_node, '@xcentre', l_xcentre);
+        dbms_xslprocessor.valueof(l_sub_node, '@y1', l_y1);
+        dbms_xslprocessor.valueof(l_sub_node, '@y2', l_y2);
+        dbms_xslprocessor.valueof(l_sub_node, '@ycentre', l_ycentre);
+        dbms_xslprocessor.valueof(l_sub_node, '@z1', l_z1);
+        dbms_xslprocessor.valueof(l_sub_node, '@z2', l_z2);
+        dbms_xslprocessor.valueof(l_sub_node, '@zcentre', l_zcentre);
+      end loop;
+    end if;
+
+    l_node_list := dbms_xslprocessor.selectnodes(p_node, 'dynamics');
+    l_node_count := dbms_xmldom.getlength(l_node_list);
+    if l_node_count > 0 then
+      for j in 0..(l_node_count - 1) loop
+        l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@bidirectional', l_bidirectional);
+        dbms_xslprocessor.valueof(l_sub_node, '@speed1', l_speed1);
+      end loop;
+    end if;
+
+
+    l_node_list := dbms_xslprocessor.selectnodes(p_node, 'segment_reference');
+    l_node_count := dbms_xmldom.getlength(l_node_list);
+    if l_node_count > 0 then
+      for j in 0..(l_node_count - 1) loop
+        l_sub_node := dbms_xmldom.item (l_node_list, j);
+        l_status_segment_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof(l_sub_node, '@status_segment_id'));
+        l_route_segment_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof(l_sub_node, '@route_segment_id'));
+      end loop;
+    end if;
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'node_reference');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		l_node_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof(l_sub_node, '@id'));
+	  end loop;
+    end if;
+
+	
+    l_id := bpi_util.convert_isc_id(l_id);
+    l_downstream_id := bpi_util.convert_isc_id(l_downstream_id);
+    l_downstream1_id := bpi_util.convert_isc_id(l_downstream1_id);
+    l_upstream_id := bpi_util.convert_isc_id(l_upstream_id);
+    l_upstream1_id := bpi_util.convert_isc_id(l_upstream1_id);
+    
+    update dim_iscs
+    set version_id = p_version_id
+    , parent_id = p_parent_id
+    , lengthvalue = l_lengthvalue
+	, family = l_family
+    , subsystem_type = l_subsystem_type
+    , mark_code = l_mark_code
+    , function = l_function
+    , statistical_subject = l_statistical_subject
+    , areaid = l_areaid
+    , zoneid = l_zoneid
+    , equipmentid = l_equipmentid
+    , customer_id = l_customer_id
+    , mechanical_drawing = l_mechanical_drawing
+    , angle1 = l_angle1
+    , angle2 = l_angle2
+    , bidirectional = l_bidirectional
+    , block_id = l_block_id
+    , shape = l_shape
+    , speed1 = l_speed1
+    , width = l_width
+    , x1 = l_x1
+    , x2 = l_x2
+    , xcentre = l_xcentre
+    , y1 = l_y1
+    , y2 = l_y2
+    , ycentre = l_ycentre
+    , z1 = l_z1
+    , z2 = l_z2
+    , zcentre = l_zcentre
+    , downstream_id = l_downstream_id
+    , downstream1_id = l_downstream1_id
+    , upstream_id = l_upstream_id
+    , upstream1_id = l_upstream1_id
+    , node_id = l_node_id
+    , status_segment_id = l_status_segment_id
+    , route_segment_id = l_route_segment_id
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+  	insert into dim_iscs
+    ( id
+    , version_id
+    , parent_id
+    , lengthvalue
+	, family
+    , subsystem_type
+    , mark_code
+    , function
+    , statistical_subject
+    , areaid
+    , zoneid
+    , equipmentid
+    , customer_id
+    , mechanical_drawing
+    , angle1
+    , angle2
+    , bidirectional
+    , block_id
+    , shape
+    , speed1
+    , width
+    , x1
+    , x2
+    , xcentre
+    , y1
+    , y2
+    , ycentre
+    , z1
+    , z2
+    , zcentre
+    , downstream_id
+    , downstream1_id
+    , upstream_id
+    , upstream1_id
+    , node_id
+    , status_segment_id
+    , route_segment_id
+    , first_attempt_node)
+	values
+	( l_id
+    , p_version_id
+    , p_parent_id
+    , l_lengthvalue
+	, l_family
+    , l_subsystem_type
+    , l_mark_code
+    , l_function
+    , l_statistical_subject
+    , l_areaid
+    , l_zoneid
+    , l_equipmentid
+    , l_customer_id
+    , l_mechanical_drawing
+    , l_angle1
+    , l_angle2
+    , l_bidirectional
+    , l_block_id
+    , l_shape
+    , l_speed1
+    , l_width
+    , l_x1
+    , l_x2
+    , l_xcentre
+    , l_y1
+    , l_y2
+    , l_ycentre
+    , l_z1
+    , l_z2
+    , l_zcentre
+    , l_downstream_id
+    , l_downstream1_id
+    , l_upstream_id
+    , l_upstream1_id
+    , l_node_id
+    , l_status_segment_id
+    , l_route_segment_id
+    , l_first_attempt_node);
+    end if;
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'isc');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		
+	    process_isc(p_version_id, l_sub_node, l_id);
+	  end loop;
+    end if;
+  end;
+
+
+  procedure process_ps(p_version_id number, p_node dbms_xmldom.domnode, p_parent_id varchar2) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_travel_time varchar2(100);
+  l_travel_time_sum number(12,4) := 0;
+
+  l_id varchar2(50) := '';
+  l_name varchar2(50) := '';
+  l_description varchar2(250) := '';
+  l_type varchar2(50) := '';
+  l_volume_alert_threshold_hh varchar2(50) := '';
+  l_volume_alert_threshold_h varchar2(50) := '';
+  l_volume_alert_threshold_l varchar2(50) := '';
+  l_volume_alert_threshold_ll varchar2(50) := '';
+  l_process_alert_threshold_hh varchar2(50) := '';
+  l_process_alert_threshold_h varchar2(50) := '';
+  l_process_alert_threshold_l varchar2(50) := '';
+  l_process_alert_threshold_ll varchar2(50) := '';
+
+  v_rows_processed integer := 0;
+
+  begin
+
+	dbms_xslprocessor.valueof (p_node, '@id', l_id);
+	dbms_xslprocessor.valueof (p_node, '@name', l_name);
+	dbms_xslprocessor.valueof (p_node, '@description', l_description);
+	dbms_xslprocessor.valueof (p_node, '@type', l_type);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_high_high', l_volume_alert_threshold_hh);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_high', l_volume_alert_threshold_h);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_low', l_volume_alert_threshold_l);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_low_low', l_volume_alert_threshold_ll);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_high_high', l_process_alert_threshold_hh);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_high', l_process_alert_threshold_h);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_low', l_process_alert_threshold_l);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_low_low', l_process_alert_threshold_ll);
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'logistic_step_travel_time');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	l_travel_time_sum := 0;
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@travel_time', l_travel_time);
+		l_travel_time_sum := l_travel_time_sum + str_to_num(l_travel_time);
+	  end loop;
+    end if;
+
+    update dim_process_steps
+    set version_id = p_version_id
+    , psname = l_name
+    , description = l_description
+    , pstype = l_type
+    , volume_alert_threshold_hh = l_volume_alert_threshold_hh
+    , volume_alert_threshold_h = l_volume_alert_threshold_h
+    , volume_alert_threshold_l = l_volume_alert_threshold_l
+    , volume_alert_threshold_ll = l_volume_alert_threshold_ll
+    , process_alert_threshold_hh = l_process_alert_threshold_hh
+    , process_alert_threshold_h = l_process_alert_threshold_h
+    , process_alert_threshold_l = l_process_alert_threshold_l
+    , process_alert_threshold_ll = l_process_alert_threshold_ll
+    , travel_time_sum = l_travel_time_sum
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+      insert into dim_process_steps
+      ( id
+      , version_id
+      , psname
+      , description
+      , pstype
+      , volume_alert_threshold_hh
+      , volume_alert_threshold_h
+      , volume_alert_threshold_l
+      , volume_alert_threshold_ll
+      , process_alert_threshold_hh
+      , process_alert_threshold_h
+      , process_alert_threshold_l
+      , process_alert_threshold_ll
+      , travel_time_sum )
+	  values
+  	  ( l_id
+	  , p_version_id
+      , l_name
+      , l_description
+      , l_type
+      , l_volume_alert_threshold_hh
+      , l_volume_alert_threshold_h
+      , l_volume_alert_threshold_l
+      , l_volume_alert_threshold_ll
+      , l_process_alert_threshold_hh
+      , l_process_alert_threshold_h
+      , l_process_alert_threshold_l
+      , l_process_alert_threshold_ll
+      , l_travel_time_sum );
+    end if;
+  end;
+
+
+  procedure process_rs(p_version_id number, p_node dbms_xmldom.domnode, p_parent_id varchar2) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag varchar2(50) := '';
+  rs_rec dim_route_segments%rowtype;
+  l_isc_reference varchar2(32000) := '';
+  v_rows_processed integer := 0;
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  begin
+
+    dbms_xslprocessor.valueof (p_node, '@id', rs_rec.id);
+    dbms_xslprocessor.valueof (p_node, '@version_id', rs_rec.version_id);
+    dbms_xslprocessor.valueof (p_node, '@node_id_start', rs_rec.node_id_start);
+    dbms_xslprocessor.valueof (p_node, '@node_id_end', rs_rec.node_id_end);
+    dbms_xslprocessor.valueof (p_node, '@type_of_route', rs_rec.type_of_route);
+    dbms_xslprocessor.valueof (p_node, '@ind_physical', rs_rec.ind_physical);
+    rs_rec.status_segment_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@status_segment_id'));
+    dbms_xslprocessor.valueof (p_node, '@direction_from', rs_rec.direction_from);
+    dbms_xslprocessor.valueof (p_node, '@direction_to', rs_rec.direction_to);
+    dbms_xslprocessor.valueof (p_node, '@ind_main_flow_from', rs_rec.ind_main_flow_from);
+    dbms_xslprocessor.valueof (p_node, '@ind_main_flow_to', rs_rec.ind_main_flow_to);
+    dbms_xslprocessor.valueof (p_node, '@ind_report_tracking_at_start', rs_rec.ind_report_tracking_at_start);
+    dbms_xslprocessor.valueof (p_node, '@ind_report_tracking_at_end', rs_rec.ind_report_tracking_at_end);
+    rs_rec.default_destination := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination'));
+    rs_rec.default_destination_2 := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_2'));
+    rs_rec.default_destination_3 := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_3'));
+    rs_rec.default_destination_4 := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_4'));
+    rs_rec.default_destination_5 := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_5'));
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process1', rs_rec.default_required_scrlvlproc1);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process1', rs_rec.default_reached_scrlvlproc1);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process1', rs_rec.default_failed_scrlvlproc1);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process2', rs_rec.default_required_scrlvlproc2);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process2', rs_rec.default_reached_scrlvlproc2);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process2', rs_rec.default_failed_scrlvlproc2);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process3', rs_rec.default_required_scrlvlproc3);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process3', rs_rec.default_reached_scrlvlproc3);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process3', rs_rec.default_failed_scrlvlproc3);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process4', rs_rec.default_required_scrlvlproc4);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process4', rs_rec.default_reached_scrlvlproc4);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process4', rs_rec.default_failed_scrlvlproc4);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process5', rs_rec.default_required_scrlvlproc5);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process5', rs_rec.default_reached_scrlvlproc5);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process5', rs_rec.default_failed_scrlvlproc5);
+    dbms_xslprocessor.valueof (p_node, '@bidirectional_direction', rs_rec.bidirectional_direction);
+    dbms_xslprocessor.valueof (p_node, '@ind_detect_recirculation', rs_rec.ind_detect_recirculation);
+    dbms_xslprocessor.valueof (p_node, '@logistic_step', rs_rec.process_step);
+    rs_rec.logistic_step_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@logistic_step_id'));
+    rs_rec.degraded_mode_reset_dest := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@degraded_mode_reset_destination'));
+    dbms_xslprocessor.valueof (p_node, '@default_physical_class', rs_rec.default_physical_class);
+    dbms_xslprocessor.valueof (p_node, '@travel_time', rs_rec.travel_time);
+    dbms_xslprocessor.valueof (p_node, '@ind_transport_default', rs_rec.ind_transport_default);
+    dbms_xslprocessor.valueof (p_node, '@allowed_dimensions', rs_rec.allowed_dimensions);
+    dbms_xslprocessor.valueof (p_node, '@ind_routing_default', rs_rec.ind_routing_default);
+    dbms_xslprocessor.valueof (p_node, '@DCV_Buffer_Capacity', rs_rec.dcv_buffer_capacity);
+    dbms_xslprocessor.valueof (p_node, '@DCV_Buffer_ID', rs_rec.dcv_buffer_id);
+    dbms_xslprocessor.valueof (p_node, '@DCV_sort_control_default_loaded', rs_rec.dcv_sort_control_default_load);
+    dbms_xslprocessor.valueof (p_node, '@DCV_sort_control_default_empty', rs_rec.dcv_sort_control_default_empty);
+    dbms_xslprocessor.valueof (p_node, '@DCV_sort_control_default_maintenance', rs_rec.dcv_sort_control_default_maint);
+    dbms_xslprocessor.valueof (p_node, '@DCV_release_control_default', rs_rec.dcv_release_control_default);
+    dbms_xslprocessor.valueof (p_node, '@ind_allowed_secure', rs_rec.ind_allowed_secure);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process1', rs_rec.ind_allow_only_secure_process1);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process2', rs_rec.ind_allow_only_secure_process2);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process3', rs_rec.ind_allow_only_secure_process3);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process4', rs_rec.ind_allow_only_secure_process4);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process5', rs_rec.ind_allow_only_secure_process5);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_description', rs_rec.status_segment_description);
+    dbms_xslprocessor.valueof (p_node, '@recirculation_time', rs_rec.recirculation_time);
+    dbms_xslprocessor.valueof (p_node, '@recirculation_count', rs_rec.recirculation_count);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_transport_type', rs_rec.status_segment_transport_type);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_affected_station_id', rs_rec.status_segment_affected_statio);
+    dbms_xslprocessor.valueof (p_node, '@region_id', rs_rec.region_id);
+    dbms_xslprocessor.valueof (p_node, '@bidirectional_isc_id', rs_rec.bidirectional_isc_id);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_maxholdcap_override', rs_rec.status_segment_maxholdcap_over);
+    dbms_xslprocessor.valueof (p_node, '@ind_detect_missed_tracking_events', rs_rec.ind_detect_missed_track_events);
+    dbms_xslprocessor.valueof (p_node, '@customer_facilityid', rs_rec.customer_facilityid);
+
+    
+    rs_rec.speed_info := topo_dimensions.listdelimit(p_node, 'speed_info', 'N');
+
+    
+    rs_rec.capacity_info := topo_dimensions.listdelimit(p_node, 'capacity_info', 'N');
+    select min(topo_dimensions.str_to_num(substr(val,10))) into rs_rec.capacity from table(csv.vals(rs_rec.capacity_info)) where val like 'capacity=%';
+
+    
+    rs_rec.travel_time_info := topo_dimensions.listdelimit(p_node, 'travel_time_info', 'N');
+    if trim(rs_rec.travel_time) is null then
+      select max(substr(val,13)) into rs_rec.travel_time from table(csv.vals(rs_rec.travel_time_info)) where val like 'travel_time=%';
+    end if;
+
+    
+    l_isc_reference := topo_dimensions.listdelimit(p_node, 'isc_reference', 'Y');
+    
+    rs_rec.isc_reference := substr(l_isc_reference,1,4000);
+
+
+    update dim_route_segments
+    set version_id = p_version_id
+    , node_id_start = rs_rec.node_id_start
+    , node_id_end = rs_rec.node_id_end
+    , type_of_route = rs_rec.type_of_route
+    , ind_physical = rs_rec.ind_physical
+    , status_segment_id = rs_rec.status_segment_id
+    , direction_from = rs_rec.direction_from
+    , direction_to = rs_rec.direction_to
+    , ind_main_flow_from = rs_rec.ind_main_flow_from
+    , ind_main_flow_to = rs_rec.ind_main_flow_to
+    , ind_report_tracking_at_start = rs_rec.ind_report_tracking_at_start
+    , ind_report_tracking_at_end = rs_rec.ind_report_tracking_at_end
+    , default_destination = rs_rec.default_destination
+    , default_destination_2 = rs_rec.default_destination_2
+    , default_destination_3 = rs_rec.default_destination_3
+    , default_destination_4 = rs_rec.default_destination_4
+    , default_destination_5 = rs_rec.default_destination_5
+    , default_required_scrlvlproc1 = rs_rec.default_required_scrlvlproc1
+    , default_reached_scrlvlproc1 = rs_rec.default_reached_scrlvlproc1
+    , default_failed_scrlvlproc1 = rs_rec.default_failed_scrlvlproc1
+    , default_required_scrlvlproc2 = rs_rec.default_required_scrlvlproc2
+    , default_reached_scrlvlproc2 = rs_rec.default_reached_scrlvlproc2
+    , default_failed_scrlvlproc2 = rs_rec.default_failed_scrlvlproc2
+    , default_required_scrlvlproc3 = rs_rec.default_required_scrlvlproc3
+    , default_reached_scrlvlproc3 = rs_rec.default_reached_scrlvlproc3
+    , default_failed_scrlvlproc3 = rs_rec.default_failed_scrlvlproc3
+    , default_required_scrlvlproc4 = rs_rec.default_required_scrlvlproc4
+    , default_reached_scrlvlproc4 = rs_rec.default_reached_scrlvlproc4
+    , default_failed_scrlvlproc4 = rs_rec.default_failed_scrlvlproc4
+    , default_required_scrlvlproc5 = rs_rec.default_required_scrlvlproc5
+    , default_reached_scrlvlproc5 = rs_rec.default_reached_scrlvlproc5
+    , default_failed_scrlvlproc5 = rs_rec.default_failed_scrlvlproc5
+    , bidirectional_direction = rs_rec.bidirectional_direction
+    , ind_detect_recirculation = rs_rec.ind_detect_recirculation
+    , process_step = rs_rec.process_step
+    , logistic_step_id = rs_rec.logistic_step_id
+    , degraded_mode_reset_dest = rs_rec.degraded_mode_reset_dest
+    , default_physical_class = rs_rec.default_physical_class
+    , travel_time = rs_rec.travel_time
+    , ind_transport_default = rs_rec.ind_transport_default
+    , allowed_dimensions = rs_rec.allowed_dimensions
+    , ind_routing_default = rs_rec.ind_routing_default
+    , dcv_buffer_capacity = rs_rec.dcv_buffer_capacity
+    , dcv_buffer_id = rs_rec.dcv_buffer_id
+    , dcv_sort_control_default_load = rs_rec.dcv_sort_control_default_load
+    , dcv_sort_control_default_empty = rs_rec.dcv_sort_control_default_empty
+    , dcv_sort_control_default_maint = rs_rec.dcv_sort_control_default_maint
+    , dcv_release_control_default = rs_rec.dcv_release_control_default
+    , ind_allowed_secure = rs_rec.ind_allowed_secure
+    , ind_allow_only_secure_process1 = rs_rec.ind_allow_only_secure_process1
+    , ind_allow_only_secure_process2 = rs_rec.ind_allow_only_secure_process2
+    , ind_allow_only_secure_process3 = rs_rec.ind_allow_only_secure_process3
+    , ind_allow_only_secure_process4 = rs_rec.ind_allow_only_secure_process4
+    , ind_allow_only_secure_process5 = rs_rec.ind_allow_only_secure_process5
+    , status_segment_description = rs_rec.status_segment_description
+    , recirculation_time = rs_rec.recirculation_time
+    , recirculation_count = rs_rec.recirculation_count
+    , status_segment_transport_type = rs_rec.status_segment_transport_type
+    , status_segment_affected_statio = rs_rec.status_segment_affected_statio
+    , region_id = rs_rec.region_id
+    , bidirectional_isc_id = rs_rec.bidirectional_isc_id
+    , status_segment_maxholdcap_over = rs_rec.status_segment_maxholdcap_over
+    , ind_detect_missed_track_events = rs_rec.ind_detect_missed_track_events
+    , customer_facilityid = rs_rec.customer_facilityid
+    , capacity = rs_rec.capacity
+    , exiting = rs_rec.exiting
+    , speed_info = rs_rec.speed_info
+    , capacity_info = rs_rec.capacity_info
+    , travel_time_info = rs_rec.travel_time_info
+    , isc_reference = rs_rec.isc_reference
+    where id = rs_rec.id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+  	  insert into dim_route_segments
+      ( id
+      , version_id
+      , node_id_start
+      , node_id_end
+      , type_of_route
+      , ind_physical
+      , status_segment_id
+      , direction_from
+      , direction_to
+      , ind_main_flow_from
+      , ind_main_flow_to
+      , ind_report_tracking_at_start
+      , ind_report_tracking_at_end
+      , default_destination
+      , default_destination_2
+      , default_destination_3
+      , default_destination_4
+      , default_destination_5
+      , default_required_scrlvlproc1
+      , default_reached_scrlvlproc1
+      , default_failed_scrlvlproc1
+      , default_required_scrlvlproc2
+      , default_reached_scrlvlproc2
+      , default_failed_scrlvlproc2
+      , default_required_scrlvlproc3
+      , default_reached_scrlvlproc3
+      , default_failed_scrlvlproc3
+      , default_required_scrlvlproc4
+      , default_reached_scrlvlproc4
+      , default_failed_scrlvlproc4
+      , default_required_scrlvlproc5
+      , default_reached_scrlvlproc5
+      , default_failed_scrlvlproc5
+      , bidirectional_direction
+      , ind_detect_recirculation
+      , process_step
+      , logistic_step_id
+      , degraded_mode_reset_dest
+      , default_physical_class
+      , travel_time
+      , ind_transport_default
+      , allowed_dimensions
+      , ind_routing_default
+      , dcv_buffer_capacity
+      , dcv_buffer_id
+      , dcv_sort_control_default_load
+      , dcv_sort_control_default_empty
+      , dcv_sort_control_default_maint
+      , dcv_release_control_default
+      , ind_allowed_secure
+      , ind_allow_only_secure_process1
+      , ind_allow_only_secure_process2
+      , ind_allow_only_secure_process3
+      , ind_allow_only_secure_process4
+      , ind_allow_only_secure_process5
+      , status_segment_description
+      , recirculation_time
+      , recirculation_count
+      , status_segment_transport_type
+      , status_segment_affected_statio
+      , region_id
+      , bidirectional_isc_id
+      , status_segment_maxholdcap_over
+      , ind_detect_missed_track_events
+      , customer_facilityid
+      , capacity
+      , exiting
+      , speed_info
+      , capacity_info
+      , travel_time_info
+      , isc_reference )
+      values
+   	  ( rs_rec.id
+  	  , p_version_id
+      , rs_rec.node_id_start
+      , rs_rec.node_id_end
+      , rs_rec.type_of_route
+      , rs_rec.ind_physical
+      , rs_rec.status_segment_id
+      , rs_rec.direction_from
+      , rs_rec.direction_to
+      , rs_rec.ind_main_flow_from
+      , rs_rec.ind_main_flow_to
+      , rs_rec.ind_report_tracking_at_start
+      , rs_rec.ind_report_tracking_at_end
+      , rs_rec.default_destination
+      , rs_rec.default_destination_2
+      , rs_rec.default_destination_3
+      , rs_rec.default_destination_4
+      , rs_rec.default_destination_5
+      , rs_rec.default_required_scrlvlproc1
+      , rs_rec.default_reached_scrlvlproc1
+      , rs_rec.default_failed_scrlvlproc1
+      , rs_rec.default_required_scrlvlproc2
+      , rs_rec.default_reached_scrlvlproc2
+      , rs_rec.default_failed_scrlvlproc2
+      , rs_rec.default_required_scrlvlproc3
+      , rs_rec.default_reached_scrlvlproc3
+      , rs_rec.default_failed_scrlvlproc3
+      , rs_rec.default_required_scrlvlproc4
+      , rs_rec.default_reached_scrlvlproc4
+      , rs_rec.default_failed_scrlvlproc4
+      , rs_rec.default_required_scrlvlproc5
+      , rs_rec.default_reached_scrlvlproc5
+      , rs_rec.default_failed_scrlvlproc5
+      , rs_rec.bidirectional_direction
+      , rs_rec.ind_detect_recirculation
+      , rs_rec.process_step
+      , rs_rec.logistic_step_id
+      , rs_rec.degraded_mode_reset_dest
+      , rs_rec.default_physical_class
+      , rs_rec.travel_time
+      , rs_rec.ind_transport_default
+      , rs_rec.allowed_dimensions
+      , rs_rec.ind_routing_default
+      , rs_rec.dcv_buffer_capacity
+      , rs_rec.dcv_buffer_id
+      , rs_rec.dcv_sort_control_default_load
+      , rs_rec.dcv_sort_control_default_empty
+      , rs_rec.dcv_sort_control_default_maint
+      , rs_rec.dcv_release_control_default
+      , rs_rec.ind_allowed_secure
+      , rs_rec.ind_allow_only_secure_process1
+      , rs_rec.ind_allow_only_secure_process2
+      , rs_rec.ind_allow_only_secure_process3
+      , rs_rec.ind_allow_only_secure_process4
+      , rs_rec.ind_allow_only_secure_process5
+      , rs_rec.status_segment_description
+      , rs_rec.recirculation_time
+      , rs_rec.recirculation_count
+      , rs_rec.status_segment_transport_type
+      , rs_rec.status_segment_affected_statio
+      , rs_rec.region_id
+      , rs_rec.bidirectional_isc_id
+      , rs_rec.status_segment_maxholdcap_over
+      , rs_rec.ind_detect_missed_track_events
+      , rs_rec.customer_facilityid
+      , rs_rec.capacity
+      , rs_rec.exiting
+      , rs_rec.speed_info
+      , rs_rec.capacity_info
+      , rs_rec.travel_time_info
+      , rs_rec.isc_reference);
+    end if;
+  end;
+
+
+  procedure process_nodes(p_version_id number, p_node dbms_xmldom.domnode) is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  n_rec dim_nodes%rowtype;
+  v_rows_processed integer := 0;
+
+  begin
+    dbms_xslprocessor.valueof (p_node, '@id', n_rec.id);
+    dbms_xslprocessor.valueof (p_node, '@ind_physical', n_rec.ind_physical);
+    dbms_xslprocessor.valueof (p_node, '@isc_id', n_rec.isc_id);
+    dbms_xslprocessor.valueof (p_node, '@isc_id_reporting', n_rec.isc_id_reporting);
+    dbms_xslprocessor.valueof (p_node, '@type', n_rec.ntype);
+    dbms_xslprocessor.valueof (p_node, '@merge_algorithm', n_rec.merge_algorithm);
+    dbms_xslprocessor.valueof (p_node, '@ind_tracking_point', n_rec.ind_tracking_point);
+    n_rec.destination_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@destination_id'));
+    n_rec.station_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@station_id'));
+    dbms_xslprocessor.valueof (p_node, '@ind_autonomous_routing', n_rec.ind_autonomous_routing);
+    dbms_xslprocessor.valueof (p_node, '@ind_initial_registration', n_rec.ind_initial_registration);
+    n_rec.degraded_mode_destination := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@degraded_mode_destination'));
+    dbms_xslprocessor.valueof (p_node, '@ind_assignable_destination', n_rec.ind_assignable_destination);
+    dbms_xslprocessor.valueof (p_node, '@logistic_step', n_rec.process_step);
+    n_rec.logistic_step_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@logistic_step_id'));
+    dbms_xslprocessor.valueof (p_node, '@entrypoint_type', n_rec.entrypoint_type);
+    dbms_xslprocessor.valueof (p_node, '@default_physical_class', n_rec.default_physical_class);
+    dbms_xslprocessor.valueof (p_node, '@PS_emu_type', n_rec.ps_emu_type);
+    dbms_xslprocessor.valueof (p_node, '@direction_id', n_rec.direction_id);
+    dbms_xslprocessor.valueof (p_node, '@link_id', n_rec.link_id);
+    dbms_xslprocessor.valueof (p_node, '@ind_BPM_generation', n_rec.ind_bpm_generation);
+    dbms_xslprocessor.valueof (p_node, '@customer_facilityid', n_rec.customer_facilityid);
+    
+    n_rec.capacity_info := topo_dimensions.listdelimit(p_node, 'capacity_info', 'N');
+    
+    
+    n_rec.isc_id := bpi_util.convert_isc_id(n_rec.isc_id);
+    n_rec.isc_id_reporting := bpi_util.convert_isc_id(n_rec.isc_id_reporting);
+    
+    
+
+	update dim_nodes
+    set version_id = p_version_id
+    , type_of_node = n_rec.type_of_node
+    , exiting = n_rec.exiting
+    , reporting_node_type = n_rec.reporting_node_type
+    , ind_physical = n_rec.ind_physical
+    , isc_id = n_rec.isc_id
+    , isc_id_reporting = n_rec.isc_id_reporting
+    , ntype = n_rec.ntype
+    , merge_algorithm = n_rec.merge_algorithm
+    , ind_tracking_point = n_rec.ind_tracking_point
+    , destination_id = n_rec.destination_id
+    , station_id = n_rec.station_id
+    , ind_autonomous_routing = n_rec.ind_autonomous_routing
+    , ind_initial_registration = n_rec.ind_initial_registration
+    , degraded_mode_destination = n_rec.degraded_mode_destination
+    , ind_assignable_destination = n_rec.ind_assignable_destination
+    , process_step = n_rec.process_step
+    , logistic_step_id = n_rec.logistic_step_id
+    , entrypoint_type = n_rec.entrypoint_type
+    , default_physical_class = n_rec.default_physical_class
+    , ps_emu_type = n_rec.ps_emu_type
+    , direction_id = n_rec.direction_id
+    , link_id = n_rec.link_id
+    , ind_bpm_generation = n_rec.ind_bpm_generation
+    , customer_facilityid = n_rec.customer_facilityid
+    , capacity_info = n_rec.capacity_info
+    where id = n_rec.id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+ 	  insert into dim_nodes
+      ( id
+      , version_id
+      , type_of_node
+      , exiting
+      , reporting_node_type
+      , ind_physical
+      , isc_id
+      , isc_id_reporting
+      , ntype
+      , merge_algorithm
+      , ind_tracking_point
+      , destination_id
+      , station_id
+      , ind_autonomous_routing
+      , ind_initial_registration
+      , degraded_mode_destination
+      , ind_assignable_destination
+      , process_step
+      , logistic_step_id
+      , entrypoint_type
+      , default_physical_class
+      , ps_emu_type
+      , direction_id
+      , link_id
+      , ind_bpm_generation
+      , customer_facilityid
+      , capacity_info )
+      values
+      ( n_rec.id
+      , p_version_id
+      , n_rec.type_of_node
+      , n_rec.exiting
+      , n_rec.reporting_node_type
+      , n_rec.ind_physical
+      , n_rec.isc_id
+      , n_rec.isc_id_reporting
+      , n_rec.ntype
+      , n_rec.merge_algorithm
+      , n_rec.ind_tracking_point
+      , n_rec.destination_id
+      , n_rec.station_id
+      , n_rec.ind_autonomous_routing
+      , n_rec.ind_initial_registration
+      , n_rec.degraded_mode_destination
+      , n_rec.ind_assignable_destination
+      , n_rec.process_step
+      , n_rec.logistic_step_id
+      , n_rec.entrypoint_type
+      , n_rec.default_physical_class
+      , n_rec.ps_emu_type
+      , n_rec.direction_id
+      , n_rec.link_id
+      , n_rec.ind_bpm_generation
+      , n_rec.customer_facilityid
+      , n_rec.capacity_info );
+    end if;
+  end;
+
+
+  procedure process_status_segments(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag varchar2(50) := '';
+
+  l_id varchar2(50) := '';
+  l_description varchar2(200)  := '';
+  l_transport_type varchar2(50)  := '';
+  l_flow_type varchar2(50)  := '';
+  l_affected_station_id number  := null;
+  l_max_holding_capacity varchar2(50)  := '';
+  l_areas varchar2(500) := '';
+
+  v_rows_processed integer := 0;
+
+  begin
+	dbms_xslprocessor.valueof (p_node, '@id', l_id);
+	dbms_xslprocessor.valueof (p_node, '@description', l_description);
+	dbms_xslprocessor.valueof (p_node, '@transport_type', l_transport_type);
+	dbms_xslprocessor.valueof (p_node, '@flow_type', l_flow_type);
+	l_affected_station_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@affected_station_id'));
+	dbms_xslprocessor.valueof (p_node, '@max_holding_capacity', l_max_holding_capacity);
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'area');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	l_areas := '';
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@id', l_tag);
+		l_areas := l_areas||','||l_tag;
+	  end loop;
+    end if;
+
+    update dim_status_segments
+    set version_id = p_version_id
+    , description = l_description
+    , transport_type = l_transport_type
+    , flow_type = l_flow_type
+    , affected_station_id = l_affected_station_id
+    , max_holding_capacity = l_max_holding_capacity
+    , areas = l_areas
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+      insert into dim_status_segments
+      ( id
+      , version_id
+      , description
+      , transport_type
+      , flow_type
+      , affected_station_id
+      , max_holding_capacity
+      , areas  )
+      values
+      ( l_id
+      , p_version_id
+      , l_description
+      , l_transport_type
+      , l_flow_type
+      , l_affected_station_id
+      , l_max_holding_capacity
+      , l_areas );
+    end if;
+  end;
+
+
+
+
+
+
+
+
+  procedure process_links(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag varchar2(50) := '';
+
+  l_id varchar2(50) := '';
+  l_description varchar2(200)  := '';
+  l_startha number  := null;
+  l_endha number  := null;
+  l_downstreamha varchar2(500)  := '';
+
+  v_rows_processed integer := 0;
+
+  begin
+	dbms_xslprocessor.valueof (p_node, '@id', l_id);
+	dbms_xslprocessor.valueof (p_node, '@description', l_description);
+	l_startha := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@startHA'));
+        l_endha := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@endHA'));
+    
+   	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'downstreamHA');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+  	l_downstreamha := '';
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@id', l_tag);
+		l_downstreamha := l_downstreamha||','||l_tag;
+	  end loop;
+    end if;
+
+	update dim_links
+    set version_id = p_version_id
+    , description = l_description
+    , startha = l_startha
+    , endha = l_endha
+    , downstreamha = l_downstreamha
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+	insert into dim_links
+    ( id
+    , version_id
+    , description
+    , startha
+    , endha
+    , downstreamha )
+    values
+    ( l_id
+    , p_version_id
+    , l_description
+    , l_startha
+    , l_endha
+    , l_downstreamha );
+    end if;
+  end;
+
+
+
+
+
+
+
+
+  procedure process_handling_areas(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag varchar2(50) := '';
+
+  n_rec dim_handling_areas%rowtype;
+
+  v_rows_processed integer := 0;
+
+  begin
+
+	dbms_xslprocessor.valueof (p_node, '@id', n_rec.id);
+	dbms_xslprocessor.valueof (p_node, '@description', n_rec.description);
+	dbms_xslprocessor.valueof (p_node, '@BIR', n_rec.bir);
+    dbms_xslprocessor.valueof (p_node, '@current', n_rec.iscurrent);
+
+   	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'destination');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+  	n_rec.destinations := '';
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@id', l_tag);
+		n_rec.destinations := n_rec.destinations||','||l_tag;
+	  end loop;
+    end if;
+
+	update dim_handling_areas
+    set version_id = p_version_id
+    , description = n_rec.description
+    , bir = n_rec.bir
+    , iscurrent = n_rec.iscurrent
+    , destinations = n_rec.destinations
+    where id = n_rec.id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+	insert into dim_handling_areas
+    ( id
+    , version_id
+    , description
+    , bir
+    , iscurrent
+    , destinations )
+    values
+    ( n_rec.id
+    , p_version_id
+    , n_rec.description
+    , n_rec.bir
+    , n_rec.iscurrent
+    , n_rec.destinations );
+    end if;
+  end;
+  
+  
+  function extract_parallel(p_version_id number, p_node dbms_xmldom.domnode, p_tr_id number) return number is
+  l_id number := null;
+  l_tag varchar2(50)  := '';
+  l_series_id number;
+  l_parallel_id number;
+  l_status_segment_id number;
+  
+  l_kind varchar2(50) := '';
+  l_node dbms_xmldom.domnode;
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+
+  begin
+    l_node_list := dbms_xmldom.getchildnodes(p_node);
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+
+	if l_node_count > 0 then
+  	  
+      g_tr_sequence :=  g_tr_sequence + 1;
+	  l_id := g_tr_sequence;
+	  for j in 0..(l_node_count - 1) loop
+	    l_node := dbms_xmldom.item (l_node_list, j);
+	    if not dbms_xmldom.isnull(l_node) then
+          l_parallel_id := null;
+          l_series_id := null;
+          l_status_segment_id := null;
+          
+          
+          l_kind := dbms_xmldom.getnodename(l_node);
+          if l_kind = 'parallel' then
+            l_parallel_id := extract_parallel(p_version_id, l_node, p_tr_id);
+          elsif l_kind = 'series' then
+            l_series_id := extract_series(p_version_id, l_node, p_tr_id);
+          elsif l_kind = 'path' then
+            dbms_xslprocessor.valueof(l_node, '@status_segment_id', l_tag);
+            l_status_segment_id := topo_dimensions.str_to_num(l_tag);
+            
+            
+          end if;
+          g_par_sequence := g_par_sequence + 1;
+          insert into dim_tr_parallels
+          ( id
+          , version_id
+          , parallel_id
+          , series_id
+          , status_segment_id
+          , tr_id
+          , item_sequence )
+          
+          values
+          ( l_id
+          , p_version_id
+          , l_parallel_id
+          , l_series_id
+          , l_status_segment_id
+          , p_tr_id
+          , g_par_sequence );
+          
+        end if;
+	  end loop;
+    end if;
+    return l_id;
+  end;
+
+
+  function extract_series(p_version_id number, p_node dbms_xmldom.domnode, p_tr_id number) return number is
+  l_id number := null;
+  l_tag varchar2(50)  := '';
+  l_parallel_id number;
+  l_series_id number;
+  l_status_segment_id number;
+  
+  l_kind varchar2(50) := '';
+  l_node dbms_xmldom.domnode;
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+
+  begin
+    l_node_list := dbms_xmldom.getchildnodes(p_node);
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+
+	if l_node_count > 0 then
+	  
+      g_tr_sequence :=  g_tr_sequence + 1;
+	  l_id := g_tr_sequence;
+	  for j in 0..(l_node_count - 1) loop
+	    l_node := dbms_xmldom.item (l_node_list, j);
+	    if not dbms_xmldom.isnull(l_node) then
+          l_parallel_id := null;
+          l_series_id := null;
+          l_status_segment_id := null;
+          
+          
+          l_kind := dbms_xmldom.getnodename(l_node);
+          if l_kind = 'parallel' then
+            l_parallel_id := extract_parallel(p_version_id, l_node, p_tr_id);
+          elsif l_kind = 'series' then
+            l_series_id := extract_series(p_version_id, l_node, p_tr_id);
+          elsif l_kind = 'path' then
+            dbms_xslprocessor.valueof(l_node, '@status_segment_id', l_tag);
+            l_status_segment_id := topo_dimensions.str_to_num(l_tag);
+            
+            
+          end if;
+          g_ser_sequence := g_ser_sequence + 1;
+          insert into dim_tr_series
+          ( id
+          , version_id
+          , parallel_id
+          , series_id
+          , status_segment_id
+          , tr_id
+          , item_sequence )
+          
+          values
+          ( l_id
+          , p_version_id
+          , l_parallel_id
+          , l_series_id
+          , l_status_segment_id
+          , p_tr_id
+          , g_ser_sequence );
+          
+        end if;
+	  end loop;
+    end if;
+    return l_id;
+  end;
+
+
+  procedure process_transport_routes(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_id number := null;
+  l_name varchar2(250)  := '';
+  l_tag varchar2(50)  := '';
+  l_parallel_id number;
+  l_series_id number;
+  l_status_segment_id number;
+
+  l_kind varchar2(50) := '';
+  l_node dbms_xmldom.domnode;
+
+  v_rows_processed integer := 0;
+
+  begin
+
+    dbms_xslprocessor.valueof(p_node, '@id', l_id);
+    dbms_xslprocessor.valueof(p_node, '@name', l_name);
+
+    
+    
+    l_node := dbms_xmldom.getfirstchild(p_node);
+    if not dbms_xmldom.isnull(l_node) then
+      l_parallel_id := null;
+      l_series_id := null;
+      l_status_segment_id := null;
+      
+      l_kind := dbms_xmldom.getnodename(l_node);
+      if l_kind = 'parallel' then
+        l_parallel_id := extract_parallel(p_version_id, l_node, l_id);
+      elsif l_kind = 'series' then
+        l_series_id := extract_series(p_version_id, l_node, l_id);
+      elsif l_kind = 'path' then
+        dbms_xslprocessor.valueof(l_node, '@status_segment_id', l_tag);
+        l_status_segment_id := topo_dimensions.str_to_num(l_tag);
+      end if;
+    end if;
+
+	update dim_transport_routes
+    set version_id = p_version_id
+    , name = l_name
+    , parallel_id = l_parallel_id
+    , series_id = l_series_id
+    , status_segment_id = l_status_segment_id
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+	insert into dim_transport_routes
+    ( id
+    , version_id
+    , name
+    , parallel_id
+    , series_id
+    , status_segment_id )
+    values
+    ( l_id
+    , p_version_id
+    , l_name
+    , l_parallel_id
+    , l_series_id
+    , l_status_segment_id );
+    end if;
+  end;
+
+
+
+
+
+
+  procedure process_stations(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_id varchar2(50) := '';
+  l_type varchar2(50)  := '';
+  l_destination_id number  := null;
+  l_end_user_id varchar2(50)  := '';
+  l_category varchar2(50)  := '';
+  l_maximum_release_rate varchar2(50)  := '';
+  l_allow_eject varchar2(50)  := '';
+  l_bidirectional_dest_normal number  := null;
+  l_bidirectional_dest_reverse number  := null;
+  l_bidirectional_isc_id varchar2(50)  := '';
+  l_entrance_id varchar2(50)  := '';
+  l_ind_report_availability varchar2(50)  := '';
+  l_ind_update_tracking varchar2(50)  := '';
+
+  v_rows_processed integer := 0;
+
+  begin
+	dbms_xslprocessor.valueof (p_node, '@id', l_id);
+	dbms_xslprocessor.valueof (p_node, '@type', l_type);
+	l_destination_id := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@destination_id'));
+        dbms_xslprocessor.valueof (p_node, '@end_user_id', l_end_user_id);
+	dbms_xslprocessor.valueof (p_node, '@category', l_category);
+	dbms_xslprocessor.valueof (p_node, '@maximum_release_rate', l_maximum_release_rate);
+	dbms_xslprocessor.valueof (p_node, '@allow_eject', l_allow_eject);
+	l_bidirectional_dest_normal := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@bidirectional_destination_normal_id'));
+	l_bidirectional_dest_reverse := topo_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@bidirectional_destination_reversed_id'));
+	dbms_xslprocessor.valueof (p_node, '@bidirectional_isc_id', l_bidirectional_isc_id);
+	dbms_xslprocessor.valueof (p_node, '@entrance_id', l_entrance_id);
+	dbms_xslprocessor.valueof (p_node, '@ind_report_availability', l_ind_report_availability);
+	dbms_xslprocessor.valueof (p_node, '@ind_update_tracking', l_ind_update_tracking);
+
+	update dim_stations
+    set version_id = p_version_id
+    , stype = l_type
+    , destination_id = l_destination_id
+    , end_user_id = l_end_user_id
+    , category = l_category
+    , maximum_release_rate = l_maximum_release_rate
+    , allow_eject = l_allow_eject
+    , bidirectional_dest_normal = l_bidirectional_dest_normal
+    , bidirectional_dest_reverse = l_bidirectional_dest_reverse
+    , bidirectional_isc_id = l_bidirectional_isc_id
+    , entrance_id = l_entrance_id
+    , ind_report_availability = l_ind_report_availability
+    , ind_update_tracking = l_ind_update_tracking
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+	insert into dim_stations
+    ( id
+    , version_id
+    , stype
+    , destination_id
+    , end_user_id
+    , category
+    , maximum_release_rate
+    , allow_eject
+    , bidirectional_dest_normal
+    , bidirectional_dest_reverse
+    , bidirectional_isc_id
+    , entrance_id
+    , ind_report_availability
+    , ind_update_tracking )
+    values
+    ( l_id
+    , p_version_id
+    , l_type
+    , l_destination_id
+    , l_end_user_id
+    , l_category
+    , l_maximum_release_rate
+    , l_allow_eject
+    , l_bidirectional_dest_normal
+    , l_bidirectional_dest_reverse
+    , l_bidirectional_isc_id
+    , l_entrance_id
+    , l_ind_report_availability
+    , l_ind_update_tracking );
+    end if;
+  end;
+
+
+  procedure create_stations(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+
+  begin
+
+    insert into hist_stations select * from dim_stations
+    where version_id = (select max(version_id) from dim_stations)
+    and version_id > nvl((select max(version_id) from hist_stations),0);
+
+    l_node_list := dbms_xslprocessor.selectnodes(g_document_node, '//stations/station');
+    l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+    plog ('Total of station nodes in input: ' || l_node_count, 'info');
+
+    for i in 0..(l_node_count - 1) loop
+        l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+        process_stations(p_new_version_id, l_node);
+        dbms_xmldom.freenode(l_node);
+    end loop;
+
+    
+
+    select count(*) into l_node_count from dim_stations;
+    plog ('Total of records in DIM_STATIONS: ' || l_node_count, 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    
+    plog( 'Error (create_stations): '||l_msg, 'error' );
+    g_error := 100;
+  end;
+
+
+  procedure create_iscs(p_new_version_id number) is
+  l_node_list             dbms_xmldom.domnodelist;
+  l_node_count            number (20);
+  l_node                  dbms_xmldom.domnode;
+  l_msg                   varchar2(4000);
+  begin
+
+    insert into hist_iscs select * from dim_iscs
+    where version_id = (select max(version_id) from dim_iscs)
+    and version_id > nvl((select max(version_id) from hist_iscs),0);
+
+    l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//iscs/isc');
+    l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+    plog ('Total of isc nodes in input: ' || l_node_count, 'info');
+
+    for i in 0..(l_node_count - 1) loop
+        l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+        process_isc(p_new_version_id, l_node, null);
+        dbms_xmldom.freenode(l_node);
+    end loop;
+
+    
+
+    select count(*) into l_node_count from dim_iscs;
+    plog ('Total of records in DIM_ISCS: ' || l_node_count, 'info');
+
+   exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    
+    plog( 'Error (create_iscs): '||l_msg, 'error' );
+    g_error := 101;
+  end;
+
+
+  
+  procedure create_links(p_new_version_id number) is
+  l_node_list             dbms_xmldom.domnodelist;
+  l_node_count            number (20);
+  l_node                  dbms_xmldom.domnode;
+  l_msg                   varchar2(4000);
+  begin
+
+    insert into hist_links select * from dim_links
+    where version_id = (select max(version_id) from dim_links)
+    and version_id > nvl((select max(version_id) from hist_links),0);
+
+    l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//links/link');
+    l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+    plog ('Total of link nodes in input: ' || l_node_count, 'info');
+
+    for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_links(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+    end loop;
+
+    
+
+    select count(*) into l_node_count from dim_links;
+    plog ('Total of records in DIM_LINKS: ' || l_node_count, 'info');
+
+   exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    
+    plog( 'Error (create_links): '||l_msg, 'error' );
+    g_error := 102;
+  end;
+
+  
+  procedure create_handling_areas(p_new_version_id number) is
+  l_node_list             dbms_xmldom.domnodelist;
+  l_node_count            number (20);
+  l_node                  dbms_xmldom.domnode;
+  l_msg                   varchar2(4000);
+  begin
+
+    insert into hist_handling_areas select * from dim_handling_areas
+    where version_id = (select max(version_id) from dim_handling_areas)
+    and version_id > nvl((select max(version_id) from hist_handling_areas),0);
+
+    l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//handling_areas/handling_area');
+    l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+    plog ('Total of handling_area nodes in input: ' || l_node_count, 'info');
+
+    for i in 0..(l_node_count - 1) loop
+        l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+        process_handling_areas(p_new_version_id, l_node);
+        dbms_xmldom.freenode(l_node);
+    end loop;
+
+    
+
+    select count(*) into l_node_count from dim_handling_areas;
+    plog ('Total of records in DIM_HANDLING_AREAS: ' || l_node_count, 'info');
+
+   exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    
+    plog( 'Error (create_handling_areas): '||l_msg, 'error' );
+    g_error := 103;
+  end;
+
+
+
+
+  procedure create_process_steps(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+
+    insert into hist_process_steps select * from dim_process_steps
+    where version_id = (select max(version_id) from dim_process_steps)
+    and version_id > nvl((select max(version_id) from hist_process_steps),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//logistic_steps/logistic_step');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of process_step nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_ps(p_new_version_id, l_node, null);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+    
+
+	select count(*) into l_node_count from dim_process_steps;
+	plog ('Total of records in DIM_PROCESS_STEPS: ' || l_node_count, 'info');
+
+   exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	
+	plog( 'Error (create_process_steps): '||l_msg, 'error' );
+    g_error := 104;
+  end;
+
+  procedure create_route_segments(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+
+    insert into hist_route_segments select * from dim_route_segments
+    where version_id = (select max(version_id) from dim_route_segments)
+    and version_id > nvl((select max(version_id) from hist_route_segments),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//route_segments/route_segment');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of route_segment nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+ 	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_rs(p_new_version_id, l_node, null);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	update dim_route_segments set type_of_route = 'BEGIN'
+	where node_id_start not in (select node_id_end from dim_route_segments);
+
+	update dim_route_segments set type_of_route = 'END'
+	where node_id_end not in (select node_id_start from dim_route_segments);
+
+	update dim_route_segments set type_of_route = 'MIDDLE' where type_of_route is null;
+
+	
+
+	select count(*) into l_node_count from dim_route_segments;
+	plog ('Total of records in DIM_ROUTE_SEGMENTS: ' || l_node_count, 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	
+	plog( 'Error (create_route_segments): '||l_msg, 'error' );
+    g_error := 105;
+  end;
+
+  procedure update_exiting_nodes is
+
+  l_msg             varchar2(4000);
+
+  l_node_count      number (20);
+  
+  begin
+
+	plog ('Update EXITING for specific station types.' , 'info');
+ 
+	update dim_nodes set exiting = 'FALSE'
+	where station_id in (select id from dim_stations where stype in ('L1_L2_Out', 'L3_Out', 'L4_Out', 'OOG_Out', 'SC_Out', 'HBS_1_2', 'HBS_3', 'HBS_4', 'Store', 'LaneBasedEBS') )
+	and exiting='TRUE';
+	
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	
+	plog( 'Error (update_exiting_nodes): '||l_msg, 'error' );
+    g_error := 106;
+  end;
+
+  procedure mark_exiting_node(p_new_version_id number, p_node_rec dim_nodes%rowtype) is
+  
+  l_msg varchar2(4000);
+  l_predecessor dim_nodes%rowtype;
+  type sn_arr is varray(10) of number; 
+  l_sn_array sn_arr := sn_arr();
+  begin
+
+  	
+	
+    update dim_nodes set exiting = 'TRUE' where id = p_node_rec.id and version_id = p_new_version_id;
+
+    
+    if p_node_rec.ntype <> 'DVT' then
+
+	  
+      for rs_rec in ( select node_id_start from dim_route_segments
+                      where node_id_end = p_node_rec.id
+                      and version_id = p_new_version_id and rownum <= 10 ) loop
+        l_sn_array.extend(1);
+        l_sn_array(l_sn_array.count) := rs_rec.node_id_start;
+      end loop;
+
+      
+      
+      
+      
+      
+      
+
+      for i in 1..l_sn_array.count loop
+        
+        begin
+          select * into l_predecessor from dim_nodes where id = l_sn_array(i) and version_id = p_new_version_id;
+          
+          if l_predecessor.exiting is null or l_predecessor.exiting != 'TRUE' then 
+            mark_exiting_node(p_new_version_id, l_predecessor); 
+          end if;
+        exception when others then
+          l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+          plog( 'Error (mark_exiting_node): '||l_msg, 'error' );
+        end;
+      end loop;
+    end if;
+  end;
+
+
+  procedure mark_exiting_nodes(p_new_version_id number) is
+  l_msg varchar2(4000);
+  type ext_nodes_arr is table of dim_nodes%rowtype;
+  l_ext_nodes_array ext_nodes_arr;
+  begin
+    update dim_nodes set exiting = null; 
+
+	select * bulk collect into l_ext_nodes_array from dim_nodes where ntype in ('EXT', 'AB') and version_id = p_new_version_id;
+	
+    for i in 1..l_ext_nodes_array.count loop
+      mark_exiting_node(p_new_version_id, l_ext_nodes_array(i));
+    end loop;
+
+    
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	
+	plog( 'Error (mark_exiting_nodes): '||l_msg, 'error' );
+    g_error := 106;
+  end;
+
+
+  procedure create_nodes(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+
+    insert into hist_nodes select * from dim_nodes
+    where version_id = (select max(version_id) from dim_nodes)
+    and version_id > nvl((select max(version_id) from hist_nodes),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//nodes/node');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of node nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_nodes(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	update dim_nodes set type_of_node = 'BEGIN'
+	where id not in (select node_id_end from dim_route_segments);
+
+	update dim_nodes set type_of_node = 'END'
+	where id not in (select node_id_start from dim_route_segments);
+
+	update dim_nodes set type_of_node = 'MIDDLE' where type_of_node is null;
+
+	
+
+    mark_exiting_nodes(p_new_version_id);
+	commit;
+
+	select count(*) into l_node_count from dim_nodes;
+	plog ('Total of records in DIM_NODES: ' || l_node_count, 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	
+	plog( 'Error (create_nodes): '||l_msg, 'error' );
+    g_error := 107;
+  end;
+
+
+
+
+  procedure create_status_segments(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+
+    insert into hist_status_segments select * from dim_status_segments
+    where version_id = (select max(version_id) from dim_status_segments)
+    and version_id > nvl((select max(version_id) from hist_status_segments),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//status_segments/status_segment');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of status_segment nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_status_segments(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	
+
+	select count(*) into l_node_count from dim_status_segments;
+	plog ('Total of records in DIM_STATUS_SEGMENTS: ' || l_node_count, 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	
+	plog( 'Error (create_status_segments): '||l_msg, 'error' );
+    g_error := 108;
+  end;
+
+
+  procedure create_destinations(p_new_version_id number) is
+  l_node_count number (20);
+  l_msg varchar2(4000);
+  cursor c_dests is
+    select n.destination_id as xid, p_new_version_id, n.id, n.process_step, n.logistic_step_id, p.description as logistic_step_description, s.category, s.stype
+    from dim_nodes n, dim_stations s, dim_process_steps p
+    where n.station_id = s.id
+	  and n.logistic_step_id = p.id
+    and n.destination_id is not null
+    union
+    select s.bidirectional_dest_normal as xid, p_new_version_id, n.id, n.process_step, n.logistic_step_id, p.description as logistic_step_description, s.category, s.stype
+    from dim_nodes n, dim_stations s, dim_process_steps p
+    where n.station_id = s.id
+	  and n.logistic_step_id = p.id
+    and s.bidirectional_dest_normal is not null;
+  begin
+    insert into hist_destinations select * from dim_destinations
+    where version_id = (select max(version_id) from dim_destinations)
+    and version_id > nvl((select max(version_id) from hist_destinations),0);
+
+    
+    
+    
+
+    delete from dim_destinations;
+    for c_rec in c_dests loop
+      insert into dim_destinations (id, version_id, node_id, process_step, logistic_step_id, logistic_step_description, category, stype)
+      values (c_rec.xid, p_new_version_id, c_rec.id, c_rec.process_step, c_rec.logistic_step_id, c_rec.logistic_step_description, c_rec.category, c_rec.stype);
+	  end loop;
+	  
+	  select count(*) into l_node_count from dim_destinations;
+	  plog ('Total of records in DIM_DESTINATIONS: ' || l_node_count, 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	  plog( 'Error (create_destinations): '||l_msg, 'error' );
+    g_error := 108;
+  end;
+
+
+  procedure create_naze(p_new_version_id number) is
+  l_node_count number (20);
+  l_msg varchar2(4000);
+  l_areaid varchar2(16);
+  l_zoneid varchar2(8);
+  l_equipmentid varchar2(8);
+  cursor c_naze is
+    select n.id as nodeid
+    , n.isc_id as isc_id
+    , n.isc_id_reporting
+    , n.ind_autonomous_routing
+    , n.ind_tracking_point
+    , n.ind_initial_registration
+    , n.process_step
+	, n.logistic_step_id
+	, p.description as logistic_step_description
+    , n.destination_id
+    , n.station_id
+    , case when s.end_user_id is not null then s.end_user_id else (select s2.end_user_id from dim_stations s2 where n.destination_id = s2. destination_id) end as end_user_id
+    , n.ntype
+    , s.stype
+    , s.category
+    , i.mark_code
+    , i.statistical_subject as subjecttype
+	, i.family
+    , i.subsystem_type
+    
+    , n.exiting as first_attempt_node
+    , n.exiting
+    , n.reporting_node_type
+    from dim_nodes n, dim_stations s, dim_iscs i, dim_process_steps p
+    where n.station_id = s.id(+)
+    and n.isc_id_reporting = i.id(+)
+	and n.logistic_step_id = p.id(+);
+  
+  begin
+    insert into hist_node_area_zone_equipment select * from dim_node_area_zone_equipment
+    where version_id = (select max(version_id) from dim_node_area_zone_equipment)
+    and version_id > nvl((select max(version_id) from hist_node_area_zone_equipment),0);
+
+    
+    
+    
+
+    delete from dim_node_area_zone_equipment;
+    for c_rec in c_naze loop
+      topo_dimensions.split_isc(c_rec.isc_id_reporting, l_areaid, l_zoneid, l_equipmentid);
+      if l_areaid is not null and l_zoneid is not null and l_equipmentid is not null then
+        begin
+          insert into dim_node_area_zone_equipment ( nodeid, version_id, isc_id, isc_id_reporting
+          , areaid, zoneid, equipmentid
+          , ind_autonomous_routing, ind_tracking_point, ind_initial_registration, process_step
+		  , logistic_step_id, logistic_step_description
+          , destination_id, station_id, end_user_id, ntype, stype, category, mark_code, subjecttype
+          , family, subsystem_type, first_attempt_node, exiting, reporting_node_type )
+          values (c_rec.nodeid, p_new_version_id, c_rec.isc_id, c_rec.isc_id_reporting
+          , l_areaid, l_zoneid, l_equipmentid
+          , c_rec.ind_autonomous_routing, c_rec.ind_tracking_point, c_rec.ind_initial_registration, c_rec.process_step
+		  , c_rec.logistic_step_id, c_rec.logistic_step_description
+          , c_rec.destination_id, c_rec.station_id, c_rec.end_user_id, c_rec.ntype, c_rec.stype, c_rec.category, c_rec.mark_code, c_rec.subjecttype
+          , c_rec.family, c_rec.subsystem_type, c_rec.first_attempt_node, c_rec.exiting, c_rec.reporting_node_type );
+        exception when others then
+          plog ('create_NAZE NODEID: '||to_char(c_rec.nodeid)||', ISC_ID_REPORTING:'||
+          c_rec.isc_id_reporting||': ['||l_areaid||']['||l_zoneid||']['||l_equipmentid||'] '||sqlerrm, 'error');
+        end;
+      end if;
+    end loop;
+    
+
+    select count(*) into l_node_count from dim_node_area_zone_equipment;
+    plog ('Total of records in DIM_NODE_AREA_ZONE_EQUIPMENT: '||to_char(l_node_count), 'info');
+
+    update dim_node_area_zone_equipment
+    
+	set end_user_id=trim(to_char(nodeid))||'-'||trim(areaid)||'.'||trim(zoneid)||'.'||trim(equipmentid)
+    where end_user_id is null;
+  	plog ('Warning: '||to_char(sql%rowcount)||' empty END_USER_ID values were updated in DIM_NODE_AREA_ZONE_EQUIPMENT.', 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    
+    plog( 'Error (create_naze): '||l_msg, 'error' );
+    g_error := 109;
+  end;
+
+
+  procedure create_tr_derivatives(p_new_version_id number) is
+  v_paths path_varr;
+  n integer := 0;
+  v_path_start_id number;
+  v_path_segment_id number;
+  v_capacity number;
+  v_path_capacity number := 32767000;
+  v_par_ser varchar2(20) := '';
+  v_segment varchar2(20) := '';
+  v_par_ser_path varchar2(2000) := '';
+  v_segment_path varchar2(2000) := '';
+  begin
+    delete from dim_tr_paths_segments;
+    delete from dim_tr_paths;
+    for c_rec in (select * from dim_transport_routes where version_id = p_new_version_id order by id) loop
+      if c_rec.status_segment_id is not null then
+        v_paths := path_varr();
+        v_paths.extend(1);
+        v_paths(1) := to_char(c_rec.status_segment_id)||',';
+      elsif c_rec.series_id is not null then
+        v_paths := route_calc.series_paths(null, c_rec.series_id);
+      elsif c_rec.parallel_id is not null then
+        v_paths := route_calc.parallel_paths(null, c_rec.parallel_id);
+      end if;
+      for i in 1..v_paths.count loop
+        n := 0;
+        v_path_capacity := 32767000;
+        v_par_ser_path := '';
+        v_segment_path := '';
+        for csv_rec in (select val from table(csv.vals(v_paths(i)))) loop
+          n := n + 1;
+          
+          if substr(csv_rec.val,1,1) in ('P', 'S') then
+            v_par_ser := csv_rec.val;
+            
+              v_par_ser_path := v_par_ser_path||v_par_ser||',';
+            
+            n := n - 1;
+          else
+            v_segment := csv_rec.val;
+            v_segment_path := v_segment_path||v_segment||',';
+            v_path_segment_id := topo_dimensions.str_to_num(v_segment);
+            begin
+              select capacity into v_capacity
+              from dim_status_segments
+              where id = v_path_segment_id;
+              v_path_capacity := least(v_path_capacity, v_capacity);
+            exception when others then v_capacity := null;
+            end;
+            insert into dim_tr_paths_segments (transport_route_id, path_id, position_in_path, status_segment_id, segment_capacity, par_ser)
+            values (c_rec.id, i, n, v_path_segment_id, v_capacity, v_par_ser);
+          end if;
+        end loop;
+        insert into dim_tr_paths (transport_route_id, path_id, path_string, segid_string, path_capacity)
+        values (c_rec.id, i, v_paths(i), v_segment_path, v_path_capacity);
+      end loop;
+    end loop;
+    
+
+    delete from dim_tr_status_segments;
+    insert into dim_tr_status_segments
+    (transport_route_id, status_segment_id, segment_capacity, par_ser_string)
+    select transport_route_id, status_segment_id, nvl(min(segment_capacity), 0), '-'
+    from dim_tr_paths_segments
+    group by transport_route_id, status_segment_id
+    order by 1,2;
+    
+
+    for c_rec in (select * from dim_tr_status_segments ) loop
+      v_par_ser_path := '';
+      for ps_rec in ( select distinct par_ser from dim_tr_paths_segments
+                      where status_segment_id = c_rec.status_segment_id
+                      and transport_route_id = c_rec.transport_route_id ) loop
+        v_par_ser_path := v_par_ser_path||ps_rec.par_ser||',';
+      end loop;
+      update dim_tr_status_segments
+      set par_ser_string = v_par_ser_path
+      where status_segment_id = c_rec.status_segment_id
+      and transport_route_id = c_rec.transport_route_id;
+    end loop;
+    
+
+    for c_rec in (select id from dim_transport_routes where version_id = p_new_version_id) loop
+      v_capacity := route_calc.tr_capacity(c_rec.id, 0, null);
+      
+      update dim_transport_routes
+      set fully_functioning_capacity = round(v_capacity,6)
+      where id = c_rec.id and version_id = p_new_version_id;
+    end loop;
+    
+
+  end;
+
+
+
+  procedure create_transport_routes(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+    g_par_sequence := 0;
+    g_ser_sequence := 0;
+
+    insert into hist_transport_routes select * from dim_transport_routes
+    where version_id = (select max(version_id) from dim_transport_routes)
+    and version_id > nvl((select max(version_id) from hist_transport_routes),0);
+
+    insert into hist_tr_parallels select * from dim_tr_parallels
+    where version_id = (select max(version_id) from dim_tr_parallels)
+    and version_id > nvl((select max(version_id) from hist_tr_parallels),0);
+
+    insert into hist_tr_series select * from dim_tr_series
+    where version_id = (select max(version_id) from dim_tr_series)
+    and version_id > nvl((select max(version_id) from hist_tr_series),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//transport_routes/transport_route');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of transport_routes in input: ' || l_node_count, 'info');
+
+	if l_node_count > 0 then
+	  
+	  
+	  delete from dim_tr_parallels;
+      delete from dim_tr_series;
+    end if;
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_transport_routes(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	
+
+	if l_node_count > 0 then
+	  
+	  
+	  
+      create_tr_derivatives(p_new_version_id);
+    end if;
+
+
+	select count(*) into l_node_count from dim_transport_routes;
+	plog ('Total of records in DIM_TRANSPORT_ROUTES: ' || l_node_count, 'info');
+	select count(*) into l_node_count from dim_tr_parallels;
+	plog ('Total of records in DIM_TR_PARALLELS: ' || l_node_count, 'info');
+	select count(*) into l_node_count from dim_tr_series;
+	plog ('Total of records in DIM_TR_SERIES: ' || l_node_count, 'info');
+
+    select count(*) into l_node_count from dim_tr_paths;
+	plog ('Total of records in DIM_TR_PATHS: ' || l_node_count, 'info');
+	select count(*) into l_node_count from dim_tr_paths_segments;
+	plog ('Total of records in DIM_TR_PATHS_SEGMENTS: ' || l_node_count, 'info');
+	select count(*) into l_node_count from dim_tr_status_segments;
+	plog ('Total of records in DIM_TR_STATUS_SEGMENTS: ' || l_node_count, 'info');
+
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	rollback;
+	plog( 'Error (create_transport_routes): '||l_msg, 'error' );
+  end;
+
+
+  procedure create_dim_area_zone_link is
+  l_count number (20);
+  l_msg varchar2(4000);
+  begin
+    delete from dim_area_zone_link;
+
+    insert into dim_area_zone_link (area_zone, link_id, downstreamha)
+    select substr(a.isc_id_reporting,1,7), max(a.link_id), max(b.downstreamha)
+    from dim_nodes a, dim_links b
+    where a.link_id is not null
+    and b.id = a.link_id
+    group by substr(a.isc_id_reporting,1,7);
+    
+
+    
+
+    select count(*) into l_count from dim_area_zone_link;
+	plog ('Total of records in DIM_AREA_ZONE_LINK: ' || l_count, 'info');
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	
+	plog( 'Error (create_dim_area_zone_link): '||l_msg, 'error' );
+    g_error := 110;
+  end;
+  
+  
+  procedure create_dim_tr_nodes is
+  l_count number (20);
+  l_msg varchar2(4000);
+  l_last_node number := -1;
+  l_last_rs number;
+  l_last_ps_emu_type varchar2(50);
+  l_last_area varchar2(50);
+  l_last_rowid rowid;
+  l_dereg varchar2(1);
+  begin
+    delete from dim_tr_nodes;
+
+    insert into dim_tr_nodes (transport_route_id,path_id,segment_position_in_path,position_in_segment
+    ,status_segment_id,route_segment_id,node_id_start,node_id_end,travel_time,isc_id_reporting
+    ,ind_initial_registration,ind_tracking_point,ind_tracking_prev_rs_end,ind_tracking_next_rs_start
+    ,ntype,ps_emu_type,process_step,station_id)
+    select ps.transport_route_id, ps.path_id, ps.position_in_path as segment_position_in_path
+    , 0 as position_in_segment, ps.status_segment_id
+    , rs.id as route_segment_id, rs.node_id_start, rs.node_id_end, rs.travel_time
+    , n.isc_id_reporting, n.ind_initial_registration, n.ind_tracking_point, rs.ind_report_tracking_at_end, null
+    , n.ntype, n.ps_emu_type, n.process_step, n.station_id as station_id
+    from dim_tr_paths_segments ps, dim_route_segments rs, dim_nodes n
+    where ps.status_segment_id = rs.status_segment_id
+    and n.id = rs.node_id_end
+    order by 1;
+
+    for c_rec in (select * from dim_tr_paths_segments) loop
+      
+      update dim_tr_nodes
+      set position_in_segment = -1
+      where transport_route_id = c_rec.transport_route_id
+      and path_id = c_rec.path_id
+      and segment_position_in_path = c_rec.position_in_path
+      and rownum = 1
+      and node_id_start in
+      ( select node_id_start from
+        ( select node_id_start from dim_tr_nodes
+          where transport_route_id = c_rec.transport_route_id
+          and path_id = c_rec.path_id
+          and segment_position_in_path = c_rec.position_in_path
+        )
+        where node_id_start not in
+        ( select node_id_end from dim_tr_nodes
+          where transport_route_id = c_rec.transport_route_id
+          and path_id = c_rec.path_id
+          and segment_position_in_path = c_rec.position_in_path
+         )
+       );
+
+      
+      update dim_tr_nodes
+      set position_in_segment = 99999
+      where transport_route_id = c_rec.transport_route_id
+      and path_id = c_rec.path_id
+      and segment_position_in_path = c_rec.position_in_path
+      and position_in_segment = 0
+      and node_id_end in
+      ( select node_id_end from
+        ( select node_id_end from dim_tr_nodes
+          where transport_route_id = c_rec.transport_route_id
+          and path_id = c_rec.path_id
+          and segment_position_in_path = c_rec.position_in_path
+        )
+        where node_id_end not in
+        ( select node_id_start from dim_tr_nodes
+          where transport_route_id = c_rec.transport_route_id
+          and path_id = c_rec.path_id
+          and segment_position_in_path = c_rec.position_in_path
+        )
+      );
+      
+    end loop;
+
+    
+    
+    
+    insert into dim_tr_nodes (transport_route_id,path_id,segment_position_in_path,position_in_segment
+    ,status_segment_id,route_segment_id,node_id_start,node_id_end,travel_time,isc_id_reporting
+    ,ind_initial_registration,ind_tracking_point,ntype,ps_emu_type,process_step,station_id)
+    select a.transport_route_id,a.path_id,a.segment_position_in_path,-2
+    ,a.status_segment_id,a.route_segment_id,null,a.node_id_start,null,n.isc_id_reporting
+    ,n.ind_initial_registration,n.ind_tracking_point,n.ntype,n.ps_emu_type,n.process_step,n.station_id
+    from dim_tr_nodes a, dim_nodes n
+    where segment_position_in_path=1 and position_in_segment=-1
+    and n.id = a.node_id_start;
+
+    
+    
+    
+
+    
+    for c_rec in (select a.transport_route_id, a.path_id, a.segment_position_in_path, a.node_id_start
+        from  dim_tr_nodes a,
+        ( select transport_route_id, path_id, segment_position_in_path, count(*)
+        from dim_tr_nodes
+        where segment_position_in_path = 2 and position_in_segment = -1
+        group by transport_route_id, path_id, segment_position_in_path
+        having count(*) > 1) b
+        where a.transport_route_id = b.transport_route_id and a.path_id = b.path_id and a.segment_position_in_path = 2 and a.position_in_segment = -1
+        and not exists (select 1 from dim_tr_nodes c
+        where transport_route_id = a.transport_route_id and path_id = a.path_id and segment_position_in_path = 1 and node_id_start = a.node_id_start)
+        ) loop
+      delete from  dim_tr_nodes
+      where transport_route_id = c_rec.transport_route_id
+      and path_id = c_rec.path_id
+      and segment_position_in_path = 2
+      and node_id_start = c_rec.node_id_start;
+    end loop;
+
+    
+    for c_rec in ( select transport_route_id, path_id, count(*) from
+     ( select transport_route_id, path_id, segment_position_in_path, max(position_in_segment)
+                 from dim_tr_nodes
+                 where segment_position_in_path = 1
+                 group by transport_route_id, path_id, segment_position_in_path
+                 having max(position_in_segment) = 0
+        union
+        select transport_route_id, path_id, segment_position_in_path,min(position_in_segment)
+                 from dim_tr_nodes
+                 where segment_position_in_path = 2
+                 group by transport_route_id, path_id, segment_position_in_path
+                 having min(position_in_segment) < 0
+      ) group by transport_route_id, path_id having count(*) > 1 order by 1,2,3 ) loop
+
+      select node_id_start into l_last_node from dim_tr_nodes
+      where transport_route_id = c_rec.transport_route_id
+      and path_id = c_rec.path_id
+      and segment_position_in_path = 2
+      and position_in_segment = -1 and rownum=1;
+
+      
+      update dim_tr_nodes
+      set position_in_segment = -3, node_id_start = null
+      where transport_route_id = c_rec.transport_route_id
+      and path_id = c_rec.path_id
+      and segment_position_in_path=1
+      and node_id_start = l_last_node;
+    end loop;
+
+    for c_rec in (select * from dim_tr_nodes where node_id_start is null order by 1,2,3,4) loop
+      l_last_node := c_rec.node_id_end;
+
+      select count(*) into l_count from dim_tr_nodes
+      where transport_route_id = c_rec.transport_route_id
+      and path_id = c_rec.path_id;
+
+      
+      
+
+      for i in 1..l_count loop
+        begin
+          select rowid, node_id_end into l_last_rowid, l_last_node from dim_tr_nodes
+          where node_id_start = l_last_node
+          and transport_route_id = c_rec.transport_route_id
+          and path_id = c_rec.path_id and rownum = 1;
+          update dim_tr_nodes set position_in_segment = i where rowid = l_last_rowid and position_in_segment = 0;
+          
+          
+        exception
+          when no_data_found then null;
+        end;
+      end loop;
+    end loop;
+
+    l_last_rs := null;
+    l_last_node := null;
+    l_last_ps_emu_type := '-';
+    l_last_area := '-';
+    l_last_rowid := '-';
+    for c_rec in (select rowid, route_segment_id, node_id_start, node_id_end,isc_id_reporting, ps_emu_type
+                  from dim_tr_nodes
+                  order by transport_route_id,path_id,segment_position_in_path desc, position_in_segment desc) loop
+      if c_rec.node_id_end = l_last_node then
+        
+
+        if l_last_area <> substr(c_rec.isc_id_reporting,1,4) then
+          update dim_tr_nodes set area_switch='Y' where rowid = l_last_rowid;
+        end if;
+
+        l_dereg := null;
+        if upper(l_last_ps_emu_type) = 'EXITNODEREGISTER' and upper(c_rec.ps_emu_type) = 'STT_DVZ' then
+          l_dereg := 'Y';
+        end if;
+
+        update dim_tr_nodes
+        set deregister = l_dereg
+        , ind_tracking_next_rs_start = (select ind_report_tracking_at_start from dim_route_segments
+                                        where id = c_rec.route_segment_id)
+        where rowid = c_rec.rowid;
+      end if;
+      l_last_rs := c_rec.route_segment_id;
+      l_last_node := c_rec.node_id_start;
+      l_last_ps_emu_type := c_rec.ps_emu_type;
+      l_last_area := substr(c_rec.isc_id_reporting,1,4);
+      l_last_rowid := c_rec.rowid;
+    end loop;
+
+    
+    update dim_tr_nodes set deregister = 'Y'
+    where deregister is null and upper(ps_emu_type) in ('DEREGISTER', 'EXITDEREGISTER');
+
+    select count(*) into l_count from dim_tr_nodes;
+	plog ('Total of records in DIM_TR_NODES: ' || l_count, 'info');
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    dbms_output.put_line(l_msg);
+	
+	plog( 'Error (create_dim_tr_nodes): '||l_msg, 'error' );
+    g_error := 111;
+  end;
+
+  
+  
+
+
+
+
+
+  procedure upd_status_segment_capacities is
+  l_msg varchar2(4000);
+  begin
+    for c_rec in ( select status_segment_id, min(capacity) as capacity
+                   from dim_route_segments
+                   group by status_segment_id) loop
+      update dim_status_segments
+      set capacity = c_rec.capacity
+      where id = c_rec.status_segment_id;
+    end loop;
+    commit;
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	rollback;
+	plog( 'Error (upd_status_segment_capacities): '||l_msg, 'error' );
+  end;
+
+
+procedure update_travel_times is
+l_con_proc_name constant varchar2(200) := g_con_package||'.update_travel_times';
+cursor c_trpt is
+  select transport_route_id, path_id, round(sum(str_to_num(travel_time)),6) as travel_time
+  from dim_tr_nodes
+  where node_id_start is not null
+  group by transport_route_id, path_id
+  order by 1,2;
+cursor c_trt is
+select transport_route_id
+, round(min(path_travel_time),6) as min_travel_time
+, round(max(path_travel_time),6) as max_travel_time
+, round(avg(path_travel_time),6) as avg_travel_time
+from dim_tr_paths
+group by transport_route_id;
+begin
+  for c_rec in c_trpt loop
+    update dim_tr_paths set path_travel_time = c_rec.travel_time
+    where transport_route_id = c_rec.transport_route_id
+    and path_id = c_rec.path_id;
+  end loop;
+  
+  for c_rec in c_trt loop
+    
+    update dim_transport_routes
+    set min_travel_time = c_rec.min_travel_time
+      , max_travel_time = c_rec.max_travel_time
+      , avg_travel_time = c_rec.avg_travel_time
+    where id = c_rec.transport_route_id;
+  end loop;
+end;
+
+
+procedure update_reporting_node_type is
+l_con_proc_name constant varchar2(200) := g_con_package||'.update_reporting_node_type';
+begin
+  
+  update dim_nodes set reporting_node_type = 'MC_Exit'
+  where id in
+  ( select r.node_id_end
+    from dim_nodes n, dim_stations s, dim_route_segments r
+    where n.station_id = s.id
+    and r.node_id_start = n.id
+    and s.stype = 'ManualEncoding'
+    and r.ind_report_tracking_at_end = 'TRUE' );
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  update dim_nodes set reporting_node_type = 'Store_Exit'
+  where id in
+  ( select node_id_start
+    from dim_route_segments
+    where node_id_start in ( select r.node_id_end
+    from dim_nodes n, dim_stations s, dim_route_segments r
+    where n.station_id = s.id
+    and r.node_id_start = n.id
+    and s.stype = 'Store' )
+    and ind_report_tracking_at_start = 'TRUE' );
+end;
+
+
+procedure update_exiting_for_rs_and_isc is
+begin
+  update dim_route_segments set exiting='TRUE' where
+  node_id_end in (select id from dim_nodes where exiting='TRUE');
+
+  update dim_route_segments set exiting='FALSE' where
+  node_id_end in (select id from dim_nodes where exiting='FALSE');
+
+  update dim_iscs set exiting='TRUE' where
+  id in (select isc_id_reporting from dim_nodes where exiting='TRUE');
+
+  update dim_iscs set exiting='FALSE' where
+  id in (select isc_id_reporting from dim_nodes where exiting='FALSE');
+  
+  update dim_iscs set exiting='TRUE' where
+  route_segment_id in (select id from dim_route_segments where exiting='TRUE')
+  and exiting is null;
+
+  
+  update dim_iscs set exiting='TRUE' where
+  downstream_id in (select id from dim_iscs where exiting='TRUE')
+  and exiting is null;
+
+  
+  update dim_iscs set exiting='TRUE' where
+  substr(id,1,7) in (select substr(id,1,7) from dim_iscs where exiting='TRUE')
+  and exiting is null;
+
+end;
+
+
+procedure fill_dim_maintenance_kpi is
+l_count number;
+begin
+  delete from dim_maintenance_kpi;
+
+  
+  select count(*) into l_count from dim_iscs where function is not null;
+
+  if l_count > 0 then
+    insert into dim_maintenance_kpi (markcode, kpi)
+    select markcode, symbolicname as kpi from (
+    select a.statisticalid, a.subjecttype, a.symbolicname, a.sampletype, a.sourceprocessid, a.markcode, a.unit
+    , b.areaid, b.zoneid, b.equipmentid, b.process_step
+    from dim_statistical a, dim_iscs b
+    where a.markcode is not null
+    and a.sampletype='CUMULATIVE'
+    and a.statisticalgroup='SERVICE'
+    and a.kpigroup='MAINTAINABILITY'
+    and (a.unit='#' or a.unit is null)
+    and a.subjecttype = b.statistical_subject
+    ) group by markcode, symbolicname order by 1,2;
+  else
+    
+    insert into dim_maintenance_kpi (markcode, kpi)
+    select markcode, symbolicname as kpi from (
+    select a.statisticalid, a.subjecttype, a.symbolicname, a.sampletype, a.sourceprocessid, a.markcode, a.unit
+    , b.areaid, b.zoneid, b.equipmentid, b.process_step
+    from dim_statistical a, dim_iscs b
+    where a.markcode is not null
+    and a.sampletype='CUMULATIVE'
+    and a.statisticalgroup='SERVICE'
+    and a.kpigroup='MAINTAINABILITY'
+    and (a.unit='#' or a.unit is null)
+    and b.statistical_subject = a.subjecttype
+    ) group by markcode, symbolicname order by 1,2;
+  end if;
+  
+  commit;
+end;
+
+
+
+
+procedure process_clusters(p_version_id number, p_node dbms_xmldom.domnode) is
+l_id varchar2(50) := '';
+l_name varchar2(50)  := '';
+v_rows_processed integer := 0;
+begin
+  dbms_xslprocessor.valueof (p_node, '@id', l_id);
+  dbms_xslprocessor.valueof (p_node, '@name', l_name);
+  update dim_clusters
+  set version_id = p_version_id
+  , name = l_name
+  where id = l_id;
+  v_rows_processed := sql%rowcount;
+  if v_rows_processed < 1 then
+    insert into dim_clusters (id, version_id, name)
+    values (l_id, p_version_id, l_name);
+  end if;
+end;
+
+
+procedure create_clusters(p_new_version_id number) is
+l_node_list	dbms_xmldom.domnodelist;
+l_node_count number (20);
+l_node dbms_xmldom.domnode;
+l_msg varchar2(4000);
+v_rows_processed integer := 0;
+begin
+  insert into hist_clusters select * from dim_clusters
+  where version_id = (select max(version_id) from dim_clusters)
+  and version_id > nvl((select max(version_id) from hist_clusters),0);
+
+  l_node_list := dbms_xslprocessor.selectnodes(g_document_node, '//clusters/cluster');
+  l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+  plog ('Total of cluster  nodes in input: ' || l_node_count, 'info');
+
+  for i in 0..(l_node_count - 1) loop
+    l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+    process_clusters(p_new_version_id, l_node);
+    dbms_xmldom.freenode(l_node);
+  end loop;
+
+  select count(*) into l_node_count from dim_clusters;
+  plog ('Total of records in DIM_CLUSTERS: ' || l_node_count, 'info');
+exception when others	then
+  l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+  plog( 'Error (create_clusters): '||l_msg, 'error' );
+  g_error := 100;
+end;
+
+procedure update_screening_iscs is
+
+
+
+
+
+
+cursor c_missing is
+select naze.nodeid as screening_node, rs.id as rs_id 
+from dim_node_area_zone_equipment naze, dim_route_segments rs
+where naze.stype like 'HBS%'
+and (rs.node_id_start = naze.nodeid or rs.node_id_end = naze.nodeid)
+order by 1,2;
+
+
+
+
+cursor c_arrived is
+select naze.nodeid as screening_node, rs.id as rs_id, rs.node_id_start as tracking_point 
+from dim_node_area_zone_equipment naze, dim_route_segments rs
+where naze.stype like 'HBS%'
+and rs.node_id_end = naze.nodeid
+order by 2,1;
+
+
+cursor c_isc_reporting is
+select naze.isc_id, naze.isc_id_reporting, i.register_screening_node
+from dim_node_area_zone_equipment naze, dim_iscs i
+where i.id = naze.isc_id
+and naze.isc_id != naze.isc_id_reporting
+and i.register_screening_node is not null;
+
+begin
+  for c_rec in c_missing loop
+    update dim_iscs
+    set register_screening_node = c_rec.screening_node
+    where route_segment_id = c_rec.rs_id;
+  end loop;
+  for c_rec in c_arrived loop
+    update dim_node_area_zone_equipment
+    set tracking_screening_node = c_rec.screening_node
+    where nodeid = c_rec.tracking_point;
+  end loop;
+  for c_rec in c_isc_reporting loop
+    update dim_iscs
+    set register_screening_node = c_rec.register_screening_node
+    where id = c_rec.isc_id_reporting
+    and register_screening_node is null;
+  end loop;
+  commit;
+end;
+
+
+procedure process_topo(i_node in dbms_xmldom.domnode, i_source_id in number, o_error out number) is
+l_con_proc_name constant varchar2(200) := g_con_package||'.process_TOPO';
+l_nodelist dbms_xmldom.domnodelist;
+l_attr_node dbms_xmldom.domnode;
+l_old_version_id number(19,0) := 0;
+l_new_version_id number(19,0) := 0;
+l_pd3_version varchar2(255) := '';
+l_vi_bhs_platform_version varchar2(255) := '';
+l_esot_library_version varchar2(255) := '';
+l_file_date varchar2(255) := '';
+l_description varchar2(1000) := '';
+l_msg varchar2(4000) := '';
+l_verb varchar2(50) := '';
+l_filename varchar2(200) := '';
+begin
+  viu_module.enter_module(l_con_proc_name,to_char(sys_extract_utc(systimestamp)));
+  o_error := 0;
+  begin
+    g_document_node := i_node;
+    g_dimension_source_id := i_source_id;
+   
+    
+    l_nodelist := dbms_xslprocessor.selectnodes (g_document_node, '//project_definition');
+    if (dbms_xmldom.getlength (nl => l_nodelist) > 0) then
+      l_attr_node := dbms_xmldom.item (l_nodelist, 0);
+      
+      dbms_xslprocessor.valueof (l_attr_node, '@vi_bhs_platform_version', l_vi_bhs_platform_version);
+      dbms_xslprocessor.valueof (l_attr_node, '@file_date', l_file_date);
+      dbms_xslprocessor.valueof (l_attr_node, '@esot_library_version', l_esot_library_version);
+      dbms_xslprocessor.valueof (l_attr_node, '@pd3_version', l_pd3_version);
+
+      l_description :=     'platform_version="'||l_vi_bhs_platform_version||'" '
+                        || 'esot_lib_version="'||l_esot_library_version   ||'" '
+                        || 'pd3_version="'     ||l_pd3_version            ||'" '
+                        || 'file_date="'       ||l_file_date              || '" ';
+
+    end if;
+    if (l_pd3_version is null) or (trim(l_pd3_version) = '') then
+      plog('Error (process_TOPO): No version information found (//project_definition, @pd3_version)', 'error');
+      l_pd3_version := '??';
+      l_description  := '??';
+      g_error := 11;
+    end if;
+
+    if g_error = 0 then
+      begin
+        select max(id) into l_old_version_id from dimension_version
+        where source_type = 'TOPO' and enddate is null;
+      exception when others then
+        l_old_version_id := 0;
+      end;
+      
+      begin
+      select scr.filename
+      into   l_filename
+      from   dimension_source scr
+      where  scr.id = g_dimension_source_id;
+      exception when others then
+         l_filename := '';
+      end;
+
+      begin
+        l_verb := 'Retrieving sequence';
+        select dimension_seq.nextval into l_new_version_id from dual;
+        
+        l_verb := 'Inserting';
+        insert into dimension_version (id, source_id, source_type, startdate, enddate, versiontag, description, filename)
+        values (l_new_version_id, g_dimension_source_id, 'TOPO', sysdate, null, l_pd3_version, l_description, l_filename);
+        if l_old_version_id > 0 then
+          l_verb := 'Updating';
+          update dimension_version set enddate = sysdate
+          where source_type = 'TOPO' and enddate is null and id = l_old_version_id;
+        end if;
+      exception when others then
+        l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        rollback;
+        plog(l_con_proc_name||': '||l_verb||' DIMENSION_VERSION: '||l_msg, 'error');
+        g_error := 12;
+      end;
+    end if;
+
+    if g_error = 0 then
+      l_old_version_id := nvl(l_old_version_id, 0);
+      if l_old_version_id = 0 then
+         plog('Installing initial version (ID '||to_char(l_new_version_id)||')', 'info');
+      else
+        plog('Replacing old versions (ID '||to_char(l_old_version_id)||') with (ID '||to_char(l_new_version_id)||')', 'info');
+      end if;
+
+
+      
+      create_iscs(l_new_version_id);
+      create_process_steps(l_new_version_id);
+      create_route_segments(l_new_version_id);
+      create_nodes(l_new_version_id);
+      create_status_segments(l_new_version_id);
+      create_stations(l_new_version_id);
+      create_destinations(l_new_version_id);
+      create_links(l_new_version_id);
+      create_handling_areas(l_new_version_id);
+      create_clusters(l_new_version_id);
+  
+      update_reporting_node_type;
+
+	  	
+      update_exiting_nodes;
+      update_exiting_for_rs_and_isc;
+      commit;
+	  
+      create_naze(l_new_version_id);
+
+      update dim_iscs
+      set process_step = topo_dimensions.find_process_step(node_id, route_segment_id)
+                       , stype = topo_dimensions.find_stype(node_id);
+      commit;
+      
+      update_screening_iscs; 
+
+      create_dim_area_zone_link;
+      upd_status_segment_capacities;
+      create_transport_routes(l_new_version_id);
+      create_dim_tr_nodes;
+      update_travel_times;
+      fill_dim_maintenance_kpi;
+      
+
+
+	  end if;
+	  
+	  plog ('TOPO has been processed.', 'info');
+	exception	when others	then
+	  l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	  plog(l_msg, 'error');
+	  g_error := 10;
+	end;
+  o_error := g_error;
+	viu_module.leave_module(l_con_proc_name);
+end;
+
+end topo_dimensions;
+/

@@ -1,0 +1,29 @@
+procedure acl_handle_request(i_id_cust in varchar2, i_action in varchar2, o_message out varchar2, o_success out varchar2) is
+
+
+l_success boolean;
+l_action varchar2(50) := lower(trim(i_action));
+begin
+  if l_action in ('start','stop') then
+    begin
+      acl_application_control.handle_request( i_aet_id_cust      => i_id_cust
+                                            , i_ace_id_cust      => l_action
+                                            , o_success          => l_success
+                                            );
+      if l_success then
+        o_message := i_id_cust||' '||l_action||' was successful.';
+        o_success := 'Y';
+      else
+        o_message := i_id_cust||' '||l_action||' failed.';
+        o_success := 'N';
+      end if;
+    exception when others then
+      o_message := substr(i_id_cust||' '||l_action||' failed. '||sqlerrm,1,2000);
+      o_success := 'N';
+    end;
+  else
+    o_message := i_id_cust||' unknown action: '||l_action;
+    o_success := 'N';
+  end if;
+end;
+/

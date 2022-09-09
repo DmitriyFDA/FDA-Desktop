@@ -1,0 +1,17 @@
+procedure xsdvalidate(xmlmsg in clob, xsdurl in varchar2, o_success out boolean, o_message out varchar2) is
+  xml_in 	xmltype;
+  l_xml 	xmltype;
+begin
+  xml_in := xmltype.createxml(xmlmsg);
+  begin
+    l_xml := xml_in.createschemabasedxml(xsdurl);
+    xmltype.schemavalidate(l_xml);
+  	o_message := 'VALIDATED.';
+	o_success := true;
+  exception when others then
+    o_message := 'Error validating via '||xsdurl||': '||sqlerrm;
+    o_success := false;
+  end;
+  
+end;
+/

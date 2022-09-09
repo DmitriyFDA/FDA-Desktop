@@ -1,0 +1,1561 @@
+create or replace PACKAGE TOPO_ULD_Dimensions IS
+   
+   PROCEDURE process_TOPO_ULD(i_node in DBMS_XMLDOM.domnode, i_source_id in number, o_error out number);
+   function str_to_num(str varchar2) return number;
+   
+END TOPO_ULD_dimensions;
+/
+
+
+
+
+package body topo_uld_dimensions is
+
+g_con_package                 constant varchar2(30) := 'TOPO_ULD_Dimensions';
+g_document_node               dbms_xmldom.domnode;
+g_dimension_source_id         number := 0;
+g_error                       number := 0;
+  
+  
+function str_to_num(str varchar2) return number is
+n number := 0;
+begin
+  begin
+    n := to_number(str);
+  exception when others then
+    n := null;
+  end;
+  return n;
+end;
+
+
+procedure free_memory is
+begin
+  begin
+    dbms_xmldom.freenode(n => g_document_node);
+  exception when others then
+    null;
+  end;
+end;
+
+
+function listdelimit(p_domnode dbms_xmldom.domnode, p_tag varchar2, p_notagging varchar2) return varchar2 is
+l_nodemap dbms_xmldom.domnamednodemap;
+l_nodelist dbms_xmldom.domnodelist;
+l_nodecount number;
+l_attributecount number;
+l_attrnode dbms_xmldom.domnode;
+l_attrname varchar2(100);
+l_attrvalue varchar2(4000);
+l_subnode dbms_xmldom.domnode;
+l_nodevalue varchar2(32000) := '';
+begin
+  l_nodelist := dbms_xslprocessor.selectnodes(p_domnode, p_tag);
+  l_nodecount := dbms_xmldom.getlength(l_nodelist);
+  if l_nodecount > 0 then
+    for j in 0..(l_nodecount - 1) loop
+      l_subnode := dbms_xmldom.item(l_nodelist, j);
+      l_nodemap := dbms_xmldom.getattributes(l_subnode);
+	  l_attributecount := dbms_xmldom.getlength(l_nodemap);
+      
+      for k in 0..l_attributecount-1 loop
+ 	    l_attrnode := dbms_xmldom.item(l_nodemap, k);
+	    l_attrname := dbms_xmldom.getnodename(l_attrnode);
+	    l_attrvalue := dbms_xmldom.getnodevalue(l_attrnode);
+	    if p_notagging = 'Y' then
+  	      l_nodevalue := l_nodevalue||l_attrvalue||',';
+	    else
+          l_nodevalue := l_nodevalue||l_attrname||'='||l_attrvalue||',';
+        end if;
+      end loop;
+      if p_notagging != 'Y' then
+        l_nodevalue := l_nodevalue||chr(10);
+      end if;
+    end loop;
+  end if;
+  return trim(substr(l_nodevalue,1,4000));
+end;
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure process_isc(p_version_id number, p_node dbms_xmldom.domnode, p_parent_id varchar2, p_objtype in varchar2) is
+  
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag1 varchar2(100);
+  l_tag2 varchar2(100);
+  v_rows_processed integer := 0;
+
+  
+  l_id varchar2(50) := '';
+  l_function varchar2(50) := '';
+  l_guid varchar2(50) := '';
+  l_lengthvalue varchar2(50) := '';
+  l_mark_code varchar2(50) := '';
+  l_vila_document varchar2(50) := '';
+  l_subsystem_type varchar2(50) := '';
+  l_ind_reporting varchar2(50) := '';
+
+  l_statistical_subject varchar2(50) := '';
+  l_areaid varchar2(50) := '';
+  l_zoneid varchar2(50) := '';
+  l_equipmentid varchar2(50) := '';
+
+  
+  l_angle1 varchar2(50) := '';
+  l_angle2 varchar2(50) := '';
+  l_bidirectional varchar2(50) := '';
+  l_block_id varchar2(50) := '';
+  l_shape varchar2(50) := '';
+  l_speed1 varchar2(50) := '';
+  l_width varchar2(50) := '';
+  l_x1 varchar2(50) := '';
+  l_x2 varchar2(50) := '';
+  l_xcentre varchar2(50) := '';
+  l_y1 varchar2(50) := '';
+  l_y2 varchar2(50) := '';
+  l_ycentre varchar2(50) := '';
+  l_z1 varchar2(50) := '';
+  l_z2 varchar2(50) := '';
+  l_zcentre varchar2(50) := '';
+
+   
+  l_downstream_id varchar2(50) := '';
+  l_downstream1_id varchar2(50) := '';
+  l_upstream_id varchar2(50) := '';
+  l_upstream1_id varchar2(50) := '';
+
+  
+  l_node_id number := null;
+
+  
+  l_status_segment_id number;
+  l_route_segment_id number;
+
+  l_first_attempt_node varchar2(50) := '';
+
+  p1 integer; p2 integer; p3 integer;
+
+  begin
+
+	dbms_xslprocessor.valueof (p_node, '@id', l_id);
+	dbms_xslprocessor.valueof (p_node, '@guid', l_guid);
+	dbms_xslprocessor.valueof (p_node, '@function', l_function);
+    dbms_xslprocessor.valueof (p_node, '@length', l_lengthvalue);
+    dbms_xslprocessor.valueof (p_node, '@mark_code', l_mark_code);
+    dbms_xslprocessor.valueof (p_node, '@vila_document', l_vila_document);
+	dbms_xslprocessor.valueof (p_node, '@subsystem_type', l_subsystem_type);
+	dbms_xslprocessor.valueof (p_node, '@ind_reporting', l_ind_reporting);
+	
+
+    l_statistical_subject := l_subsystem_type||'_'||l_mark_code||l_function;
+    p1 := instr(l_id, '.', 1);
+    p2 := instr(l_id, '.', p1+1);
+    p3 := instr(l_id, '.', p2+1);
+    if p3 = 0 then
+      p3 := length(l_id) + 1;
+    end if;
+    if p1 > 0 and p2 > 0 and p3 > 0 then
+      l_areaid := stdnumstr(substr(l_id, 1 ,p1-1));
+      l_zoneid := stdnumstr(substr(l_id, p1+1 ,p2-p1-1));
+      l_equipmentid := stdnumstr(substr(l_id, p2+1 ,p3-p2-1));
+    else
+      l_areaid := '0';
+      l_zoneid := '0';
+      l_equipmentid := '0';
+    end if;
+	l_node_list := dbms_xslprocessor.selectnodes(p_node,  'fif');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@id', l_tag1);
+		dbms_xslprocessor.valueof(l_sub_node, '@isc_id', l_tag2);
+		if l_tag1 = 'downstream0' then l_downstream_id := l_tag2; end if;
+	    if l_tag1 = 'downstream' then l_downstream_id := l_tag2; end if;
+		if l_tag1 = 'downstream1' then l_downstream1_id := l_tag2; end if;
+   	    if l_tag1 = 'upstream0' then l_upstream_id := l_tag2; end if;
+		if l_tag1 = 'upstream' then l_upstream_id := l_tag2; end if;
+		if l_tag1 = 'upstream1' then l_upstream1_id := l_tag2; end if;
+	  end loop;
+    end if;
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'block');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@id', l_block_id);
+		dbms_xslprocessor.valueof(l_sub_node, '@angle1', l_angle1);
+		dbms_xslprocessor.valueof(l_sub_node, '@angle2', l_angle2);
+		dbms_xslprocessor.valueof(l_sub_node, '@bidirectional', l_bidirectional);
+		dbms_xslprocessor.valueof(l_sub_node, '@shape', l_shape);
+		dbms_xslprocessor.valueof(l_sub_node, '@speed1', l_speed1);
+		dbms_xslprocessor.valueof(l_sub_node, '@width', l_width);
+		dbms_xslprocessor.valueof(l_sub_node, '@x1', l_x1);
+		dbms_xslprocessor.valueof(l_sub_node, '@x2', l_x2);
+		dbms_xslprocessor.valueof(l_sub_node, '@xcentre', l_xcentre);
+		dbms_xslprocessor.valueof(l_sub_node, '@y1', l_y1);
+		dbms_xslprocessor.valueof(l_sub_node, '@y2', l_y2);
+		dbms_xslprocessor.valueof(l_sub_node, '@ycentre', l_ycentre);
+		dbms_xslprocessor.valueof(l_sub_node, '@z1', l_z1);
+		dbms_xslprocessor.valueof(l_sub_node, '@z2', l_z2);
+		dbms_xslprocessor.valueof(l_sub_node, '@zcentre', l_zcentre);
+	  end loop;
+    end if;
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'segment_reference');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		l_status_segment_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof(l_sub_node, '@status_segment_id'));
+		l_route_segment_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof(l_sub_node, '@route_segment_id'));
+	  end loop;
+    end if;
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'node_reference');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		l_node_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof(l_sub_node, '@id'));
+	  end loop;
+    end if;
+
+    update dim_uld_iscs
+    set version_id = p_version_id
+    , parent_id = p_parent_id
+    , guid = l_guid
+    , lengthvalue = l_lengthvalue
+    , subsystem_type = l_subsystem_type
+    , mark_code = l_mark_code
+    , function = l_function
+    , statistical_subject = l_statistical_subject
+    , areaid = l_areaid
+    , zoneid = l_zoneid
+    , equipmentid = l_equipmentid
+    , ind_reporting = l_ind_reporting
+    , vila_document = l_vila_document
+    , angle1 = l_angle1
+    , angle2 = l_angle2
+    , bidirectional = l_bidirectional
+    , block_id = l_block_id
+    , shape = l_shape
+    , speed1 = l_speed1
+    , width = l_width
+    , x1 = l_x1
+    , x2 = l_x2
+    , xcentre = l_xcentre
+    , y1 = l_y1
+    , y2 = l_y2
+    , ycentre = l_ycentre
+    , z1 = l_z1
+    , z2 = l_z2
+    , zcentre = l_zcentre
+    , downstream_id = l_downstream_id
+    , downstream1_id = l_downstream1_id
+    , upstream_id = l_upstream_id
+    , upstream1_id = l_upstream1_id
+    , node_id = l_node_id
+    , status_segment_id = l_status_segment_id
+    , route_segment_id = l_route_segment_id
+    , objtype = p_objtype
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+  	insert into dim_uld_iscs
+    ( id
+    , version_id
+    , parent_id
+    , guid
+    , lengthvalue
+    , subsystem_type
+    , mark_code
+    , function
+    , statistical_subject
+    , areaid
+    , zoneid
+    , equipmentid
+    , ind_reporting
+    , vila_document
+    , angle1
+    , angle2
+    , bidirectional
+    , block_id
+    , shape
+    , speed1
+    , width
+    , x1
+    , x2
+    , xcentre
+    , y1
+    , y2
+    , ycentre
+    , z1
+    , z2
+    , zcentre
+    , downstream_id
+    , downstream1_id
+    , upstream_id
+    , upstream1_id
+    , node_id
+    , status_segment_id
+    , route_segment_id
+    , first_attempt_node
+    , objtype )
+	values
+	( l_id
+    , p_version_id
+    , p_parent_id
+    , l_guid
+    , l_lengthvalue
+    , l_subsystem_type
+    , l_mark_code
+    , l_function
+    , l_statistical_subject
+    , l_areaid
+    , l_zoneid
+    , l_equipmentid
+    , l_ind_reporting
+    , l_vila_document
+    , l_angle1
+    , l_angle2
+    , l_bidirectional
+    , l_block_id
+    , l_shape
+    , l_speed1
+    , l_width
+    , l_x1
+    , l_x2
+    , l_xcentre
+    , l_y1
+    , l_y2
+    , l_ycentre
+    , l_z1
+    , l_z2
+    , l_zcentre
+    , l_downstream_id
+    , l_downstream1_id
+    , l_upstream_id
+    , l_upstream1_id
+    , l_node_id
+    , l_status_segment_id
+    , l_route_segment_id
+    , l_first_attempt_node
+    , p_objtype );
+    end if;
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'isc');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		
+	    process_isc(p_version_id, l_sub_node, l_id, null);
+	  end loop;
+    end if;
+
+    l_node_list := dbms_xslprocessor.selectnodes(p_node, 'em_object');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		
+	    process_isc(p_version_id, l_sub_node, l_id, 'em');
+	  end loop;
+    end if;
+
+    l_node_list := dbms_xslprocessor.selectnodes(p_node, 'plc_object');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		
+	    process_isc(p_version_id, l_sub_node, l_id, 'plc');
+	  end loop;
+    end if;
+
+  end;
+
+
+  procedure create_iscs(p_new_version_id number) is
+  l_node_list             dbms_xmldom.domnodelist;
+  l_node_count            number (20);
+  l_node                  dbms_xmldom.domnode;
+  l_msg                   varchar2(4000);
+  begin
+    insert into hist_uld_iscs select * from dim_uld_iscs
+    where version_id = (select max(version_id) from dim_uld_iscs)
+    and version_id > nvl((select max(version_id) from hist_uld_iscs),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//iscs/isc');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of isc nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_isc(p_new_version_id, l_node, null, null);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	select count(*) into l_node_count from dim_uld_iscs;
+	plog ('Total of records in DIM_ULD_ISCS: ' || l_node_count, 'info');
+   exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	plog( 'Error (create_iscs): '||l_msg, 'error' );
+    g_error := 101;
+  end;
+
+  
+
+
+  procedure process_logistic_step(p_version_id number, p_node dbms_xmldom.domnode, p_parent_id varchar2) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_travel_time varchar2(100);
+  l_travel_time_sum number(12,4) := 0;
+  l_id number := null;
+  l_name varchar2(50) := '';
+  l_description varchar2(250) := '';
+  l_type varchar2(50) := '';
+  l_volume_alert_threshold_hh varchar2(50) := '';
+  l_volume_alert_threshold_h varchar2(50) := '';
+  l_volume_alert_threshold_l varchar2(50) := '';
+  l_volume_alert_threshold_ll varchar2(50) := '';
+  l_process_alert_threshold_hh varchar2(50) := '';
+  l_process_alert_threshold_h varchar2(50) := '';
+  l_process_alert_threshold_l varchar2(50) := '';
+  l_process_alert_threshold_ll varchar2(50) := '';
+  v_rows_processed integer := 0;
+  begin
+	l_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@id'));
+	dbms_xslprocessor.valueof (p_node, '@name', l_name);
+	dbms_xslprocessor.valueof (p_node, '@description', l_description);
+	dbms_xslprocessor.valueof (p_node, '@type', l_type);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_high_high', l_volume_alert_threshold_hh);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_high', l_volume_alert_threshold_h);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_low', l_volume_alert_threshold_l);
+	dbms_xslprocessor.valueof (p_node, '@holding_volume_alert_threshold_low_low', l_volume_alert_threshold_ll);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_high_high', l_process_alert_threshold_hh);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_high', l_process_alert_threshold_h);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_low', l_process_alert_threshold_l);
+	dbms_xslprocessor.valueof (p_node, '@bags_to_be_processed_alert_threshold_low_low', l_process_alert_threshold_ll);
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'logistic_step_travel_time');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	l_travel_time_sum := 0;
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@travel_time', l_travel_time);
+		l_travel_time_sum := l_travel_time_sum + str_to_num(l_travel_time);
+	  end loop;
+    end if;
+
+    update dim_uld_logistic_steps
+    set version_id = p_version_id
+    , psname = l_name
+    , description = l_description
+    , pstype = l_type
+    , volume_alert_threshold_hh = l_volume_alert_threshold_hh
+    , volume_alert_threshold_h = l_volume_alert_threshold_h
+    , volume_alert_threshold_l = l_volume_alert_threshold_l
+    , volume_alert_threshold_ll = l_volume_alert_threshold_ll
+    , process_alert_threshold_hh = l_process_alert_threshold_hh
+    , process_alert_threshold_h = l_process_alert_threshold_h
+    , process_alert_threshold_l = l_process_alert_threshold_l
+    , process_alert_threshold_ll = l_process_alert_threshold_ll
+    , travel_time_sum = l_travel_time_sum
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+      insert into dim_uld_logistic_steps
+      ( id
+      , version_id
+      , psname
+      , description
+      , pstype
+      , volume_alert_threshold_hh
+      , volume_alert_threshold_h
+      , volume_alert_threshold_l
+      , volume_alert_threshold_ll
+      , process_alert_threshold_hh
+      , process_alert_threshold_h
+      , process_alert_threshold_l
+      , process_alert_threshold_ll
+      , travel_time_sum )
+	  values
+  	  ( l_id
+	  , p_version_id
+      , l_name
+      , l_description
+      , l_type
+      , l_volume_alert_threshold_hh
+      , l_volume_alert_threshold_h
+      , l_volume_alert_threshold_l
+      , l_volume_alert_threshold_ll
+      , l_process_alert_threshold_hh
+      , l_process_alert_threshold_h
+      , l_process_alert_threshold_l
+      , l_process_alert_threshold_ll
+      , l_travel_time_sum );
+    end if;
+  end;
+  
+  
+  procedure create_logistic_steps(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+    insert into hist_uld_logistic_steps select * from dim_uld_logistic_steps
+    where version_id = (select max(version_id) from dim_uld_logistic_steps)
+    and version_id > nvl((select max(version_id) from hist_uld_logistic_steps),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//logistic_steps/logistic_step');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of LOGISTIC_STEP nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_logistic_step(p_new_version_id, l_node, null);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	select count(*) into l_node_count from dim_uld_logistic_steps;
+	plog ('Total of records in DIM_ULD_LOGISTIC_STEPS: ' || l_node_count, 'info');
+   exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	plog( 'Error (create_LOGISTIC_STEPs): '||l_msg, 'error' );
+    g_error := 104;
+  end;
+
+
+
+  
+
+
+
+
+
+  procedure process_route_segment(p_version_id number, p_node dbms_xmldom.domnode, p_parent_id varchar2) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag varchar2(50) := '';
+  rs_rec dim_uld_route_segments%rowtype;
+  l_isc_reference varchar2(32000) := '';
+  v_rows_processed integer := 0;
+  begin
+    dbms_xslprocessor.valueof (p_node, '@id', rs_rec.id);
+    dbms_xslprocessor.valueof (p_node, '@version_id', rs_rec.version_id);
+    dbms_xslprocessor.valueof (p_node, '@node_id_start', rs_rec.node_id_start);
+    dbms_xslprocessor.valueof (p_node, '@node_id_end', rs_rec.node_id_end);
+    dbms_xslprocessor.valueof (p_node, '@type_of_route', rs_rec.type_of_route);
+    dbms_xslprocessor.valueof (p_node, '@ind_physical', rs_rec.ind_physical);
+    rs_rec.status_segment_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@status_segment_id'));
+    dbms_xslprocessor.valueof (p_node, '@direction_from', rs_rec.direction_from);
+    dbms_xslprocessor.valueof (p_node, '@direction_to', rs_rec.direction_to);
+    dbms_xslprocessor.valueof (p_node, '@ind_main_flow_from', rs_rec.ind_main_flow_from);
+    dbms_xslprocessor.valueof (p_node, '@ind_main_flow_to', rs_rec.ind_main_flow_to);
+    dbms_xslprocessor.valueof (p_node, '@ind_report_tracking_at_start', rs_rec.ind_report_tracking_at_start);
+    dbms_xslprocessor.valueof (p_node, '@ind_report_tracking_at_end', rs_rec.ind_report_tracking_at_end);
+    rs_rec.default_destination := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination'));
+    rs_rec.default_destination_2 := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_2'));
+    rs_rec.default_destination_3 := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_3'));
+    rs_rec.default_destination_4 := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_4'));
+    rs_rec.default_destination_5 := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@default_destination_5'));
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process1', rs_rec.default_required_scrlvlproc1);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process1', rs_rec.default_reached_scrlvlproc1);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process1', rs_rec.default_failed_scrlvlproc1);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process2', rs_rec.default_required_scrlvlproc2);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process2', rs_rec.default_reached_scrlvlproc2);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process2', rs_rec.default_failed_scrlvlproc2);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process3', rs_rec.default_required_scrlvlproc3);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process3', rs_rec.default_reached_scrlvlproc3);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process3', rs_rec.default_failed_scrlvlproc3);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process4', rs_rec.default_required_scrlvlproc4);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process4', rs_rec.default_reached_scrlvlproc4);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process4', rs_rec.default_failed_scrlvlproc4);
+    dbms_xslprocessor.valueof (p_node, '@default_required_screening_level_process5', rs_rec.default_required_scrlvlproc5);
+    dbms_xslprocessor.valueof (p_node, '@default_reached_screening_level_process5', rs_rec.default_reached_scrlvlproc5);
+    dbms_xslprocessor.valueof (p_node, '@default_failed_screening_level_process5', rs_rec.default_failed_scrlvlproc5);
+    dbms_xslprocessor.valueof (p_node, '@bidirectional_direction', rs_rec.bidirectional_direction);
+    dbms_xslprocessor.valueof (p_node, '@ind_detect_recirculation', rs_rec.ind_detect_recirculation);
+    dbms_xslprocessor.valueof (p_node, '@logistic_step', rs_rec.logistic_step);
+    rs_rec.logistic_step_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@logistic_step_id'));
+    rs_rec.degraded_mode_reset_dest := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@degraded_mode_reset_destination'));
+    dbms_xslprocessor.valueof (p_node, '@ltm_id', rs_rec.ltm_id);
+    dbms_xslprocessor.valueof (p_node, '@default_physical_class', rs_rec.default_physical_class);
+    dbms_xslprocessor.valueof (p_node, '@travel_time', rs_rec.travel_time);
+    dbms_xslprocessor.valueof (p_node, '@ind_transport_default', rs_rec.ind_transport_default);
+    dbms_xslprocessor.valueof (p_node, '@allowed_dimensions', rs_rec.allowed_dimensions);
+    dbms_xslprocessor.valueof (p_node, '@ind_routing_default', rs_rec.ind_routing_default);
+    dbms_xslprocessor.valueof (p_node, '@DCV_Buffer_Capacity', rs_rec.dcv_buffer_capacity);
+    dbms_xslprocessor.valueof (p_node, '@DCV_Buffer_ID', rs_rec.dcv_buffer_id);
+    dbms_xslprocessor.valueof (p_node, '@DCV_sort_control_default_loaded', rs_rec.dcv_sort_control_default_load);
+    dbms_xslprocessor.valueof (p_node, '@DCV_sort_control_default_empty', rs_rec.dcv_sort_control_default_empty);
+    dbms_xslprocessor.valueof (p_node, '@DCV_sort_control_default_maintenance', rs_rec.dcv_sort_control_default_maint);
+    dbms_xslprocessor.valueof (p_node, '@DCV_release_control_default', rs_rec.dcv_release_control_default);
+    dbms_xslprocessor.valueof (p_node, '@ind_allowed_secure', rs_rec.ind_allowed_secure);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process1', rs_rec.ind_allow_only_secure_process1);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process2', rs_rec.ind_allow_only_secure_process2);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process3', rs_rec.ind_allow_only_secure_process3);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process4', rs_rec.ind_allow_only_secure_process4);
+    dbms_xslprocessor.valueof (p_node, '@ind_allow_only_secure_process5', rs_rec.ind_allow_only_secure_process5);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_description', rs_rec.status_segment_description);
+    dbms_xslprocessor.valueof (p_node, '@recirculation_time', rs_rec.recirculation_time);
+    dbms_xslprocessor.valueof (p_node, '@recirculation_count', rs_rec.recirculation_count);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_transport_type', rs_rec.status_segment_transport_type);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_affected_station_id', rs_rec.status_segment_affected_statio);
+    dbms_xslprocessor.valueof (p_node, '@region_id', rs_rec.region_id);
+    dbms_xslprocessor.valueof (p_node, '@bidirectional_isc_id', rs_rec.bidirectional_isc_id);
+    dbms_xslprocessor.valueof (p_node, '@status_segment_maxholdcap_override', rs_rec.status_segment_maxholdcap_over);
+    dbms_xslprocessor.valueof (p_node, '@ind_detect_missed_tracking_events', rs_rec.ind_detect_missed_track_events);
+    dbms_xslprocessor.valueof (p_node, '@customer_facilityid', rs_rec.customer_facilityid);
+
+    
+    rs_rec.speed_info := topo_uld_dimensions.listdelimit(p_node, 'speed_info', 'N');
+
+    
+    rs_rec.capacity_info := topo_uld_dimensions.listdelimit(p_node, 'capacity_info', 'N');
+    select min(topo_uld_dimensions.str_to_num(substr(val,10))) into rs_rec.capacity from table(csv.vals(rs_rec.capacity_info)) where val like 'capacity=%';
+
+    
+    rs_rec.travel_time_info := topo_uld_dimensions.listdelimit(p_node, 'travel_time_info', 'N');
+    if trim(rs_rec.travel_time) is null then
+      select max(substr(val,13)) into rs_rec.travel_time from table(csv.vals(rs_rec.travel_time_info)) where val like 'travel_time=%';
+    end if;
+
+    
+    l_isc_reference := topo_uld_dimensions.listdelimit(p_node, 'isc_reference', 'Y');
+    
+    rs_rec.isc_reference := substr(l_isc_reference,1,4000);
+
+    
+    update dim_uld_route_segments
+    set version_id = p_version_id
+    , node_id_start = rs_rec.node_id_start
+    , node_id_end = rs_rec.node_id_end
+    , type_of_route = rs_rec.type_of_route
+    , ind_physical = rs_rec.ind_physical
+    , status_segment_id = rs_rec.status_segment_id
+    , direction_from = rs_rec.direction_from
+    , direction_to = rs_rec.direction_to
+    , ind_main_flow_from = rs_rec.ind_main_flow_from
+    , ind_main_flow_to = rs_rec.ind_main_flow_to
+    , ind_report_tracking_at_start = rs_rec.ind_report_tracking_at_start
+    , ind_report_tracking_at_end = rs_rec.ind_report_tracking_at_end
+    , default_destination = rs_rec.default_destination
+    , default_destination_2 = rs_rec.default_destination_2
+    , default_destination_3 = rs_rec.default_destination_3
+    , default_destination_4 = rs_rec.default_destination_4
+    , default_destination_5 = rs_rec.default_destination_5
+    , default_required_scrlvlproc1 = rs_rec.default_required_scrlvlproc1
+    , default_reached_scrlvlproc1 = rs_rec.default_reached_scrlvlproc1
+    , default_failed_scrlvlproc1 = rs_rec.default_failed_scrlvlproc1
+    , default_required_scrlvlproc2 = rs_rec.default_required_scrlvlproc2
+    , default_reached_scrlvlproc2 = rs_rec.default_reached_scrlvlproc2
+    , default_failed_scrlvlproc2 = rs_rec.default_failed_scrlvlproc2
+    , default_required_scrlvlproc3 = rs_rec.default_required_scrlvlproc3
+    , default_reached_scrlvlproc3 = rs_rec.default_reached_scrlvlproc3
+    , default_failed_scrlvlproc3 = rs_rec.default_failed_scrlvlproc3
+    , default_required_scrlvlproc4 = rs_rec.default_required_scrlvlproc4
+    , default_reached_scrlvlproc4 = rs_rec.default_reached_scrlvlproc4
+    , default_failed_scrlvlproc4 = rs_rec.default_failed_scrlvlproc4
+    , default_required_scrlvlproc5 = rs_rec.default_required_scrlvlproc5
+    , default_reached_scrlvlproc5 = rs_rec.default_reached_scrlvlproc5
+    , default_failed_scrlvlproc5 = rs_rec.default_failed_scrlvlproc5
+    , bidirectional_direction = rs_rec.bidirectional_direction
+    , ind_detect_recirculation = rs_rec.ind_detect_recirculation
+    , logistic_step = rs_rec.logistic_step
+    , logistic_step_id = rs_rec.logistic_step_id
+    , degraded_mode_reset_dest = rs_rec.degraded_mode_reset_dest
+    , ltm_id = rs_rec.ltm_id
+    , default_physical_class = rs_rec.default_physical_class
+    , travel_time = rs_rec.travel_time
+    , ind_transport_default = rs_rec.ind_transport_default
+    , allowed_dimensions = rs_rec.allowed_dimensions
+    , ind_routing_default = rs_rec.ind_routing_default
+    , dcv_buffer_capacity = rs_rec.dcv_buffer_capacity
+    , dcv_buffer_id = rs_rec.dcv_buffer_id
+    , dcv_sort_control_default_load = rs_rec.dcv_sort_control_default_load
+    , dcv_sort_control_default_empty = rs_rec.dcv_sort_control_default_empty
+    , dcv_sort_control_default_maint = rs_rec.dcv_sort_control_default_maint
+    , dcv_release_control_default = rs_rec.dcv_release_control_default
+    , ind_allowed_secure = rs_rec.ind_allowed_secure
+    , ind_allow_only_secure_process1 = rs_rec.ind_allow_only_secure_process1
+    , ind_allow_only_secure_process2 = rs_rec.ind_allow_only_secure_process2
+    , ind_allow_only_secure_process3 = rs_rec.ind_allow_only_secure_process3
+    , ind_allow_only_secure_process4 = rs_rec.ind_allow_only_secure_process4
+    , ind_allow_only_secure_process5 = rs_rec.ind_allow_only_secure_process5
+    , status_segment_description = rs_rec.status_segment_description
+    , recirculation_time = rs_rec.recirculation_time
+    , recirculation_count = rs_rec.recirculation_count
+    , status_segment_transport_type = rs_rec.status_segment_transport_type
+    , status_segment_affected_statio = rs_rec.status_segment_affected_statio
+    , region_id = rs_rec.region_id
+    , bidirectional_isc_id = rs_rec.bidirectional_isc_id
+    , status_segment_maxholdcap_over = rs_rec.status_segment_maxholdcap_over
+    , ind_detect_missed_track_events = rs_rec.ind_detect_missed_track_events
+    , customer_facilityid = rs_rec.customer_facilityid
+    , capacity = rs_rec.capacity
+    , exiting = rs_rec.exiting
+    , speed_info = rs_rec.speed_info
+    , capacity_info = rs_rec.capacity_info
+    , travel_time_info = rs_rec.travel_time_info
+    , isc_reference = rs_rec.isc_reference
+    where id = rs_rec.id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+  	  insert into dim_uld_route_segments
+      ( id
+      , version_id
+      , node_id_start
+      , node_id_end
+      , type_of_route
+      , ind_physical
+      , status_segment_id
+      , direction_from
+      , direction_to
+      , ind_main_flow_from
+      , ind_main_flow_to
+      , ind_report_tracking_at_start
+      , ind_report_tracking_at_end
+      , default_destination
+      , default_destination_2
+      , default_destination_3
+      , default_destination_4
+      , default_destination_5
+      , default_required_scrlvlproc1
+      , default_reached_scrlvlproc1
+      , default_failed_scrlvlproc1
+      , default_required_scrlvlproc2
+      , default_reached_scrlvlproc2
+      , default_failed_scrlvlproc2
+      , default_required_scrlvlproc3
+      , default_reached_scrlvlproc3
+      , default_failed_scrlvlproc3
+      , default_required_scrlvlproc4
+      , default_reached_scrlvlproc4
+      , default_failed_scrlvlproc4
+      , default_required_scrlvlproc5
+      , default_reached_scrlvlproc5
+      , default_failed_scrlvlproc5
+      , bidirectional_direction
+      , ind_detect_recirculation
+      , logistic_step
+      , logistic_step_id
+      , degraded_mode_reset_dest
+      , ltm_id
+      , default_physical_class
+      , travel_time
+      , ind_transport_default
+      , allowed_dimensions
+      , ind_routing_default
+      , dcv_buffer_capacity
+      , dcv_buffer_id
+      , dcv_sort_control_default_load
+      , dcv_sort_control_default_empty
+      , dcv_sort_control_default_maint
+      , dcv_release_control_default
+      , ind_allowed_secure
+      , ind_allow_only_secure_process1
+      , ind_allow_only_secure_process2
+      , ind_allow_only_secure_process3
+      , ind_allow_only_secure_process4
+      , ind_allow_only_secure_process5
+      , status_segment_description
+      , recirculation_time
+      , recirculation_count
+      , status_segment_transport_type
+      , status_segment_affected_statio
+      , region_id
+      , bidirectional_isc_id
+      , status_segment_maxholdcap_over
+      , ind_detect_missed_track_events
+      , customer_facilityid
+      , capacity
+      , exiting
+      , speed_info
+      , capacity_info
+      , travel_time_info
+      , isc_reference )
+      values
+   	  ( rs_rec.id
+  	  , p_version_id
+      , rs_rec.node_id_start
+      , rs_rec.node_id_end
+      , rs_rec.type_of_route
+      , rs_rec.ind_physical
+      , rs_rec.status_segment_id
+      , rs_rec.direction_from
+      , rs_rec.direction_to
+      , rs_rec.ind_main_flow_from
+      , rs_rec.ind_main_flow_to
+      , rs_rec.ind_report_tracking_at_start
+      , rs_rec.ind_report_tracking_at_end
+      , rs_rec.default_destination
+      , rs_rec.default_destination_2
+      , rs_rec.default_destination_3
+      , rs_rec.default_destination_4
+      , rs_rec.default_destination_5
+      , rs_rec.default_required_scrlvlproc1
+      , rs_rec.default_reached_scrlvlproc1
+      , rs_rec.default_failed_scrlvlproc1
+      , rs_rec.default_required_scrlvlproc2
+      , rs_rec.default_reached_scrlvlproc2
+      , rs_rec.default_failed_scrlvlproc2
+      , rs_rec.default_required_scrlvlproc3
+      , rs_rec.default_reached_scrlvlproc3
+      , rs_rec.default_failed_scrlvlproc3
+      , rs_rec.default_required_scrlvlproc4
+      , rs_rec.default_reached_scrlvlproc4
+      , rs_rec.default_failed_scrlvlproc4
+      , rs_rec.default_required_scrlvlproc5
+      , rs_rec.default_reached_scrlvlproc5
+      , rs_rec.default_failed_scrlvlproc5
+      , rs_rec.bidirectional_direction
+      , rs_rec.ind_detect_recirculation
+      , rs_rec.logistic_step
+      , rs_rec.logistic_step_id
+      , rs_rec.degraded_mode_reset_dest
+      , rs_rec.ltm_id
+      , rs_rec.default_physical_class
+      , rs_rec.travel_time
+      , rs_rec.ind_transport_default
+      , rs_rec.allowed_dimensions
+      , rs_rec.ind_routing_default
+      , rs_rec.dcv_buffer_capacity
+      , rs_rec.dcv_buffer_id
+      , rs_rec.dcv_sort_control_default_load
+      , rs_rec.dcv_sort_control_default_empty
+      , rs_rec.dcv_sort_control_default_maint
+      , rs_rec.dcv_release_control_default
+      , rs_rec.ind_allowed_secure
+      , rs_rec.ind_allow_only_secure_process1
+      , rs_rec.ind_allow_only_secure_process2
+      , rs_rec.ind_allow_only_secure_process3
+      , rs_rec.ind_allow_only_secure_process4
+      , rs_rec.ind_allow_only_secure_process5
+      , rs_rec.status_segment_description
+      , rs_rec.recirculation_time
+      , rs_rec.recirculation_count
+      , rs_rec.status_segment_transport_type
+      , rs_rec.status_segment_affected_statio
+      , rs_rec.region_id
+      , rs_rec.bidirectional_isc_id
+      , rs_rec.status_segment_maxholdcap_over
+      , rs_rec.ind_detect_missed_track_events
+      , rs_rec.customer_facilityid
+      , rs_rec.capacity
+      , rs_rec.exiting
+      , rs_rec.speed_info
+      , rs_rec.capacity_info
+      , rs_rec.travel_time_info
+      , rs_rec.isc_reference);
+    end if;
+  end;
+
+  procedure create_route_segments(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+    insert into hist_uld_route_segments select * from dim_uld_route_segments
+    where version_id = (select max(version_id) from dim_uld_route_segments)
+    and version_id > nvl((select max(version_id) from hist_uld_route_segments),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//route_segments/route_segment');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of route_segment nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+ 	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_route_segment(p_new_version_id, l_node, null);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	update dim_uld_route_segments set type_of_route = 'BEGIN'
+	where node_id_start not in (select node_id_end from dim_uld_route_segments);
+
+	update dim_uld_route_segments set type_of_route = 'END'
+	where node_id_end not in (select node_id_start from dim_uld_route_segments);
+
+	update dim_uld_route_segments set type_of_route = 'MIDDLE' where type_of_route is null;
+	
+	select count(*) into l_node_count from dim_uld_route_segments;
+	plog ('Total of records in DIM_ULD_ROUTE_SEGMENTS: ' || l_node_count, 'info');
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	plog( 'Error (create_route_segments): '||l_msg, 'error' );
+    g_error := 105;
+  end;
+
+
+  
+
+
+
+  procedure process_nodes(p_version_id number, p_node dbms_xmldom.domnode) is
+  n_rec dim_uld_nodes%rowtype;
+  v_rows_processed integer := 0;
+
+  begin
+    dbms_xslprocessor.valueof (p_node, '@id', n_rec.id);
+    dbms_xslprocessor.valueof (p_node, '@ind_physical', n_rec.ind_physical);
+    dbms_xslprocessor.valueof (p_node, '@isc_id', n_rec.isc_id);
+    dbms_xslprocessor.valueof (p_node, '@isc_id_reporting', n_rec.isc_id_reporting);
+    dbms_xslprocessor.valueof (p_node, '@type', n_rec.ntype);
+    dbms_xslprocessor.valueof (p_node, '@merge_algorithm', n_rec.merge_algorithm);
+    dbms_xslprocessor.valueof (p_node, '@ind_tracking_point', n_rec.ind_tracking_point);
+    n_rec.destination_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@destination_id'));
+    n_rec.station_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@station_id'));
+    dbms_xslprocessor.valueof (p_node, '@ind_autonomous_routing', n_rec.ind_autonomous_routing);
+    dbms_xslprocessor.valueof (p_node, '@ind_initial_registration', n_rec.ind_initial_registration);
+    n_rec.degraded_mode_destination := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@degraded_mode_destination'));
+    dbms_xslprocessor.valueof (p_node, '@ltm_id', n_rec.ltm_id);
+    dbms_xslprocessor.valueof (p_node, '@ind_assignable_destination', n_rec.ind_assignable_destination);
+    dbms_xslprocessor.valueof (p_node, '@logistic_step', n_rec.logistic_step);
+    n_rec.logistic_step_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@logistic_step_id'));
+    dbms_xslprocessor.valueof (p_node, '@entrypoint_type', n_rec.entrypoint_type);
+    dbms_xslprocessor.valueof (p_node, '@default_physical_class', n_rec.default_physical_class);
+    dbms_xslprocessor.valueof (p_node, '@PS_emu_type', n_rec.ps_emu_type);
+    n_rec.direction_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@direction_id'));
+    dbms_xslprocessor.valueof (p_node, '@link_id', n_rec.link_id);
+    dbms_xslprocessor.valueof (p_node, '@ind_BPM_generation', n_rec.ind_bpm_generation);
+    dbms_xslprocessor.valueof (p_node, '@customer_facilityid', n_rec.customer_facilityid);
+    
+    n_rec.capacity_info := topo_uld_dimensions.listdelimit(p_node, 'capacity_info', 'N');
+    
+
+	update dim_uld_nodes
+    set version_id = p_version_id
+    , type_of_node = n_rec.type_of_node
+    , exiting = n_rec.exiting
+    , reporting_node_type = n_rec.reporting_node_type
+    , ind_physical = n_rec.ind_physical
+    , isc_id = n_rec.isc_id
+    , isc_id_reporting = n_rec.isc_id_reporting
+    , ntype = n_rec.ntype
+    , merge_algorithm = n_rec.merge_algorithm
+    , ind_tracking_point = n_rec.ind_tracking_point
+    , destination_id = n_rec.destination_id
+    , station_id = n_rec.station_id
+    , ind_autonomous_routing = n_rec.ind_autonomous_routing
+    , ind_initial_registration = n_rec.ind_initial_registration
+    , degraded_mode_destination = n_rec.degraded_mode_destination
+    , ltm_id = n_rec.ltm_id
+    , ind_assignable_destination = n_rec.ind_assignable_destination
+    , logistic_step = n_rec.logistic_step
+    , logistic_step_id = n_rec.logistic_step_id
+    , entrypoint_type = n_rec.entrypoint_type
+    , default_physical_class = n_rec.default_physical_class
+    , ps_emu_type = n_rec.ps_emu_type
+    , direction_id = n_rec.direction_id
+    , link_id = n_rec.link_id
+    , ind_bpm_generation = n_rec.ind_bpm_generation
+    , customer_facilityid = n_rec.customer_facilityid
+    , capacity_info = n_rec.capacity_info
+    where id = n_rec.id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+ 	  insert into dim_uld_nodes
+      ( id
+      , version_id
+      , type_of_node
+      , exiting
+      , reporting_node_type
+      , ind_physical
+      , isc_id
+      , isc_id_reporting
+      , ntype
+      , merge_algorithm
+      , ind_tracking_point
+      , destination_id
+      , station_id
+      , ind_autonomous_routing
+      , ind_initial_registration
+      , degraded_mode_destination
+      , ltm_id
+      , ind_assignable_destination
+      , logistic_step
+      , logistic_step_id
+      , entrypoint_type
+      , default_physical_class
+      , ps_emu_type
+      , direction_id
+      , link_id
+      , ind_bpm_generation
+      , customer_facilityid
+      , capacity_info )
+      values
+      ( n_rec.id
+      , p_version_id
+      , n_rec.type_of_node
+      , n_rec.exiting
+      , n_rec.reporting_node_type
+      , n_rec.ind_physical
+      , n_rec.isc_id
+      , n_rec.isc_id_reporting
+      , n_rec.ntype
+      , n_rec.merge_algorithm
+      , n_rec.ind_tracking_point
+      , n_rec.destination_id
+      , n_rec.station_id
+      , n_rec.ind_autonomous_routing
+      , n_rec.ind_initial_registration
+      , n_rec.degraded_mode_destination
+      , n_rec.ltm_id
+      , n_rec.ind_assignable_destination
+      , n_rec.logistic_step
+      , n_rec.logistic_step_id
+      , n_rec.entrypoint_type
+      , n_rec.default_physical_class
+      , n_rec.ps_emu_type
+      , n_rec.direction_id
+      , n_rec.link_id
+      , n_rec.ind_bpm_generation
+      , n_rec.customer_facilityid
+      , n_rec.capacity_info );
+    end if;
+  end;
+  
+  
+  procedure mark_exiting_node(p_new_version_id number, p_node_rec dim_uld_nodes%rowtype) is
+  
+  l_msg varchar2(4000);
+  l_predecessor dim_uld_nodes%rowtype;
+  type sn_arr is varray(10) of number; 
+  l_sn_array sn_arr := sn_arr();
+  begin
+    
+    update dim_uld_nodes set exiting = 'TRUE' where id = p_node_rec.id and version_id = p_new_version_id;
+    
+    if p_node_rec.ntype <> 'DVT' then
+      
+      for rs_rec in ( select node_id_start from dim_uld_route_segments
+                      where node_id_end = p_node_rec.id
+                      and version_id = p_new_version_id and rownum <= 10 ) loop
+        l_sn_array.extend(1);
+        l_sn_array(l_sn_array.count) := rs_rec.node_id_start;
+      end loop;
+
+      
+      
+      
+      
+      
+      
+
+      for i in 1..l_sn_array.count loop
+        
+        begin
+          select * into l_predecessor from dim_uld_nodes where id = l_sn_array(i) and version_id = p_new_version_id;
+          
+          if l_predecessor.exiting is null or l_predecessor.exiting != 'TRUE' then 
+            mark_exiting_node(p_new_version_id, l_predecessor);
+          end if;
+        exception when others then
+          l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+          plog( 'Error (mark_exiting_node): '||l_msg, 'error' );
+        end;
+      end loop;
+    end if;
+  end;
+
+
+  procedure mark_exiting_nodes(p_new_version_id number) is
+  l_msg varchar2(4000);
+  type ext_nodes_arr is table of dim_uld_nodes%rowtype;
+  l_ext_nodes_array ext_nodes_arr;
+  begin
+    update dim_uld_nodes set exiting = null; 
+
+    select * bulk collect into l_ext_nodes_array from dim_uld_nodes where ntype='EXT' and version_id = p_new_version_id;
+    for i in 1..l_ext_nodes_array.count loop
+      mark_exiting_node(p_new_version_id, l_ext_nodes_array(i));
+    end loop;
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	plog( 'Error (mark_exiting_nodes): '||l_msg, 'error' );
+    g_error := 106;
+  end;
+
+
+  procedure create_nodes(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+
+    insert into hist_uld_nodes select * from dim_uld_nodes
+    where version_id = (select max(version_id) from dim_uld_nodes)
+    and version_id > nvl((select max(version_id) from hist_uld_nodes),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//nodes/node');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of node nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_nodes(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	update dim_uld_nodes set type_of_node = 'BEGIN'
+	where id not in (select node_id_end from dim_uld_route_segments);
+
+	update dim_uld_nodes set type_of_node = 'END'
+	where id not in (select node_id_start from dim_uld_route_segments);
+
+	update dim_uld_nodes set type_of_node = 'MIDDLE' where type_of_node is null;
+
+    mark_exiting_nodes(p_new_version_id);
+	commit;
+
+	select count(*) into l_node_count from dim_uld_nodes;
+	plog ('Total of records in DIM_ULD_NODES: ' || l_node_count, 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	plog( 'Error (create_nodes): '||l_msg, 'error' );
+    g_error := 107;
+  end;
+
+
+
+  
+
+
+
+
+  procedure process_status_segments(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_node_list dbms_xmldom.domnodelist;
+  l_node_count number;
+  l_sub_node dbms_xmldom.domnode;
+  l_tag varchar2(50) := '';
+  l_id varchar2(50) := '';
+  l_description varchar2(200)  := '';
+  l_group_id varchar2(50)  := '';
+  l_transport_type varchar2(50)  := '';
+  l_flow_type varchar2(50)  := '';
+  l_affected_station_id number  := null;
+  l_max_holding_capacity varchar2(50)  := '';
+  l_areas varchar2(500) := '';
+  v_rows_processed integer := 0;
+  begin
+	dbms_xslprocessor.valueof (p_node, '@id', l_id);
+	dbms_xslprocessor.valueof (p_node, '@description', l_description);
+	dbms_xslprocessor.valueof (p_node, '@group_id', l_group_id);
+	dbms_xslprocessor.valueof (p_node, '@transport_type', l_transport_type);
+	dbms_xslprocessor.valueof (p_node, '@flow_type', l_flow_type);
+	l_affected_station_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@affected_station_id'));
+	dbms_xslprocessor.valueof (p_node, '@max_holding_capacity', l_max_holding_capacity);
+
+	l_node_list := dbms_xslprocessor.selectnodes(p_node, 'area');
+	l_node_count := dbms_xmldom.getlength(l_node_list);
+	l_areas := '';
+	if l_node_count > 0 then
+	  for j in 0..(l_node_count - 1) loop
+	    l_sub_node := dbms_xmldom.item (l_node_list, j);
+		dbms_xslprocessor.valueof(l_sub_node, '@id', l_tag);
+		l_areas := l_areas||','||l_tag;
+	  end loop;
+    end if;
+
+    update dim_uld_status_segments
+    set version_id = p_version_id
+    , description = l_description
+    , group_id = l_group_id
+    , transport_type = l_transport_type
+    , flow_type = l_flow_type
+    , affected_station_id = l_affected_station_id
+    , max_holding_capacity = l_max_holding_capacity
+    , areas = l_areas
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+      insert into dim_uld_status_segments
+      ( id
+      , version_id
+      , description
+      , group_id
+      , transport_type
+      , flow_type
+      , affected_station_id
+      , max_holding_capacity
+      , areas  )
+      values
+      ( l_id
+      , p_version_id
+      , l_description
+      , l_group_id
+      , l_transport_type
+      , l_flow_type
+      , l_affected_station_id
+      , l_max_holding_capacity
+      , l_areas );
+    end if;
+  end;
+  
+  
+  procedure create_status_segments(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  begin
+
+    insert into hist_uld_status_segments select * from dim_uld_status_segments
+    where version_id = (select max(version_id) from dim_uld_status_segments)
+    and version_id > nvl((select max(version_id) from hist_uld_status_segments),0);
+
+	l_node_list := dbms_xslprocessor.selectnodes (g_document_node, '//status_segments/status_segment');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of status_segment nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_status_segments(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+	
+	select count(*) into l_node_count from dim_uld_status_segments;
+	plog ('Total of records in DIM_ULD_STATUS_SEGMENTS: ' || l_node_count, 'info');
+
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	plog( 'Error (create_status_segments): '||l_msg, 'error' );
+    g_error := 108;
+  end;
+
+ 
+  procedure upd_status_segment_capacities is
+  l_msg varchar2(4000);
+  begin
+    for c_rec in ( select status_segment_id, min(capacity) as capacity
+                   from dim_uld_route_segments
+                   group by status_segment_id) loop
+      update dim_uld_status_segments
+      set capacity = c_rec.capacity
+      where id = c_rec.status_segment_id;
+    end loop;
+    commit;
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	rollback;
+	plog( 'Error (upd_status_segment_capacities): '||l_msg, 'error' );
+  end;
+  
+
+  
+
+
+
+  procedure process_stations(p_version_id number, p_node dbms_xmldom.domnode) is
+  l_id varchar2(50) := '';
+  l_type varchar2(50)  := '';
+  l_destination_id number  := null;
+  l_end_user_id varchar2(50)  := '';
+  l_category varchar2(50)  := '';
+  l_maximum_release_rate varchar2(50)  := '';
+  l_allow_eject varchar2(50)  := '';
+  l_bidirectional_dest_normal number  := null;
+  l_bidirectional_dest_reverse number  := null;
+  l_bidirectional_isc_id varchar2(50)  := '';
+  l_entrance_id varchar2(50)  := '';
+  l_ind_report_availability varchar2(50)  := '';
+  l_ind_update_tracking varchar2(50)  := '';
+
+  v_rows_processed integer := 0;
+
+  begin
+	dbms_xslprocessor.valueof (p_node, '@id', l_id);
+	dbms_xslprocessor.valueof (p_node, '@type', l_type);
+	l_destination_id := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@destination_id'));
+    dbms_xslprocessor.valueof (p_node, '@end_user_id', l_end_user_id);
+	dbms_xslprocessor.valueof (p_node, '@category', l_category);
+	dbms_xslprocessor.valueof (p_node, '@maximum_release_rate', l_maximum_release_rate);
+	dbms_xslprocessor.valueof (p_node, '@allow_eject', l_allow_eject);
+	l_bidirectional_dest_normal := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@bidirectional_destination_normal_id'));
+	l_bidirectional_dest_reverse := topo_uld_dimensions.str_to_num(dbms_xslprocessor.valueof (p_node, '@bidirectional_destination_reversed_id'));
+	dbms_xslprocessor.valueof (p_node, '@bidirectional_isc_id', l_bidirectional_isc_id);
+	dbms_xslprocessor.valueof (p_node, '@entrance_id', l_entrance_id);
+	dbms_xslprocessor.valueof (p_node, '@ind_report_availability', l_ind_report_availability);
+	dbms_xslprocessor.valueof (p_node, '@ind_update_tracking', l_ind_update_tracking);
+
+	update dim_uld_stations
+    set version_id = p_version_id
+    , stype = l_type
+    , destination_id = l_destination_id
+    , end_user_id = l_end_user_id
+    , category = l_category
+    , maximum_release_rate = l_maximum_release_rate
+    , allow_eject = l_allow_eject
+    , bidirectional_dest_normal = l_bidirectional_dest_normal
+    , bidirectional_dest_reverse = l_bidirectional_dest_reverse
+    , bidirectional_isc_id = l_bidirectional_isc_id
+    , entrance_id = l_entrance_id
+    , ind_report_availability = l_ind_report_availability
+    , ind_update_tracking = l_ind_update_tracking
+    where id = l_id;
+    v_rows_processed := sql%rowcount;
+    if v_rows_processed < 1 then
+	insert into dim_uld_stations
+    ( id
+    , version_id
+    , stype
+    , destination_id
+    , end_user_id
+    , category
+    , maximum_release_rate
+    , allow_eject
+    , bidirectional_dest_normal
+    , bidirectional_dest_reverse
+    , bidirectional_isc_id
+    , entrance_id
+    , ind_report_availability
+    , ind_update_tracking )
+    values
+    ( l_id
+    , p_version_id
+    , l_type
+    , l_destination_id
+    , l_end_user_id
+    , l_category
+    , l_maximum_release_rate
+    , l_allow_eject
+    , l_bidirectional_dest_normal
+    , l_bidirectional_dest_reverse
+    , l_bidirectional_isc_id
+    , l_entrance_id
+    , l_ind_report_availability
+    , l_ind_update_tracking );
+    end if;
+  end;
+  
+  
+  procedure create_stations(p_new_version_id number) is
+  l_node_list    	dbms_xmldom.domnodelist;
+  l_node_count      number (20);
+  l_node            dbms_xmldom.domnode;
+  l_msg             varchar2(4000);
+  v_rows_processed integer := 0;
+  begin
+    insert into hist_uld_stations select * from dim_uld_stations
+    where version_id = (select max(version_id) from dim_uld_stations)
+    and version_id > nvl((select max(version_id) from hist_uld_stations),0);
+	
+	l_node_list := dbms_xslprocessor.selectnodes(g_document_node, '//stations/station');
+	l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+	plog ('Total of station nodes in input: ' || l_node_count, 'info');
+
+	for i in 0..(l_node_count - 1) loop
+  	  l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+      process_stations(p_new_version_id, l_node);
+      dbms_xmldom.freenode(l_node);
+	end loop;
+
+	select count(*) into l_node_count from dim_uld_stations;
+	plog ('Total of records in DIM_ULD_STATIONS: ' || l_node_count, 'info');
+  exception when others	then
+    l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+	plog( 'Error (create_stations): '||l_msg, 'error' );
+	g_error := 100;
+  end;
+
+
+  
+  
+
+
+
+procedure process_clusters(p_version_id number, p_node dbms_xmldom.domnode) is
+l_id varchar2(50) := '';
+l_name varchar2(50)  := '';
+v_rows_processed integer := 0;
+begin
+  dbms_xslprocessor.valueof (p_node, '@id', l_id);
+  dbms_xslprocessor.valueof (p_node, '@name', l_name);
+  update dim_uld_clusters
+  set version_id = p_version_id
+  , name = l_name
+  where id = l_id;
+  v_rows_processed := sql%rowcount;
+  if v_rows_processed < 1 then
+    insert into dim_uld_clusters (id, version_id, name)
+    values (l_id, p_version_id, l_name);
+  end if;
+end;
+
+
+procedure create_clusters(p_new_version_id number) is
+l_node_list	dbms_xmldom.domnodelist;
+l_node_count number (20);
+l_node dbms_xmldom.domnode;
+l_msg varchar2(4000);
+v_rows_processed integer := 0;
+begin
+  insert into hist_uld_clusters select * from dim_uld_clusters
+  where version_id = (select max(version_id) from dim_uld_clusters)
+  and version_id > nvl((select max(version_id) from hist_uld_clusters),0);
+
+  l_node_list := dbms_xslprocessor.selectnodes(g_document_node, '//clusters/cluster');
+  l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+  plog ('Total of cluster  nodes in input: ' || l_node_count, 'info');
+
+  for i in 0..(l_node_count - 1) loop
+    l_node := dbms_xmldom.item (nl => l_node_list, idx => i);
+    process_clusters(p_new_version_id, l_node);
+    dbms_xmldom.freenode(l_node);
+  end loop;
+
+  select count(*) into l_node_count from dim_uld_clusters;
+  plog ('Total of records in DIM_ULD_CLUSTERS: ' || l_node_count, 'info');
+exception when others	then
+  l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+  plog( 'Error (create_clusters): '||l_msg, 'error' );
+  g_error := 100;
+end;
+
+
+procedure process_topo_uld(i_node in dbms_xmldom.domnode, i_source_id in number, o_error out number) is
+l_con_proc_name constant varchar2(200) := g_con_package||'.process_TOPO';
+l_nodelist dbms_xmldom.domnodelist;
+l_attr_node dbms_xmldom.domnode;
+l_old_version_id number(19,0) := 0;
+l_new_version_id number(19,0) := 0;
+l_rcs_version varchar2(50) := '';
+l_pduld_version varchar2(50) := '';
+l_description varchar2(200) := '';
+l_msg varchar2(4000) := '';
+l_verb varchar2(50) := '';
+l_filename varchar2(200) := '';
+begin
+  viu_module.enter_module(l_con_proc_name,to_char(sys_extract_utc(systimestamp)));
+  o_error := 0;
+  begin
+    g_document_node := i_node;
+    g_dimension_source_id := i_source_id;
+   
+    
+    l_nodelist := dbms_xslprocessor.selectnodes (g_document_node, '//uld_project_definition');
+    if (dbms_xmldom.getlength (nl => l_nodelist) > 0) then
+      l_attr_node := dbms_xmldom.item (l_nodelist, 0);
+      
+      dbms_xslprocessor.valueof (l_attr_node, '@pduld_version', l_pduld_version);
+      dbms_xslprocessor.valueof (l_attr_node, '@rcs_version', l_rcs_version);
+
+      l_description := l_description||'pduld_version="'||l_pduld_version||'" ';
+      l_description := l_description||'rcs_version="'||l_rcs_version||'" ';
+    end if;
+    if (l_rcs_version is null) or (trim(l_rcs_version) = '') then
+      plog('Error (process_TOPO_ULD): No version information found (//uld_project_definition, @rcs_version)', 'error');
+      l_rcs_version := '??';
+      l_description  := '??';
+      g_error := 11;
+    end if;
+
+
+    if g_error = 0 then
+      begin
+        select max(id) into l_old_version_id from dimension_version
+        where source_type = 'TOPO_ULD' and enddate is null;
+      exception when others then
+        l_old_version_id := 0;
+      end;
+
+      begin
+        select scr.filename
+        into   l_filename
+        from   dimension_source scr
+        where  scr.id = g_dimension_source_id;
+      exception when others then
+        l_filename := '';
+      end;
+      
+      begin
+        l_verb := 'Retrieving sequence';
+        select dimension_seq.nextval into l_new_version_id from dual;
+        
+        l_verb := 'Inserting';
+        insert into dimension_version (id, source_id, source_type, startdate, enddate, versiontag, description, filename)
+        values (l_new_version_id, g_dimension_source_id, 'TOPO_ULD', sysdate, null, l_rcs_version, l_description, l_filename);
+        if l_old_version_id > 0 then
+          l_verb := 'Updating';
+          update dimension_version set enddate = sysdate
+          where source_type = 'TOPO_ULD' and enddate is null and id = l_old_version_id;
+        end if;
+
+      exception when others then
+        l_msg := sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+        rollback;
+        plog(l_con_proc_name||': '||l_verb||' DIMENSION_VERSION: '||l_msg, 'error');
+        g_error := 12;
+      end;
+    end if;
+
+    if g_error = 0 then
+    l_old_version_id := nvl(l_old_version_id, 0);
+      if l_old_version_id = 0 then
+        plog('Installing initial version (ID '||to_char(l_new_version_id)||')', 'info');
+      else
+        plog('Replacing old versions (ID '||to_char(l_old_version_id)||') with (ID '||to_char(l_new_version_id)||')', 'info');
+      end if;
+      
+
+  
+      create_iscs(l_new_version_id);
+      create_logistic_steps(l_new_version_id);
+      create_route_segments(l_new_version_id);
+      create_nodes(l_new_version_id);
+      create_status_segments(l_new_version_id);
+      create_stations(l_new_version_id);
+      create_clusters(l_new_version_id);
+      commit;
+    
+      upd_status_segment_capacities;
+ 
+
+    
+    end if;
+   
+    plog ('TOPO_ULD has been processed.', 'info');
+  exception when others	then
+    l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    plog(l_msg, 'error');
+    g_error := 10;
+  end;
+  o_error := g_error;
+	viu_module.leave_module(l_con_proc_name);
+end;
+
+  
+
+end topo_uld_dimensions;
+/

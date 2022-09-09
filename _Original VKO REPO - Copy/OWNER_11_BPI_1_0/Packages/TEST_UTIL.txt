@@ -1,0 +1,288 @@
+create or replace package TEST_UTIL is
+procedure CleanupDynTables;
+procedure CleanupDynTablesNoRef;
+procedure start_application(i_id_cust in varchar2);
+procedure stop_application(i_id_cust in varchar2);
+procedure reset_loglevel(p_level number);
+function count_in_table (p_table in varchar2, p_where in varchar2 default null) return number;
+procedure check_count_in_table (p_table in varchar2, p_where in varchar2 default null
+, p_expected in number, p_errors in out number);
+procedure log_success_or_failure(p_errors number);
+procedure Tables2HTML(table_list varchar2);
+end TEST_UTIL;
+/
+
+
+
+
+package body test_util is
+
+procedure cleanupdyntables is
+begin
+  dbms_output.put_line('Truncating tables ACL_APPLICATION_PROCESSES, VIU_INFO_LOGS, XML_MESSAGE_STORE.');
+  execute immediate 'alter session set ddl_lock_timeout = 600';
+  execute immediate 'truncate table VIU_INFO_LOGS';
+  execute immediate 'truncate table XML_MESSAGE_STORE';
+  dbms_output.put_line('Setting STATUS of DIMENSION_SOURCE_TYPES to null.');
+  update dimension_source_types set status = null;
+  commit;
+  dbms_output.put_line('Truncating all Warehouse Core, Fact and Dynamic Dimension tables.');
+  begin
+    for c_rec in (select table_name from user_tables
+    where table_name like 'WC%' or table_name like 'FACT%'
+    or table_name like 'DIM%' or table_name like 'HIST%') loop
+      if c_rec.table_name not in ('DIMENSION_SOURCE_TYPES', 'DIMENSION_SOURCE_DEPENDENCIES') then
+        execute immediate 'truncate table '||c_rec.table_name;
+      end if;
+    end loop;
+  end;
+end;
+
+
+
+
+
+procedure cleanupdyntablesnoref is
+begin
+  dbms_output.put_line('Truncating tables VIU_INFO_LOGS, XML_MESSAGE_STORE.');
+  execute immediate 'alter session set ddl_lock_timeout = 600';
+  execute immediate 'truncate table VIU_INFO_LOGS';
+  execute immediate 'truncate table XML_MESSAGE_STORE';
+
+  dbms_output.put_line('Truncating all Warehouse Core, Fact and Dynamic Dimension tables.');
+  begin
+    for c_rec in (select table_name from user_tables
+    where table_name like 'WC%' or table_name like 'FACT%') loop
+      execute immediate 'truncate table '||c_rec.table_name;
+    end loop;
+  end;
+end;
+
+
+procedure start_application(i_id_cust in varchar2) is
+l_success boolean;
+begin
+  acl_application_control.handle_request( i_aet_id_cust      => i_id_cust
+                                          , i_ace_id_cust      => 'stsrt'
+                                          , o_success          => l_success
+                                          );
+  if l_success then
+    dbms_output.put_line(i_id_cust||': Start was successful.');
+  else
+    dbms_output.put_line(i_id_cust||': Start failed.');
+  end if;
+end;
+
+
+
+
+
+procedure stop_application(i_id_cust in varchar2) is
+l_success boolean;
+begin
+  acl_application_control.handle_request( i_aet_id_cust      => i_id_cust
+                                          , i_ace_id_cust      => 'stop'
+                                          , o_success          => l_success
+                                          );
+  if l_success then
+    dbms_output.put_line(i_id_cust||': Stop was successful.');
+  else
+    dbms_output.put_line(i_id_cust||': Stop failed.');
+  end if;
+end;
+
+
+
+
+
+procedure reset_loglevel(p_level number) is
+begin
+  update viu_parameters set value = p_level where name = 'MaxLvlOprInfoLogged';
+  commit;
+  viu_action.set_current_loglevel(p_level);
+  viu_info.v_maxlvloprinfologged := p_level;
+end;
+
+
+
+
+
+function count_in_table (p_table in varchar2, p_where in varchar2 default null) return number is
+l_cnt number;
+l_stm varchar2(2000) := 'select count(*) from '||p_table;
+begin
+  if trim(p_where) is not null then
+    l_stm := l_stm||' where '||p_where;
+  end if;
+  
+  execute immediate l_stm into l_cnt;
+  return l_cnt;
+end;
+
+
+
+
+
+
+procedure check_count_in_table (p_table in varchar2, p_where in varchar2 default null
+, p_expected in number, p_errors in out number) is
+l_cnt number;
+l_msg varchar2(2000) := '';
+begin
+  l_cnt := count_in_table(p_table, p_where);
+  l_msg := 'Expected '||to_char(p_expected)||' rows in '||p_table;
+  if trim(p_where) is not null then
+    l_msg := l_msg||' where '||p_where;
+  end if;
+  l_msg := l_msg||'. Got '||to_char(l_cnt);
+  dbms_output.put_line(l_msg);
+  if l_cnt <> p_expected then
+    p_errors := p_errors + 1;
+    dbms_output.put_line('!!!!! PREVIOUS CHECK WENT WRONG !!!!!');
+  end if;
+end;
+
+
+
+
+
+
+
+
+
+
+
+
+procedure log_success_or_failure(p_errors number) is
+begin
+  dbms_output.put_line(chr(10)||to_char(p_errors)||' errors.'||chr(10));
+  if p_errors = 0 then
+    dbms_output.put_line('*****************************************************');
+    dbms_output.put_line('***************** S U C C E S S *********************');
+    dbms_output.put_line('*****************************************************');
+  else
+    dbms_output.put_line('*****************************************************');
+    dbms_output.put_line('***************** F A I L U R E *********************');
+    dbms_output.put_line('*****************************************************');
+  end if;
+end;
+
+
+procedure tables2html(table_list varchar2) is
+l_cols_count number := 0;
+l_cols_heading varchar2(16000) := '';
+l_cols_select varchar2(32767) := '';
+l_sql varchar2(32767) := '';
+l_select varchar2(100) := '';
+l_title varchar2(100) := '';
+l_orderby varchar2(100) := '';
+l_tab varchar2(100) := '';
+l_sep varchar2(10) := '';
+l_eventts_col number := 0;
+l_idevent_col number := 0;
+l_key_col number := 0;
+l_id_col number := 0;
+
+type tdcols is table of varchar2(16000);
+tablecols tdcols;
+begin
+
+  dbms_output.put_line('<HTML><head><style type="text/css">
+table {border-collapse:collapse; border:2px solid #000000; nowrap; font-family:"Trebuchet MS", Arial, Helvetica, sans-serif; font-size:10px;}
+td {border:1px solid #000000; nowrap;}
+div {border-top-width:4px; border-top-style:solid; border-top-color:#ff9900; padding-top: 10px;}
+body {background-color: #FFFFFF;background-repeat:no-repeat;background-position:right top;"}
+</style></head><BODY><div>');
+
+  for c_rec in (select upper(trim(val)) as tbl from table(csv.vals(table_list)) order by 1)  loop
+    l_tab := trim(replace(replace(c_rec.tbl,chr(10)),chr(13)));
+    dbms_output.put_line('<p><a href="#'||l_tab||'">'||l_tab||'</a></p>');
+  end loop;
+
+  for c_rec in (select upper(trim(val)) as tbl from table(csv.vals(table_list)) order by 1)  loop
+    l_tab := trim(replace(replace(c_rec.tbl,chr(10)),chr(13)));
+    l_cols_count := 0;
+    l_cols_heading := '';
+    l_cols_select := '';
+    l_eventts_col := 0;
+    l_idevent_col := 0;
+    l_key_col := 0;
+    l_id_col := 0;
+    l_orderby := '';
+    l_sep := '';
+
+    
+    for t_rec in (select * from (select * from user_tab_columns where table_name=l_tab order by column_id) where rownum <= 128) loop
+      l_cols_count := l_cols_count + 1;
+      l_cols_heading := l_cols_heading||'<td><b>'||t_rec.column_name||'</b></td>';
+      if t_rec.data_type like 'TIMESTAMP%' then
+        l_select := 'TO_CHAR('||t_rec.column_name||',''YYYY-MM-DD HH24:MI:SS.FF'')';
+      elsif t_rec.data_type = 'DATE' then
+        l_select := 'TO_CHAR('||t_rec.column_name||',''YYYY-MM-DD HH24:MI:SS'')';
+      elsif t_rec.data_type = 'VARCHAR2' then
+        l_select := t_rec.column_name;
+      elsif t_rec.data_type = 'CLOB' then
+        l_select := '''&lt;CLOB&gt;''';
+      elsif t_rec.data_type = 'XMLTYPE' then
+        l_select := '''&lt;XMLTYPE&gt;''';
+      elsif t_rec.data_type = 'BLOB' then
+        l_select := '''&lt;BLOB&gt;''';
+      elsif t_rec.data_type like 'LONG%' then
+        l_select := '''&lt;LONG&gt;''';
+      else
+        l_select := 'TO_CHAR('||t_rec.column_name||')';
+      end if;
+      l_cols_select := l_cols_select||l_sep||'''<td>''||'||l_select||'||''</td>''';
+      l_sep := '||';
+
+      if t_rec.column_name = 'EVENTTS' then l_eventts_col := 1; end if;
+      if t_rec.column_name = 'IDEVENT' then l_idevent_col := 1; end if;
+      if t_rec.column_name = 'KEY' then l_key_col := 1; end if;
+      if t_rec.column_name = 'ID' then l_id_col := 1; end if;
+    end loop;
+
+    if l_tab='XML_MESSAGE_STORE' and l_idevent_col > 0 then
+      l_orderby := 'IDEVENT DESC';
+    elsif substr(l_tab,1,4)='VIU_' and l_id_col > 0 then
+      l_orderby := 'ID DESC';
+    elsif substr(l_tab,1,3)='WC_' and l_key_col > 0 then
+      l_orderby := 'KEY DESC';
+    elsif substr(l_tab,1,5)='FACT_' and l_eventts_col > 0 then
+      l_orderby := 'EVENTTS DESC';
+    end if;
+    if l_orderby is null and l_id_col > 0 then
+      if substr(l_tab,1,5)='FACT_' then
+        l_orderby := 'ID DESC';
+      else
+        l_orderby := 'ID';
+      end if;
+    end if;
+    l_title := l_tab;
+    l_sql := 'SELECT '||l_cols_select||' FROM '||l_tab;
+    if l_orderby is not null then
+      l_sql := l_sql||' order by '||l_orderby;
+      l_title := l_title||', ordered by '||l_orderby;
+    end if;
+    if l_cols_count = 128 then
+      l_title := l_title||', limited to 128 columns';
+    end if;
+    dbms_output.put_line('<a name="'||l_tab||'"></a><table cellpadding="3" border="1"><tr style="background-color:#DDDDDD;" ><td colspan='
+      ||to_char(l_cols_count)||'><b>'||l_title||'</b></td></tr>');
+    dbms_output.put_line('<tr style="background-color:#DDDDDD;" >'||l_cols_heading||'</tr>');
+
+    begin
+      execute immediate l_sql bulk collect into tablecols;
+      for i in 1..tablecols.count loop
+        dbms_output.put_line('<tr>'||tablecols(i)||'</tr>');
+      end loop;
+      dbms_output.put_line('</table><br>');
+    exception when others then
+      dbms_output.put_line('</table><br><br>'||l_sql||'<br><br>'||sqlerrm);
+    end;
+
+  end loop;
+  dbms_output.put_line('</div></BODY>');
+end;
+
+end test_util;
+/

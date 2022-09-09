@@ -1,0 +1,157 @@
+create or replace PACKAGE cmn_constant
+IS
+   g_con_package                             CONSTANT VARCHAR2( 30 ) := 'CMN_CONSTANT';
+
+   g_con_interface_logging                   CONSTANT varchar2(20)    := 'INTERFACE_LOGGING';
+   g_con_pve_cmn_party_ident                 CONSTANT VARCHAR2( 40 )  := 'PARTY_IDENTIFICATION';
+   g_con_cmn_timestamp_format                CONSTANT VARCHAR2( 240 ) := 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"';
+   g_con_cmn_timestamp_format_int            CONSTANT VARCHAR2( 240 ) := 'YYYY-MM-DD"T"HH24:MI:SS.FF9tzh:tzm';
+   g_con_cmn_date_format                     CONSTANT VARCHAR2( 240 ) := 'YYYYMMDD.HH24MISS';
+   g_con_cmn_iso8601_date_format             CONSTANT VARCHAR2( 240 ) := 'YYYY-MM-DD';
+   g_con_yesno_no                            CONSTANT VARCHAR2( 1 )   := 'N';
+   g_con_yesno_yes                           CONSTANT VARCHAR2( 1 )   := 'Y';
+   g_con_yesnofull_no                        CONSTANT VARCHAR2( 3 )   := 'NO';
+   g_con_yesnofull_yes                       CONSTANT VARCHAR2( 3 )   := 'YES';
+   g_con_cmn_seconds_in_day                  CONSTANT NUMBER          := 86400;
+   g_con_lsn_max_sent_seq                    CONSTANT NUMBER          := 9999;
+   g_con_pve_cm_url                          CONSTANT VARCHAR2( 240 ) := 'CM_URL';
+   g_con_pve_log_msgproctime                 CONSTANT VARCHAR2( 240 ) := 'LOG_MSG_PROCESSING_TIME';
+   g_con_xsd_url                             CONSTANT VARCHAR2( 100 ) := 'XSD_URL';
+   g_con_pve_lsn_def_resp_interva            CONSTANT VARCHAR2( 240 ) := 'LSN_DEF_RESP_INTERVAL';
+   g_con_pve_lsn_allowed_misses              CONSTANT VARCHAR2( 240 ) := 'LSN_ALLOWED_MISSES';
+   g_con_pve_send_log_max_sev                CONSTANT VARCHAR2(240)   := 'SEND_LOG_MAX_SEVERITY';
+   g_con_dequeue_program                     CONSTANT VARCHAR2(240)   := 'cmn_queue.dequeue_message';
+   g_con_procedure                           CONSTANT VARCHAR2(240)   := 'PROCEDURE';
+   g_con_function                            CONSTANT VARCHAR2(240)   := 'FUNCTION';
+   g_con_xml_encoding                        CONSTANT VARCHAR2(240)   := '<?xml version="1.0" encoding="UTF-8"?>';
+   g_con_xmlroot                             CONSTANT VARCHAR2(240)   := '1.0" encoding="UTF-8';
+   g_con_truncate_logging                    CONSTANT varchar2(100)   := 'TRUNCATE_LOGGING';
+   g_con_clobmessage                         CONSTANT varchar2(11)    := 'CLOBMESSAGE';
+   g_con_ifc_messages_retention              CONSTANT varchar2(22)    := 'IFC_MESSAGES_RETENTION';
+   g_con_default_retention_1                 CONSTANT pls_integer     := 24;
+   g_con_default_retention_30                CONSTANT pls_integer     := 720;
+   g_con_default_commit_size                 CONSTANT pls_integer     := 1000;
+                                                                      
+   /* Constants for message directions. */
+   g_con_msg_direction_incoming              CONSTANT VARCHAR2( 1 )   := 'I';
+   g_con_msg_direction_outgoing              CONSTANT VARCHAR2( 1 )   := 'O';
+   g_con_msg_direction_returning             CONSTANT VARCHAR2( 1 )   := 'R';
+                                                                      
+   /* Constants related to the http protocol. */
+   g_con_ifc_http_post_method                CONSTANT VARCHAR2( 20 )  := 'POST';
+   g_con_ifc_http_get_method                 CONSTANT VARCHAR2( 20 )  := 'GET';
+   g_con_ifc_http_name_type                  CONSTANT VARCHAR2( 20 )  := 'Content-Type';
+   g_con_ifc_http_name_length                CONSTANT VARCHAR2( 20 )  := 'Content-Length';
+   g_con_ifc_http_header_value               CONSTANT VARCHAR2( 20 )  := 'text/plain';
+   g_con_ifc_http_timeout_send               CONSTANT VARCHAR2(20)    := 'HTTP_TIMEOUT_SEND';
+   g_con_ifc_http_timeout_request            CONSTANT VARCHAR2(20)     := 'HTTP_TIMEOUT_REQUEST';
+                                                                      
+   /* Generic Header constants */
+   g_con_Header                              CONSTANT varchar2(20)    := 'Header';
+   g_con_MessageTime                         CONSTANT varchar2(20)    := 'MessageTime';
+   g_con_Source                              CONSTANT varchar2(10)    := 'Source';
+   g_con_Target                              CONSTANT varchar2(10)    := 'Target';
+   g_con_ProcessID                           CONSTANT varchar2(10)    := 'ProcessID';
+   g_con_InstanceID                          CONSTANT varchar2(20)    := 'InstanceID';
+   g_con_OperatorID                          CONSTANT varchar2(20)    := 'OperatorID';
+                                                                      
+   -- Parameter names                                                 
+   g_con_system_identification               CONSTANT VARCHAR2( 30 )  := 'SYSTEM_IDENTIFICATION';
+   g_con_validate_incoming_msg               CONSTANT VARCHAR2( 30 )  := 'VALIDATE_INCOMING_MSG';
+   g_con_reset_enabled                       CONSTANT VARCHAR2(240)   := 'RESET_ENABLED';
+                                                                      
+   /* Message attributes */
+   g_con_xml_appl                            CONSTANT VARCHAR2(20)    := 'APPLICATION';
+   g_con_xml_conf                            CONSTANT VARCHAR2(20)    := 'PROJECT';
+                                                                      
+   /* Constants releated to Version and registry entries */
+   g_con_rgy_appl                            CONSTANT VARCHAR2(20)    := 'APPL';
+   g_con_rgy_conf                            CONSTANT VARCHAR2(20)    := 'CONFIGURATION';
+                                                                      
+   g_con_persistent                          CONSTANT varchar2(35)    := 'PERSISTENT';
+   g_con_buffered                            CONSTANT varchar2(35)    := 'BUFFERED';
+   g_con_persistent_or_buffered              CONSTANT varchar2(35)    := 'PERSISTENT_OR_BUFFERED';
+                                                                      
+   /* Constants related to CleanUp functionality */
+   g_con_cup_type_partition                  CONSTANT VARCHAR2( 40 )  := 'PARTITION';
+   g_con_cup_type_rowdelete                  CONSTANT VARCHAR2( 40 )  := 'ROWDELETE';
+   g_con_cup_type_truncate                   CONSTANT VARCHAR2( 40 )  := 'TRUNCATE';
+                                                                      
+   /* Constants related to relations */
+   g_con_constraint_type_ref                 CONSTANT VARCHAR2( 40 )  := 'R';
+   g_con_delete_rule_cascade                 CONSTANT VARCHAR2( 40 )  := 'CASCADE';
+   g_con_constraint_sts_enabled              CONSTANT VARCHAR2( 40 )  := 'ENABLED';
+
+   g_con_default_table_suffix                CONSTANT VARCHAR2( 40 )  := '_DFTMARKER';
+   g_con_summary_view_suffix                 CONSTANT VARCHAR2( 40 )  := '_V_ALL';
+   g_con_previous_view_suffix                CONSTANT VARCHAR2( 40 )  := '_V_PRV';
+                                                                      
+   g_con_partition_date_format               CONSTANT VARCHAR2( 40 )  := 'YYYYMMDDHH24';
+   g_con_len_partition_date_fmt              CONSTANT NUMBER          := 10;
+                                                                      
+   g_con_object_type_table                   CONSTANT VARCHAR2( 40 )  := 'TABLE';
+   g_con_object_type_view                    CONSTANT VARCHAR2( 40 )  := 'VIEW';
+   g_con_object_type_trigger                 CONSTANT VARCHAR2( 40 )  := 'TRIGGER';
+                                                                      
+   g_con_state_invalid                       CONSTANT VARCHAR2( 40 )  := 'INVALID';
+                                                                      
+   g_con_constraint_ref                      CONSTANT VARCHAR2( 40 )  := 'R';
+   g_con_constraint_sys                      CONSTANT VARCHAR2( 40 )  := 'SYS';
+   g_con_max_baselength                      CONSTANT NUMBER          := 19;
+                                                                      
+   g_con_timestamp_placeholder               CONSTANT VARCHAR2( 40 )  := ':B_RETENTION_TIMESTAMP';
+   g_con_job_start_placeholder               CONSTANT VARCHAR2( 40 )  := ':B_JOB_START_TIMESTAMP';
+                                                                      
+   g_con_lifetime_offset                     CONSTANT VARCHAR2( 40 )  := 'd00h01m00s00f000';
+                                                                      
+   -- Naming convention nested table                                  
+   g_con_nested_table_suffix                 CONSTANT VARCHAR2( 40 )  := '_NT';
+                                                                      
+   -- DBMS_LOCK related entries                                       
+   g_reset_lockhandle                        CONSTANT VARCHAR2( 40 )  := '_CMN_RESET_LOCKHANDLE';
+   g_con_lock_success                        CONSTANT INTEGER         := 0;
+   g_con_lock_exists                         CONSTANT INTEGER         := 4; -- Existing lock in current session
+   g_con_unlock_success                      CONSTANT INTEGER         := 0;
+   g_con_unlock_not_found                    CONSTANT INTEGER         := 4;
+                                                                      
+   -- XPATH expressions                                               
+   g_con_reset_dynamic_data_req              CONSTANT VARCHAR2( 60 )  := 'ResetDynamicDataRequest';
+   g_con_xpath_ddr_dyn_data_req              CONSTANT VARCHAR2( 60 )  :=  '/'|| g_con_reset_dynamic_data_req;
+   g_con_xpath_ddr_scope                     CONSTANT VARCHAR2( 60 )  :=  g_con_xpath_ddr_dyn_data_req ||'/' || 'Scope';
+                                             
+   -- Reset results                          
+   g_con_reset_result_success                CONSTANT VARCHAR2( 60 )  := 'SUCCESS';
+   g_con_reset_result_disabled               CONSTANT VARCHAR2( 60 )  := 'FAIL_RESET_NOT_ENABLED';
+   g_con_reset_result_failed                 CONSTANT VARCHAR2( 60 )  := 'FAIL_OTHER';
+
+   SUBTYPE st_proc_name IS VARCHAR2( 61 );
+
+   SUBTYPE st_timestamp IS TIMESTAMP ( 3 );
+
+   SUBTYPE st_processid IS VARCHAR2( 20 );
+
+   SUBTYPE st_instanceid IS VARCHAR2( 64 );
+
+   SUBTYPE st_operatorid IS VARCHAR2( 30 );
+
+   /* Subtyp st_attribute should not be used. Remove this definition when PDM does 
+    * not refer to it anymore
+   */
+   SUBTYPE st_attribute IS XMLTYPE;
+   
+   SUBTYPE st_timestamp_str IS VARCHAR2( 40 );
+
+   exc_internal_error             EXCEPTION;
+   PRAGMA EXCEPTION_INIT( exc_internal_error, -600 );
+   
+   exc_resource_busy              EXCEPTION;
+   PRAGMA EXCEPTION_INIT( exc_resource_busy, -54 ); --ORA-00054: resource busy and acquire with NOWAIT specified or timeout expired
+   
+END cmn_constant;
+/
+
+
+package body cmn_constant
+is
+end cmn_constant;
+/

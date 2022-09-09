@@ -1,0 +1,1189 @@
+create or replace PACKAGE cmn_common
+IS
+   subtype t_int is INTERVAL DAY (9) TO SECOND(6);
+
+   /* Get parameter value */
+   FUNCTION get_parameter_value( i_prr_name IN cmn_parameters.NAME%TYPE )
+      RETURN cmn_parameter_values.VALUE%TYPE;
+
+   /* Return the CLOB value of a given XMLTYPE data type */
+   FUNCTION get_clob_val( i_xmltype_data IN XMLTYPE )
+      RETURN CLOB;
+
+   /* Returns a default timestamp. */
+   FUNCTION default_timestamp
+      RETURN TIMESTAMP;
+
+   /* Get default date. */
+   FUNCTION default_date
+      RETURN DATE;
+
+   /* Convert varchar2 time interval to Interval datatype */
+   FUNCTION varchar_to_interval( i_int IN VARCHAR2 )
+      RETURN t_int DETERMINISTIC;
+
+   /* Convert varchar2 to timestamp */
+   FUNCTION varchar_to_timestamp( i_timestamp IN VARCHAR2 )
+      RETURN TIMESTAMP DETERMINISTIC;
+
+   /* Convert varchar2 to timestamp with timezone */
+   FUNCTION varchar_to_timestamp_with_tz( i_timestamp IN VARCHAR2 )
+      RETURN TIMESTAMP WITH TIME ZONE DETERMINISTIC;
+
+   /* Convert varchar2 to date */
+   FUNCTION varchar_to_date( i_date IN VARCHAR2 )
+      RETURN DATE DETERMINISTIC;
+
+   /* Convert varchar2 in iso8601 format to date */
+   FUNCTION varchar_iso8601_to_date( i_date IN VARCHAR2 )
+     RETURN DATE;
+
+   /* Convert timestamp to varchar2 */
+   FUNCTION timestamp_to_varchar( i_timestamp IN TIMESTAMP )
+      RETURN VARCHAR2 DETERMINISTIC;
+
+   /* Convert timestamp with timezone to varchar2 
+   ** 19-03-2018 ra#28355 nlmv2 Added overloaded function
+   */
+   FUNCTION timestamp_to_varchar( i_timestamp IN TIMESTAMP WITH TIME ZONE)
+      RETURN VARCHAR2 DETERMINISTIC;
+
+   /* Convert timestamp with timezone to varchar2 */
+   FUNCTION timestamp_with_tz_to_varchar( i_timestamp IN TIMESTAMP WITH TIME ZONE )
+      RETURN VARCHAR2 DETERMINISTIC;
+
+   /* Convert date to varchar2 */
+   FUNCTION date_to_varchar( i_date IN DATE )
+      RETURN VARCHAR2 DETERMINISTIC;
+
+   /* Set the parametr value of a given parameter */
+   PROCEDURE set_parameter_value( i_prr_name IN cmn_parameters.NAME%TYPE, i_pve_value IN cmn_parameter_values.VALUE%TYPE );
+
+   /* Varchar to boolean */
+   FUNCTION varchar_to_boolean( i_varchar IN VARCHAR2 )
+      RETURN BOOLEAN;
+
+   /* Start tooling set for service (used by operational_check) */
+   PROCEDURE clearLog;
+   PROCEDURE logLine(i_text in varchar2);
+   FUNCTION  listLog return clob;
+   FUNCTION  count_in_table (i_table in varchar2, i_where in varchar2 default null) return number;
+   PROCEDURE check_count_in_table (p_table in varchar2, p_where in varchar2 default null, p_expected in number, p_errors in out number);
+   PROCEDURE check_count_in_table_GT (p_table in varchar2, p_where in varchar2 default null, p_expected in number, p_errors in out number);
+   PROCEDURE check_count_in_table_BETWEEN (p_table in varchar2, p_where in varchar2 default null, p_expected_lower in number, p_expected_upper in number, p_errors in out number);
+   PROCEDURE log_success_or_failure(p_errors number);
+   PROCEDURE heading(i_heading in varchar2);
+
+END cmn_common;
+/
+
+
+
+
+package body cmn_common
+is
+   g_con_package   constant varchar2( 20 ) := 'cmn_common';
+
+   g_log clob; 	
+
+   cursor c_param
+   is
+      select ptr.name
+           , pve.value
+      from   cmn_parameters ptr
+           , cmn_parameter_values pve
+      where  ptr.id = pve.ptr_id;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function get_parameter_value( i_prr_name in cmn_parameters.name%type )
+      return cmn_parameter_values.value%type
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                         := g_con_package || '.get_parameter_value';
+      l_return                   varchar2( 1000 );
+      l_found                    boolean;
+      l_rt_ptr                   cmn_parameters%rowtype;
+      l_rt_pve                   cmn_parameter_values%rowtype;
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'name=' || i_prr_name
+                             );
+      l_return  := cmn_context.get_param( i_prr_name );
+
+      
+      if l_return is null
+      then
+         
+         l_found := cmn_ptr_tapi_pck.ptr_select_row_uk( i_ptr_name => i_prr_name
+                                                      , o_rt_ptr   => l_rt_ptr
+                                                      );
+         if l_found
+         then
+            
+            l_found := cmn_pve_tapi_pck.pve_select_row_uk( i_pve_ptr_id => l_rt_ptr.id
+                                                         , o_rt_pve     => l_rt_pve
+                                                         );
+
+            if l_found
+            then
+               l_return := l_rt_pve.value;
+            else
+               
+               viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnnoparameterentry
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_error
+                                  , i_info_arguments         => i_prr_name
+                                  , i_additional_data        => 'PARAMETER_VALUE not found'
+                                  );
+            end if;
+         else
+            
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnnoparameterentry
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         => i_prr_name
+                               , i_additional_data        => 'PARAMETER not found'
+                               );
+         end if;
+      end if;
+
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => 'value=' || l_return
+                             );
+      return l_return;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_parameter_value;
+
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_clob_val( i_xmltype_data in xmltype )
+      return clob
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_clob_val';
+      l_return_value             clob;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      if i_xmltype_data is not null
+      then
+         l_return_value  := i_xmltype_data.getclobval;
+      else
+         l_return_value  := null;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_return_value;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_clob_val;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function default_timestamp
+      return timestamp
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.default_timestamp';
+      l_return_value             cmn_constant.st_timestamp;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      l_return_value  := sys_extract_utc(systimestamp);
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_return_value;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end default_timestamp;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function default_date
+      return date
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.default_date';
+      l_return_value             date;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      l_return_value  := sysdate;
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_return_value;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end default_date;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function varchar_to_interval( i_int in varchar2 )
+      return t_int
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                         := g_con_package || '.varchar_to_interval';
+      l_interval                 interval day( 9 )to second;
+      l_int                      varchar2( 256 );
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      begin
+         l_int       := replace( lower( i_int )
+                               , 'd'
+                               , ''
+                               );
+         l_int       := replace( l_int
+                               , 'h'
+                               , ' '
+                               );
+         l_int       := replace( l_int
+                               , 'm'
+                               , ':'
+                               );
+         l_int       := replace( l_int
+                               , 's'
+                               , ':'
+                               );
+         l_int       := replace( l_int
+                               , 'f'
+                               , '.'
+                               );
+         
+         l_interval  := to_dsinterval( l_int );
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnintervalconversionerr
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'Interval: ' || i_int
+                               );
+      end;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_interval;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end varchar_to_interval;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function varchar_to_timestamp( i_timestamp in varchar2 )
+      return timestamp
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.varchar_to_timestamp';
+      l_return_value             timestamp;
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         l_return_value  :=
+                        to_timestamp_tz( i_timestamp
+                                       , cmn_constant.g_con_cmn_timestamp_format_int
+                                       );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnvarchartotimestamp
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'db Timestamp: ' || i_timestamp
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end varchar_to_timestamp;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function varchar_to_timestamp_with_tz( i_timestamp in varchar2 )
+      return timestamp with time zone
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.varchar_to_timestamp_with_tz';
+      l_return_value             timestamp with time zone;
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         l_return_value  :=
+                        to_timestamp_tz( i_timestamp
+                                       , cmn_constant.g_con_cmn_timestamp_format_int
+                                       );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnvarchartotimestamp
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'db Timestamp: ' || i_timestamp
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end varchar_to_timestamp_with_tz;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function varchar_to_date( i_date in varchar2 )
+      return date
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.varchar_to_date';
+      l_return_value             date;
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         l_return_value  := to_date( i_date
+                                   , cmn_constant.g_con_cmn_date_format
+                                   );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnvarchartodate
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'Date: ' || i_date
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end varchar_to_date;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function varchar_iso8601_to_date( i_date in varchar2 )
+      return date
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.varchar_iso8601_to_date';
+      l_return_value             date;
+      l_date varchar2(10);
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         
+         if(length(i_date) > 10) then
+            l_date := substr(i_date,0,10);
+         else
+            l_date := i_date;
+         end if;
+
+         l_return_value  := to_date( l_date
+                                   , cmn_constant.g_con_cmn_iso8601_date_format
+                                   );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnvarchartodate
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'Date: ' || i_date
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end varchar_iso8601_to_date;
+   
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function timestamp_to_varchar( i_timestamp in timestamp )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.timestamp_to_varchar';
+      l_return_value             varchar2( 100 );
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         l_return_value  := to_char( i_timestamp
+                                   , cmn_constant.g_con_cmn_timestamp_format
+                                   );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmntimestamptovarchar
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'Timestamp: ' || i_timestamp
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end timestamp_to_varchar;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function timestamp_to_varchar ( i_timestamp in timestamp with time zone )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.timestamp_to_varchar';
+      l_timestamp_tz             timestamp with time zone;
+      l_timestamp_offset         number;
+      l_return_value             varchar2( 100 );
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         
+         
+         l_timestamp_offset := extract ( timezone_hour   from i_timestamp )
+                             + extract ( timezone_minute from i_timestamp )/60;
+         
+         
+         l_timestamp_tz     := i_timestamp - numtodsinterval(l_timestamp_offset,'HOUR');
+         
+         
+         l_return_value  := to_char( l_timestamp_tz
+                                   , cmn_constant.g_con_cmn_timestamp_format
+                                   );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmntimestamptovarchar
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'Timestamp: ' || i_timestamp
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end timestamp_to_varchar;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function timestamp_with_tz_to_varchar( i_timestamp in timestamp with time zone )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                        := g_con_package || '.timestamp_with_tz_to_varchar';
+      l_return_value             varchar2( 100 );
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         
+         
+         
+         
+         l_return_value  := timestamp_to_varchar ( i_timestamp => i_timestamp );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmntimestamptovarchar
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'Timestamp: ' || i_timestamp
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end timestamp_with_tz_to_varchar;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function date_to_varchar( i_date in date )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.date_to_varchar';
+      l_return_value             varchar2( 100 );
+   begin
+      begin
+         viu_module.enter_module( i_module      => l_con_proc_name );
+         l_return_value  := to_char( i_date
+                                   , cmn_constant.g_con_cmn_date_format
+                                   );
+         viu_module.leave_module( i_module      => l_con_proc_name );
+         return l_return_value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmndatetovarchar
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_additional_data        => 'Date: ' || i_date
+                               );
+      end;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end date_to_varchar;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure set_parameter_value(
+      i_prr_name    in   cmn_parameters.name%type
+    , i_pve_value   in   cmn_parameter_values.value%type
+   )
+   is
+      
+      cursor c_get_parameter_value( i_ptr_name in cmn_parameters.name%type )
+      is
+         select pve.*
+         from   cmn_parameter_values pve
+              , cmn_parameters ptr
+         where  pve.ptr_id = ptr.id
+         and    ptr.name = i_ptr_name;
+
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                          := g_con_package || '.set_parameter_value';
+      rec_get_parameter_value    c_get_parameter_value%rowtype;
+      l_rt_pve                   cmn_parameter_values%rowtype;
+      l_rows_updated             number;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      open c_get_parameter_value( i_ptr_name      => i_prr_name );
+
+      fetch c_get_parameter_value
+      into  rec_get_parameter_value;
+
+      if c_get_parameter_value%found
+      then
+         close c_get_parameter_value;
+
+         
+         l_rt_pve        := rec_get_parameter_value;
+         l_rt_pve.value  := i_pve_value;
+
+         update cmn_parameter_values pve
+         set    pve.value = i_pve_value
+         where  ptr_id = ( select id
+                          from   cmn_parameters
+                          where  name = i_prr_name );
+
+         cmn_context.add_param( i_prr_name
+                              , i_pve_value
+                              );
+      else
+         close c_get_parameter_value;
+
+         
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_cmnnoparameterentry
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_info_arguments         => i_prr_name
+                            );
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         if c_get_parameter_value%isopen
+         then
+            close c_get_parameter_value;
+         end if;
+
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end set_parameter_value;
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function varchar_to_boolean( i_varchar in varchar2 )
+      return boolean
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                          := g_con_package || '.varchar_to_boolean';
+      l_return_value             boolean                   := false;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      if upper( i_varchar ) = cmn_constant.g_con_yesno_yes
+      then
+         l_return_value  := true;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_return_value;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end varchar_to_boolean;
+
+   
+   procedure clearlog
+   is
+   begin
+     g_log := '';
+   end;
+
+   procedure logline(
+       i_text in varchar2)
+   is
+   begin
+     g_log := g_log||trim(i_text)||chr(10);
+   end;
+
+   function listlog
+     return clob
+   is
+   begin
+     return g_log;
+   end;
+
+   function count_in_table(
+      i_table in varchar2,
+      i_where in varchar2 default null)
+    return number
+   is
+    l_cnt number;
+    l_stm varchar2(2000) := 'select count(*) from '||i_table;
+   begin
+     if trim(i_where) is not null then
+       l_stm          := l_stm||' where '||i_where;
+     end if;
+     execute immediate l_stm into l_cnt;
+     return l_cnt;
+   end;
+
+   procedure check_count_in_table(
+      p_table    in varchar2,
+      p_where    in varchar2 default null ,
+      p_expected in number,
+      p_errors   in out number)
+   is
+     l_cnt number;
+     l_msg varchar2(2000) := '';
+   begin
+     l_cnt            := count_in_table(p_table, p_where);
+     l_msg            := 'Expected '||to_char(p_expected)||' rows in '||p_table;
+     if trim(p_where) is not null then
+       l_msg          := l_msg||' where '||p_where;
+     end if;
+     l_msg := l_msg||'. Got '||to_char(l_cnt);
+     logline(l_msg);
+     if l_cnt   <> p_expected then
+       p_errors := p_errors + 1;
+       logline('!!!!! PREVIOUS CHECK WENT WRONG !!!!!');
+     end if;
+   end;
+
+   procedure check_count_in_table_gt(
+       p_table    in varchar2,
+       p_where    in varchar2 default null ,
+       p_expected in number,
+       p_errors   in out number)
+   is
+     l_cnt number;
+     l_msg varchar2(2000) := '';
+   begin
+     l_cnt            := count_in_table(p_table, p_where);
+     l_msg            := 'Expected more than '||to_char(p_expected)||' rows in '||p_table;
+     if trim(p_where) is not null then
+       l_msg          := l_msg||' where '||p_where;
+     end if;
+     l_msg := l_msg||'. Got '||to_char(l_cnt);
+     logline(l_msg);
+     if l_cnt   <= p_expected then
+       p_errors := p_errors + 1;
+       logline('!!!!! PREVIOUS CHECK WENT WRONG !!!!!');
+     end if;
+   end;
+
+   procedure check_count_in_table_between(
+       p_table          in varchar2,
+       p_where          in varchar2 default null ,
+       p_expected_lower in number,
+       p_expected_upper in number,
+       p_errors         in out number)
+   is
+     l_cnt number;
+     l_msg varchar2(2000) := '';
+   begin
+     l_cnt            := count_in_table(p_table, p_where);
+     l_msg            := 'Expected more than '||to_char(p_expected_lower)|| ' and less than '||to_char(p_expected_upper) ||' rows in '||p_table;
+     if trim(p_where) is not null then
+       l_msg          := l_msg||' where '||p_where;
+     end if;
+     l_msg := l_msg||'. Got '||to_char(l_cnt);
+     logline(l_msg);
+     if l_cnt   <= p_expected_lower or l_cnt >= p_expected_upper then
+       p_errors := p_errors + 1;
+       logline('!!!!! PREVIOUS CHECK WENT WRONG !!!!!');
+     end if;
+   end;
+
+   procedure log_success_or_failure(
+       p_errors number)
+   is
+   begin
+     logline(chr(10)||to_char(p_errors)||' total errors.'||chr(10));
+     if p_errors = 0 then
+       logline('*****************************************************');
+       logline('***************** S U C C E S S *********************');
+       logline('*****************************************************');
+     else
+       logline('*****************************************************');
+       logline('***************** F A I L U R E *********************');
+       logline('*****************************************************');
+     end if;
+   end;
+   procedure heading(
+       i_heading in varchar2)
+   is
+     l_length number;
+     l_text   varchar2(2000) := '***  '||trim(i_heading)||'  ***' ;
+   begin
+     l_length := length(l_text);
+     logline('');
+     logline(rpad('*', l_length, '*'));
+     logline(l_text);
+     logline(rpad('*', l_length, '*'));
+   end;
+
+	
+
+begin
+   
+   clearlog;
+
+   
+   for r_param in c_param
+   loop
+      cmn_context.add_param( r_param.name
+                           , r_param.value
+                           );
+   end loop;
+end cmn_common;
+/

@@ -1,0 +1,879 @@
+create or replace PACKAGE ACL_COMMON IS
+
+G_CON_PACKAGE CONSTANT ACL_CONSTANT.ST_PROC_NAME := 'ACL_Common';
+
+/* CMN_001 Returns a default timestamp. */
+FUNCTION DEFAULT_TIMESTAMP
+ RETURN TIMESTAMP;
+/* CMN_002 Get default Timestamp with Timezone */
+FUNCTION DEFAULT_TIMESTAMP_WITH_TZ
+ RETURN TIMESTAMP WITH TIME ZONE;
+/* CMN_003 convert timestamp to varchar2 */
+FUNCTION TIMESTAMP_TO_VARCHAR
+ (I_TIMESTAMP IN TIMESTAMP
+ )
+ RETURN VARCHAR2;
+/* CMN_004 Convert date to varchar2 */
+FUNCTION DATE_TO_VARCHAR
+ (I_DATE IN DATE
+ )
+ RETURN VARCHAR2;
+/* CMN_005: Get parameter value */
+FUNCTION GET_PARAMETER_VALUE
+ (I_PRR_NAME IN ACL_PARAMETERS.NAME%TYPE
+ )
+ RETURN ACL_PARAMETER_VALUES.VALUE%TYPE;
+/* CMN_006:Return the fully specified database name, including the domain */
+FUNCTION GET_DB_NAME
+ RETURN ACL_CONSTANT.ST_DB_GLOBAL_NAME;
+/* To retrieve the request type (id_cust) to start an Application_Element */
+FUNCTION GET_REQUEST_TYPE_START
+ RETURN ACL_AET_CONTROL_REQUEST_TYPES.id_cust%TYPE;
+/* To retrieve the request type (id_cust) to stop an Application_Element */
+FUNCTION GET_REQUEST_TYPE_STOP
+ RETURN ACL_AET_CONTROL_REQUEST_TYPES.id_cust%TYPE;
+/* To retrieve the request type (id_cust) to abort an Application_Element */
+FUNCTION GET_REQUEST_TYPE_ABORT
+ RETURN ACL_AET_CONTROL_REQUEST_TYPES.id_cust%TYPE;
+ --
+   /* Returns Application Version Number */
+   FUNCTION get_application_version_number
+   RETURN VARCHAR2;
+   
+   /* Returns Application installed datetime */
+   FUNCTION get_application_installed_dt
+   RETURN VARCHAR2;
+   
+   /* Returns Application Version Description */
+   FUNCTION get_application_version_descr
+   RETURN VARCHAR2;
+   /*
+   ** Sleep: Wrapper for DB sleep (DBMS_LOCK.sleep and DBMS_SESSION.sleep)
+   */
+   PROCEDURE sleep ( i_nr_seconds IN number
+                   );
+   --
+END ACL_COMMON;
+/
+
+
+
+
+package body acl_common is
+
+
+g_dbname acl_constant.st_db_global_name := null;
+
+
+
+function default_timestamp
+ return timestamp
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package || '.Default_Timestamp';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+
+   return to_timestamp( to_char( sys_extract_utc( systimestamp )
+                               , acl_constant.g_con_cmn_timestamp_format
+                               )
+                      , acl_constant.g_con_cmn_timestamp_format
+                      );
+exception
+   when others
+   then
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end default_timestamp;
+
+function default_timestamp_with_tz
+ return timestamp with time zone
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package || '.Default_Timestamp_With_TZ';
+
+l_return_value timestamp with time zone;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   l_return_value  := systimestamp;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return l_return_value;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end default_timestamp_with_tz;
+
+function timestamp_to_varchar
+ (i_timestamp in timestamp
+ )
+ return varchar2
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Timestamp_to_Varchar';
+
+l_formatted_timestamp varchar2(240);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      if i_timestamp is not null
+      then
+         
+         l_formatted_timestamp := to_char( i_timestamp, acl_constant.g_con_cmn_timestamp_format) ||
+         acl_constant.g_con_cmn_timestamp_suffix;
+      end if;
+
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_acltimestamptovarchar
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            );
+   end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_formatted_timestamp;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end timestamp_to_varchar;
+
+function date_to_varchar
+ (i_date in date
+ )
+ return varchar2
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Date_to_Varchar';
+
+l_varchar_date varchar2(240);
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   begin
+      l_varchar_date := to_char( i_date
+                               , acl_constant.g_con_cmn_date_format
+                               );
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_acldatetovarchar
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            );
+   end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_varchar_date;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end date_to_varchar;
+
+function get_parameter_value
+ (i_prr_name in acl_parameters.name%type
+ )
+ return acl_parameter_values.value%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package || '.Get_Parameter_Value';
+
+
+l_found boolean;
+rec_pve acl_parameter_values%rowtype;
+
+
+cursor c_get_parameter_value
+ (i_prr_name in acl_parameters.name%type
+ )
+ is
+select pve.*
+from   acl_parameter_values  pve
+     , acl_parameters        prr
+where  pve.prr_id = prr.id
+and    prr.name   = i_prr_name;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   open c_get_parameter_value( i_prr_name );
+
+   fetch c_get_parameter_value
+   into  rec_pve;
+
+   l_found  := c_get_parameter_value%found;
+
+   close c_get_parameter_value;
+
+   if not l_found
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_aclnoparameterentry
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_prr_name
+                         );
+   end if;
+
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+   return rec_pve.value;
+
+exception
+   when others
+   then
+      if c_get_parameter_value%isopen
+      then
+         close c_get_parameter_value;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+end get_parameter_value;
+
+function get_db_name
+ return acl_constant.st_db_global_name
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_DB_Name';
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module          => l_con_proc_name);
+
+   
+   
+   if acl_common.g_dbname is null
+   then
+      
+      
+      
+      select global_name
+      into   acl_common.g_dbname
+      from   global_name
+      ;
+   end if;
+
+   viu_module.leave_module( i_module          => l_con_proc_name );
+
+   return acl_common.g_dbname;
+
+exception
+   when others
+   then
+      
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end get_db_name;
+
+function get_request_type_start
+ return acl_aet_control_request_types.id_cust%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_Request_Type_Start';
+
+
+l_ace_id_cust acl_aet_control_request_types.id_cust%type;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module          => l_con_proc_name);
+
+   
+   select
+     id_cust
+   into
+     l_ace_id_cust
+   from
+     acl_aet_control_request_types
+   where
+     id = acl_constant.g_con_ace_name_start
+   ;
+
+   viu_module.leave_module( i_module          => l_con_proc_name);
+   return(l_ace_id_cust);
+
+exception
+   when others
+   then
+      
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end get_request_type_start;
+
+function get_request_type_stop
+ return acl_aet_control_request_types.id_cust%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_Request_Type_Stop';
+
+
+l_ace_id_cust acl_aet_control_request_types.id_cust%type;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module          => l_con_proc_name);
+
+   
+   select
+     id_cust
+   into
+     l_ace_id_cust
+   from
+     acl_aet_control_request_types
+   where
+     id = acl_constant.g_con_ace_name_stop
+   ;
+
+   viu_module.leave_module( i_module          => l_con_proc_name);
+   return(l_ace_id_cust);
+
+exception
+   when others
+   then
+      
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end get_request_type_stop;
+
+function get_request_type_abort
+ return acl_aet_control_request_types.id_cust%type
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Get_Request_Type_Abort';
+
+
+l_ace_id_cust acl_aet_control_request_types.id_cust%type;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module          => l_con_proc_name);
+
+   
+   select
+     id_cust
+   into
+     l_ace_id_cust
+   from
+     acl_aet_control_request_types
+   where
+     id = acl_constant.g_con_ace_name_abort
+   ;
+
+   viu_module.leave_module( i_module          => l_con_proc_name);
+   return(l_ace_id_cust);
+
+exception
+   when others
+   then
+      
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end get_request_type_abort;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_application_version_number
+     return varchar2
+   is
+      l_con_proc_name constant acl_constant.st_proc_name
+                                  := g_con_package || '.get_application_version_number';
+      
+      l_return varchar2(1000);
+   begin
+      for r_rgy in (select listagg(rgy.version) within group (order by rgy.date_installed desc) application_version_number
+                    from   acl_registry rgy
+                    where  rgy.comp_id = acl_constant.g_con_rgy_proj
+                    )
+      loop
+        l_return := substr(r_rgy.application_version_number,1,1000);
+      end loop;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_application_version_number;
+   
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_application_installed_dt
+     return varchar2
+   is
+      l_con_proc_name constant acl_constant.st_proc_name
+                                  := g_con_package || '.get_application_installed_dt';
+      
+      l_return varchar2(1000);
+   begin
+      for r_rgy in (select listagg(acl_common.timestamp_to_varchar(rgy.date_installed)) within group (order by rgy.date_installed desc) application_installed_dt
+                    from   acl_registry rgy
+                    where  rgy.comp_id = acl_constant.g_con_rgy_proj
+                    )
+      loop
+        l_return := substr(r_rgy.application_installed_dt,1,1000);
+      end loop;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_application_installed_dt;
+   
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_application_version_descr
+     return varchar2
+   is
+      l_con_proc_name constant acl_constant.st_proc_name
+                                  := g_con_package || '.get_application_version_description';
+      
+      l_return varchar2(1000);
+   begin
+      for r_rgy in (select listagg(rgy.comp_id
+                                   || ',' || rgy.version
+                                   || ',' || acl_common.timestamp_to_varchar(rgy.date_installed)
+                                   ,';'
+                                  ) within group (order by rgy.date_installed desc) application_version_descr
+                    from   acl_registry rgy
+                    )
+      loop
+        l_return := substr(r_rgy.application_version_descr,1,1000);
+      end loop;
+      
+      return l_return;
+   exception
+      when others
+      then
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name);
+         rollback;
+   end get_application_version_descr;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure sleep ( i_nr_seconds in number
+                  )
+  is
+    l_con_proc_name constant varchar2(60) := g_con_package || '.sleep';
+    l_time_limit    constant pls_integer  := 3600;
+    l_nr_seconds             number;
+  begin
+    viu_module.enter_module ( i_module => l_con_proc_name );
+    l_nr_seconds := i_nr_seconds;
+    
+
+
+
+
+    $if ( dbms_db_version.version >= 19 )
+    $then
+      
+      while l_nr_seconds > 0
+      loop
+        dbms_session.sleep ( least(l_time_limit, l_nr_seconds) );
+        l_nr_seconds := l_nr_seconds - l_time_limit;
+      end loop;
+    $else
+      
+      dbms_lock.sleep ( l_nr_seconds );
+    $end
+    
+    viu_module.leave_module ( i_module     => l_con_proc_name
+                            , i_debug_info => sqlerrm
+                            );
+  exception
+    when others
+    then
+      viu_module.leave_module ( i_module            => l_con_proc_name
+                              , i_debug_info        => sqlerrm
+                              );
+      viu_info.raise_info     ( i_calling_procedure => l_con_proc_name
+                              );
+  end sleep;
+  
+end acl_common;
+/

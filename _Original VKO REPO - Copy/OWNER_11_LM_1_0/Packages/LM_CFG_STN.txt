@@ -1,0 +1,457 @@
+create or replace PACKAGE lm_cfg_stn
+IS
+g_con_package        CONSTANT VARCHAR2( 30 ) := 'LM_CFG_STN';
+
+PROCEDURE load_station_data;
+
+PROCEDURE create_station ( i_station_type            IN  lm_station_types.name%TYPE
+                         , i_conduct_type            IN  VARCHAR2
+                         , i_station_id              IN  lm_stations.id%TYPE
+                         , i_description             IN  lm_stations.description%TYPE
+                         , i_ind_report_availability IN  VARCHAR2
+                         , i_ind_update_tracking     IN  VARCHAR2
+                         , o_rt_stn                  OUT lm_stations%ROWTYPE
+                         );
+
+PROCEDURE create_destination ( i_destination_id IN  lm_physical_destinations.id%TYPE
+                             , i_ind_assignable IN  VARCHAR2
+                             , i_station_type   IN  lm_station_types.name%TYPE
+                             , i_rt_sct         IN  lm_system_components%ROWTYPE
+                             , i_description    IN  lm_physical_destinations.description%TYPE
+                             , i_rt_stn         IN  lm_stations%ROWTYPE
+                             , o_rt_pon         OUT lm_physical_destinations%ROWTYPE
+                             );
+
+END lm_cfg_stn;
+/
+
+
+
+package body lm_cfg_stn is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure create_destination ( i_destination_id in  lm_physical_destinations.id%type
+                             , i_ind_assignable in  varchar2
+                             , i_station_type   in  lm_station_types.name%type
+                             , i_rt_sct         in  lm_system_components%rowtype
+                             , i_description    in  lm_physical_destinations.description%type
+                             , i_rt_stn         in  lm_stations%rowtype
+                             , o_rt_pon         out lm_physical_destinations%rowtype
+                             )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.create_destination';
+
+   l_rt_sry lm_station_reachabilities%rowtype;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   o_rt_pon.id                         := i_destination_id;
+   o_rt_pon.id_cust                    := i_destination_id;
+   o_rt_pon.ind_assignable_destination := lm_config.translate_truefalse( i_truefalse => i_ind_assignable );
+   o_rt_pon.sct_id                     := i_rt_sct.id;
+   o_rt_pon.ind_bagstore               := case i_station_type
+                                             when lm_constant.g_con_cfg_store_name then lm_constant.g_con_yesno_yes
+                                          end;
+   o_rt_pon.description                := i_description;
+
+   lm_pon_tapi_pck.pon_insert_row( io_rt_pon => o_rt_pon );
+
+   
+   l_rt_sry.id     := (i_rt_stn.id * lm_constant.g_con_cfg_sry_factor) + lm_constant.g_con_mom_mom_mode_normal;
+   l_rt_sry.stn_id := i_rt_stn.id;
+   l_rt_sry.mom_id := lm_constant.g_con_mom_mom_mode_normal;
+   l_rt_sry.pon_id := o_rt_pon.id;
+
+   lm_sry_tapi_pck.sry_insert_row( io_rt_sry => l_rt_sry );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end create_destination;
+
+
+
+
+
+
+
+procedure create_and_link_destination ( i_rt_stn         in lm_stations%rowtype
+                                      , i_station_type   in lm_station_types.name%type
+                                      )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.create_and_link_destination';
+
+   l_rt_nde lm_nodes%rowtype;
+   l_rt_pon lm_physical_destinations%rowtype;
+   l_rt_sct lm_system_components%rowtype;
+   l_rows   number;
+   l_dummy  boolean;
+
+   
+   
+   cursor c_nodes ( b_station_id lm_stations.id%type )
+   is
+      select 
+             nde.id
+      ,      nde.isc_id_reporting
+      ,      nde.station_id
+      ,      nde.destination_id
+      ,      nde.ind_assignable_destination
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable ( '/project_definition/nodes/node[@ind_physical="TRUE" and @destination_id!=""]'
+                        passing pd.data
+                        columns id                         number       path '@id'
+                        ,       isc_id_reporting           varchar2(30) path '@isc_id_reporting'           
+                        ,       station_id                 number       path '@station_id'
+                        ,       destination_id             number       path '@destination_id'
+                        ,       ind_assignable_destination varchar2(5)  path '@ind_assignable_destination' 
+                      ) nde
+      where  nde.station_id = b_station_id
+      union all
+      select 
+
+             nde.id
+      ,      nde.isc_id_reporting
+      ,      nde_stn.station_id
+      ,      nde.destination_id
+      ,      nde.ind_assignable_destination
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable ( '/project_definition/nodes/node[@ind_physical="TRUE" and @destination_id!=""]'
+                        passing pd.data
+                        columns station_id                 number       path '@station_id'
+                        ,       destination_id             number       path '@destination_id'
+                      ) nde_stn
+      ,      xmltable ( '/project_definition/nodes/node[@ind_physical="TRUE" and @station_id=""]'
+                        passing pd.data
+                        columns id                         number       path '@id'
+                        ,       isc_id_reporting           varchar2(30) path '@isc_id_reporting'           
+                        ,       station_id                 number       path '@station_id'
+                        ,       destination_id             number       path '@destination_id'
+                        ,       ind_assignable_destination varchar2(5)  path '@ind_assignable_destination' 
+                      ) nde
+      where  nde_stn.station_id = b_station_id
+      and    nde.destination_id = nde_stn.destination_id
+      ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_nodes in c_nodes (b_station_id => i_rt_stn.id)
+   loop
+
+      
+      if not lm_pon_tapi_pck.pon_select_row( i_pon_id => l_rec_nodes.destination_id
+                                           , o_rt_pon => l_rt_pon
+                                           )
+      then
+
+         
+         l_dummy := lm_sct_tapi_pck.sct_select_row_uk2( i_sct_id_cust_full => l_rec_nodes.isc_id_reporting
+                                                      , o_rt_sct           => l_rt_sct
+                                                      );
+
+         
+         create_destination ( i_destination_id => l_rec_nodes.destination_id
+                            , i_ind_assignable => l_rec_nodes.ind_assignable_destination
+                            , i_station_type   => i_station_type
+                            , i_rt_sct         => l_rt_sct
+                            , i_description    => l_rec_nodes.isc_id_reporting || ' ' || i_station_type
+                            , i_rt_stn         => i_rt_stn
+                            , o_rt_pon         => l_rt_pon
+                            );
+
+      end if; 
+
+      
+      l_dummy := lm_nde_tapi_pck.nde_select_row( i_nde_id => l_rec_nodes.id
+                                               , o_rt_nde => l_rt_nde
+                                               );
+      l_rt_nde.pon_id := l_rt_pon.id;
+      l_rows := lm_nde_tapi_pck.nde_update_row( i_nde_id  => l_rt_nde.id
+                                              , io_rt_nde => l_rt_nde
+                                              );
+
+   end loop;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end create_and_link_destination;
+
+
+
+
+
+
+
+procedure link_status_segments( i_stn_id in lm_stations.id%type)
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.link_status_segments';
+
+   
+   cursor c_lst ( b_stn_id lm_stations.id%type )
+   is
+      select lst.id
+      ,      lst.max_holding_capacity
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable ( '/project_definition/status_segments/status_segment'
+                        passing pd.data
+                        columns id                         number        path '@id'
+                        ,       max_holding_capacity       number        path '@max_holding_capacity'
+                      ) lst
+      ,      lm_route_segments         rst
+      ,      lm_nodes                  nde
+      ,      lm_station_reachabilities sry
+      where  rst.lst_id            = lst.id
+      and    rst.nde_id_start_node = nde.id
+      and    nde.pon_id            = sry.pon_id
+      and    sry.mom_id            = lm_constant.g_con_mom_mom_mode_normal
+      and    sry.stn_id            = b_stn_id
+      ;
+
+   l_rt_lst   lm_logical_segments%rowtype;
+   l_rows     number;
+   
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_lst in c_lst (b_stn_id => i_stn_id)
+   loop
+
+      
+      if lm_lst_tapi_pck.lst_select_row( i_lst_id => l_rec_lst.id
+                                       , o_rt_lst => l_rt_lst
+                                       )
+      then
+         l_rt_lst.stn_id               := i_stn_id;
+         l_rt_lst.max_holding_capacity := l_rec_lst.max_holding_capacity;
+         
+         
+         l_rows := lm_lst_tapi_pck.lst_update_row( i_lst_id  => l_rt_lst.id
+                                                 , io_rt_lst => l_rt_lst
+                                                 );
+
+      end if;
+   end loop;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end link_status_segments;
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure create_station ( i_station_type            in  lm_station_types.name%type
+                         , i_conduct_type            in  varchar2
+                         , i_station_id              in  lm_stations.id%type
+                         , i_description             in  lm_stations.description%type
+                         , i_ind_report_availability in  varchar2
+                         , i_ind_update_tracking     in  varchar2
+                         , o_rt_stn                  out lm_stations%rowtype
+                         )
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.create_station';
+
+   l_rt_ste lm_station_types%rowtype;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   if not lm_ste_tapi_pck.ste_select_row_uk1( i_ste_name => i_station_type
+                                            , o_rt_ste   => l_rt_ste
+                                            )
+   then
+
+      
+      select nvl( max( ste.id ) + 1, 1)
+      into   l_rt_ste.id
+      from   lm_station_types ste
+      ;
+      
+      
+      l_rt_ste.conduct_type := case i_conduct_type
+                                  when 'Input'        then lm_constant.g_con_conduct_input
+                                  when 'Output'       then lm_constant.g_con_conduct_output
+                                  when 'Intermediate' then lm_constant.g_con_conduct_intermediate
+                                  when 'Virtual'      then lm_constant.g_con_conduct_virtual
+                               end;
+
+      
+      l_rt_ste.name                           := i_station_type;
+      l_rt_ste.description                    := 'Station for ' || i_station_type;
+      l_rt_ste.ind_use_oper_state_for_avlblty := lm_constant.g_con_yesno_yes;
+
+      lm_ste_tapi_pck.ste_insert_row( io_rt_ste => l_rt_ste );
+   end if;
+   
+   
+   o_rt_stn.id                         := i_station_id;
+   o_rt_stn.id_cust                    := i_station_id;
+   o_rt_stn.ste_id                     := l_rt_ste.id;
+   o_rt_stn.ind_fallback               := lm_constant.g_con_yesno_no;
+   o_rt_stn.ind_availability_reporting := lm_config.translate_truefalse( i_truefalse => i_ind_report_availability );
+   o_rt_stn.ind_update_tracking        := lm_config.translate_truefalse( i_truefalse => i_ind_update_tracking );
+   o_rt_stn.ind_rules_defined          := lm_constant.g_con_yesno_no;
+   o_rt_stn.description                := i_description;
+   o_rt_stn.bagstore_type              := case i_station_type
+                                             when lm_constant.g_con_cfg_store_name then lm_constant.g_con_store_type_rack
+                                             
+                                          end;
+   
+   lm_stn_tapi_pck.stn_insert_row( io_rt_stn => o_rt_stn );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end create_station;
+
+
+
+
+
+
+
+procedure load_station_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_station_data';
+
+   l_rt_stn     lm_stations%rowtype;
+   l_start_time timestamp := lm_common.default_timestamp;
+   l_#stn       integer;
+
+   
+   
+   
+   cursor c_stations
+   is
+      select stn.id
+      ,      stn.type
+      ,      stn.category
+      ,      stn.end_user_id
+      ,      stn.ind_equipment_availability
+      ,      stn.ind_update_tracking
+      from   cmn_v_sysconfig_data pd
+      ,      xmltable ( '/project_definition/stations/station'
+                        passing pd.data
+                        columns id                         number        path '@id'
+                        ,       type                       varchar2(100) path '@type'                       
+                        ,       category                   varchar2(100) path '@category'                   
+                        ,       end_user_id                varchar2(500) path '@end_user_id'                
+                        ,       ind_equipment_availability varchar2(5)   path '@ind_equipment_availability' 
+                        ,       ind_update_tracking        varchar2(5)   path '@ind_update_tracking'        
+                      ) stn
+      where  exists
+             (
+             select nde.station_id
+             from   cmn_v_sysconfig_data pd
+             ,      xmltable ( '/project_definition/nodes/node[@ind_physical="TRUE" and @destination_id!=""]'
+                               passing pd.data
+                               columns station_id number path '@station_id'
+                             ) nde
+             where  station_id = stn.id
+             )
+      ;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_station in c_stations
+   loop
+
+      
+      create_station ( i_station_type            => l_rec_station.type
+                     , i_conduct_type            => l_rec_station.category
+                     , i_station_id              => l_rec_station.id
+                     , i_description             => l_rec_station.end_user_id
+                     , i_ind_report_availability => l_rec_station.ind_equipment_availability
+                     , i_ind_update_tracking     => l_rec_station.ind_update_tracking
+                     , o_rt_stn                  => l_rt_stn
+                     );
+                     
+      create_and_link_destination ( i_rt_stn         => l_rt_stn
+                                  , i_station_type   => l_rec_station.type
+                                  );
+      
+      if l_rec_station.type = lm_constant.g_con_cfg_store_name
+      then
+         link_status_segments( i_stn_id => l_rt_stn.id);
+      end if;
+   
+   end loop;
+
+   
+   select count(*)
+   into   l_#stn
+   from   lm_stations stn
+   ;
+   lm_config.log_processing_time( i_message_name    => 'stations'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#stn||' lm_stations'
+                                );
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_station_data;
+
+end lm_cfg_stn;
+/

@@ -1,0 +1,6 @@
+procedure force_snapshot is
+begin
+  dbms_workload_repository.create_snapshot;
+  owa_util.redirect_url('REP_AWR');
+end;
+/

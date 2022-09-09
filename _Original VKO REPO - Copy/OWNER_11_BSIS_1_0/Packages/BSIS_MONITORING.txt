@@ -1,0 +1,262 @@
+create or replace PACKAGE bsis_monitoring
+AUTHID DEFINER
+AS
+  /******************************************************************************
+     NAME:       BSIS_MONITORING
+     PURPOSE:    BSIS application monitoring
+                 This package is initiated from the BSIS jobs and executes all
+                 required application monitoring tasks
+
+     REVISIONS:
+     Ver        Date        Author           Description
+     ---------  ----------  ---------------  ------------------------------------
+     1.0        02-03-2020  nlmv2            Initial version
+  ******************************************************************************/
+  -- 
+  PROCEDURE bsm_monitoring;
+  --
+  PROCEDURE monitor_status;
+  --
+END bsis_monitoring;
+/
+
+
+
+
+package body bsis_monitoring
+is
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+  g_con_package                 constant varchar2 (20)                            := 'bsis_monitoring';
+  g_aet_name                    constant acl_application_elements.name%type       := 'BSIS_MONITORING_JOB';
+  g_warning_dsd_name            constant acl_detailed_state_definitions.name%type := 'BsmMonitoring_W';
+  g_error_dsd_name              constant acl_detailed_state_definitions.name%type := 'BsmMonitoring_E';
+  
+  g_bsm_monitor_start_time               number;
+  g_bsm_monitor_end_time                 number;
+  g_bsm_monitor_warn_period              pls_integer;
+  g_bsm_monitor_warn_threshold           pls_integer;
+  g_bsm_monitor_error_period             pls_integer;
+  g_bsm_monitor_error_threshold          pls_integer;
+  g_aet_id                               acl_application_elements.id%type;
+  
+
+
+
+
+  procedure init
+  is
+    l_con_proc_name constant cmn_constant.st_proc_name        := g_con_package||'.monitor_status';
+    l_value                  cmn_parameter_values.value%type;
+    
+    function get_decimal_time ( i_time_str in varchar2 )
+    return number
+    is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package||'.get_decimal_time';
+      l_time_str                 cmn_parameter_values.value%type;
+      l_strpos                   pls_integer;
+      l_retval                   number := 0;
+    begin
+      l_time_str := ltrim(rtrim(i_time_str));
+      l_strpos   := instr(l_time_str,':');
+      
+      if l_strpos>0
+      then
+        l_retval := to_number(substr(l_time_str,1,l_strpos-1)) + to_number(substr(l_time_str,l_strpos+1,2))/60;
+      else
+        l_retval := to_number(l_time_str);
+      end if;
+      
+      return l_retval;
+    exception
+      when others
+      then
+        viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+        return 0;
+    end get_decimal_time;
+  begin
+    
+
+
+    l_value                       := nvl ( cmn_common.get_parameter_value( i_prr_name => 'BSM_MONITORING_START_TIME'      ), '00:00' );
+    g_bsm_monitor_start_time      := get_decimal_time ( i_time_str => l_value );
+    
+    l_value                       := nvl ( cmn_common.get_parameter_value( i_prr_name => 'BSM_MONITORING_END_TIME'        ), '23:59' );
+    g_bsm_monitor_end_time        := get_decimal_time ( i_time_str => l_value );
+    
+    g_bsm_monitor_warn_period     := nvl ( cmn_common.get_parameter_value( i_prr_name => 'BSM_MONITORING_WARN_PERIOD'     ), 0 );
+    g_bsm_monitor_warn_threshold  := nvl ( cmn_common.get_parameter_value( i_prr_name => 'BSM_MONITORING_WARN_THRESHOLD'  ), 0 );
+    g_bsm_monitor_error_period    := nvl ( cmn_common.get_parameter_value( i_prr_name => 'BSM_MONITORING_ERROR_PERIOD'    ), 0 );
+    g_bsm_monitor_error_threshold := nvl ( cmn_common.get_parameter_value( i_prr_name => 'BSM_MONITORING_ERROR_THRESHOLD' ), 0 );
+    
+
+
+    select aet.id
+    into   g_aet_id
+    from   acl_application_elements aet
+    where  upper(aet.name) = upper(g_aet_name)
+    ;
+    
+  exception
+    when others
+    then
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end init;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure bsm_monitoring
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package||'.bsm_monitoring';
+    l_cnt             pls_integer;
+    l_det_state_set   boolean;
+  begin
+    
+
+
+
+    if  g_bsm_monitor_error_period    > 0
+    and g_bsm_monitor_error_threshold > 0
+    then
+      select count(1)
+      into   l_cnt
+      from   bsis_baggage_data
+      where  last_src_data_upd_bsm >= sysdate - (g_bsm_monitor_error_period/1440)
+      and    rownum                <= g_bsm_monitor_error_threshold
+      ;
+      
+      if l_cnt < g_bsm_monitor_error_threshold
+      then
+        l_det_state_set := true;
+        
+        
+        acl_application_control.clear_detailed_state ( i_dsd_name   => g_warning_dsd_name
+                                                     , i_aet_id     => g_aet_id
+                                                     );
+        acl_application_control.set_detailed_state ( i_dsd_name   => g_error_dsd_name
+                                                   , i_aet_id     => g_aet_id
+                                                   );
+      else
+        l_det_state_set := false;
+        acl_application_control.clear_detailed_state ( i_dsd_name   => g_error_dsd_name
+                                                     , i_aet_id     => g_aet_id
+                                                     );
+      end if;
+    end if;
+    
+
+
+
+    if  not l_det_state_set
+    and g_bsm_monitor_warn_period    > 0
+    and g_bsm_monitor_warn_threshold > 0
+    then
+      select count(1)
+      into   l_cnt
+      from   bsis_baggage_data
+      where  last_src_data_upd_bsm >= sysdate - (g_bsm_monitor_warn_period/1440)
+      and    rownum                <= g_bsm_monitor_warn_threshold
+      ;
+      
+      if  l_cnt < g_bsm_monitor_warn_threshold
+      then
+        l_det_state_set := true;
+        acl_application_control.set_detailed_state ( i_dsd_name   => g_warning_dsd_name
+                                                   , i_aet_id     => g_aet_id
+                                                   );
+      else
+        l_det_state_set := false;
+        acl_application_control.clear_detailed_state ( i_dsd_name   => g_warning_dsd_name
+                                                     , i_aet_id     => g_aet_id
+                                                     );
+      end if;
+    end if;
+    
+  exception
+    when others
+    then
+      rollback;
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end bsm_monitoring;
+  
+
+
+
+
+
+
+
+
+
+  procedure monitor_status
+  is
+    l_con_proc_name constant cmn_constant.st_proc_name := g_con_package||'.monitor_status';
+    l_decimal_time           number;
+  begin
+    
+
+
+    bsis_lifesign.monitor_lifesign_status;
+    
+
+
+
+
+
+    l_decimal_time := to_char(sysdate,'HH24') + to_char(sysdate,'MI')/60;
+    if  l_decimal_time >= g_bsm_monitor_start_time
+    and l_decimal_time <= g_bsm_monitor_end_time
+    then
+      bsm_monitoring;
+    else
+      acl_application_control.clear_detailed_state ( i_dsd_name   => g_warning_dsd_name
+                                                   , i_aet_id     => g_aet_id
+                                                   );
+      acl_application_control.clear_detailed_state ( i_dsd_name   => g_error_dsd_name
+                                                   , i_aet_id     => g_aet_id
+                                                   );
+    end if;
+    
+
+
+
+    commit;
+    
+  exception
+    when others
+    then
+      rollback;
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end monitor_status;
+  
+begin
+  init;
+end bsis_monitoring;
+/

@@ -1,0 +1,56 @@
+procedure remove_dim_version is
+v_msg varchar2(32767) := '';
+cursor c_versions is
+  select v.id, v.source_id, s.filename, s.lastmodified, v.source_type, v.startdate, v.enddate, v.versiontag, v.description
+  from dimension_version v, dimension_source s
+  where v.source_id = s.id
+  order by v.source_type, v.id;
+begin
+  begin
+    htp.print(gui.head( gui.app_name||' > Remove Dimension Version ', 'Remove Dimension Version '));
+
+    htp.print('<SCRIPT>');
+    htp.print('function confirm_remove(id, link) { if (confirm("Are you really sure you want to remove this source and version. (ID="+id+") ?    ")) {document.location=link; } }');
+    htp.print('</SCRIPT>');
+
+    htp.print('<br>');
+    htp.print('<TABLE border=2 bordercolor="#8B4513" bgcolor="#FFEBCD" cellspacing=2 cellpadding=1><TR><TH colspan=10>Dimension Sources and Versions</TH></TR>');
+    htp.print('<TR><TH>'||chr(38)||'nbsp;</TH>');
+    htp.print('<TH>ID</TH>');
+    htp.print('<TH>Source file</TH>');
+    htp.print('<TH>Last Modified</TH>');
+    htp.print('<TH>Source Type</TH>');
+    htp.print('<TH>Start Date</TH>');
+    htp.print('<TH>End Date</TH>');
+    htp.print('<TH>Version Tag</TH>');
+    htp.print('<TH>Description</TH>');
+    htp.print('</TR>');
+
+    for rec in c_versions loop
+      
+      htp.print('<TR>');
+      htp.print('<TD><BUTTON onClick="confirm_remove('||to_char(rec.id)||',''DELETE_DIM_version?p_id='||to_char(rec.id)||''');">Remove</BUTTON></TD>');
+      htp.print('<TD>'||to_char(rec.id)||'</TD>');
+      htp.print('<TD>'||rec.filename||'</TD>');
+      htp.print('<TD>'||rec.lastmodified||'</TD>');
+      htp.print('<TD>'||rec.source_type||'</TD>');
+      htp.print('<TD>'||rec.startdate||'</TD>');
+      htp.print('<TD>'||rec.enddate||'</TD>');
+      htp.print('<TD>'||rec.versiontag||'</TD>');
+      htp.print('<TD>'||rec.description||'</TD>');
+      htp.print('</TR>');
+    end loop;
+    htp.p('</TABLE>');
+    htp.print(gui.tail);
+
+  exception when others then
+    htp.print(gui.head( gui.app_name||' > Remove Dimension Version ', 'Remove Dimension Version '));
+    v_msg := v_msg||'<br>'||sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

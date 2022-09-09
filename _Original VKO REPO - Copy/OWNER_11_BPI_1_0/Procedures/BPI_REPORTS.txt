@@ -1,0 +1,5 @@
+procedure bpi_reports is
+begin
+  bpir_home;
+end;
+/

@@ -1,0 +1,602 @@
+create or replace PACKAGE lm_rbs_administration IS
+ 
+   g_con_package CONSTANT lm_constant.st_proc_name := 'lm_rbs_administration';
+   SUBTYPE g_interval_type IS INTERVAL DAY(9) TO SECOND(3);
+
+PROCEDURE bagstore_relocation_monitor;
+
+PROCEDURE set_ref_timestamp
+   (i_timestamp IN TIMESTAMP DEFAULT NULL
+   );
+
+FUNCTION get_ref_timestamp
+RETURN TIMESTAMP;
+
+FUNCTION station_receptive
+   ( i_stn_id           IN     lm_stations.id%TYPE
+   , i_ind_highest_rank IN     BOOLEAN
+   , i_time_limit_pay   IN     lm_task_instructions.time_limit_process_activity%type
+   , i_tin_id_exclude   IN     lm_task_instructions.id%TYPE DEFAULT NULL
+   , i_pid              IN     lm_packages.pid%TYPE
+   , i_source           IN     VARCHAR2
+   )
+RETURN BOOLEAN;
+
+FUNCTION get_filling_level
+   ( i_stn_id           IN     lm_stations.id%TYPE
+   , i_tin_id_exclude   IN     lm_task_instructions.id%TYPE DEFAULT NULL
+   )
+RETURN NUMBER;
+
+FUNCTION get_outbound_bags
+   ( i_stn_id           IN     lm_stations.id%TYPE
+   )
+RETURN NUMBER;
+
+FUNCTION get_station_capacity
+   ( i_stn_id           IN     lm_stations.id%TYPE
+   )
+RETURN NUMBER;
+
+FUNCTION get_threshold_fill_rate
+   ( i_duration         IN     g_interval_type
+   , i_fill_rate1       IN     lm_stations.store_control_prim_fill_rate_1%TYPE
+   , i_duration1        IN     lm_stations.store_control_prim_duration_1%TYPE
+   , i_fill_rate2       IN     lm_stations.store_control_prim_fill_rate_2%TYPE
+   , i_duration2        IN     lm_stations.store_control_prim_duration_2%TYPE
+   )
+RETURN NUMBER;
+
+END lm_rbs_administration;
+/
+
+
+
+
+package body lm_rbs_administration is
+
+
+
+
+
+
+
+
+   
+   g_ref_timestamp            timestamp;
+
+
+
+
+
+
+procedure bagstore_relocation_monitor
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.bagstore_relocation_monitor';
+
+   
+   
+   type rt_tin
+   is record( evaluation_order number
+            , nt_pids          nt_id_coll
+            , nt_tin_ids       nt_id_coll
+            );
+              
+   type nt_tin is table of rt_tin;
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   cursor c_tin
+   is
+   select tin.evaluation_order
+   ,      cast (collect (tin.pid    order by tin.tin_id asc
+                        ) as nt_id_coll
+               ) pid_coll
+   ,      cast (collect (tin.tin_id order by tin.tin_id asc
+               
+                        ) as nt_id_coll
+               ) tin_id_coll
+   from   (select dense_rank ()
+                    over (order by tinv.time_limit_process_activity asc
+                          ,        tinv.pay_id                      asc
+                          ,        tinv.store_rank                  desc
+                         ) as evaluation_order
+           ,      tinv.pid
+           ,      tinv.id   as tin_id
+           from   lm_tin_non_primary_store_v tinv
+          ) tin
+   group by tin.evaluation_order
+   order by tin.evaluation_order
+   ;
+   
+   l_nt_tin   nt_tin;
+   l_new_dsn  boolean;
+
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   lm_rbs_administration.set_ref_timestamp(lm_common.default_timestamp);
+
+   open c_tin;
+   fetch c_tin bulk collect into l_nt_tin;
+   close c_tin;
+   for idx_eval in 1 .. l_nt_tin.count
+   loop
+      
+      
+      
+      
+      for idx_tin in 1 .. l_nt_tin(idx_eval).nt_tin_ids.count
+      loop
+         begin
+            lm_topology_administration.evaluate_task_instr_for_pck
+               ( i_pid                     => l_nt_tin(idx_eval).nt_pids(idx_tin)
+               , i_tin_id                  => l_nt_tin(idx_eval).nt_tin_ids(idx_tin)
+               , i_nt_exclude_stations     => nt_stn_id()
+               , i_source                  => lm_constant.g_con_src_bagstore_relocation
+               , o_new_determined_stations => l_new_dsn
+               );
+            if not l_new_dsn
+            then
+               exit; 
+            end if;
+         exception
+            when others
+            then
+               
+
+
+               viu_info.handle_info;
+         end;
+      end loop;
+   end loop;
+
+   commit;  
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+
+exception
+   when others
+   then
+      rollback;
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm);
+      viu_info.handle_info;
+end bagstore_relocation_monitor;
+
+
+
+
+
+
+
+procedure set_ref_timestamp
+   (i_timestamp in timestamp default null
+   )
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.set_ref_timestamp';
+
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   g_ref_timestamp := case
+                         when i_timestamp is null
+                         then lm_common.default_timestamp
+                         else i_timestamp
+                      end;
+
+   viu_module.leave_module( i_module => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end set_ref_timestamp;
+
+
+
+
+
+
+
+function get_ref_timestamp
+return timestamp
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_ref_timestamp';
+
+begin
+  viu_module.enter_module( i_module => l_con_proc_name );
+  viu_module.leave_module( i_module => l_con_proc_name );
+
+   return case
+             when g_ref_timestamp is null
+             then lm_common.default_timestamp
+             else g_ref_timestamp
+          end;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end get_ref_timestamp ;
+
+
+
+
+
+
+function station_receptive
+   ( i_stn_id           in     lm_stations.id%type
+   , i_ind_highest_rank in     boolean
+   , i_time_limit_pay   in     lm_task_instructions.time_limit_process_activity%type
+   , i_tin_id_exclude   in     lm_task_instructions.id%type default null
+   , i_pid              in     lm_packages.pid%type
+   , i_source           in     varchar2
+   )
+return boolean
+is
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package||'.station_receptive';
+
+   l_duration                lm_stations.store_control_prim_duration_1%type;
+   l_fill_rate               number;
+   l_ind_receptive           boolean := false;
+   l_rt_stn                  lm_stations%rowtype;
+   l_current_time            timestamp := get_ref_timestamp;
+   
+   l_fill_rate1              lm_stations.store_control_prim_fill_rate_1%type;
+   l_duration1               lm_stations.store_control_prim_duration_1%type;
+   l_fill_rate2              lm_stations.store_control_prim_fill_rate_1%type;
+   l_duration2               lm_stations.store_control_prim_duration_1%type;
+   
+   l_threshold_fill_rate     number;
+
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   if lm_stn_tapi_pck.stn_select_row( i_stn_id => i_stn_id
+                                    , o_rt_stn => l_rt_stn)
+   then
+      
+      if i_ind_highest_rank
+      then
+         l_fill_rate1 := l_rt_stn.store_control_prim_fill_rate_1;
+         l_duration1  := l_rt_stn.store_control_prim_duration_1;
+         l_fill_rate2 := l_rt_stn.store_control_prim_fill_rate_2;
+         l_duration2  := l_rt_stn.store_control_prim_duration_2;
+      else
+         l_fill_rate1 := l_rt_stn.store_control_alt_fill_rate_1;
+         l_duration1  := l_rt_stn.store_control_alt_duration_1;
+         l_fill_rate2 := l_rt_stn.store_control_alt_fill_rate_2;
+         l_duration2  := l_rt_stn.store_control_alt_duration_2;
+      end if;
+      
+      if l_fill_rate1 is null
+      or l_duration1 is null
+      or l_fill_rate2 is null
+      or l_duration2 is null
+      then
+         
+         
+         l_ind_receptive := true;
+      else
+         l_duration  := nvl(i_time_limit_pay, l_current_time) - l_current_time;
+         l_fill_rate := get_filling_level( i_stn_id         => i_stn_id
+                                         , i_tin_id_exclude => i_tin_id_exclude
+                                         );
+
+         l_threshold_fill_rate := get_threshold_fill_rate( i_duration   => l_duration
+                                                         , i_fill_rate1 => l_fill_rate1
+                                                         , i_duration1  => l_duration1
+                                                         , i_fill_rate2 => l_fill_rate2
+                                                         , i_duration2  => l_duration2
+                                                         );
+                                      
+         if l_fill_rate < l_threshold_fill_rate
+         then
+            l_ind_receptive := true;
+         end if;
+      end if; 
+   end if;
+   
+   if not l_ind_receptive
+   then
+      
+      viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_stationnotreceptive
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_notification
+                            , i_info_arguments    => i_stn_id||'##'||i_pid
+                            , i_additional_data   => 'Remaining storage duration: '
+                                                  || to_char(l_duration)
+                                                  || '; Fill rate threshold: '      || l_threshold_fill_rate
+                                                  || '; Actual fill rate: '         || l_fill_rate
+                                                  || '. Process/source: '           || i_source
+                            );
+   end if;
+   
+   viu_module.leave_module( i_module => l_con_proc_name );
+  
+   return l_ind_receptive;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end station_receptive;
+
+
+
+
+
+
+function get_filling_level
+   ( i_stn_id           in     lm_stations.id%type
+   , i_tin_id_exclude   in     lm_task_instructions.id%type default null
+   )
+return number
+is
+
+   l_con_proc_name    constant       lm_constant.st_proc_name := g_con_package||'.get_filling_level';
+
+   l_loadfactor                      number;
+   l_outbound                        number;
+   l_holding_capacity                number;
+   l_filling_level                   number;
+   
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   
+   l_holding_capacity := get_station_capacity( i_stn_id => i_stn_id);
+
+   if l_holding_capacity = 0
+   then
+      
+      l_filling_level := 1; 
+   else
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      lm_topology_administration.loadfactor( i_nt_stations     => nt_stn_id(i_stn_id)
+                                           , i_pay_id          => null
+                                           , i_tin_id_exclude  => i_tin_id_exclude
+                                           , i_ind_loadbalance => false
+                                           , o_load_factor     => l_loadfactor
+                                           );
+
+      
+      l_outbound := lm_rbs_administration.get_outbound_bags(i_stn_id => i_stn_id);
+   
+      l_filling_level := (l_loadfactor + l_outbound) / l_holding_capacity;
+   end if;
+
+   viu_module.leave_module( i_module => l_con_proc_name );
+   
+   return l_filling_level;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end get_filling_level;
+
+
+
+
+
+
+function get_outbound_bags
+   ( i_stn_id           in     lm_stations.id%type
+   )
+return number
+is
+   cursor c_count_pae(b_stn_id in lm_stations.id%type)
+   is
+      select /*+ index (pae lm_pae_pss_fk_i) index (rst lm_rst_lst_fk_i)*/ count(1)
+      from   lm_packages         pae
+      ,      lm_route_segments   rst
+      ,      lm_logical_segments lst
+      where  pae.pss_id = lm_constant.g_con_pss_name_open
+      and    pae.rst_id = rst.id
+      and    rst.lst_id = lst.id
+      and    lst.stn_id = b_stn_id
+      and    not exists
+             (select ''
+              from   lm_task_instructions   tin
+              ,      lm_determined_stations dsn
+              where  (case when tin.pss_id is not null then tin.pid end) = pae.pid
+              and    dsn.tin_id = tin.id
+              and    dsn.stn_id = b_stn_id
+              and    dsn.ind_final_expected = lm_constant.g_con_yesno_no
+             )
+   ;
+
+   l_con_proc_name    constant       lm_constant.st_proc_name := g_con_package||'.get_outbound_bags';
+
+   l_outbound_bags                   number;
+   
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   
+   
+   open c_count_pae(b_stn_id => i_stn_id);
+   fetch c_count_pae into l_outbound_bags;
+   close c_count_pae;
+   
+   viu_module.leave_module( i_module => l_con_proc_name );
+   
+   return nvl(l_outbound_bags, 0);
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end get_outbound_bags;
+
+
+
+
+
+
+function get_station_capacity
+   ( i_stn_id           in     lm_stations.id%type
+   )
+return number
+is
+
+   l_con_proc_name    constant       lm_constant.st_proc_name := g_con_package||'.get_station_capacity';
+
+   cursor c_stn_capacity( b_stn_id lm_stations.id%type)
+   is
+   
+   
+   
+   
+   
+   select sum(
+           case
+            when exists (select ''
+                         from   lm_lss_active_v lss
+                         where  lss.lst_id = lst.id
+                         and    lss.ssm_id not in ( lm_constant.g_con_ssm_operational
+                                                  , lm_constant.g_con_ssm_temp_not_available
+                                                  , lm_constant.g_con_ssm_initial
+                                                  )
+                        )
+            then (select /*+ index (pae lm_pae_pss_fk_i) */ count(1)
+                  from   lm_packages       pae
+                  ,      lm_route_segments rst
+                  where  pae.pss_id = lm_constant.g_con_pss_name_open
+                  and    pae.rst_id = rst.id
+                  and    rst.lst_id = lst.id
+                 )
+            else lst.max_holding_capacity
+           end) holding_capacity
+   from   lm_logical_segments lst
+   where  lst.stn_id = b_stn_id;
+   
+   l_holding_capacity                integer;
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   open c_stn_capacity( b_stn_id => i_stn_id);
+   fetch c_stn_capacity into l_holding_capacity;
+   close c_stn_capacity;
+   
+   viu_module.leave_module( i_module => l_con_proc_name );
+
+   return l_holding_capacity;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end get_station_capacity;
+
+
+
+
+
+
+function get_threshold_fill_rate
+   ( i_duration         in     g_interval_type
+   , i_fill_rate1       in     lm_stations.store_control_prim_fill_rate_1%type
+   , i_duration1        in     lm_stations.store_control_prim_duration_1%type
+   , i_fill_rate2       in     lm_stations.store_control_prim_fill_rate_2%type
+   , i_duration2        in     lm_stations.store_control_prim_duration_2%type
+   )
+return number
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_threshold_fill_rate';
+   
+   l_threshold_fill_rate           number;
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   if i_duration < i_duration2
+   then
+      l_threshold_fill_rate :=  i_fill_rate2;
+   elsif i_duration  >  i_duration1
+   then
+      l_threshold_fill_rate :=  i_fill_rate1;
+   else 
+      l_threshold_fill_rate := ( i_fill_rate1 * lm_common.to_seconds(( i_duration - i_duration2 ))
+                               + i_fill_rate2 * lm_common.to_seconds(( i_duration1 - i_duration ))
+                               )
+                               /
+                               lm_common.to_seconds(( i_duration1 - i_duration2 ));
+   end if;
+            
+   viu_module.leave_module( i_module => l_con_proc_name );
+   
+   return l_threshold_fill_rate;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+end get_threshold_fill_rate;
+
+end lm_rbs_administration;
+/

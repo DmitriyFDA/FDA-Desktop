@@ -1,0 +1,278 @@
+create or replace PACKAGE odb_alerts_calculation  
+IS
+   PROCEDURE odb_init_alerts(
+                    i_handling_area    IN     ODB_HANDLING_AREAS.ID%TYPE,
+                    i_metric           IN     ODB_METRICS.ID%TYPE,
+                    i_metric_type_tar  IN     ODB_METRICS.METRIC_TYPE%TYPE, 
+                    i_domain_type      IN     ODB_METRICS.DOMAIN_TYPE%TYPE,
+                    i_profile          IN     ODB_PROFILES.ID%TYPE,
+                    i_severity         IN     ODB_ALERT_CONFIGURATIONS.SEVERITY%TYPE,
+                    i_comparison_operator IN  ODB_ALERT_CONFIGURATIONS.COMPARISON_OPERATOR%TYPE,
+                    i_threshold        IN     ODB_ALERT_CONFIGURATIONS.THRESHOLD%TYPE,
+                    i_metric_type_ref  IN     ODB_METRICS.METRIC_TYPE%TYPE:=NULL,
+					i_config_type       IN    ODB_ALERT_CONFIGURATIONS.CONFIG_TYPE%TYPE
+             );
+
+   PROCEDURE odb_update_alert_indicators;
+
+   PROCEDURE adjust_spec_alert_config (
+                  i_internal_id             IN     INTEGER,
+                  i_handling_area           IN     ODB_HANDLING_AREAS.ID%TYPE,
+                  i_metric                  IN     ODB_METRICS.ID%TYPE,
+                  i_metric_type_tar         IN     ODB_METRICS.METRIC_TYPE%TYPE,
+                  i_domain_type             IN     ODB_METRICS.DOMAIN_TYPE%TYPE,
+                  i_profile                 IN     ODB_PROFILES.ID%TYPE,
+                  i_severity                IN     ODB_ALERT_CONFIGURATIONS.SEVERITY%TYPE,
+                  i_comparison_operator     IN     ODB_ALERT_CONFIGURATIONS.COMPARISON_OPERATOR%TYPE,
+                  i_threshold        	    IN     ODB_ALERT_CONFIGURATIONS.THRESHOLD%TYPE,
+  				  i_delete_config			IN     INTEGER,
+                  i_metric_type_ref         IN     ODB_METRICS.METRIC_TYPE%TYPE:=NULL,
+                  i_handling_area_down      IN     ODB_HANDLING_AREAS.ID%TYPE:=NULL,
+                  i_config_type             IN     ODB_ALERT_CONFIGURATIONS.CONFIG_TYPE%TYPE
+             );
+
+END odb_alerts_calculation;
+/
+
+
+PACKAGE BODY odb_alerts_calculation
+IS
+   
+
+
+
+
+   
+
+
+
+
+
+
+
+
+   
+   PROCEDURE ODB_UPDATE_ALERT_INDICATORS
+   AS
+      L_NOW  ODB_ALERTS.DATE_MODIFIED%TYPE := SYS_EXTRACT_UTC(ODB_COMMON.GET_MY_SYSTIMESTAMP);
+      
+   BEGIN
+      MERGE INTO ODB_ALERTS ALT
+      USING ( SELECT ALT_ID
+              ,      IND_ACTIVE
+              ,      IND_ACTIVE_NEW
+              FROM ODB_ALERT_STATUS_V
+              WHERE (IND_MODIFIED = 1
+                    OR
+                    IND_ACTIVE <> IND_ACTIVE_NEW)
+            ) ASS ON (ASS.ALT_ID = ALT.ID)
+      WHEN MATCHED
+      THEN
+         UPDATE
+         SET    IND_ACTIVE = ASS.IND_ACTIVE_NEW
+         ,      IND_MODIFIED = ABS(IND_ACTIVE - ASS.IND_ACTIVE_NEW)
+         ,      DATE_MODIFIED = CASE WHEN IND_ACTIVE = ASS.IND_ACTIVE_NEW
+                                     THEN DATE_MODIFIED
+                                     ELSE L_NOW
+                                END
+      ;
+   END ODB_UPDATE_ALERT_INDICATORS;
+   
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE ODB_INIT_ALERTS(
+                  I_HANDLING_AREA           IN     ODB_HANDLING_AREAS.ID%TYPE,
+                  I_METRIC                  IN     ODB_METRICS.ID%TYPE,
+                  I_METRIC_TYPE_TAR         IN     ODB_METRICS.METRIC_TYPE%TYPE,
+                  I_DOMAIN_TYPE             IN     ODB_METRICS.DOMAIN_TYPE%TYPE,
+                  I_PROFILE                 IN     ODB_PROFILES.ID%TYPE,
+                  I_SEVERITY                IN     ODB_ALERT_CONFIGURATIONS.SEVERITY%TYPE,
+                  I_COMPARISON_OPERATOR     IN     ODB_ALERT_CONFIGURATIONS.COMPARISON_OPERATOR%TYPE,
+                  I_THRESHOLD        	    IN     ODB_ALERT_CONFIGURATIONS.THRESHOLD%TYPE,
+                  I_METRIC_TYPE_REF	        IN     ODB_METRICS.METRIC_TYPE%TYPE DEFAULT NULL,
+                  I_CONFIG_TYPE              IN     ODB_ALERT_CONFIGURATIONS.CONFIG_TYPE%TYPE
+             )
+   AS
+        L_ALERT_CONFIGURATION_ID ODB_ALERT_CONFIGURATIONS.ID%TYPE;
+        L_DYNAMIC_REFERENCE_ID ODB_METRIC_INSTANCES.ID%TYPE;
+   BEGIN
+
+   		
+
+        INSERT INTO ODB_ALERT_CONFIGURATIONS (ID, PRF_ID, MTC_ID, MIN_ID_TARGET, MIN_ID_REFERENCE, SEVERITY, COMPARISON_OPERATOR, THRESHOLD, CONFIG_TYPE)
+	   (SELECT ODB_ACN_SEQ1.NEXTVAL
+              , I_PROFILE
+              , I_METRIC
+              , MIN.ID
+              ,(SELECT MIN_R.ID
+                FROM  ODB_METRIC_INSTANCES MIN_R
+                INNER JOIN ODB_METRICS MTC_R  ON MTC_R.ID = MIN_R.MTC_ID
+                WHERE EXISTS
+                  (SELECT 0
+                     FROM ODB_METRIC_INSTANCES MIN_T
+                     INNER JOIN ODB_METRIC_SUBJECT_INSTANCES MSI_T ON MSI_T.MIN_ID = MIN_T.ID
+                     INNER JOIN ODB_METRIC_SUBJECTS MSU_T          ON MSU_T.ID = MSI_T.MSU_ID
+                     INNER JOIN ODB_METRIC_SUBJECT_INSTANCES MSI_R ON
+                                NVL(MSI_T.HAA_ID,0) = NVL(MSI_R.HAA_ID,0)
+                           AND (NVL (MSI_T.LSP_ID, 0) = NVL (MSI_R.LSP_ID, 0))
+                           AND (NVL (MSI_T.SST_ID, 0) = NVL (MSI_R.SST_ID, 0))
+                           AND (NVL (MSI_T.LNK_ID, 0) = NVL (MSI_R.LNK_ID, 0))
+                           AND (NVL (MSI_T.PDN_ID, 0) = NVL (MSI_R.PDN_ID, 0))
+                           AND (NVL (MSI_T.PPL_ID, 0) = NVL (MSI_R.PPL_ID, 0))
+                           AND (NVL (MSI_T.STN_ID, 0) = NVL (MSI_R.STN_ID, 0))
+                     INNER JOIN ODB_METRIC_SUBJECTS MSU_R ON MSU_R.ID = MSI_R.MSU_ID
+                     WHERE NVL (MSU_T.USE, 0) = NVL (MSU_R.USE, 0)
+                           AND NVL(MTC_R.METRIC_TYPE,'X') = NVL(I_METRIC_TYPE_REF,'X')
+                           AND MIN_T.ID = MIN.ID
+                           AND MSI_R.MIN_ID = MIN_R.ID)
+                )
+                , I_SEVERITY
+                , I_COMPARISON_OPERATOR
+                , I_THRESHOLD
+		, I_CONFIG_TYPE
+         	FROM ODB_METRIC_INSTANCES MIN
+        	INNER JOIN ODB_METRIC_SUBJECT_INSTANCES MSI ON MSI.MIN_ID = MIN.ID
+        	INNER JOIN ODB_METRIC_SUBJECTS MSU ON MSU.ID = MSI.MSU_ID
+        	INNER JOIN ODB_METRICS MTC ON MTC.ID = MIN.MTC_ID
+                WHERE MTC.METRIC_TYPE = I_METRIC_TYPE_TAR
+                AND (MSU.USE='START' OR MSU.USE IS NULL)
+                AND  MTC.DOMAIN_TYPE = I_DOMAIN_TYPE
+                AND ((MSI.HAA_ID = I_HANDLING_AREA)
+                OR   (MSI.HAA_ID IS NULL AND
+                      MSI.LNK_ID IN (SELECT LNK.ID
+                                     FROM ODB_HANDLING_AREA_LINKS LNK
+                                     WHERE LNK.HAA_ID_START = I_HANDLING_AREA OR LNK.HAA_ID_END = I_HANDLING_AREA
+                                     )
+                     ))
+
+         );
+   END ODB_INIT_ALERTS;
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   PROCEDURE ADJUST_SPEC_ALERT_CONFIG (
+                  I_INTERNAL_ID             IN     INTEGER,
+                  I_HANDLING_AREA           IN     ODB_HANDLING_AREAS.ID%TYPE,
+                  I_METRIC                  IN     ODB_METRICS.ID%TYPE,
+                  I_METRIC_TYPE_TAR         IN     ODB_METRICS.METRIC_TYPE%TYPE,
+                  I_DOMAIN_TYPE             IN     ODB_METRICS.DOMAIN_TYPE%TYPE,
+                  I_PROFILE                 IN     ODB_PROFILES.ID%TYPE,
+                  I_SEVERITY                IN     ODB_ALERT_CONFIGURATIONS.SEVERITY%TYPE,
+                  I_COMPARISON_OPERATOR     IN     ODB_ALERT_CONFIGURATIONS.COMPARISON_OPERATOR%TYPE,
+                  I_THRESHOLD        	    IN     ODB_ALERT_CONFIGURATIONS.THRESHOLD%TYPE,
+ 				  I_DELETE_CONFIG			IN     INTEGER,
+                  I_METRIC_TYPE_REF   	    IN     ODB_METRICS.METRIC_TYPE%TYPE:=NULL,
+                  I_HANDLING_AREA_DOWN      IN     ODB_HANDLING_AREAS.ID%TYPE:=NULL,
+                  I_CONFIG_TYPE             IN     ODB_ALERT_CONFIGURATIONS.CONFIG_TYPE%TYPE
+              )
+    AS
+
+	   CURSOR C_METRIC_INSTANCES IS
+       SELECT MIV.MIN_ID
+	   FROM   ODB_METRIC_INSTANCES_V MIV
+       WHERE  MIV.METRIC_TYPE = I_METRIC_TYPE_TAR
+       AND    MIV.DOMAIN_TYPE = I_DOMAIN_TYPE
+       AND   ((MIV.HAA_ID = I_HANDLING_AREA)
+       AND    ((MIV.DOMAIN_TYPE = 'STATION' AND MIV.STN_ID = NVL(I_INTERNAL_ID,MIV.STN_ID)) OR
+               (MIV.DOMAIN_TYPE = 'LOGISTIC_STEP' AND MIV.LSP_ID = NVL(I_INTERNAL_ID,MIV.LSP_ID)) OR
+               (MIV.DOMAIN_TYPE = 'STATUS_SEGMENT' AND MIV.SST_ID = NVL(I_INTERNAL_ID,MIV.SST_ID)) OR
+	           (MIV.DOMAIN_TYPE = 'PROCESS_DEFINITION' AND MIV.PDN_ID = NVL(I_INTERNAL_ID,MIV.PDN_ID)) OR
+               (MIV.DOMAIN_TYPE = 'HANDLING_AREA')) OR
+			   (MIV.DOMAIN_TYPE = 'LOGISTIC_STEPxHANDLING_AREA' AND MIV.LSP_ID = I_INTERNAL_ID AND MIV.DHA_ID = NVL(I_HANDLING_AREA_DOWN,MIV.DHA_ID)) OR
+			   (MIV.DOMAIN_TYPE = 'HANDLING_AREAxHANDLING_AREA' AND MIV.DHA_ID = NVL(I_HANDLING_AREA_DOWN,MIV.DHA_ID))
+       OR     (MIV.HAA_ID IS NULL AND MIV.LNK_ID = NVL(I_INTERNAL_ID,MIV.LNK_ID) AND MIV.DOMAIN_TYPE = 'LINK'));
+
+	   L_MIN_ID_REF  ODB_METRIC_INSTANCES.ID%TYPE :=NULL;
+
+	   FUNCTION FIND_METRIC_INSTANCE (I_METRIC_TYPE   IN ODB_METRICS.METRIC_TYPE%TYPE) RETURN INTEGER
+  	   AS
+      	   L_MIN_ID ODB_METRIC_INSTANCES.ID%TYPE;
+  	   BEGIN
+            SELECT MIV.MIN_ID INTO L_MIN_ID
+      		FROM   ODB_METRIC_INSTANCES_V MIV
+      		WHERE  MIV.METRIC_TYPE = I_METRIC_TYPE
+      		AND    MIV.DOMAIN_TYPE = I_DOMAIN_TYPE
+      		AND   ((MIV.HAA_ID = I_HANDLING_AREA)
+            AND    ((MIV.DOMAIN_TYPE = 'STATION' AND MIV.STN_ID = NVL(I_INTERNAL_ID,MIV.STN_ID)) OR
+                    (MIV.DOMAIN_TYPE = 'LOGISTIC_STEP' AND MIV.LSP_ID = NVL(I_INTERNAL_ID,MIV.LSP_ID)) OR
+                    (MIV.DOMAIN_TYPE = 'STATUS_SEGMENT' AND MIV.SST_ID = NVL(I_INTERNAL_ID,MIV.SST_ID)) OR
+	 	            (MIV.DOMAIN_TYPE = 'PROCESS_DEFINITION' AND MIV.PDN_ID = NVL(I_INTERNAL_ID,MIV.PDN_ID)) OR
+                    (MIV.DOMAIN_TYPE = 'HANDLING_AREA'))
+            OR     (MIV.HAA_ID IS NULL AND MIV.LNK_ID = NVL(I_INTERNAL_ID,MIV.LNK_ID) AND MIV.DOMAIN_TYPE = 'LINK'));
+	      	RETURN L_MIN_ID;
+   	   END FIND_METRIC_INSTANCE;
+
+    BEGIN
+
+      
+
+      IF (I_METRIC_TYPE_REF IS NOT NULL) THEN
+	      L_MIN_ID_REF:= FIND_METRIC_INSTANCE(I_METRIC_TYPE_REF);
+      END IF;
+
+	  
+	  
+
+	  FOR R_METRIC_INSTANCES IN C_METRIC_INSTANCES
+	  LOOP
+	  	  IF (I_DELETE_CONFIG = 1) THEN
+		     
+			 DELETE FROM ODB_ALERT_CONFIGURATIONS
+			 WHERE  PRF_ID = I_PROFILE
+		     AND    MIN_ID_TARGET = R_METRIC_INSTANCES.MIN_ID;
+		  ELSIF (I_THRESHOLD IS NOT NULL AND I_CONFIG_TYPE IS NOT NULL AND I_SEVERITY IS NOT NULL) THEN
+			  INSERT INTO ODB_ALERT_CONFIGURATIONS (ID, PRF_ID, MTC_ID, MIN_ID_TARGET, MIN_ID_REFERENCE, SEVERITY, COMPARISON_OPERATOR, THRESHOLD, CONFIG_TYPE)
+		      (SELECT ODB_ACN_SEQ1.NEXTVAL, I_PROFILE, I_METRIC, R_METRIC_INSTANCES.MIN_ID, L_MIN_ID_REF , I_SEVERITY, I_COMPARISON_OPERATOR, I_THRESHOLD, I_CONFIG_TYPE FROM DUAL);
+		  END IF;
+	  END LOOP;
+
+   END ADJUST_SPEC_ALERT_CONFIG;
+
+END ODB_ALERTS_CALCULATION;
+/

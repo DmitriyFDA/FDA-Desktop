@@ -1,0 +1,113 @@
+create or replace PACKAGE acl_userpriv_utils AUTHID CURRENT_USER
+IS
+-- *************** Notes on "current user"-privileges **********************
+-- Killing a session must be performed under the current user's privileges
+-- (override the PL/SQL's default "definer"-privilege model)
+-- See requirement SSDD:3990 / CR 19677.
+--
+-- This has the following implications:
+-- As little references as possible should be made to database objects
+-- that are not strictly necessary, as this causes authorisation issues.
+-- E.g. When in a procedure executed under the current user's privileges
+--      a reference is made to, say, the procedure Viu_Info.Raise_Info,
+--      the end-user (!!) must have the EXECUTE privilege on the package
+--      Viu_Info (either via a role or directly), and he or she should
+--      have a private synonym defined in his or her database schema
+--      for Viu_Info; alternatively, a public synonym would be OK as well
+-- Normally no such direct privileges and synonyms are defined for end-users.
+--
+-- So when executing procedures under current user's privileges
+-- (AUTHID CURRENT_USER), as little references to other objects must be
+-- made as possible.
+--
+-- That is why we do not use VIU (Enter_Module, Leave_Module, Raise_Info) here,
+-- but just execute the plain code.
+--
+-- Any exceptions are to be catched by the calling procedure
+-- ************************************************************************
+   
+   g_con_package      CONSTANT VARCHAR2(61) := 'Acl_Userpriv_Utils';
+   
+   PROCEDURE kill_session( i_sid IN VARCHAR2
+                         , i_serial# IN VARCHAR2
+                         , i_ind_immediate IN VARCHAR2
+                         );
+   
+END acl_userpriv_utils;
+/
+
+
+
+
+package body acl_userpriv_utils
+is
+   procedure kill_session( i_sid in varchar2
+                         , i_serial# in varchar2
+                         , i_ind_immediate in varchar2 )
+   is
+      l_con_proc_name      constant varchar2(61) := g_con_package||'.Kill_Session';
+      
+      l_statement                   varchar2( 200 );
+
+   pragma autonomous_transaction;
+   
+   begin
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_statement  := 'ALTER SYSTEM DISCONNECT SESSION ''' || i_sid || ', ' || i_serial# || ''' ';
+
+      
+      case upper( i_ind_immediate )
+         when 'Y'   
+         then
+            l_statement  := l_statement || ' IMMEDIATE';
+         else
+            l_statement  := l_statement || ' POST_TRANSACTION';
+      end case;
+
+      
+      execute immediate l_statement;
+        
+        
+   
+   end kill_session;
+   
+end acl_userpriv_utils;
+/

@@ -1,0 +1,792 @@
+create or replace PACKAGE pdm_taskreport_ifc
+IS
+   /****************************************************************************
+   Name          : pdm_taskreport_ifc
+   Short name    : TRC
+   Description   : Package to handle taskreport interface.
+
+   Change history:
+   Nr. Date       Author  Request Description
+   --- ---------- ------- ------- ---------------------------------------------
+     1
+     0 30-11-2010 nlrdick    2713 Creation
+   ****************************************************************************/
+
+   PROCEDURE determine_taskreport_data(
+      i_msg                IN     XMLTYPE
+    , i_it_attributes      IN     pdm_attributes.attribute_coll
+    , o_pi_id                 OUT pdm_packages.pi_id%TYPE
+    , o_place_of_birth        OUT pdm_packages.place_of_birth%TYPE
+    , o_tasktype              OUT pdm_task_types.name%TYPE
+    , o_stationid_cust        OUT pdm_stations.id_cust%TYPE
+    , o_rt_stn                OUT pdm_stations%ROWTYPE
+    , o_areaid                OUT VARCHAR2
+    , o_zoneid                OUT VARCHAR2
+    , o_pid                   OUT pdm_packages.pid%TYPE
+    , o_pd_id                 OUT pdm_packages.pd_id%TYPE
+    , o_bir_lpc_ext           OUT pdm_package_attributes.value%TYPE
+    , o_party_id_cust         OUT cmn_parties.id_cust%TYPE
+    , o_party_id              OUT cmn_parties.id%TYPE
+    , o_party_type            OUT cmn_parties.type%TYPE
+    , o_instance_id           OUT VARCHAR2
+    , o_eventtime             OUT cmn_constant.st_timestamp
+    , o_tr_error              OUT VARCHAR2
+    , o_ind_loaded            OUT BOOLEAN
+    , o_ind_unloaded          OUT BOOLEAN
+    , o_ind_physical_event    OUT BOOLEAN
+   );
+
+   PROCEDURE extract_attributes( i_message       IN  XMLTYPE
+                               , i_imd_id        IN  cmn_ifc_msg_definitions.id%TYPE
+                               , o_it_attributes OUT pdm_attributes.attribute_coll
+                               );
+
+END pdm_taskreport_ifc;
+/
+
+
+
+
+package body pdm_taskreport_ifc
+is
+   
+
+
+
+
+   g_con_package                constant varchar2( 20 )  := 'pdm_taskreport_ifc';
+   g_con_xpath_trt              constant varchar2( 20 )  := 'TaskReport';
+   g_con_xpath_pid              constant varchar2( 60 )  := g_con_xpath_trt || '/PID';
+   g_con_xpath_tasktype         constant varchar2( 60 )  := g_con_xpath_trt || '/TaskType';
+   g_con_xpath_stationid        constant varchar2( 60 )  := g_con_xpath_trt || '/StationID';
+   g_con_xpath_areaid           constant varchar2( 60 )  := g_con_xpath_trt || '/AreaID';
+   g_con_xpath_zoneid           constant varchar2( 60 )  := g_con_xpath_trt || '/ZoneID';
+   g_con_xpath_source           constant varchar2( 60 )  := g_con_xpath_trt || '/Header/Source/ProcessID';
+   g_con_xpath_source_instance  constant varchar2( 60 )  := g_con_xpath_trt || '/Header/Source/InstanceID';
+   g_con_xpath_pi_id            constant varchar2( 60 )  := g_con_xpath_trt || '/BaggageIdentifier/BID';
+   g_con_xpath_pob              constant varchar2( 60 )  := g_con_xpath_trt || '/BaggageIdentifier/BID_Extension';
+   g_con_xpath_pi_id_bir        constant varchar2( 60 )  := g_con_xpath_trt || '/BIR_Info/BaggageIdentifier/BID';
+   g_con_xpath_pob_bir          constant varchar2( 60 )  := g_con_xpath_trt || '/BIR_Info/BaggageIdentifier/BID_Extension';
+   g_con_xpath_eventtime        constant varchar2( 60 )  := g_con_xpath_trt || '/EventTime';
+   g_con_xpath_bir_info         constant varchar2( 60 )  := g_con_xpath_trt || '/BIR_Info';
+   g_con_xpath_bir_lpc          constant varchar2( 60 )  := g_con_xpath_bir_info || '/BaggageTag/LPC';
+   g_con_xpath_bir_lpc_ext      constant varchar2( 60 )  := g_con_xpath_bir_info || '/BaggageTag/LPC_Extension';
+   g_con_xpath_result           constant varchar2( 60 )  := g_con_xpath_trt || '/Result';
+   g_con_xpath_error            constant varchar2( 60 )  := g_con_xpath_result || '/Error';
+   g_con_xpath_detail           constant varchar2( 60 )  := g_con_xpath_result || '/Detail';
+   g_con_xpath_uldidcode        constant varchar2( 60 )  := g_con_xpath_detail || '/LoadResult/ULDIdentificationCode';
+   g_con_xpath_loaderror        constant varchar2( 60 )  := g_con_xpath_detail || '/LoadResult/LoadError';
+   g_con_loaderror_eq_failure   constant varchar2( 60 )  := 'EQUIPMENT_FAILURE';
+   g_con_loaderror_overruled    constant varchar2( 60 )  := 'OPERATOR_OVERRULED';
+   g_con_xpath_unloadresult     constant varchar2( 60 )  := g_con_xpath_detail || '/UnloadResult';
+   g_con_xpath_batchresult      constant varchar2( 60 )  := g_con_xpath_detail || '/BatchResult';
+   g_con_xpath_contrrouresult   constant varchar2( 60 )  := g_con_xpath_detail || '/ControlledRoutingResult';
+   g_con_date_format            constant varchar2( 10 )  := 'YYYY-MM-DD';
+
+   procedure init
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.' || 'Init';
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function sdd_to_flightdate( i_sdd in varchar2 )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.sdd_to_flightdate';
+
+      l_systimestamp             cmn_constant.st_timestamp;
+      l_year_month               varchar2(10);
+      l_sdd_of_month             varchar2(10);
+      l_last_day_of_month        varchar2(10);
+      l_flightdate               date;
+      l_flightdate_str           varchar2(30);
+      l_sdd_delay_allowed        pls_integer;
+      l_sdd_ahead_allowed        pls_integer;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+      l_systimestamp       := cmn_common.default_timestamp;
+
+      l_sdd_delay_allowed  :=
+         to_number( cmn_common.get_parameter_value
+                       ( i_prr_name   => pdm_constant.g_con_sdd_delay_allowed)
+                  );
+
+      l_sdd_ahead_allowed  :=
+         to_number( cmn_common.get_parameter_value
+                       ( i_prr_name   => pdm_constant.g_con_sdd_ahead_allowed)
+                  );
+
+      l_sdd_of_month       := ltrim( i_sdd , '-' );
+      l_last_day_of_month  := to_char(last_day(l_systimestamp));
+
+      
+      
+      
+      
+      if l_sdd_of_month <= l_last_day_of_month
+      then
+         l_year_month      := to_char(l_systimestamp,'YYYYMM');
+      else
+         l_year_month      := to_char(add_months(l_systimestamp, -1),'YYYYMM');
+      end if;
+
+      l_flightdate         := to_date ( l_year_month || l_sdd_of_month ,'YYYYMMDD' );
+
+      
+      
+      if l_flightdate  > trunc ( l_systimestamp ) + l_sdd_ahead_allowed
+      then
+         l_flightdate := add_months( l_flightdate, 11);
+      end if;
+
+      
+      
+      if l_flightdate + l_sdd_delay_allowed  < trunc ( l_systimestamp )
+      then
+         l_flightdate := add_months( l_flightdate, 1);
+      end if;
+
+      l_flightdate_str := to_char( l_flightdate, g_con_date_format );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+
+      return l_flightdate_str;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end sdd_to_flightdate;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function get_rt_adn( i_adn_path in pdm_attribute_definitions.path%type )
+   return pdm_attribute_definitions%rowtype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.get_rt_adn';
+
+      l_rt_adn                   pdm_attribute_definitions%rowtype;
+      l_found  boolean;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+      l_found := pdm_adn_tapi_pck.adn_select_row_uk1(i_adn_path => i_adn_path
+                                                    ,o_rt_adn   => l_rt_adn);
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+      return l_rt_adn;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end get_rt_adn;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure map_attributes( i_message        in     xmltype
+                           , io_it_attributes in out pdm_attributes.attribute_coll
+                           )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.map_attributes';
+
+      l_rt_adn_airline_ltf         pdm_attribute_definitions%rowtype;
+      l_rt_adn_flightnr_ltf        pdm_attribute_definitions%rowtype;
+      l_rt_adn_airline_bir         pdm_attribute_definitions%rowtype;
+      l_rt_adn_flightnr_bir        pdm_attribute_definitions%rowtype;
+      l_rt_adn_flightdate          pdm_attribute_definitions%rowtype;
+      l_rt_adn_executedtasktype    pdm_attribute_definitions%rowtype;
+      l_rt_adn_routeresult_noerror pdm_attribute_definitions%rowtype;
+
+      l_airline_regexp         cmn_parameter_values.value%type;
+      l_flightnumber_regexp    cmn_parameter_values.value%type;
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      
+      
+      if    io_it_attributes.exists(pdm_constant.g_con_ltf_flightnr_attr)
+         or io_it_attributes.exists(pdm_constant.g_con_bir_flightnr_attr)
+      then
+
+         
+         l_airline_regexp := cmn_common.get_parameter_value
+                                ( i_prr_name => pdm_constant.g_con_pve_airline_regexp
+                                );
+         l_flightnumber_regexp := cmn_common.get_parameter_value
+                                     ( i_prr_name => pdm_constant.g_con_pve_flightnumber_regexp
+                                     );
+
+         
+         if io_it_attributes.exists(pdm_constant.g_con_ltf_flightnr_attr)
+         then
+
+            
+            
+            
+            l_rt_adn_airline_ltf  := get_rt_adn( i_adn_path => pdm_constant.g_con_ltf_airline_attr );
+            l_rt_adn_flightnr_ltf := get_rt_adn( i_adn_path => pdm_constant.g_con_ltf_flightnumber_attr );
+
+            io_it_attributes(l_rt_adn_airline_ltf.path).adn_id    := l_rt_adn_airline_ltf.id;
+            io_it_attributes(l_rt_adn_airline_ltf.path).adn_type  := l_rt_adn_airline_ltf.type;
+
+            io_it_attributes(l_rt_adn_flightnr_ltf.path).adn_id   := l_rt_adn_flightnr_ltf.id;
+            io_it_attributes(l_rt_adn_flightnr_ltf.path).adn_type := l_rt_adn_flightnr_ltf.type;
+
+            io_it_attributes(l_rt_adn_airline_ltf.path).value(1)  := regexp_substr (io_it_attributes(pdm_constant.g_con_ltf_flightnr_attr).value(1),l_airline_regexp);
+            io_it_attributes(l_rt_adn_flightnr_ltf.path).value(1) := regexp_substr (io_it_attributes(pdm_constant.g_con_ltf_flightnr_attr).value(1),l_flightnumber_regexp,3);
+         end if;
+
+         
+         if io_it_attributes.exists(pdm_constant.g_con_bir_flightnr_attr)
+         then
+
+            
+            
+            
+            l_rt_adn_airline_bir  := get_rt_adn( i_adn_path => pdm_constant.g_con_bir_airline_attr );
+            l_rt_adn_flightnr_bir := get_rt_adn( i_adn_path => pdm_constant.g_con_bir_flightnumber_attr );
+
+            io_it_attributes(l_rt_adn_airline_bir.path).adn_id    := l_rt_adn_airline_bir.id;
+            io_it_attributes(l_rt_adn_airline_bir.path).adn_type  := l_rt_adn_airline_bir.type;
+
+            io_it_attributes(l_rt_adn_flightnr_bir.path).adn_id   := l_rt_adn_flightnr_bir.id;
+            io_it_attributes(l_rt_adn_flightnr_bir.path).adn_type := l_rt_adn_flightnr_bir.type;
+
+            io_it_attributes(l_rt_adn_airline_bir.path).value(1)  := regexp_substr (io_it_attributes(pdm_constant.g_con_bir_flightnr_attr).value(1),l_airline_regexp);
+            io_it_attributes(l_rt_adn_flightnr_bir.path).value(1) := regexp_substr (io_it_attributes(pdm_constant.g_con_bir_flightnr_attr).value(1),l_flightnumber_regexp,3);
+         end if;
+      end if; 
+
+      
+      if io_it_attributes.exists(pdm_constant.g_con_sdd_attr)
+      then
+
+         
+         l_rt_adn_flightdate := get_rt_adn( i_adn_path => pdm_constant.g_con_bir_flightdate_attr);
+
+         io_it_attributes(l_rt_adn_flightdate.path).adn_id   := l_rt_adn_flightdate.id;
+         io_it_attributes(l_rt_adn_flightdate.path).adn_type := l_rt_adn_flightdate.type;
+         io_it_attributes(l_rt_adn_flightdate.path).value(1) := sdd_to_flightdate(io_it_attributes(pdm_constant.g_con_sdd_attr).value(1));
+      end if;
+
+      
+      l_rt_adn_executedtasktype := get_rt_adn( i_adn_path => pdm_constant.g_con_executedtasktype_attr);
+
+      io_it_attributes(l_rt_adn_executedtasktype.path).adn_id   := l_rt_adn_executedtasktype.id;
+      io_it_attributes(l_rt_adn_executedtasktype.path).adn_type := l_rt_adn_executedtasktype.type;
+
+      
+      
+      io_it_attributes(l_rt_adn_executedtasktype.path).ind_force := cmn_constant.g_con_yesno_yes;
+
+
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+      if    (
+                 io_it_attributes.exists(pdm_constant.g_con_xpath_error)
+             and (   cmn_common.get_parameter_value( i_prr_name => pdm_constant.g_con_ptr_del_extask_unexp_stn )
+                     = cmn_constant.g_con_yesno_yes
+                  or io_it_attributes(pdm_constant.g_con_xpath_error).value(1) <> pdm_constant.g_con_tr_error_unexp_station
+                 )
+            )
+         or (    io_it_attributes.exists(pdm_constant.g_con_routeresult_attr)
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_dump
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_manualdeliver
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_manualscan
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_routetocache
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_routetol4
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_routetomc
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_routetooutput
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_routetopb
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_routetorelabel
+             and io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1) <> pdm_constant.g_con_tte_reclaim
+            )
+         or cmn_xml_util.extract_element( i_xml   => i_message
+                                        , i_xpath => g_con_xpath_batchresult
+                                        )
+            is not null
+         or cmn_xml_util.extract_element( i_xml   => i_message
+                                        , i_xpath => g_con_xpath_contrrouresult
+                                        )
+            is not null
+
+      then
+
+         
+         io_it_attributes(l_rt_adn_executedtasktype.path).value(1)  := null;
+      else
+
+         
+         
+         
+         
+         io_it_attributes(l_rt_adn_executedtasktype.path).value(1)  := io_it_attributes(pdm_constant.g_con_tasktype_attr).value(1);
+      end if;
+
+      
+      
+      if         io_it_attributes.exists(pdm_constant.g_con_routeresult_attr)
+         and not io_it_attributes.exists(pdm_constant.g_con_xpath_error)
+      then
+
+         
+         l_rt_adn_routeresult_noerror := get_rt_adn( i_adn_path => pdm_constant.g_con_routeresult_noerror_attr);
+   
+         io_it_attributes(l_rt_adn_routeresult_noerror.path).adn_id   := l_rt_adn_routeresult_noerror.id;
+         io_it_attributes(l_rt_adn_routeresult_noerror.path).adn_type := l_rt_adn_routeresult_noerror.type;
+         io_it_attributes(l_rt_adn_routeresult_noerror.path).value(1) := io_it_attributes(pdm_constant.g_con_routeresult_attr).value(1);
+      end if;
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end map_attributes;
+
+   
+
+
+
+
+
+
+
+
+
+
+   function physical_event( i_stn_id     in pdm_stations.id%type
+                          , i_areaid     in pdm_package_attributes.value%type
+                          , i_zoneid     in pdm_package_attributes.value%type
+                          )
+      return boolean
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.physical_event';
+      
+      l_result boolean := false;
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      if      i_stn_id is not null
+      	 or ( i_areaid is not null and i_zoneid is not null)
+      then
+         l_result := true;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+      return l_result;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end physical_event;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure determine_taskreport_data(
+      i_msg                in     xmltype
+    , i_it_attributes      in     pdm_attributes.attribute_coll
+    , o_pi_id                 out pdm_packages.pi_id%type
+    , o_place_of_birth        out pdm_packages.place_of_birth%type
+    , o_tasktype              out pdm_task_types.name%type
+    , o_stationid_cust        out pdm_stations.id_cust%type
+    , o_rt_stn                out pdm_stations%rowtype
+    , o_areaid                out varchar2
+    , o_zoneid                out varchar2
+    , o_pid                   out pdm_packages.pid%type
+    , o_pd_id                 out pdm_packages.pd_id%type
+    , o_bir_lpc_ext           out pdm_package_attributes.value%type
+    , o_party_id_cust         out cmn_parties.id_cust%type
+    , o_party_id              out cmn_parties.id%type
+    , o_party_type            out cmn_parties.type%type
+    , o_instance_id           out varchar2
+    , o_eventtime             out cmn_constant.st_timestamp
+    , o_tr_error              out varchar2
+    , o_ind_loaded            out boolean
+    , o_ind_unloaded          out boolean
+    , o_ind_physical_event    out boolean
+   )
+   is
+
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.determine_taskreport_data';
+
+      l_rt_stn    pdm_stations%rowtype;
+      l_rt_pty    cmn_parties%rowtype;
+      l_loaderror pdm_package_attributes.value%type;
+      l_found     boolean;
+      
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      o_pi_id := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                   , i_adn_path      => g_con_xpath_pi_id
+                                                   );
+
+      
+      if o_pi_id is not null
+      then
+         
+         o_place_of_birth := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                               , i_adn_path      => g_con_xpath_pob
+                                                               );
+      else
+         
+         o_pi_id := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                      , i_adn_path      => g_con_xpath_pi_id_bir
+                                                      );
+
+         o_place_of_birth := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                               , i_adn_path      => g_con_xpath_pob_bir
+                                                               );
+      end if;
+
+      
+      if     o_pi_id          is     null
+      	 and o_place_of_birth is not null
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_piidnotfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            );
+      end if;
+
+      
+      if     o_pi_id          is not null
+      	 and o_place_of_birth is     null
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_placeofbirthnotfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            );
+      end if;
+
+      o_tasktype := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                      , i_adn_path      => g_con_xpath_tasktype
+                                                      );
+
+      o_stationid_cust := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                            , i_adn_path      => g_con_xpath_stationid
+                                                            );
+
+      l_found := pdm_stn_tapi_pck.stn_select_row_uk1( i_stn_id_cust => o_stationid_cust
+                                                    , o_rt_stn      => o_rt_stn
+                                                    );
+
+      o_areaid := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                    , i_adn_path      => g_con_xpath_areaid
+                                                    );
+
+      o_zoneid := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                    , i_adn_path      => g_con_xpath_zoneid
+                                                    );
+
+      o_pid := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                 , i_adn_path      => g_con_xpath_pid
+                                                 );
+
+      o_pd_id := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                   , i_adn_path      => g_con_xpath_bir_lpc
+                                                   );
+
+      o_bir_lpc_ext := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                         , i_adn_path      => g_con_xpath_bir_lpc_ext
+                                                         );
+
+      o_party_id_cust := cmn_xml_util.extract_value( i_xml   => i_msg
+                                                   , i_xpath => g_con_xpath_source
+                                                   );
+
+      o_instance_id := cmn_xml_util.extract_value( i_xml   => i_msg
+                                                 , i_xpath => g_con_xpath_source_instance
+                                                 );
+
+      l_found := cmn_common_msg.pty_select_row_uk( i_pty_id_cust          => o_party_id_cust
+                                                 , i_pty_instance_id_cust => o_instance_id
+                                                 , o_rt_pty               => l_rt_pty
+                                                 );
+      if l_found
+      then
+         o_party_id   := l_rt_pty.id;
+         o_party_type := l_rt_pty.type;
+      end if;
+
+      o_eventtime := cmn_common.varchar_to_timestamp
+                        ( pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                            , i_adn_path      => g_con_xpath_eventtime
+                                                            )
+                        );
+
+      o_tr_error := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                      , i_adn_path      => g_con_xpath_error
+                                                      );
+
+      
+      
+      
+      
+      l_loaderror := pdm_attributes.get_attr_list_value( i_it_attributes => i_it_attributes
+                                                       , i_adn_path      => g_con_xpath_loaderror
+                                                       );
+ 
+      o_ind_loaded :=
+             cmn_xml_util.extract_element( i_xml   => i_msg
+                                         , i_xpath => g_con_xpath_uldidcode
+                                         )
+                          is not null
+                      and (   l_loaderror is null
+                      	   or l_loaderror in (g_con_loaderror_eq_failure, g_con_loaderror_overruled)
+                          )
+      ;
+
+      
+      o_ind_unloaded :=
+         cmn_xml_util.extract_element( i_xml   => i_msg
+                                     , i_xpath => g_con_xpath_unloadresult
+                                     )
+                        is not null
+      ;
+
+      
+      o_ind_physical_event := physical_event( i_stn_id => o_rt_stn.id
+                                            , i_areaid => o_areaid
+                                            , i_zoneid => o_zoneid
+                                            );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end determine_taskreport_data;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure extract_attributes( i_message       in  xmltype
+                               , i_imd_id        in  cmn_ifc_msg_definitions.id%type
+                               , o_it_attributes out pdm_attributes.attribute_coll
+                               )
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.extract_attributes';
+
+   begin
+      viu_module.enter_module( i_module => l_con_proc_name );
+
+      
+      pdm_attributes.extract_attributedata( i_message       => i_message
+                                          , i_imd_id        => i_imd_id
+                                          , o_it_attributes => o_it_attributes
+                                          );
+
+      
+      map_attributes( i_message        => i_message
+                    , io_it_attributes => o_it_attributes
+                    );
+
+      viu_module.leave_module( i_module => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => l_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+   end extract_attributes;
+
+begin
+   init;
+end pdm_taskreport_ifc;
+/

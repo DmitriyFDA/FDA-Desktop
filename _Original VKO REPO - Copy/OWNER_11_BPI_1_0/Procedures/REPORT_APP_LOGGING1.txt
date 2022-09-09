@@ -1,0 +1,31 @@
+procedure report_app_logging1(p_period in varchar2 default ' ', p_sortby in varchar2 default ' ',  p_app in varchar2 default ' ') is
+v_msg      varchar2(32767);
+v_dt1      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24');
+v_dt2      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24');
+v_where    varchar2( 200);
+v_title    varchar2( 200) := 'Report Application Logging '||p_period||', dd '||ts2str(sysdate);
+begin
+  begin
+    v_msg := 'Calculating start date time. ';
+    v_dt1 := substr(p_period, 1, 11)||':00';
+    v_msg := 'Calculating end date time. ';
+    v_dt2 := substr(p_period, 13, 11)||':00';
+
+    v_where := 'INSERTTS BETWEEN TO_DATE('''||v_dt1||''',''YYYYMMDD.HH24:MI'') AND TO_DATE('''||v_dt2||''',''YYYYMMDD.HH24:MI'')';
+    if trim(p_app) is not null then
+      v_where := 'PROCESSID = '''||p_app||''' AND '||v_where;
+    end if;
+
+    inspect_table (v_title, 'WC_APPLICATIONLOGDATA', 1000, v_where, p_sortby);
+
+  exception when others then
+    htp.print(ui_menu.head_from_link('REP_APP_LOGGING'));
+    v_msg := v_msg||sqlerrm;
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

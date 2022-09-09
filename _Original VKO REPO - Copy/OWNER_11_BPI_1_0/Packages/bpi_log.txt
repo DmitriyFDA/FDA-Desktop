@@ -1,0 +1,155 @@
+create or replace PACKAGE bpi_log
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'bpi_log';
+
+   PROCEDURE warn( i_con_proc IN VARCHAR2
+                 , i_data     IN VARCHAR2 := NULL
+                 );
+
+   PROCEDURE raise_fatal_error( i_con_proc IN VARCHAR2
+                              , i_msg      IN VARCHAR2 := NULL
+                              );
+
+   PROCEDURE handle_error( i_con_proc IN VARCHAR2
+                         , i_msg      IN VARCHAR2 := NULL
+                         );
+
+   PROCEDURE debug_info( i_con_proc IN VARCHAR2
+                       , i_data     IN VARCHAR2 := NULL
+                       );
+
+   PROCEDURE notify( i_con_proc IN VARCHAR2
+                   , i_data     IN VARCHAR2 := NULL
+                   , i_info     IN VARCHAR2 := NULL
+                   );
+
+END bpi_log;
+/
+
+
+
+
+package body bpi_log
+is
+
+procedure warn( i_con_proc in varchar2
+              , i_data     in varchar2 := null
+              )
+is
+   l_data viu_info_logs.additional_data%type;
+begin
+   l_data := substr( nvl( i_data, i_con_proc )
+                     ||', WARN: '||sqlerrm||chr(10)
+                     ||dbms_utility.format_error_backtrace
+                   , 1, 4000
+                   );
+   viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure  => i_con_proc
+                         , i_severity           => viu_info.c_severity_warning
+                         , i_info_arguments     => to_char( sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                         , i_additional_data    => l_data
+                         );
+end;
+
+
+procedure raise_fatal_error( i_con_proc in varchar2
+                           , i_msg      in varchar2 := null
+                           )
+is
+   l_msg  viu_info_logs.additional_data%type;
+begin
+   l_msg := substr( nvl( i_msg, i_con_proc )
+                    ||', ERROR: '||sqlerrm||chr(10)
+                    ||dbms_utility.format_error_backtrace
+                  , 1, 4000
+                  );
+   
+   if dbms_transaction.local_transaction_id is not null
+   then
+      rollback;
+   end if;
+
+   bpi_trace.leave_module( i_module => i_con_proc );
+
+   viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                      , i_calling_procedure  => i_con_proc
+                      , i_severity           => viu_info.c_severity_error
+                      , i_info_arguments     => to_char( sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6' )
+                      , i_additional_data    => l_msg
+                      );
+end;
+
+
+procedure handle_error( i_con_proc in varchar2
+                      , i_msg      in varchar2 := null
+                      )
+is
+   l_msg viu_info_logs.additional_data%type;
+begin
+   l_msg := substr( nvl(i_msg, i_con_proc)
+                    ||', ERROR: '||sqlerrm||chr(10)
+                    ||dbms_utility.format_error_backtrace
+                  , 1, 4000
+                  );
+   if sqlcode in (-01652, -00060)
+   then
+      warn(i_con_proc, l_msg);
+   else
+      viu_info.handle_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                          , i_calling_procedure  => i_con_proc
+                          , i_severity           => viu_info.c_severity_error
+                          , i_info_arguments     => to_char( sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6' )
+                          , i_additional_data    => l_msg
+                          );
+   end if;
+end;
+
+
+procedure debug_info( i_con_proc in varchar2
+                    , i_data     in varchar2 := null
+                    )
+is
+   l_data viu_info_logs.additional_data%type;
+begin
+   l_data := substr( nvl(i_data, i_con_proc)
+                   , 1, 4000
+                   );
+
+   viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure  => i_con_proc
+                         , i_severity           => viu_info.c_severity_debug
+                         , i_info_arguments     => to_char( sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6' )
+                         , i_additional_data    => l_data
+                         );
+end;
+
+
+procedure notify( i_con_proc in varchar2
+                , i_data     in varchar2 := null
+                , i_info     in varchar2 := null
+                )
+is
+   l_data  viu_info_logs.additional_data%type;
+   l_info  viu_info_logs.info_arguments%type;
+begin
+   l_data := substr( nvl(i_data, i_con_proc)
+                   , 1, 4000
+                   );
+   l_info := case when trim(i_info) is null
+                then
+                   to_char( sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6' )
+                else
+                   substr( i_info, 1, 4000 )
+             end;
+
+   viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure  => i_con_proc
+                         , i_severity           => viu_info.c_severity_notification
+                         , i_info_arguments     => l_info
+                         , i_additional_data    => l_data
+                         );
+end;
+
+
+end bpi_log;
+/

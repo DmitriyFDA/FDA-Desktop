@@ -1,0 +1,5 @@
+procedure commit is
+begin
+  commit;
+end;
+/

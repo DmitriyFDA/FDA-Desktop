@@ -1,0 +1,136 @@
+function get_composition(p_name in varchar2) return clob is
+v_text  clob := '?';
+v_vddl  varchar2(32767) := '';
+v_prec  varchar2(  30) := '';
+v_null  varchar2(  30) := '';
+v_temp  varchar2(   1) := '';
+v_type  varchar2(  30) := '';
+cursor c_tcols (p_table in varchar2) is
+  select column_name, data_type, data_length, data_precision, nullable
+  from user_tab_columns
+  where table_name=p_name
+  order by column_id;
+
+  function x_get_constrs (p_name in varchar2) return varchar2 is
+  v_txt varchar2(32000) := '';
+  cursor c_constr_c (p_table in varchar2) is
+    select constraint_name, status, search_condition
+    from user_constraints
+    where table_name = p_table
+    and constraint_type = 'C'
+    and constraint_name not like 'SYS_%'
+    order by 1;
+  cursor c_constr_pu (p_table in varchar2) is
+    select constraint_name, status
+    from user_constraints
+    where table_name = p_table
+    and constraint_type in ('P', 'U')
+    order by constraint_type, constraint_name;
+  cursor c_constr_r (p_table in varchar2) is
+    select constraint_name, status
+    from user_constraints
+    where table_name = p_table
+    and constraint_type = 'R'
+    order by 1;
+  cursor c_triggers (p_table in varchar2) is
+    select trigger_name, status
+    from user_triggers
+    where table_name = p_table
+    order by 1;
+  cursor c_idx(p_table in varchar2) is
+    select index_name, status
+    from user_indexes
+    where table_name=p_table and index_name not like 'SYS%'
+    order by index_name;
+  cursor c_cols(p_table in varchar2, p_index in varchar2) is
+    select column_name
+    from user_ind_columns
+    where table_name=p_table
+    and index_name=p_index
+    order by column_position;
+  begin
+    v_txt := chr(10)||'Value Constraints:';
+    for c_rec in c_constr_c(p_name) loop
+      v_txt := v_txt||chr(10)||c_rec.constraint_name||' is '||c_rec.status;
+    end loop;
+    v_txt := v_txt||chr(10)||chr(10)||'Primary and Unique Key Constraints:';
+    for c_rec in c_constr_pu(p_name) loop
+      v_txt := v_txt||chr(10)||c_rec.constraint_name||' is '||c_rec.status;
+    end loop;
+    v_txt := v_txt||chr(10)||chr(10)||'Indexes:';
+    for c_rec1 in c_idx(p_name) loop
+      v_txt := v_txt||chr(10)||c_rec1.index_name||' on (';
+      for c_rec2 in c_cols(p_name, c_rec1.index_name) loop
+        v_txt := v_txt||c_rec2.column_name||', ';
+      end loop;
+      v_txt := substr(v_txt, 1, length(v_txt)-2)||') is '||c_rec1.status;
+    end loop;
+    v_txt := v_txt||chr(10)||chr(10)||'Foreign Key Constraints:';
+    for c_rec in c_constr_r(p_name) loop
+      v_txt := v_txt||chr(10)||c_rec.constraint_name||' is '||c_rec.status;
+    end loop;
+    v_txt := v_txt||chr(10)||chr(10)||'Triggers:';
+    for c_rec in c_triggers(p_name) loop
+      v_txt := v_txt||chr(10)||c_rec.trigger_name||' is '||c_rec.status;
+    end loop;
+    return v_txt;
+  end;
+
+begin
+  begin
+    select 'VIEW' into v_type from user_views where view_name=p_name;
+  exception when others then
+    begin
+      select 'TABLE' into v_type from user_tables where table_name=p_name;
+    exception when others then
+      v_type := 'UNKNOWN';
+    end;
+  end;
+  if v_type = 'TABLE' then
+    begin
+      select temporary into v_temp from user_tables where table_name = p_name;
+      if v_temp = 'Y' then
+        v_text := 'Table '||p_name||'(Temporary)'||chr(10);
+      else
+        v_text := 'Table '||p_name||chr(10);
+      end if;
+      for c_rec in c_tcols(p_name) loop
+        v_prec := nvl(ltrim(to_char(c_rec.data_length)), ' ');
+        if c_rec.data_type = 'NUMBER' then
+          if c_rec.data_precision is not null then
+            v_prec := ltrim(to_char(c_rec.data_precision));
+          end if;
+        elsif c_rec.data_type = 'DATE' then
+          v_prec := ' ';
+        else
+          null;
+        end if;
+        if v_prec <> ' ' then
+          v_prec := '('||v_prec||')';
+        end if;
+        v_null := ' ';
+        if c_rec.nullable = 'N' then
+          v_null := 'NOT NULL';
+        end if;
+        v_text := v_text||chr(10)||rpad(c_rec.column_name, 31, ' ')
+              ||rpad(v_null, 9, ' ')  ||c_rec.data_type||v_prec;
+      end loop;
+      v_text := v_text||chr(10)||x_get_constrs(p_name);
+    exception
+       when others then v_text := v_text||chr(10)||sqlerrm;
+    end;
+  elsif v_type = 'VIEW' then
+    begin
+      select text into v_vddl from user_views where view_name = p_name;
+      v_text := replace(v_vddl,',',chr(10)||',');
+      v_text := replace(v_vddl,chr(10)||chr(10),chr(10));
+    exception
+      when others then v_text := sqlerrm;
+    end;
+    v_text := 'View '||p_name||chr(10)||chr(10)||'Definition:'||chr(10)||chr(10)||v_text;
+  else
+    v_text := p_name||' is not a known table or view.';
+  end if;
+  return v_text;
+end;
+/

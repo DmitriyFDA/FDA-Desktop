@@ -1,0 +1,467 @@
+create or replace PACKAGE Dimension IS
+  G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'Dimension';
+  function Start_MUTEX(i_source_type in varchar2) return boolean;
+  procedure End_MUTEX(i_source_type in varchar2);
+  procedure get_DIM_source_type( i_filename in varchar2, o_source_type out varchar2
+                               , o_error out number, o_message out viu_info_logs.additional_data%type);
+  procedure process_DIM_source(i_filename in varchar2, o_error out number, o_message out viu_info_logs.additional_data%type);
+  procedure Dimension_Source_Update(p_Error in number, p_dimension_source_id in number);
+  procedure gather_statistics(p_table_name varchar2);
+  procedure gather_DIM_statistics;
+  procedure remove_version(p_dimension_version_id in number);
+END Dimension;
+/
+
+
+
+
+package body dimension is
+
+
+function start_mutex(i_source_type in varchar2) return boolean is
+l_msg viu_info_logs.additional_data%type;
+l_current_status varchar2(50) := '???';
+l_ok boolean := false;
+begin
+  begin
+    select status into l_current_status
+    from dimension_source_types where source_type = i_source_type for update;
+    if l_current_status = 'UPDATING' then
+      commit; 
+      l_msg := 'Start_MUTEX('||i_source_type||') failed. Already UPDATING. No action.'
+             ||chr(10)||'***  PLEASE RESTART AFTER CHECKING ANY OTHER '||i_source_type||' PROCESSING HAS COMPLETED  ***';
+      plog(l_msg, 'error');
+      l_ok := false;
+    else
+      
+      update dimension_source_types set status = 'UPDATING' where source_type = i_source_type;
+      commit; 
+      l_ok := true;
+    end if;
+  exception when others then
+    l_ok := false;
+    l_msg := 'Start_MUTEX('||i_source_type||') failed: '||chr(10)||sqlerrm;
+    plog(l_msg, 'error');
+  end;
+  return l_ok;
+end;
+
+
+procedure end_mutex(i_source_type in varchar2) is
+begin
+  
+  update dimension_source_types set status = null where source_type = i_source_type;
+  commit;
+end;
+
+
+procedure dimension_source_update(p_error in number, p_dimension_source_id in number) is
+l_msg viu_info_logs.additional_data%type;
+begin
+  if p_error <> 0 and p_dimension_source_id > 0 then
+    begin
+      
+      update dimension_source set error = p_error where id = p_dimension_source_id;
+    exception when others then
+      l_msg := 'DIMENSION_SOURCE update failure(2). '||'ERR:'||to_char(p_error)||', ID:'||to_char(p_dimension_source_id)||chr(10)||sqlerrm;
+      plog(l_msg, 'error');
+    end;
+  end if;
+end;
+
+
+procedure gather_statistics(p_table_name varchar2) is
+l_owner varchar2(30) := '';
+begin
+  
+  return;
+
+  
+  begin
+    select table_owner into l_owner
+    from user_synonyms where table_name = upper(p_table_name);
+  exception when no_data_found then
+    l_owner := user;
+  end;
+  
+  
+  
+  
+  
+end;
+
+
+procedure gather_dim_statistics is
+l_msg viu_info_logs.additional_data%type;
+begin
+  
+  l_msg := 'Gathering statistics for all DIM tables.';
+  plog(l_msg, 'info');
+  for c_rec in (select table_name from user_tables where table_name like 'DIM_%') loop
+    gather_statistics(c_rec.table_name);
+  end loop;
+  l_msg := 'Done. DIM tables analyzed.';
+  plog(l_msg, 'info');
+end;
+
+
+procedure remove_version(p_dimension_version_id in number) is
+l_con_proc_name constant varchar2(200) := g_con_package||'.remove_version('||to_char(p_dimension_version_id)||')';
+l_msg viu_info_logs.additional_data%type;
+l_dv_rec dimension_version%rowtype;
+sqldml varchar2(2000) := '';
+cursor c_dims is
+select table_name from  user_tab_columns
+where table_name like 'DIM%' and table_name not like 'DIMENSION%'
+and column_name='VERSION_ID';
+begin
+  begin
+    select * into l_dv_rec from dimension_version where id = p_dimension_version_id;
+    l_msg := l_con_proc_name||'. Removing DIMENSION_VERSION.ID = '||to_char(l_dv_rec.id)||', DIMENSION_SOURCE.ID = '||to_char(l_dv_rec.source_id);
+    plog(l_msg, 'info');
+
+    for c_rec in c_dims loop
+      sqldml := 'DELETE FROM '||c_rec.table_name||' WHERE VERSION_ID='||to_char(p_dimension_version_id);
+      execute immediate sqldml;
+    end loop;
+    delete from dimension_version where id=p_dimension_version_id;
+    delete from dimension_source where id=l_dv_rec.source_id;
+    update dimension_source_types set status = null;
+    commit;
+  exception when others then
+    l_msg := l_con_proc_name||'. Error: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+    rollback;
+    plog(l_msg, 'error');
+  end;
+end;
+
+
+
+procedure get_dim_source_type
+( i_filename     in   varchar2
+, o_source_type  out  varchar2
+, o_error        out  number
+, o_message      out  viu_info_logs.additional_data%type
+)
+is
+   l_con_proc_name constant varchar2(200) := g_con_package||'.get_DIM_source_type';
+   
+   l_clob          clob;
+   l_dim_src_rec   dimension_source%rowtype;
+   l_parser        dbms_xmlparser.parser;
+   l_dom_doc       dbms_xmldom.domdocument;
+   l_node          dbms_xmldom.domnode;
+   l_rootnode      dbms_xmldom.domnode;
+   l_root_element  dbms_xmldom.domelement;
+   l_rootnodename  varchar2(50);
+
+begin
+   o_error       := 0;
+   o_message     := '';
+   o_source_type := 'Unknown source type';
+   begin
+      select f_blobtoclob(blob_content)
+      into   l_clob
+      from   documents
+      where  upper(name) = upper(i_filename);
+   exception
+      when no_data_found then
+         o_error   := 1;
+         o_message := i_filename||' not found in table DOCUMENTS.';
+      when others then
+         o_error   := 2;
+         o_message := sqlerrm;
+   end;
+   
+   if o_error = 0
+   then
+      begin
+         
+         l_parser := dbms_xmlparser.newparser;
+         
+         dbms_xmlparser.setvalidationmode(l_parser, false);
+         
+         dbms_xmlparser.parseclob(l_parser, l_clob);
+         
+         l_dom_doc := dbms_xmldom.newdomdocument;
+         l_dom_doc := dbms_xmlparser.getdocument (l_parser);
+         
+         dbms_xmlparser.freeparser(l_parser);
+         
+         l_node         := dbms_xmldom.makenode(l_dom_doc);
+         l_root_element := dbms_xmldom.getdocumentelement(l_dom_doc);
+         l_rootnode     := dbms_xmldom.makenode(l_root_element);
+         l_rootnodename := dbms_xmldom.getnodename(l_rootnode);
+   
+         case l_rootnodename
+            when 'MetaData'                 then o_source_type := 'META';
+            when 'project_definition'       then o_source_type := 'TOPO';
+            when 'Application_Definition'   then o_source_type := 'TOPO_APPL';
+            when 'uld_project_definition'   then o_source_type := 'TOPO_ULD';
+            when 'CommonProcessDefinitions' then o_source_type := 'CPD';
+            else
+               o_error   := 3;
+               o_message := 'Cannot process. Unknown root node: '||l_rootnodename;
+         end case;
+      exception when others then
+         
+         o_error   := 4;
+         o_message := sqlerrm;
+      end;
+   
+      
+      begin
+         dbms_xmldom.freenode(n => l_node);
+      exception
+         when others then
+            null;
+      end;
+      
+      begin
+         dbms_xmldom.freedocument(doc => l_dom_doc);
+      exception
+         when others then
+            null;
+      end;
+   end if;
+end;
+
+
+procedure process_dim_source
+( i_filename  in   varchar2
+, o_error     out  number
+, o_message   out  viu_info_logs.additional_data%type
+)
+is
+   l_con_proc_name  constant  varchar2(200)    := g_con_package||'.process_dim_source';
+
+   l_clob           clob;
+   l_lastmod        date                       := to_date('01012000','DDMMYYYY');
+   l_filesize       number                     := 0;
+   l_dim_src_rec    dimension_source%rowtype;
+   l_parser         dbms_xmlparser.parser;
+   l_dom_doc        dbms_xmldom.domdocument;
+   l_node           dbms_xmldom.domnode;
+   l_rootnode       dbms_xmldom.domnode;
+   l_root_element   dbms_xmldom.domelement;
+   l_rootnodename   varchar2(50);
+   l_source_type    varchar2(50);
+   l_log_level      number                      := 0;
+   l_source_id      number;
+   l_sub_err        number                      := 0;
+   l_sub_prc        varchar2(50)                := '';
+begin
+   viu_module.enter_module(l_con_proc_name,to_char(sys_extract_utc(systimestamp)));
+   o_error       := 0;
+   o_message     := '';
+   l_source_type := 'Unknown source type';
+   
+   
+   l_log_level := viu_info.v_maxlvloprinfologged;
+   if l_log_level >= 3
+   then
+      l_log_level := null; 
+   end if;
+   if l_log_level is not null
+   then
+      viu_action.set_current_loglevel(3);
+      viu_info.v_maxlvloprinfologged := 3;
+   end if;
+   
+   
+   begin
+      select f_blobtoclob(blob_content)
+      ,      nvl(file_last_modified, last_updated)
+      ,      doc_size
+      into   l_clob
+      ,      l_lastmod
+      ,      l_filesize
+      from   documents
+      where upper(name) = upper(i_filename);
+   exception
+      when no_data_found then
+        o_error   := 11;
+        o_message := i_filename||' not found in table DOCUMENTS.';
+      when others then
+        o_error   := 12;
+        o_message := sqlerrm;
+   end;
+
+   if o_error = 0
+   then
+      if l_lastmod is null
+      then
+         l_lastmod := to_date('01012000','DDMMYYYY');
+      end if;
+      if l_filesize is null
+      then
+         l_filesize := 0;
+      end if;
+      begin
+         
+         l_parser := dbms_xmlparser.newparser;
+         
+         dbms_xmlparser.setvalidationmode(l_parser, false);
+         
+         dbms_xmlparser.parseclob(l_parser, l_clob);
+         
+         l_dom_doc := dbms_xmldom.newdomdocument;
+         l_dom_doc := dbms_xmlparser.getdocument (l_parser);
+         
+         dbms_xmlparser.freeparser(l_parser);
+         
+         l_node         := dbms_xmldom.makenode(l_dom_doc);
+         l_root_element := dbms_xmldom.getdocumentelement(l_dom_doc);
+         l_rootnode     := dbms_xmldom.makenode(l_root_element);
+         l_rootnodename := dbms_xmldom.getnodename(l_rootnode);
+
+         case l_rootnodename
+            when 'MetaData'                 then l_source_type := 'META';
+            when 'project_definition'       then l_source_type := 'TOPO';
+            when 'Application_Definition'   then l_source_type := 'TOPO_APPL';
+            when 'uld_project_definition'   then l_source_type := 'TOPO_ULD';
+            when 'CommonProcessDefinitions' then l_source_type := 'CPD';
+            else
+               o_error   := 13;
+               o_message := 'Cannot process. Unknown root node: '||l_rootnodename;
+         end case;
+      
+      exception when others then
+         
+         o_error := 14;
+         o_message := sqlerrm;
+      end;
+
+      if o_error = 0
+      then
+         
+         plog(l_con_proc_name||' file "'||i_filename||'" is of type: '||l_source_type, 'info');
+         if not dimension.start_mutex(l_source_type)
+         then
+            o_error   := 15;
+            o_message := 'Mutual Exclusion failed.';
+         else
+            begin
+               l_source_id := dimension_seq.nextval;
+               insert into dimension_source (id, source_type, filename, lastmodified, insertdate, fsize, error, xmlsource)
+               values (l_source_id, l_source_type, upper(i_filename), l_lastmod, sysdate, l_filesize, o_error, l_clob);
+               
+               
+               o_message := 'Successfully loaded.';
+               plog(l_con_proc_name||'("'||i_filename||'" [='||l_source_type||']): DIMENSION_SOURCE.ID='||to_char(l_source_id)||chr(10)||o_message, 'info');
+            exception
+               when dup_val_on_index then
+                  o_message :=   'This file, last modified '||to_char(l_lastmod,'YYYY-MM-DD HH24:MI:SS')
+                               ||', is already present in table DIMENSION_SOURCE: ';
+                  plog(l_con_proc_name||'("'||i_filename||'" [='||l_source_type||']): '||o_message, 'warning');
+               
+                  select *
+                  into   l_dim_src_rec
+                  from   dimension_source
+                  where  filename     = upper(i_filename)
+                  and    lastmodified = l_lastmod
+                  and    fsize        = l_filesize;
+               
+                  
+                  if l_dim_src_rec.error <> 0
+                  then
+                     begin
+                        delete from dimension_source where id = l_dim_src_rec.id;
+                        insert into dimension_source (id, source_type, filename, lastmodified, insertdate, fsize, error, xmlsource)
+                        values (l_source_id, l_source_type, upper(i_filename), l_lastmod, sysdate, l_filesize, 0, l_clob);
+                     exception
+                        when others then
+                           o_error   := 16;
+                           o_message := sqlerrm;
+                     end;
+                  else
+                     o_error   := 17;
+                     o_message := 'This '||l_source_type||' file has already been processed successfully on '||to_char(l_dim_src_rec.insertdate,'YYYY-MM-DD HH24:MI:SS');
+                  end if;
+               when others then
+                  o_error   := 18;
+                  o_message := sqlerrm; 
+            end;
+         end if;
+
+         
+         if o_error = 0
+         then
+            
+            
+            l_sub_err := 0;
+            if l_source_type = 'META' then
+                l_sub_prc := 'meta_dimensions.process_meta';
+                meta_dimensions.process_meta(i_filename, l_node, l_source_id, l_sub_err);
+            elsif l_source_type = 'TOPO' then
+                l_sub_prc := 'topo_dimensions.process_topo';
+                topo_dimensions.process_topo(l_node, l_source_id, l_sub_err);
+            elsif l_source_type = 'TOPO_APPL' then
+                l_sub_prc := 'topo_appl_dimensions.process_topo_appl';
+                topo_appl_dimensions.process_topo_appl(l_node, l_source_id, l_sub_err);
+            elsif l_source_type = 'TOPO_ULD' then
+                l_sub_prc := 'topo_uld_dimensions.process_topo_uld';
+                topo_uld_dimensions.process_topo_uld(l_node, l_source_id, l_sub_err);
+            elsif l_source_type = 'CPD' then
+                l_sub_prc := 'cpd_dimensions.process_cpd';
+                cpd_dimensions.process_cpd(l_node, l_source_id, l_sub_err);
+            else
+              o_error := 19;
+              o_message := 'Unknown source type: '||l_source_type;
+            end if;
+            if l_sub_err != 0 then
+               o_error := 20;
+               o_message := l_source_type||': '||l_sub_prc||' failed with error: '||l_sub_err;
+            end if;
+         end if;
+
+         
+         if o_error = 0
+         then
+            commit;
+            o_message := l_source_type||' Processing completed successfully.';
+            plog(l_con_proc_name||'("'||i_filename||'"): '||o_message, 'info');
+         else
+            rollback;
+         end if;
+
+         dimension.end_mutex(l_source_type);
+      end if;
+
+      
+      begin
+         dbms_xmldom.freenode(n => l_node);
+      exception
+         when others then
+            null;
+      end;
+      begin
+         dbms_xmldom.freedocument(doc => l_dom_doc);
+      exception
+         when others then
+            null;
+      end;
+
+   end if;
+
+   
+   if o_error = 0
+   then
+      dimension.gather_dim_statistics;
+   else
+      plog(l_con_proc_name||'("'||i_filename||'"): Error '||to_char(o_error)||chr(10)||o_message, 'error');
+      plog(l_con_proc_name||'("'||i_filename||'"): '||l_source_type||' Processing aborted.', 'error');
+   end if;
+   
+   if l_log_level is not null
+   then
+      viu_action.set_current_loglevel(l_log_level);
+      viu_info.v_maxlvloprinfologged := l_log_level;
+   end if;
+   
+   viu_module.leave_module(l_con_proc_name);
+end;
+
+
+end dimension;
+/

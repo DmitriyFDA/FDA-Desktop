@@ -1,0 +1,266 @@
+create or replace PACKAGE cpd_dimensions IS
+
+   procedure process_cpd
+   ( i_node       in   dbms_xmldom.domnode
+   , i_source_id  in   number
+   , o_error      out  number
+   );
+
+END cpd_dimensions;
+/
+
+
+
+
+package body cpd_dimensions is
+
+   
+   g_con_package                 constant varchar2(30) := 'cpd_dimensions';
+   
+   g_document_node               dbms_xmldom.domnode;
+   g_dimension_source_id         number := 0;
+   g_version                     varchar2(50);
+   g_error                       number := 0;
+
+procedure free_memory
+is
+begin
+   begin
+      dbms_xmldom.freenode(n => g_document_node);
+   exception
+      when others then
+         null;
+   end;
+end free_memory;
+
+procedure process_processdefinitions
+( p_version_id  in  number
+, p_node        in  dbms_xmldom.domnode
+, p_parent_id   in  varchar2
+)
+is
+   l_name            varchar2(50)            := '';
+   l_displayname     varchar2(50)            := '';
+begin
+   dbms_xslprocessor.valueof (p_node, 'Name', l_name);
+   dbms_xslprocessor.valueof (p_node, 'DisplayName', l_displayname);
+
+   insert into dim_processdefinitions
+   ( version_id
+   , name
+   , displayname
+   )
+   values
+   ( p_version_id
+   , l_name
+   , l_displayname
+   );
+
+end process_processdefinitions;
+
+procedure process_commonprocessdefs
+( p_version_id  in  number
+, p_node        in  dbms_xmldom.domnode
+, p_parent_id   in  varchar2
+)
+is
+   l_name            varchar2(50)            := '';
+   l_cpd_displayname     varchar2(50)            := '';
+begin
+   dbms_xslprocessor.valueof (p_node, 'Name', l_name);
+   dbms_xslprocessor.valueof (p_node, 'CommonProcessDefinitionDisplayName', l_cpd_displayname);
+
+   insert into dim_commonprocessdefinitions
+   ( version_id
+   , name
+   , cpd_displayname
+   )
+   values
+   ( p_version_id
+   , l_name
+   , l_cpd_displayname
+   );
+
+end process_commonprocessdefs;
+
+
+procedure create_processdefinitions (p_new_version_id number)
+is
+   l_con_proc_name   constant  varchar2(200) := g_con_package||'.create_processdefinitions';
+   
+   l_node_list    dbms_xmldom.domnodelist;
+   l_node_count   number (20);
+   l_node         dbms_xmldom.domnode;
+   l_msg          viu_info_logs.additional_data%type;
+begin
+   l_node_list  := dbms_xslprocessor.selectnodes (g_document_node, '//CommonProcessDefinition/ProcessDefinition');
+   l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+   
+   plog ('Total of ProcessDefinition nodes in input: ' || l_node_count, 'info');
+   
+   for i in 0..(l_node_count - 1)
+   loop
+      l_node := dbms_xmldom.item (l_node_list, i);
+      
+      process_processdefinitions(p_new_version_id, l_node, null);
+      
+      dbms_xmldom.freenode(l_node);
+   end loop;
+   
+   select count(*)
+   into l_node_count
+   from dim_processdefinitions;
+   
+   plog ('Total of records in DIM_PROCESSDEFINITIONS: ' || l_node_count, 'info');
+exception
+   when others then
+      g_error := 15;
+      l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+      plog(l_msg, 'error');
+end create_processdefinitions;
+
+procedure create_commonprocessdefs (p_new_version_id number)
+is
+   l_con_proc_name   constant  varchar2(200) := g_con_package||'.create_commonprocessdefs';
+   
+   l_node_list    dbms_xmldom.domnodelist;
+   l_node_count   number (20);
+   l_node         dbms_xmldom.domnode;
+   l_msg          viu_info_logs.additional_data%type;
+begin
+   l_node_list  := dbms_xslprocessor.selectnodes (g_document_node, '//CommonProcessDefinition');
+   l_node_count := dbms_xmldom.getlength (nl => l_node_list);
+   
+   plog ('Total of CommonProcessDefinition nodes in input: ' || l_node_count, 'info');
+   
+   for i in 0..(l_node_count - 1)
+   loop
+      l_node := dbms_xmldom.item (l_node_list, i);
+      
+      process_commonprocessdefs(p_new_version_id, l_node, null);
+      
+      dbms_xmldom.freenode(l_node);
+   end loop;
+   
+   select count(*)
+   into l_node_count
+   from dim_commonprocessdefinitions;
+   
+   plog ('Total of records in DIM_COMMONPROCESSDEFINITIONS: ' || l_node_count, 'info');
+exception
+   when others then
+      g_error := 14;
+      l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+      plog(l_msg, 'error');
+end create_commonprocessdefs;
+
+
+procedure process_cpd
+( i_node       in   dbms_xmldom.domnode
+, i_source_id  in   number
+, o_error      out  number
+)
+is
+   l_con_proc_name   constant  varchar2(200) := g_con_package||'.process_cpd';
+   
+   cursor c_old_version
+   is
+      select id
+      ,      versiontag
+      from   dimension_version
+      where  source_type = 'CPD'
+      ;
+   
+   l_node_list       dbms_xmldom.domnodelist;
+   l_attr_node       dbms_xmldom.domnode;
+   l_old_version_id  number(19,0)                        := 0;
+   l_new_version_id  number(19,0)                        := 0;
+   l_description     varchar2(200)                       := '';
+   l_old_versiontag  varchar2(200)                       := '';
+   l_filename        varchar2(200)                       := '';
+   l_msg             viu_info_logs.additional_data%type;
+begin
+   viu_module.enter_module(l_con_proc_name,to_char(sys_extract_utc(systimestamp)));
+   
+   g_error := 0;
+   
+   begin
+      g_document_node       := i_node;
+      g_dimension_source_id := i_source_id;
+      
+      plog('Determining version of CommonProcessDefinitions-file.');
+      
+      dbms_xslprocessor.valueof(g_document_node, '//Version', g_version);
+      l_description := 'Version="'||g_version||'"';
+      
+      if (g_version is null)
+      or (trim(g_version) = '')
+      then
+         g_error := 11;
+         plog('Error ('||l_con_proc_name||'): No version information found (//Version)', 'ERROR');
+      else
+         plog('Found '||l_description||' for CommonProcessDefinitions-file.');
+         
+         open  c_old_version;
+         fetch c_old_version into  l_old_version_id
+                             ,     l_old_versiontag;
+         if c_old_version%found
+         then
+            close c_old_version;
+            
+            
+            plog('Removing data of previous Version="'||l_old_versiontag||'" (ID '||to_char(l_old_version_id)||') of CommonProcessDefinitions-file.');
+            delete from dim_commonprocessdefinitions;
+            delete from dim_processdefinitions;
+            plog('Removing previous Version="'||l_old_versiontag||'" (ID '||to_char(l_old_version_id)||') of CommonProcessDefinitions-file.');
+            delete from dimension_version
+            where       source_type = 'CPD';
+            
+            delete from dimension_source
+            where       source_type = 'CPD'
+            and         id <> i_source_id;
+         else
+            close c_old_version;
+         end if;
+         
+         plog('Registering current '||l_description||' of CommonProcessDefinitions-file.');
+         
+         select dimension_seq.nextval
+         into   l_new_version_id
+         from   dual;
+         
+         
+         begin
+            select scr.filename
+            into   l_filename
+            from   dimension_source scr
+            where  scr.id = g_dimension_source_id;
+            exception when others then
+            l_filename := '';
+         end;
+         
+         insert into dimension_version(id, source_id, source_type, startdate, enddate, versiontag, description, filename)
+         values (l_new_version_id, g_dimension_source_id, 'CPD', sysdate, null, g_version, l_description, l_filename);
+         
+         plog('Installing current '||l_description||' (ID '||to_char(l_new_version_id)||')');
+         
+         create_commonprocessdefs(l_new_version_id);
+         create_processdefinitions(l_new_version_id);
+      end if;
+      
+      plog ('CPD has been processed.');
+   exception
+      when others then
+         g_error := 10;
+         l_msg := l_con_proc_name||': '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace;
+         plog(l_msg, 'error');
+   end;
+   
+   o_error := g_error;
+   
+   viu_module.leave_module(l_con_proc_name);
+end process_cpd;
+
+
+end cpd_dimensions;
+/

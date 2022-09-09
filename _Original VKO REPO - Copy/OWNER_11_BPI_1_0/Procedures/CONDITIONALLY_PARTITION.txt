@@ -1,0 +1,60 @@
+procedure conditionally_partition
+(table_name       varchar2
+,partition_column varchar2
+)
+is
+  v_ddl          varchar2(32767) := '';
+  v_partitioning varchar2(20)    := is_partitioning_available;
+  v_indexname    varchar2(30)    := '';
+  v_table_name   varchar2(30)    := upper(trim(table_name));
+  v_count        number          := 0;
+begin
+  
+  
+  
+
+  dbms_output.put_line(chr(10));
+  if v_partitioning = 'Yes' then
+    v_ddl := dbms_metadata.get_ddl('TABLE', v_table_name, user);
+    v_ddl := v_ddl||' PARTITION BY RANGE ('||partition_column||') INTERVAL (NUMTODSINTERVAL(1,''DAY'')) STORE IN (USER_DATA)'||chr(10)
+                  ||' ( PARTITION P1 VALUES LESS THAN ( TIMESTAMP'' 1900-01-01 00:00:00'' ) STORAGE (INITIAL 512K NEXT 512K) )';
+    drop_table(v_table_name);
+    dbms_output.put_line(v_ddl);
+    execute immediate v_ddl;
+    dbms_output.put_line(chr(10)||'Re-created table '||v_table_name||' with DAY interval partitioning on column '||partition_column||'.'||chr(10));
+    
+    v_indexname := '';
+  else
+    dbms_output.put_line(chr(10)||v_table_name||' not partitioned. Partitioning option: '||v_partitioning||'.'||chr(10));
+    v_indexname := substr('I_'||replace(v_table_name, '_', '')||'_'||substr(partition_column,1,1),1,30);
+  end if;
+
+  if v_table_name like 'FACT%' and v_table_name <> 'FACT_BAGTRACE' then
+    v_indexname := substr('I_'||replace(v_table_name, '_', '')||'_'||substr(partition_column,1,1),1,30);
+  end if;
+
+  if v_indexname is not null then
+    
+    select count(*)
+    into   v_count
+    from   user_ind_columns  icn1
+    where  icn1.table_name  = v_table_name
+    and    icn1.column_name = partition_column
+    and    not exists ( select *
+                        from   user_ind_columns  icn2
+                        where  icn2.table_name = icn1.table_name
+                        and    icn2.index_name = icn1.index_name
+                        and    icn2.column_position > 1
+                      );
+    if v_count = 0
+    then
+       v_ddl := 'CREATE INDEX '||v_indexname||' ON '||v_table_name||' ('||partition_column||') TABLESPACE INDEX_DATA';
+       dbms_output.put_line(v_ddl);
+       execute immediate v_ddl;
+       dbms_output.put_line(chr(10)||'Created index '||v_indexname||' on table '||v_table_name||', column '||partition_column||'.'||chr(10));
+    else
+       dbms_output.put_line(chr(10)||'Index with partition column '||partition_column||' on table '||v_table_name||' already exists. No action taken.'||chr(10));
+    end if;
+  end if;
+end;
+/

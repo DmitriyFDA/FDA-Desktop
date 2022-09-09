@@ -1,0 +1,462 @@
+create or replace PACKAGE lm_report_diagnostic_data
+IS
+   g_con_package CONSTANT lm_constant.st_proc_name := 'LM_REPORT_DIAGNOSTIC_DATA';
+
+   /* RDA_001: send application log */
+   PROCEDURE send_application_log;
+  
+   /* RDA_002: send application log message */
+   PROCEDURE send_application_log_message
+   ( i_viu_ilg IN viu_info_logs%ROWTYPE);
+   
+   /* RDA_003: send audit log message */
+   PROCEDURE send_audit_log_message
+   ( i_operator_id  IN VARCHAR2
+   , i_event_time   IN TIMESTAMP
+   , i_ip_address   IN VARCHAR2
+   , i_event        IN VARCHAR2
+   , i_description  IN VARCHAR2
+   );
+END lm_report_diagnostic_data;
+/
+
+
+
+
+
+package body lm_report_diagnostic_data is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure send_application_log
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name   constant lm_constant.st_proc_name := g_con_package || '.send_application_log';
+
+
+   type rct_ilg      is ref cursor;
+   type object_tt    is table of user_objects.object_name%type index by pls_integer;
+   
+   type ilg_count_tt is table of number index by pls_integer;
+
+   
+   cursor c_object_check( b_object_name in user_objects.object_name%type )
+   is
+   select 1
+   from   user_objects
+   where  upper( b_object_name ) = upper( object_name )
+   and    object_type in ( cmn_constant.g_con_object_type_view
+                         , cmn_constant.g_con_object_type_table
+                         );
+
+   l_max_severity          lm_parameter_values.value%type;
+
+   c_ilg_new               rct_ilg;
+   l_tt_objects            object_tt;
+   l_rt_object_check       c_object_check%rowtype;
+   l_found                 boolean;
+   l_rt_info_logs          viu_info_logs%rowtype;
+   l_dml                   varchar2(1000);
+   l_tt_info_log_count     ilg_count_tt;
+   l_ifo_nr                viu_info_logs.ifo_nr%type;
+   l_increment             integer;
+
+   
+   l_query1                varchar2(4000) :=    ' SELECT *'
+                                           || ' FROM   ';
+   l_query2                varchar2(4000) :=    ' ilg'
+                                           || ' WHERE  /* Do not modify the next statement as it uses the function based index */'
+                                           || ' NVL2(ilg.DATETIME_REPORTED,NULL,''N'') = ''N'''
+                                           || ' FOR UPDATE';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_tt_objects(1) := 'VIU_INFO_LOGS';
+   l_tt_objects(2) := 'VIU_INFO_LOGS_V_PRV';
+
+   
+   l_max_severity := lm_common.get_parameter_value
+                       ( i_prr_name => lm_constant.g_con_pve_send_log_max_sev );
+
+   
+   for i in 1 .. l_tt_objects.count
+   loop
+      
+      open  c_object_check( b_object_name => l_tt_objects(i) );
+      fetch c_object_check
+      into  l_rt_object_check;
+
+      l_found := c_object_check%found;
+
+      close c_object_check;
+
+      if l_found
+      then
+
+         
+         open  c_ilg_new for l_query1 || l_tt_objects(i) || l_query2;
+         fetch c_ilg_new
+         into  l_rt_info_logs;
+
+         while c_ilg_new%found
+         loop
+            
+            
+            
+            l_dml := 'UPDATE ' || l_tt_objects(i) ||' '
+                  || 'SET datetime_reported = :1 '
+                  || 'WHERE id = :2';
+
+            execute immediate l_dml using lm_common.default_timestamp, l_rt_info_logs.id;
+
+            
+            if l_rt_info_logs.severity <= l_max_severity
+            then
+               begin
+                  
+                  lm_report_diagnostic_data.send_application_log_message
+                                           (i_viu_ilg => l_rt_info_logs );
+
+               exception
+                  when others
+                  then
+                  if l_rt_info_logs.ifo_nr = viu_constant.c_ifo_messagenotsent
+                  then
+                     
+                     l_ifo_nr    := regexp_replace( l_rt_info_logs.additional_data
+                                                , '^IFO_NR: (\d+), COUNT: \d+$'
+                                                , '\1', 1, 1, ''
+                                                );
+
+                     
+                     l_increment := to_number( regexp_replace( l_rt_info_logs.additional_data
+                                                           , '^IFO_NR: \d+, COUNT: (\d+)$'
+                                                           , '\1', 1, 1, ''
+                                                           )
+                                           );
+                  else
+                     
+                     l_ifo_nr    := l_rt_info_logs.ifo_nr;
+                     l_increment := 1;
+                  end if;
+
+                  
+                  l_tt_info_log_count(l_ifo_nr) := case
+                                                    when l_tt_info_log_count.exists(l_ifo_nr)
+                                                    then l_tt_info_log_count(l_ifo_nr) + l_increment
+                                                    else l_increment
+                                                 end;
+               end;
+            end if;
+
+            
+            fetch c_ilg_new
+            into  l_rt_info_logs;
+         end loop;
+
+         close c_ilg_new;
+      end if;
+
+      
+      commit;
+
+   end loop;
+
+   
+   l_ifo_nr := l_tt_info_log_count.first;
+
+   while l_ifo_nr is not null
+   loop
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messagenotsent
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_additional_data        =>    'IFO_NR: '
+                                                         || l_ifo_nr
+                                                         || ', COUNT: '
+                                                         || l_tt_info_log_count(l_ifo_nr)
+                            );
+
+      l_ifo_nr := l_tt_info_log_count.next(l_ifo_nr);
+   end loop;
+
+   commit;  
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+exception
+   
+   when lm_constant.exc_internal_error
+   then
+      if c_object_check%isopen
+      then
+       close c_object_check;
+      end if;
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      
+
+
+
+
+
+
+
+
+
+      
+      lm_common.abort_application_fatal;
+      
+
+   when others
+   then
+      if c_object_check%isopen
+      then
+       close c_object_check;
+      end if;
+
+      rollback;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.handle_info;
+end send_application_log;
+
+
+procedure send_application_log_message
+( i_viu_ilg in viu_info_logs%rowtype
+)
+is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name(240) := g_con_package || '.send_application_log_message';
+
+   l_message       xmltype;
+   l_ims_id        lm_ifc_messages.id%type;
+   l_severity      varchar2(240);
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   case
+     when i_viu_ilg.severity = viu_info.c_severity_error
+     then
+       l_severity := lm_constant.g_con_mae_severity_error;
+
+     when i_viu_ilg.severity = viu_info.c_severity_warning
+     then
+       l_severity := lm_constant.g_con_mae_severity_warning;
+
+     when i_viu_ilg.severity = viu_info.c_severity_notification
+     then
+       l_severity := lm_constant.g_con_mae_severity_info;
+
+     when i_viu_ilg.severity > viu_info.c_severity_notification
+     then
+       l_severity := lm_constant.g_con_mae_severity_debug;
+     else
+       l_severity := lm_constant.g_con_mae_severity_error;
+   end case;
+
+   select xmlconcat
+              (   xmlelement( "LogMessageSource"
+                            , xmlelement( "Host", rtrim (upper(nvl(trim(sys_context('USERENV','SERVER_HOST')), sys_context('USERENV','IP_ADDRESS'))), chr('0')))
+                            , xmlelement( "ProcessID", lm_common.get_parameter_value( lm_constant.g_con_pve_lm_source_process_id))
+                            , xmlelement( "SubComponent", i_viu_ilg.calling_procedure)
+                            , nvl2
+                              ( i_viu_ilg.sessionid
+                              , xmlelement( "SessionID", to_char(i_viu_ilg.sessionid))
+                              , null
+                              )
+                            )
+                , nvl2
+                  ( i_viu_ilg.ifo_nr
+                  , xmlelement( "LogMessageID", to_char(i_viu_ilg.ifo_nr))
+                  , null
+                  )
+                , xmlelement( "LogMessageSeverity", l_severity)
+                , xmlelement( "LogMessage"
+                            ,  substr(viu_translation.complete_text_of_info
+                                ('IFO'
+                                ,i_viu_ilg.ifo_nr
+                                ,i_viu_ilg.info_arguments
+                                )||' (AdditionalData:'||i_viu_ilg.additional_data||')'
+                                ,1,1000)
+                            )
+              )
+       into   l_message
+       from   dual;
+                                                   
+   
+   l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name              => 'ApplicationLogData'
+                 , i_message               => l_message
+                 , i_event_time            => i_viu_ilg.datetime_created
+                 , i_pty_id_cust           => null
+                 , i_pty_instance_id       => null
+                 , i_sct_id                => null
+                 , i_handle_errors_locally => false
+                );
+                                                   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_application_log_message;
+
+
+
+
+
+
+
+procedure send_audit_log_message
+( i_operator_id  in varchar2
+, i_event_time   in timestamp
+, i_ip_address   in varchar2
+, i_event        in varchar2
+, i_description  in varchar2
+)
+is
+   l_con_proc_name constant lm_constant.st_proc_name(240) := g_con_package || '.send_audit_log_message';
+
+   l_message                xmltype;
+   l_ims_id                 lm_ifc_messages.id%type;
+   l_target_process_id      lm_parameter_values.value%type;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   l_target_process_id := lm_common.get_parameter_value(i_prr_name => lm_constant.g_con_pve_data_wh_process_id);
+
+   select xmlconcat
+              ( nvl2( i_ip_address
+                    , xmlelement( "IPAddress", i_ip_address)
+                    , null
+                    )
+              , xmlelement( "AuditEvent", substr(i_event, 1, 255))
+              , nvl2( i_description
+                    , xmlelement( "AuditValue", substr(i_description, 1, 4096))
+                    , null
+                    )
+              )
+   into   l_message
+   from   dual;
+                                                   
+   
+   l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name              => 'AuditLogData'
+                 , i_message               => l_message
+                 , i_event_time            => i_event_time
+                 , i_pty_id_cust           => l_target_process_id
+                 , i_pty_instance_id       => null
+                 , i_sct_id                => null
+                 , i_operator_id           => i_operator_id
+                );
+                                                   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_audit_log_message;
+
+end lm_report_diagnostic_data;
+/

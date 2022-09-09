@@ -1,0 +1,364 @@
+create or replace PACKAGE odb_uld_metrics_calculation
+IS
+   PROCEDURE calc_ulds_present_haa;
+   PROCEDURE calc_ulds_present_lsp;
+   PROCEDURE calc_ulds_present_sst;
+ 
+   PROCEDURE calc_holding_capacity_sst;
+   PROCEDURE calc_holding_capacity_lsp;
+   PROCEDURE calc_holding_capacity_haa;
+    
+   PROCEDURE calc_process_ulds_on_way_pdn;
+        
+END odb_uld_metrics_calculation;
+/
+
+
+
+package body odb_uld_metrics_calculation
+is
+   
+
+
+
+
+   type t_min  is record ( id             odb_metric_instances.id%type
+                         , previous_value odb_metric_instances.previous_value%type
+                         , value          odb_metric_instances.value%type
+                         );
+   type t_mins is table of t_min;
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ulds_present_haa
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( ulds_present, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_uld_handling_area_mtrs_v hac on hac.haa_id = msi.haa_id
+                        where  min.id = msi.min_id
+                      )
+                        as value
+               from   odb_metric_instances min
+               where  min.mtc_id in ( select id
+                                      from   odb_metrics
+                                      where  domain_type = 'HANDLING_AREA'
+                                      and    metric_type = 'ULDS_PRESENT'
+                                    )
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+        where   id = l_mins(i).id;
+
+   end calc_ulds_present_haa;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ulds_present_lsp
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+	  l_mins t_mins;
+   begin
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( ulds_present, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_uld_logistic_step_mtrs_v lsc on lsc.lsp_id = msi.lsp_id
+                        where  min.id = msi.min_id
+                      )
+                        as value
+               from   odb_metric_instances min
+               where  min.mtc_id in ( select id
+                                      from   odb_metrics
+                                      where  domain_type = 'LOGISTIC_STEP'
+                                      and    metric_type = 'ULDS_PRESENT'
+                                    )
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+        where   id = l_mins(i).id;
+
+   end calc_ulds_present_lsp;
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_ulds_present_sst
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+	  l_mins t_mins;
+   begin
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( ulds_present, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_uld_status_segment_mtrs_v ssc on ssc.sst_id = msi.sst_id
+                        where  min.id = msi.min_id
+                      )
+                        as value
+               from   odb_metric_instances min
+               where  min.mtc_id in ( select id
+                                      from   odb_metrics
+                                      where  domain_type = 'STATUS_SEGMENT'
+                                      and    metric_type = 'ULDS_PRESENT'
+                                    )
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+        where   id = l_mins(i).id;
+
+   end calc_ulds_present_sst;
+    
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_holding_capacity_sst
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+      l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( holding_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_uld_status_segment_mtrs_v ssc on ssc.sst_id = msi.sst_id
+                        where  min.id = msi.min_id
+                      )
+                        as value
+               from   odb_metric_instances min
+               where  min.mtc_id in ( select id
+                                      from   odb_metrics
+                                      where  domain_type = 'STATUS_SEGMENT'
+                                      and    metric_type = 'ULD_HOLDING_CAPACITY'
+                                    )
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+        where   id = l_mins(i).id;
+
+   end calc_holding_capacity_sst;
+  
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_holding_capacity_lsp
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+	  l_mins t_mins;
+   begin
+
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( holding_capacity, 0)
+                        from   odb_metric_subject_instances msi
+                               left outer join odb_uld_logistic_step_mtrs_v lsc on lsc.lsp_id = msi.lsp_id
+                        where  min.id = msi.min_id
+                      )
+                        as value
+               from   odb_metric_instances min
+               where  min.mtc_id in ( select id
+                                      from   odb_metrics
+                                      where  domain_type = 'LOGISTIC_STEP'
+                                      and    metric_type = 'ULD_HOLDING_CAPACITY'
+                                    )
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+        where   id = l_mins(i).id;
+
+   end calc_holding_capacity_lsp;
+  
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_holding_capacity_haa
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+	  l_mins t_mins;
+   begin
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select nvl( holding_capacity, 0)
+                        from   odb_metric_subject_instances msi
+						left outer join odb_uld_handling_area_mtrs_v hac on hac.haa_id = msi.haa_id
+                        where  min.id = msi.min_id
+                      )
+                        as value
+               from   odb_metric_instances min
+               where  min.mtc_id in ( select id
+                                      from   odb_metrics
+                                      where  domain_type = 'HANDLING_AREA'
+                                      and    metric_type = 'ULD_HOLDING_CAPACITY'
+                                    )
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+        where   id = l_mins(i).id;
+
+   end calc_holding_capacity_haa;
+   
+   
+
+
+
+
+
+
+
+
+
+
+
+   procedure calc_process_ulds_on_way_pdn
+   as
+      l_now  odb_metric_instances.date_modified%type := sys_extract_utc(odb_common.get_my_systimestamp);
+	  l_mins t_mins;
+   begin
+      select *
+      bulk collect into l_mins
+      from   ( select min.id id
+               ,      min.value as previous_value
+               ,      ( select count(*)
+                from   odb_ulds uld
+                        inner join odb_uld_instances uin on uin.id = uld.uin_active_id
+                        inner join odb_uld_phase_allocations upa on upa.uin_id = uin.id
+                        inner join odb_phases phe on upa.phe_id = phe.id
+                        inner join odb_phase_definitions phn
+                           on phe.phn_id = phn.id
+                        inner join odb_process_definitions pdn
+                           on phn.pdn_id = pdn.id
+                        inner join odb_process_plan_definitions ppn
+                           on pdn.ppn_id = ppn.id
+                        inner join odb_metric_subject_instances msi
+                           on msi.pdn_id = pdn.id
+                where  uin.routing_progress in ( 'EN_ROUTE'
+                                                , 'SORTED'
+                                                , 'MISSORTED'
+                                                )
+                 and    upa.assignment_status   = 'ACTIVE'
+                 and    ppn.ind_system_process = 1
+                 and    msi.min_id = min.id
+                      )
+                        as value
+               from   odb_metric_instances min
+               where  min.mtc_id in ( select id
+                                      from   odb_metrics
+                                      where  domain_type = 'PROCESS_DEFINITION'
+                                      and    metric_type = 'PROCESS_ULDS_ON_WAY'
+                                    )
+             )
+      where lnnvl(previous_value = value);
+
+      forall i in 1..l_mins.count
+         update odb_metric_instances
+         set    previous_value = l_mins(i).previous_value
+         ,      date_modified  = l_now
+         ,      value          = l_mins(i).value
+        where   id = l_mins(i).id;
+
+   end calc_process_ulds_on_way_pdn;
+
+end odb_uld_metrics_calculation;
+/

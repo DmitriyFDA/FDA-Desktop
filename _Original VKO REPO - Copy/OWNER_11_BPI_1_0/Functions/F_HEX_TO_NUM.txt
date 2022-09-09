@@ -1,0 +1,38 @@
+function f_hex_to_num (phexnum in varchar2 := '0000000000' ) return number is
+
+vhexnum varchar2(24) := '0000000000';
+ch varchar2(1) := '0';
+p number(18);
+nnum number(18) := 0;
+n number(18) := 0;
+x number(18);
+i number(18) := 0;
+nh number(18) := 0;
+
+begin
+vhexnum := upper(ltrim(rtrim(phexnum)));
+i := 0;
+n := length(vhexnum);
+nnum := 0;
+while(i < n) loop
+   i := i + 1;
+   ch := substr(vhexnum, n - i + 1, 1);
+   nh := 0;
+   if((ch >= 'A') and(ch <= 'F')) then
+      nh := ascii(ch) - ascii('A') + 10;
+   else
+      if((ch >= '0') and(ch <= '9')) then
+         nh := ascii(ch) - ascii('0');
+      end if;
+   end if;
+   if nh > 0 then
+      p := 1;
+      for x in 2..i loop
+         p := p * 16;
+      end loop;
+      nnum := nnum +(nh * p);
+   end if;
+end loop;
+return(nnum);
+end;
+/

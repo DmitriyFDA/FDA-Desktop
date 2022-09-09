@@ -1,0 +1,305 @@
+create or replace PACKAGE ScannerPerformance_M5
+IS
+G_CON_PACKAGE CONSTANT VARCHAR2(30) := 'ScannerPerformance_M5';
+
+PROCEDURE ScannerPerformance_AGG_M5;
+END ScannerPerformance_M5;
+/
+
+
+
+
+package body scannerperformance_m5
+is
+
+procedure scannerperformance_agg_m5
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.SCANNERPERFORMANCE_AGG_M5';
+
+   l_conf_rec metric_config%rowtype;
+   l_days     metric_config.lag%type;
+   l_count    integer := 0;
+   l_max_id   fact_scannerperformance_agg_m5.max_id%type;
+   l_periodid fact_scannerperformance_agg_m5.m5_periodid%type;
+   l_curr_id  fact_scannerperformance_agg_m5.id%type;
+   
+   l_msg      viu_info_logs.additional_data%type;
+
+   cursor c_metrics ( b_max_id   fact_scannerperformance_agg_m5.max_id%type
+                    , b_periodid fact_scannerperformance_agg_m5.m5_periodid%type
+                    )
+   is
+   select stc.id
+   ,      stc.max_id
+   ,      stc.insertts
+   ,      stc.updatets
+   ,      stc.m5_periodid
+   ,      stc.subjecttype
+   ,      stc.subjectid
+   ,      stc.areaid
+   ,      stc.zoneid
+   ,      stc.equipmentid
+   ,      stc.process_step
+   ,      stc.mark_code
+   ,      nvl( naze.end_user_id
+             , stc.areaid||'.'||stc.zoneid||'.'||stc.equipmentid
+             )                   as end_user_id
+   ,      nvl( naze.stype
+             ,'AutoScan'
+             )                   as stype 
+   ,      noread
+   ,      goodread
+   ,      invaliddata
+   ,      unexpecteddata
+   ,      nodata
+   ,      multipleread
+   ,      conflict
+   ,      round( (goodread + multipleread)
+                 / nullif(   noread
+                           + goodread
+                           + invaliddata
+                           + unexpecteddata
+                           + nodata
+                           + multipleread
+                           + conflict
+                         , 0
+                         )
+               , 2
+               ) * 100           as scannerperformance
+   ,        noread
+          + goodread
+          + invaliddata
+          + unexpecteddata
+          + nodata
+          + multipleread
+          + conflict             as scanresults
+   from   ( select min(id)       as id                      
+            ,      max(id)       as max_id
+            ,      min(insertts) as insertts
+            ,      max(updatets) as updatets
+            ,      m5_periodid
+            ,      subjecttype
+            ,      subjectid
+            ,      areaid
+            ,      zoneid
+            ,      equipmentid
+            ,      process_step
+            ,      mark_code
+            ,      statistical_group
+            ,      statistical_subgroup
+            ,      sum(noread) keep (dense_rank first order by noread desc)                 as noread
+            ,      sum(goodread) keep (dense_rank first order by goodread desc)             as goodread
+            ,      sum(invaliddata) keep (dense_rank first order by invaliddata desc)       as invaliddata
+            ,      sum(unexpecteddata) keep (dense_rank first order by unexpecteddata desc) as unexpecteddata
+            ,      sum(nodata) keep (dense_rank first order by nodata desc)                 as nodata
+            ,      sum(multipleread) keep (dense_rank first order by multipleread desc)     as multipleread
+            ,      sum(conflict) keep (dense_rank first order by conflict desc)             as conflict
+            from   ( select id
+                     ,      insertts
+                     ,      updatets
+                     ,      m5_periodid
+                     ,      subjecttype
+                     ,      subjectid
+                     ,      areaid
+                     ,      zoneid
+                     ,      equipmentid
+                     ,      process_step
+                     ,      mark_code
+                     ,      statistical
+                     ,      statistical_group
+                     ,      statistical_subgroup
+                     ,      case when statistical =   'NOREAD'                        then sum_value else 0 end noread
+                     ,      case when statistical in ('GOODREAD', 'DATAOK')           then sum_value else 0 end goodread
+                     ,      case when statistical in ('INVALIDDATA', 'DATANOTOK')     then sum_value else 0 end invaliddata
+                     ,      case when statistical in ('UNEXPECTEDDATA', 'UNEXPECTED') then sum_value else 0 end unexpecteddata
+                     ,      case when statistical in ('NODATA' ,'NODATARECEIVED')     then sum_value else 0 end nodata
+                     ,      case when statistical =   'MULTIPLEREAD'                  then sum_value else 0 end multipleread
+                     ,      case when statistical =   'CONFLICT'                      then sum_value else 0 end conflict
+                     from   fact_extmetrics_agg_m5
+                     where  mark_code like '%GEN_BSO%' or mark_code like '%GEN_CIO%'
+                     and    m5_periodid >= b_periodid
+                   )
+            group by m5_periodid
+            ,        mark_code
+            ,        areaid
+            ,        zoneid
+            ,        equipmentid
+            ,        subjecttype
+            ,        subjectid
+            ,        process_step
+            ,        statistical_group
+            ,        statistical_subgroup
+          ) stc
+   ,      dim_node_area_zone_equipment naze
+   where  naze.areaid(+)      = stc.areaid
+   and    naze.zoneid(+)      = stc.zoneid
+   and    naze.equipmentid(+) = stc.equipmentid
+   and    stc.max_id > b_max_id;
+
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      begin
+         select *
+         into   l_conf_rec
+         from   metric_config
+         where  upper(metric_procedure) = upper(l_con_proc);
+      exception
+         when others
+         then
+            l_conf_rec.status := 0;
+      end;
+
+      if l_conf_rec.status != 1
+      then
+         bpi_log.warn( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG. (STATUS <> 1).'
+                     );
+      else
+         if l_conf_rec.period_type != 'M5'
+         then
+            bpi_log.raise_fatal_error( i_con_proc => l_con_proc
+                                     , i_msg      => l_con_proc||', PERIOD_TYPE must be configured as M5'
+                                     );
+         end if;
+
+         
+         
+         select nvl(max(m5_periodid), 0) - 300*nvl(l_conf_rec.lag, 0)
+         into   l_periodid
+         from   fact_scannerperformance_agg_m5;
+
+         select nvl(max(max_id), 0)
+         into   l_max_id
+         from   fact_scannerperformance_agg_m5;
+
+         bpi_log.notify( i_con_proc => l_con_proc
+                       , i_data     => l_con_proc||' STARTED. Processing Metrics with ID greater than '
+                                                 ||to_char(l_max_id)
+                       );
+                       
+
+         for c_rec in c_metrics(l_max_id, l_periodid)
+         loop
+            l_curr_id := c_rec.id;
+
+            begin
+               insert into fact_scannerperformance_agg_m5
+               ( id
+               , max_id
+               , insertts
+               , updatets
+               , m5_periodid
+               , subjecttype
+               , subjectid
+               , areaid
+               , zoneid
+               , equipmentid
+               , process_step
+               , mark_code
+               , end_user_id
+               , stype
+               , noread
+               , goodread
+               , invaliddata
+               , unexpecteddata
+               , nodata
+               , multipleread
+               , conflict
+               , scannerperformance
+               , scanresults
+               )
+               values
+               ( c_rec.id
+               , c_rec.max_id
+               , sys_extract_utc(systimestamp)
+               , sys_extract_utc(systimestamp)
+               , c_rec.m5_periodid
+               , c_rec.subjecttype
+               , c_rec.subjectid
+               , c_rec.areaid
+               , c_rec.zoneid
+               , c_rec.equipmentid
+               , c_rec.process_step
+               , c_rec.mark_code
+               , c_rec.end_user_id
+               , c_rec.stype
+               , c_rec.noread
+               , c_rec.goodread
+               , c_rec.invaliddata
+               , c_rec.unexpecteddata
+               , c_rec.nodata
+               , c_rec.multipleread
+               , c_rec.conflict
+               , c_rec.scannerperformance
+               , c_rec.scanresults
+               );
+            exception
+               when dup_val_on_index
+               then
+                  update fact_scannerperformance_agg_m5
+                  set    max_id   = c_rec.max_id
+                  ,      updatets = sys_extract_utc(systimestamp)
+                  ,      noread   = c_rec.noread
+                  ,      goodread = c_rec.goodread
+                  ,      invaliddata = c_rec.invaliddata
+                  ,      unexpecteddata = c_rec.unexpecteddata
+                  ,      nodata = c_rec.nodata
+                  ,      multipleread = c_rec.multipleread
+                  ,      conflict = c_rec.conflict
+                  ,      scannerperformance = c_rec.scannerperformance
+                  ,      scanresults = c_rec.scanresults
+                  where  id = c_rec.id
+                  and    m5_periodid = c_rec.m5_periodid
+                  and    subjecttype = c_rec.subjecttype
+                  and    subjectid = c_rec.subjectid
+                  and    areaid = c_rec.areaid
+                  and    zoneid = c_rec.zoneid
+                  and    equipmentid = c_rec.equipmentid
+                  and    process_step = c_rec.process_step
+                  and    mark_code = c_rec.mark_code;
+
+               if sql%rowcount <> 1
+               then
+                  bpi_log.raise_fatal_error( i_con_proc => l_con_proc
+                                           , i_msg      =>    'UPDATE FACT_SCANNERPERFORMANCE_AGG_M5 FAILED. #Rows affected: '
+                                                           || to_char(sql%rowcount)
+                                                           ||',M5_PERIODID='  ||to_char(c_rec.m5_periodid)
+                                                           ||',AREAID='       ||to_char(c_rec.areaid)
+                                                           ||',ZONEID='       ||to_char(c_rec.zoneid)
+                                                           ||',EQUIPMENTID='  ||to_char(c_rec.equipmentid)
+                                                           ||',SUBJECTTYPE='  ||to_char(c_rec.subjecttype)
+                                                           ||',SUBJECTID='    ||to_char(c_rec.subjectid)
+                                                           ||',PROCESS_STEP=' ||to_char(c_rec.process_step)
+                                                           ||',MARK_CODE='    ||to_char(c_rec.mark_code)
+                                                           ||',ID='           ||to_char(c_rec.id)
+                                           );
+               end if;
+            end;
+
+            l_count := l_count + 1;
+         end loop;
+         commit;
+
+         viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                               , i_calling_procedure  => l_con_proc
+                               , i_severity           => viu_info.c_severity_notification
+                               , i_additional_data    => l_con_proc||' finished successfully. Processed '||to_char(l_count)||' Metrics.'
+                               );
+      end if;
+   exception
+      when others then
+         l_msg := substr( l_con_proc||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                               , i_calling_procedure => l_con_proc
+                               , i_severity          => viu_info.c_severity_error
+                               , i_additional_data   => l_msg
+                               );
+   end;
+  
+   bpi_trace.leave_module( i_module => l_con_proc);
+end;
+
+end scannerperformance_m5;
+/

@@ -1,0 +1,54 @@
+procedure processmeta is
+type array_str is table of varchar2(2000) index by pls_integer;
+a_js array_str;
+l_file varchar2(200) := '';
+l_num number;
+v_msg varchar2(32767);
+begin
+  a_js( 1) := 'function exec_META() { var h1=trimAll(p_file.value);';
+  a_js( 2) := '                      var s1="ProcessMETAFile?p_file="+h1';
+  a_js( 3) := '                      confirm_long_jump("Process META",s1);';
+  a_js( 4) := '                    }';
+
+  htp.print(ui_menu.head_from_link('ProcessMETA'));
+  htp.print('<div class="operate"><br>');
+
+  htp.print('<SCRIPT>');
+  for i in 1..a_js.count loop
+    htp.print(replace(a_js(i), '@', chr(38)));
+  end loop;
+  htp.print('</SCRIPT>');
+
+  begin
+
+    htp.print('<p>Select uploaded file:</p>');
+    htp.print('<TABLE>');
+
+    htp.print('<tr><td align=RIGHT valign=MIDDLE>File name (*.xml) : <td>');
+
+    htp.print('<SELECT NAME="p_file" SIZE="1">');
+    for c_rec in (select name from documents order by upper(name)) loop
+      v_msg := '<OPTION ';
+      htp.print(v_msg||'value="'||c_rec.name||'">'||c_rec.name);
+    end loop;
+    htp.print('</SELECT>');
+
+    htp.print(gui.table_input_tail('-'));
+
+    htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="Process" onClick=exec_META()>');
+
+    htp.print('<br><br>');
+
+    htp.print(gui.tail);
+
+  exception when others then
+
+    v_msg := sqlerrm;
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

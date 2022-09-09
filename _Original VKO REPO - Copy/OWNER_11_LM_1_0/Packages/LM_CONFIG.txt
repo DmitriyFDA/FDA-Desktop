@@ -1,0 +1,2320 @@
+create or replace PACKAGE lm_config
+IS
+   g_con_package       CONSTANT lm_constant.st_proc_name := 'LM_CONFIG';
+
+   PROCEDURE log_processing_time( i_message_name    IN lm_ifc_msg_definitions.name%TYPE
+                                , i_start_time      IN TIMESTAMP
+                                , i_additional_data IN VARCHAR2 DEFAULT NULL
+                                );
+
+   FUNCTION translate_truefalse( i_truefalse IN VARCHAR2 )
+   RETURN VARCHAR2;
+
+   FUNCTION duration_to_dsinterval(i_xsduration IN VARCHAR2)
+   RETURN INTERVAL DAY TO SECOND;
+
+   PROCEDURE check_node ( i_nde_id            IN lm_nodes.id%TYPE
+                        , i_ind_routing_table IN BOOLEAN DEFAULT FALSE
+                        );
+
+   PROCEDURE check_route_segment
+             (i_rst_id       IN lm_route_segments.id%TYPE
+             ,i_nde_id_start IN lm_nodes.id%TYPE DEFAULT NULL
+             );
+             
+   PROCEDURE check_dest_routing_group ( i_drp_id IN lm_destination_routing_groups.id%TYPE);
+
+   PROCEDURE check_route_segment_usage ( i_rse_id IN lm_route_segment_usages.id%TYPE);
+             
+   PROCEDURE check_destination ( i_pon_id IN lm_physical_destinations.id%TYPE);
+   
+   PROCEDURE check_station ( i_stn_id IN lm_stations.id%TYPE);
+   
+   PROCEDURE check_station_store_pd ( i_stn_id IN lm_stations.id%TYPE);
+   
+   PROCEDURE check_ebs_lane ( i_lne_stn_id IN lm_ebs_lanes.stn_id%TYPE);
+   
+   PROCEDURE check_logical_segment ( i_lst_id IN lm_logical_segments.id%TYPE);
+             
+   FUNCTION check_handling_area ( i_haa_id_cust IN lm_handling_areas.id_cust%TYPE)
+   RETURN lm_handling_areas%ROWTYPE;
+             
+   FUNCTION check_link ( i_lnk_id_cust IN lm_links.id_cust%TYPE)
+   RETURN lm_links%ROWTYPE;
+             
+   FUNCTION check_handling_area_access ( i_haa_id_cust IN lm_handling_areas.id_cust%TYPE
+                                       , i_lnk_id_cust IN lm_links.id_cust%type
+                                       )
+   RETURN lm_handling_area_accesses%ROWTYPE;
+             
+   FUNCTION check_task_definition(i_tdn_type IN lm_task_definitions.task_instruction_type%TYPE)
+   RETURN lm_task_definitions.id%TYPE;
+
+   FUNCTION check_station_type( i_ste_name IN lm_station_types.name%TYPE)
+   RETURN lm_station_types%ROWTYPE;
+   
+   PROCEDURE check_task_group( i_tgr_id IN lm_task_groups.id%TYPE);
+
+   PROCEDURE check_station_group( i_snp_id IN lm_station_groups.id%TYPE);
+
+   FUNCTION check_system_component( i_sct_id_cust_full IN lm_system_components.id_cust_full%TYPE)
+   RETURN lm_system_components.id%TYPE;
+
+   FUNCTION check_area( i_sct_id_cust IN lm_system_components.id_cust%TYPE)
+   RETURN lm_system_components.id%TYPE;
+
+   PROCEDURE load_pd_data( i_ind_autonomous    IN BOOLEAN   DEFAULT TRUE
+                         , i_default_timestamp IN TIMESTAMP DEFAULT NULL
+                         );
+   
+   PROCEDURE load_cfg_data( i_ind_autonomous    IN BOOLEAN   DEFAULT TRUE
+                          , i_default_timestamp IN TIMESTAMP DEFAULT NULL
+                          );
+   
+   PROCEDURE load_pd_cfg_data(i_default_timestamp IN TIMESTAMP DEFAULT NULL);
+
+   PROCEDURE fill_ads;
+END lm_config;
+/
+
+
+
+
+package body lm_config
+is
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   g_con_timestamp               timestamp(3);
+
+   g_bulk_collect_limit constant integer := 200000;
+   
+   procedure fill_lss;
+   procedure fill_tss;
+   procedure fill_rte;
+   procedure fill_say;
+   procedure fill_hay;
+   procedure fill_hss;
+
+   procedure fill_ray;
+   procedure fill_rde;
+   procedure fill_rey;
+   procedure fill_roe;
+   procedure fill_thg;
+   procedure upd_stn;
+
+   procedure log_processing_time( i_message_name    in lm_ifc_msg_definitions.name%type
+                                , i_start_time      in timestamp
+                                , i_additional_data in varchar2 default null
+                                )
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name
+                                    := g_con_package || '.log_processing_time';
+
+      l_elapsed_time            interval day to second;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      l_elapsed_time  := lm_common.default_timestamp - i_start_time;
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageprocessingtime
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_notification
+                            , i_info_arguments         => i_message_name
+                                                       ||'##'
+                                                       || to_char( extract( second from l_elapsed_time )
+                                                                   + 60 * extract( minute from l_elapsed_time )
+                                                                 , 'FM99990.000'
+                                                                 )
+                            , i_additional_data        => i_additional_data
+                            );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+
+   end log_processing_time;
+
+   function translate_truefalse( i_truefalse in varchar2 )
+   return varchar2
+   is
+      l_con_proc_name constant lm_constant.st_proc_name
+                                  := g_con_package || '.translate_truefalse';
+      l_ret_val varchar2( 1 );
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      if upper(i_truefalse) in ( upper(lm_constant.g_con_truefalse_true)
+                               , lm_constant.g_con_truefalse_true_1
+                               )
+      then
+         l_ret_val  := lm_constant.g_con_yesno_yes;
+      else
+         l_ret_val  := lm_constant.g_con_yesno_no;
+      end if;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_ret_val;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end translate_truefalse;
+   
+   function duration_to_dsinterval(i_xsduration in varchar2)
+   return interval day to second
+   is
+      l_con_proc_name constant lm_constant.st_proc_name
+                                  := g_con_package || '.duration_to_dsinterval';
+      l_return_value           interval day to second;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+   
+      
+      
+      
+      
+      
+      
+      begin
+         l_return_value := i_xsduration;
+      exception
+         when others
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'Encountered invalid xs:duration '|| i_xsduration
+                                     || '. No Year or Months part allowed, and D must be less than 999.'
+               );
+      end;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_return_value;
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end duration_to_dsinterval;
+
+   procedure check_node ( i_nde_id            in lm_nodes.id%type
+                        , i_ind_routing_table in boolean default false
+                        )
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_node';
+
+      l_rt_nde                            lm_nodes%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_nde_tapi_pck.nde_select_row( i_nde_id => i_nde_id
+                                           , o_rt_nde => l_rt_nde
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Node '|| i_nde_id || ' does not exist'
+            );
+      end if;
+      
+      
+      if i_ind_routing_table
+      then
+         if l_rt_nde.nde_type               != lm_constant.g_con_nde_type_divert
+         or l_rt_nde.ind_autonomous_routing  = lm_constant.g_con_yesno_yes
+         then
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'Usage for divert node '|| i_nde_id ||' is not allowed: '
+                                     || 'not a divert (type='||l_rt_nde.nde_type||') or '
+                                     || 'an autonomous divert (ind_autonomous='||l_rt_nde.ind_autonomous_routing||').'
+               );
+         end if;
+      end if;
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_node;
+
+   procedure check_route_segment
+             (i_rst_id       in lm_route_segments.id%type
+             ,i_nde_id_start in lm_nodes.id%type default null
+             )
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_route_segment';
+
+      l_rt_rst                            lm_route_segments%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_rst_tapi_pck.rst_select_row( i_rst_id => i_rst_id
+                                           , o_rt_rst => l_rt_rst
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Route Segment '|| i_rst_id || ' does not exist'
+            );
+      end if;
+      
+      
+      if i_nde_id_start is not null
+      then
+         if l_rt_rst.nde_id_start_node != i_nde_id_start
+         then
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'Route Segment '|| i_rst_id ||' does not start at node '||i_nde_id_start
+               );
+         end if;
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_route_segment;
+
+   procedure check_dest_routing_group( i_drp_id in lm_destination_routing_groups.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_dest_routing_group';
+
+      l_rt_drp                            lm_destination_routing_groups%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_drp_tapi_pck.drp_select_row( i_drp_id => i_drp_id
+                                           , o_rt_drp => l_rt_drp
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Destination Routing Group '|| i_drp_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_dest_routing_group;
+
+   procedure check_route_segment_usage ( i_rse_id in lm_route_segment_usages.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_route_segment_usage';
+
+      l_rt_rse                            lm_route_segment_usages%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_rse_tapi_pck.rse_select_row( i_rse_id => i_rse_id
+                                           , o_rt_rse => l_rt_rse
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Route Segment Usage'|| i_rse_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_route_segment_usage;
+
+   procedure check_destination ( i_pon_id in lm_physical_destinations.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_destination';
+
+      l_rt_pon                            lm_physical_destinations%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_pon_tapi_pck.pon_select_row( i_pon_id => i_pon_id
+                                           , o_rt_pon => l_rt_pon
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Destination '|| i_pon_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_destination;
+
+   procedure check_station ( i_stn_id in lm_stations.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_station';
+
+      l_rt_stn                            lm_stations%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_stn_tapi_pck.stn_select_row( i_stn_id => i_stn_id
+                                           , o_rt_stn => l_rt_stn
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Station '|| i_stn_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_station;
+
+   procedure check_station_store_pd( i_stn_id in lm_stations.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_station_store_pd';
+
+      l_rt_stn                            lm_stations%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_stn_tapi_pck.stn_select_row( i_stn_id => i_stn_id
+                                           , o_rt_stn => l_rt_stn
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Station '|| i_stn_id || ' does not exist'
+            );
+      end if;
+
+      if    l_rt_stn.bagstore_type is null
+         or l_rt_stn.bagstore_type <> lm_constant.g_con_store_type_rack
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Station '|| i_stn_id || ' is not a bag store'
+            );
+      end if;
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_station_store_pd;
+
+   procedure check_ebs_lane ( i_lne_stn_id in lm_ebs_lanes.stn_id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_ebs_lane';
+
+      l_rt_lne                            lm_ebs_lanes%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_lne_tapi_pck.lne_select_row( i_lne_stn_id => i_lne_stn_id
+                                           , o_rt_lne => l_rt_lne
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'EBS Lane '|| i_lne_stn_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_ebs_lane;
+
+   procedure check_logical_segment ( i_lst_id in lm_logical_segments.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_logical_segment';
+
+      l_rt_lst                            lm_logical_segments%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_lst_tapi_pck.lst_select_row( i_lst_id => i_lst_id
+                                           , o_rt_lst => l_rt_lst
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Segment '|| i_lst_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_logical_segment;
+
+   function check_handling_area ( i_haa_id_cust in lm_handling_areas.id_cust%type)
+   return lm_handling_areas%rowtype
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_handling_area';
+
+      l_rt_haa                            lm_handling_areas%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_haa_tapi_pck.haa_select_row_uk1(i_haa_id_cust => i_haa_id_cust
+                                               , o_rt_haa     => l_rt_haa
+                                               )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Handling area  '|| i_haa_id_cust || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_rt_haa;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_handling_area;
+
+   function check_link ( i_lnk_id_cust in lm_links.id_cust%type)
+   return lm_links%rowtype
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_link';
+
+      l_rt_lnk                            lm_links%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_lnk_tapi_pck.lnk_select_row_uk2(i_lnk_id_cust => i_lnk_id_cust
+                                               , o_rt_lnk     => l_rt_lnk
+                                               )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Link '|| i_lnk_id_cust || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_rt_lnk;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_link;
+
+   function check_handling_area_access ( i_haa_id_cust in lm_handling_areas.id_cust%type
+                                       , i_lnk_id_cust in lm_links.id_cust%type
+                                       )
+   return lm_handling_area_accesses%rowtype
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_handling_area_access';
+
+      l_rt_has                            lm_handling_area_accesses%rowtype;
+      l_rt_haa                            lm_handling_areas%rowtype;
+      l_rt_lnk                            lm_links%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_rt_haa := lm_config.check_handling_area(i_haa_id_cust => i_haa_id_cust);
+      l_rt_lnk := lm_config.check_link(i_lnk_id_cust => i_lnk_id_cust);
+      if not lm_has_tapi_pck.has_select_row_uk1( i_has_lnk_id => l_rt_lnk.id
+                                               , i_has_haa_id => l_rt_haa.id
+                                               , o_rt_has     => l_rt_has
+                                               )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Handling area access to HA '|| i_haa_id_cust
+                                  || ' over link ' || i_lnk_id_cust || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_rt_has;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_handling_area_access;
+
+   function check_task_definition(i_tdn_type in lm_task_definitions.task_instruction_type%type)
+   return lm_task_definitions.id%type
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_task_definition';
+
+      l_rt_tdn                            lm_task_definitions%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_tdn_tapi_pck.tdn_select_row_uk1( i_tdn_task_instruction_type => i_tdn_type
+                                               , o_rt_tdn                    => l_rt_tdn
+                                               )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Task Definition '|| i_tdn_type || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_rt_tdn.id;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_task_definition;
+
+   function check_station_type( i_ste_name in lm_station_types.name%type)
+   return lm_station_types%rowtype
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_station_type';
+
+      l_rt_ste                            lm_station_types%rowtype;
+      l_dummy                             boolean;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      
+      
+      l_dummy := lm_ste_tapi_pck.ste_select_row_uk1( i_ste_name => i_ste_name
+                                                   , o_rt_ste   => l_rt_ste
+                                                   );
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_rt_ste;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_station_type;
+
+   procedure check_task_group( i_tgr_id in lm_task_groups.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_task_group';
+
+      l_rt_tgr                            lm_task_groups%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_tgr_tapi_pck.tgr_select_row( i_tgr_id => i_tgr_id
+                                           , o_rt_tgr => l_rt_tgr
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Task Group  '|| i_tgr_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_task_group;
+
+   procedure check_station_group( i_snp_id in lm_station_groups.id%type)
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_station_group';
+
+      l_rt_snp                            lm_station_groups%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_snp_tapi_pck.snp_select_row( i_snp_id => i_snp_id
+                                           , o_rt_snp => l_rt_snp
+                                           )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Station Group  '|| i_snp_id || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_station_group;
+
+   function check_system_component( i_sct_id_cust_full in lm_system_components.id_cust_full%type)
+   return lm_system_components.id%type
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_system_component';
+
+      l_rt_sct                            lm_system_components%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_sct_tapi_pck.sct_select_row_uk2( i_sct_id_cust_full => i_sct_id_cust_full
+                                               , o_rt_sct           => l_rt_sct
+                                               )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'System Component '|| i_sct_id_cust_full || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_rt_sct.id;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_system_component;
+
+   function check_area( i_sct_id_cust in lm_system_components.id_cust%type)
+   return lm_system_components.id%type
+   is
+      l_con_proc_name            constant lm_constant.st_proc_name
+                                            := g_con_package || '.check_area';
+
+      l_rt_sct                            lm_system_components%rowtype;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      if not lm_sct_tapi_pck.sct_select_row_uk1( i_sct_sct_type            => lm_constant.g_con_sct_type_ara
+                                               , i_sct_id_cust             => i_sct_id_cust
+                                               , i_sct_sct_id_section_zone => null
+                                               , i_sct_sct_id_zone_area    => null
+                                               , o_rt_sct                  => l_rt_sct
+                                               )
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Area '|| i_sct_id_cust || ' does not exist'
+            );
+      end if;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+      return l_rt_sct.id;
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_area;
+
+   
+
+
+
+
+   procedure check_lm_status
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name
+                                    := g_con_package || '.check_lm_status';
+
+      cursor c_jobs
+      is
+      select ''
+      from   acl_user_jobs_v;
+      
+      l_dummy                    varchar2(1);
+      l_app_oper_status          boolean;
+      l_jobs_running             boolean;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      l_app_oper_status  := acl_application_control.determ_app_operational_status( lm_constant.get_aet_name_csci_lm );
+      
+      open c_jobs;
+      fetch c_jobs into l_dummy;
+      l_jobs_running := c_jobs%found;
+      close c_jobs;
+
+      if l_app_oper_status or l_jobs_running
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_lmoperational
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'The LM application is operational. Turn of the switch and stop all application elements before continueing.'
+            );
+      end if;
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_jobs%isopen
+         then
+            close c_jobs;
+         end if;
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end check_lm_status;
+
+   
+
+
+
+
+   procedure fill_pd_derived_data
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name
+                                    := g_con_package || '.fill_pd_derived_data';
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      fill_lss;
+      fill_tss;
+      
+      
+      fill_rte;
+      
+      
+      fill_say;
+      
+      
+      fill_hay;
+      fill_hss;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end fill_pd_derived_data;
+
+   
+
+
+
+
+
+   procedure fill_cfg_derived_data
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name
+                                    := g_con_package || '.fill_cfg_derived_data';
+
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      
+      fill_ray;
+      fill_rde;
+      fill_rey;
+      fill_roe;
+      
+      
+      upd_stn;
+      
+      
+      fill_thg;
+      
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+
+         viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+   end fill_cfg_derived_data;
+
+   
+
+
+
+
+
+
+
+
+
+   procedure load_pd_data( i_ind_autonomous    in boolean   default true
+                         , i_default_timestamp in timestamp default null
+                         )
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name
+                                    := g_con_package || '.load_pd_data';
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      g_con_timestamp := nvl(i_default_timestamp, lm_common.default_timestamp);
+
+      
+      lm_cfg_sct.load_area_data;
+      lm_cfg_sct.load_zone_data;
+      lm_cfg_sct.load_section_data;
+      lm_cfg_lst.load_logical_segment_data;
+      lm_cfg_sct.link_sct_to_segments;
+      lm_cfg_nde.load_node_data;
+      lm_cfg_rst.load_route_segment_data;
+      lm_cfg_stn.load_station_data;
+      lm_cfg_haa.load_handling_area_data;
+      lm_cfg_lnk.load_link_data;
+         
+      
+      lm_config.fill_pd_derived_data;
+
+      if i_ind_autonomous
+      then
+         commit;  
+      end if;
+      
+      
+      log_processing_time( i_message_name    => 'project_definition'
+                         , i_start_time      => l_start_time
+                         );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+
+         
+         log_processing_time( i_message_name    => 'project_definition'
+                            , i_start_time      => l_start_time
+                            );
+
+         viu_info.raise_info;
+   end load_pd_data;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   procedure load_cfg_data( i_ind_autonomous    in boolean   default true
+                          , i_default_timestamp in timestamp default null
+                          )
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name
+                                    := g_con_package || '.load_cfg_data';
+
+      
+      l_start_time               timestamp := lm_common.default_timestamp;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      g_con_timestamp := nvl(i_default_timestamp, lm_common.default_timestamp);
+
+      
+      
+      lm_cfg_availability_control.load_general_data;
+         
+      
+      lm_cfg_routing.load_destination_groups;
+      lm_cfg_routing.load_usages;
+      lm_cfg_routing.load_rules;
+      lm_cfg_routing.load_porr;
+
+      
+      lm_cfg_task_topology.load_task_definitions;
+      lm_cfg_task_topology.load_task_groups;
+      lm_cfg_task_topology.load_default_task_groups;
+      lm_cfg_task_topology.load_station_groups;
+      lm_cfg_task_topology.load_station_group_members;
+      lm_cfg_task_topology.load_task_assignments;
+
+      
+      lm_cfg_availability_control.load_controlled_routing;
+      lm_cfg_availability_control.load_station_proximity;
+      lm_cfg_availability_control.load_operator_availability;
+      lm_cfg_availability_control.load_ind_use_unavailable_stns;
+         
+      
+      lm_cfg_congestion_control.load_dynamic_capacity;
+      lm_cfg_congestion_control.load_dynamic_recirculation;
+      lm_cfg_congestion_control.load_flow_balancing;
+         
+      
+      lm_cfg_external_functions.load_bags_in_segment;
+      lm_cfg_external_functions.load_release_groups;
+      lm_cfg_external_functions.load_instruction_recovery;
+         
+      
+      lm_cfg_lane_based_ebs.load_lanes;
+      lm_cfg_lane_based_ebs.load_lane_groups;
+
+      
+      lm_cfg_availability_control.load_store_control;
+
+      
+      lm_config.fill_cfg_derived_data;
+
+
+      if i_ind_autonomous
+      then
+         commit;  
+      end if;
+
+      
+      log_processing_time( i_message_name    => 'LogisticDomainConfig'
+                         , i_start_time      => l_start_time
+                         );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+
+         
+         log_processing_time( i_message_name    => 'LogisticDomainConfig'
+                            , i_start_time      => l_start_time
+                            );
+
+         viu_info.raise_info;
+   end load_cfg_data;
+   
+   
+
+
+
+
+
+
+   procedure load_pd_cfg_data(i_default_timestamp in timestamp default null)
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name
+                                    := g_con_package || '.load_pd_cfg_data';
+
+      
+      cursor c_sca_pd(b_sca_id in cmn_sysconfig_data.id%type)
+      is
+      select sca.version
+      ,      pd.project_id
+      ,      pd.handling_area
+      from   cmn_sysconfig_data sca
+      ,      xmltable( '/project_definition'
+                        passing sca.data
+                        columns project_id               varchar2(240) path '@project_id'
+                        ,       handling_area            varchar2(30)  path 'handling_areas/handling_area[@current="true"]/@id'
+                      ) pd
+      where  sca.id = b_sca_id;
+
+      
+      cursor c_sca_conf(b_sca_id in cmn_sysconfig_data.id%type)
+      is
+      select conf.pd3_version
+      ,      conf.project_id
+      ,      conf.handling_area
+      from   cmn_sysconfig_data sca
+      ,      xmltable( '/LogisticDomainConfig/Header'
+                        passing sca.data
+                        columns pd3_version              varchar2(255) path 'PD3_Version/text()'
+                        ,       project_id               varchar2(240) path 'Project/text()'
+                        ,       handling_area            varchar2(30)  path 'HandlingAreaID/text()'
+                      ) conf
+      where  sca.id = b_sca_id;
+      
+      l_rec_sca_pd               c_sca_pd%rowtype;
+      l_rec_sca_conf             c_sca_conf%rowtype;
+      l_sca_id_pd                cmn_sysconfig_data.id%type;
+      l_sca_id_cfg               cmn_sysconfig_data.id%type;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+   begin
+      viu_module.enter_module (i_module => l_con_proc_name);
+
+      g_con_timestamp := nvl(i_default_timestamp, lm_common.default_timestamp);
+
+      
+      check_lm_status;
+      
+      
+      l_sca_id_pd  := cmn_sysconfig.get_last_sysconfig_row(i_sde_doc_type => 'project_definition');
+      l_sca_id_cfg := cmn_sysconfig.get_last_sysconfig_row(i_sde_doc_type => 'LogisticDomainConfig');
+
+      
+      open c_sca_pd(b_sca_id => l_sca_id_pd);
+      fetch c_sca_pd into l_rec_sca_pd;
+      if c_sca_pd%notfound
+      then
+         close c_sca_pd;
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_no_pd3_loaded
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'No PD3 data has been loaded.'
+            );
+      end if;
+      close c_sca_pd;
+      
+      open c_sca_conf(b_sca_id => l_sca_id_cfg);
+      fetch c_sca_conf into l_rec_sca_conf;
+      close c_sca_conf;
+      if  l_rec_sca_conf.project_id    = l_rec_sca_pd.project_id
+      and l_rec_sca_conf.pd3_version   = l_rec_sca_pd.version
+      and l_rec_sca_conf.handling_area = l_rec_sca_pd.handling_area
+      then
+         
+         null;
+      else
+         
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_pd3_mismatch
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'Mismatch between project_definition and configuration: project_definition (project "'||l_rec_sca_pd.project_id||'"'
+                                  || ', handling area "'||l_rec_sca_pd.handling_area||'"'
+                                  || ', version "'||l_rec_sca_pd.version||'")'
+                                  || ' does not match configuration (project "'||l_rec_sca_conf.project_id||'"'
+                                  || ', handling area "'||l_rec_sca_conf.handling_area||'"'
+                                  || ', pd3 version "'||l_rec_sca_conf.pd3_version||'")'
+            );
+      end if;
+
+      begin
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         cmn_cleanup.cleanup('CLEANUP_DYN_PD_CFG');
+
+         
+         
+         cmn_cleanup.cleanup('RESTORE_PROJECT_DATA');
+
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         
+         cmn_sysconfig.process_sysconfig( i_sca_id     => l_sca_id_pd
+                                        , i_handler    => 'lm_config.load_pd_data;'
+                                        );
+
+         
+         
+         cmn_sysconfig.set_sysconfig_row(i_sca_id => l_sca_id_cfg);
+
+         load_cfg_data;
+         
+      exception
+         when others
+            then
+               
+               
+               
+               
+               
+               
+               
+               cmn_cleanup.cleanup('RESTORE_PD_CFG');
+               
+               viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+      end;
+      
+      
+      
+      
+      
+      
+      cmn_sysconfig.set_active(i_sca_id => l_sca_id_pd);
+      
+      
+      cmn_cleanup.create_shadow_tables('RESTORE_PD_CFG');
+
+      
+      log_processing_time( i_message_name    => 'Process configuration files'
+                         , i_start_time      => l_start_time
+                         );
+
+      viu_module.leave_module (i_module => l_con_proc_name);
+   exception
+      when others
+      then
+         if c_sca_pd%isopen
+         then
+            close c_sca_pd;
+         end if;
+         if c_sca_conf%isopen
+         then
+            close c_sca_conf;
+         end if;
+         viu_module.leave_module (i_module          => l_con_proc_name,
+                                  i_debug_info      => sqlerrm
+                                 );
+
+         
+         log_processing_time( i_message_name    => 'Process configuration files'
+                            , i_start_time      => l_start_time
+                            );
+
+         
+         
+         viu_info.handle_info;
+
+         
+         
+         
+         raise;
+   end load_pd_cfg_data;
+
+   
+
+
+
+
+   procedure fill_lss
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_lss';
+
+      type rt_lss is record
+       (lst_id      lm_logical_segment_statuses.id%type
+       );
+      type tt_lss is table of rt_lss index by pls_integer;
+      
+      l_tt_lss tt_lss;
+      
+      cursor c_lss
+      is
+      select lst.id as lst_id
+      from   lm_logical_segments lst
+      order by lst.id
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#lss                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_lss;
+      loop
+         fetch c_lss bulk collect
+         into  l_tt_lss limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_lss.count  
+            insert /*+ APPEND */
+            into   lm_logical_segment_statuses
+            (      ssm_id
+            ,      lst_id
+            ,      time_activated
+            )
+            values
+            (      lm_constant.g_con_ssm_initial
+            ,      l_tt_lss(indx).lst_id
+            ,      g_con_timestamp
+            )
+            ;
+         l_#lss := l_#lss + l_tt_lss.count;
+         exit when l_tt_lss.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_lss;
+      
+      
+      log_processing_time( i_message_name    => 'StatusSegments'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#lss||' lm_logical_segment_statuses'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_lss%isopen
+         then
+            close c_lss;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_lss;
+
+   
+
+
+
+
+   procedure fill_tss
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_tss';
+      
+      type rt_tss is record
+       (tst_id      lm_technical_segment_statuses.tst_id%type
+       );
+      type tt_tss is table of rt_tss index by pls_integer;
+      
+      l_tt_tss tt_tss;
+      
+      cursor c_tss
+      is
+      select tst.id as tst_id
+      from   lm_technical_segments tst
+      order by tst.id
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#tss                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_tss;
+      loop
+         fetch c_tss bulk collect
+         into  l_tt_tss limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_tss.count  
+            insert /*+ APPEND */
+            into   lm_technical_segment_statuses
+            (      ssm_id
+            ,      tst_id
+            ,      time_activated
+            ,      time_deactivated
+            ,      event_time
+            )
+            values
+            (      lm_constant.g_con_ssm_initial
+            ,      l_tt_tss(indx).tst_id
+            ,      g_con_timestamp
+            ,      null
+            ,      g_con_timestamp
+            )
+            ;
+         l_#tss := l_#tss + l_tt_tss.count;
+         exit when l_tt_tss.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_tss;
+      
+      
+      log_processing_time( i_message_name    => 'StatusSegments'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#tss||' lm_technical_segment_statuses'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_tss%isopen
+         then
+            close c_tss;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_tss;
+
+   
+
+
+
+
+   procedure fill_rte
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_rte';
+      
+      type rt_rte is record
+       (id          lm_routing_tables.id%type
+       ,nde_id      lm_routing_tables.nde_id%type
+       ,rme_id      lm_routing_tables.rme_id%type
+       );
+      type tt_rte is table of rt_rte index by pls_integer;
+      
+      l_tt_rte tt_rte;
+      
+      cursor c_rte
+      is
+      select rownum as id
+      ,      rte.*
+      from  (select nde.id nde_id
+             ,      rme.id rme_id
+             from   lm_nodes nde
+             ,      lm_route_modes rme
+             where  nde.nde_type = lm_constant.g_con_nde_type_divert
+             and    nde.ind_autonomous_routing = lm_constant.g_con_yesno_no
+             order by nde.id
+             ,        rme.id
+            ) rte
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#rte                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_rte;
+      loop
+         fetch c_rte bulk collect
+         into  l_tt_rte limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_rte.count  
+            insert /*+ APPEND */
+            into   lm_routing_tables
+            (      id
+            ,      nde_id
+            ,      rme_id
+            )
+            values
+            (      l_tt_rte(indx).id
+            ,      l_tt_rte(indx).nde_id
+            ,      l_tt_rte(indx).rme_id
+            )
+            ;
+         l_#rte := l_#rte + l_tt_rte.count;
+         exit when l_tt_rte.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_rte;
+      
+      
+      log_processing_time( i_message_name    => 'Nodes'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#rte||' lm_routing_tables'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_rte%isopen
+         then
+            close c_rte;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_rte;
+   
+   
+
+
+
+
+   procedure fill_say
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_say';
+      
+      type rt_say is record
+       (stn_id      lm_station_availabilities.stn_id%type
+       );
+      type tt_say is table of rt_say index by pls_integer;
+      
+      l_tt_say tt_say;
+      
+      cursor c_say
+      is
+      select stn.id as stn_id
+      from   lm_stations stn
+      order by stn.id
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#say                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_say;
+      loop
+         fetch c_say bulk collect
+         into  l_tt_say limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_say.count  
+            insert /*+ APPEND */
+            into   lm_station_availabilities
+            (      stn_id
+            ,      ssd_id
+            ,      event_time
+            ,      ind_available_derived
+            ,      ind_dirty
+            ,      timestamp_change
+            ,      function_mode
+            )
+            values
+            (      l_tt_say(indx).stn_id
+            ,      lm_constant.g_con_ssd_id_initial
+            ,      g_con_timestamp
+            ,      lm_constant.g_con_yesno_yes
+            ,      lm_constant.g_con_yesno_no
+            ,      g_con_timestamp
+            ,      null
+            )
+            ;
+         l_#say := l_#say + l_tt_say.count;
+         exit when l_tt_say.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_say;
+      
+      
+      log_processing_time( i_message_name    => 'Stations'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#say||' lm_station_availabilities'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_say%isopen
+         then
+            close c_say;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_say;
+
+   
+
+
+
+
+   procedure fill_hay
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_hay';
+      
+      type rt_hay is record
+       (has_id      lm_haa_access_statuses.has_id%type
+       );
+      type tt_hay is table of rt_hay index by pls_integer;
+      
+      l_tt_hay tt_hay;
+      
+      cursor c_hay
+      is
+      select has.id as has_id
+      from   lm_handling_area_accesses has
+      ,      lm_handling_areas         haa
+      ,      lm_links                  lnk
+      where  lnk.haa_id_downstream = haa.id
+      and    has.lnk_id            = lnk.id
+      and    haa.ind_current       = lm_constant.g_con_yesno_yes
+      order by has.id
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#hay                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_hay;
+      loop
+         fetch c_hay bulk collect
+         into  l_tt_hay limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_hay.count  
+            insert /*+ APPEND */
+            into   lm_haa_access_availabilities
+            (      has_id
+            ,      ind_available
+            ,      ind_dirty
+            ,      timestamp_change
+            )
+            values
+            (      l_tt_hay(indx).has_id
+            ,      lm_constant.g_con_yesno_yes
+            ,      lm_constant.g_con_yesno_no
+            ,      g_con_timestamp
+            )
+            ;
+         l_#hay := l_#hay + l_tt_hay.count;
+         exit when l_tt_hay.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_hay;
+      
+      
+      log_processing_time( i_message_name    => 'HandlingAreas'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#hay||' lm_haa_access_availabilities'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_hay%isopen
+         then
+            close c_hay;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_hay;
+
+   
+
+
+
+
+   procedure fill_hss
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_hss';
+      
+      type rt_hss is record
+       (has_id      lm_haa_access_statuses.has_id%type
+       );
+      type tt_hss is table of rt_hss index by pls_integer;
+      
+      l_tt_hss tt_hss;
+      
+      cursor c_hss
+      is
+      select has.id as has_id
+      from   lm_handling_area_accesses has
+      ,      lm_handling_areas         haa
+      ,      lm_links                  lnk
+      where  lnk.haa_id_downstream = haa.id
+      and    has.lnk_id            = lnk.id
+      and    haa.ind_current       = lm_constant.g_con_yesno_yes
+      order by has.id
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#hss                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_hss;
+      loop
+         fetch c_hss bulk collect
+         into  l_tt_hss limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_hss.count  
+            insert /*+ APPEND */
+            into   lm_haa_access_statuses
+            (      hsm_id
+            ,      has_id
+            ,      time_activated
+            ,      time_deactivated
+            )
+            values
+            (      lm_constant.g_con_hsm_operational
+            ,      l_tt_hss(indx).has_id
+            ,      g_con_timestamp
+            ,      null
+            )
+            ;
+         l_#hss := l_#hss + l_tt_hss.count;
+         exit when l_tt_hss.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_hss;
+      
+      
+      log_processing_time( i_message_name    => 'HandlingAreas'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#hss||' lm_haa_access_statuses'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_hss%isopen
+         then
+            close c_hss;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_hss;
+
+   
+
+
+
+
+   procedure fill_ray
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_ray';
+
+      type rt_ray is record
+       (rse_id      lm_rse_availabilities.rse_id%type
+       );
+      type tt_ray is table of rt_ray index by pls_integer;
+      
+      l_tt_ray tt_ray;
+      
+      cursor c_ray
+      is
+      select rse.id as rse_id
+      from   lm_route_segment_usages rse
+      order by rse.id
+      ;
+      
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#ray                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_ray;
+      loop
+         fetch c_ray bulk collect
+         into  l_tt_ray limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_ray.count  
+            insert /*+ APPEND */
+            into   lm_rse_availabilities
+            (      rse_id
+            ,      ind_available
+            ,      timestamp_change
+            ,      ind_dirty
+            )
+            values
+            (      l_tt_ray(indx).rse_id
+            ,      lm_constant.g_con_yesno_yes
+            ,      g_con_timestamp
+            ,      lm_constant.g_con_yesno_no
+            )
+            ;
+         l_#ray := l_#ray + l_tt_ray.count;
+         exit when l_tt_ray.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_ray;
+
+      
+      log_processing_time( i_message_name    => 'Usages'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#ray||' lm_rse_availabilities'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_ray%isopen
+         then
+            close c_ray;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_ray;
+
+   
+
+
+
+
+   procedure fill_rde
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_rde';
+
+      type rt_rde is record
+       (rse_id      lm_rse_determined_preferences.rse_id%type
+       ,value       lm_rse_determined_preferences.value%type
+       );
+      type tt_rde is table of rt_rde index by pls_integer;
+      
+      l_tt_rde tt_rde;
+      
+      cursor c_rde
+      is
+      select rse.id as rse_id
+      ,      case rse.ras_id
+               when 1 then 1
+               when 2 then 0
+               when 3 then 2
+             end as value
+      from   lm_route_segment_usages rse
+      order by rse.id
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#rde                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_rde;
+      loop
+         fetch c_rde bulk collect
+         into  l_tt_rde limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_rde.count  
+            insert /*+ APPEND */
+            into   lm_rse_determined_preferences
+            (      rse_id
+            ,      value
+            ,      ind_dirty
+            )
+            values
+            (      l_tt_rde(indx).rse_id
+            ,      l_tt_rde(indx).value
+            ,      lm_constant.g_con_yesno_no
+            )
+            ;
+         l_#rde := l_#rde + l_tt_rde.count;
+         exit when l_tt_rde.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_rde;
+
+      
+      log_processing_time( i_message_name    => 'Usages'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#rde||' lm_rse_determined_preferences'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_rde%isopen
+         then
+            close c_rde;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_rde;
+
+   
+
+
+
+
+   procedure fill_rey
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_rey';
+      
+      type rt_rey is record
+       (pon_id      lm_routing_entries.pon_id%type
+       ,rte_id      lm_routing_entries.rte_id%type
+       ,rst_id      lm_routing_entries.rst_id%type
+       ,preference  lm_routing_entries.preference%type
+       );
+       
+      type tt_rey is table of rt_rey index by pls_integer;
+      
+      l_tt_rey tt_rey;
+      
+      cursor c_rey
+      is
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      select pon_id
+      ,      rte_id
+      ,      rst_id
+      ,      (select column_value
+              from   table(nt_prefs)
+              where  rownum = 1 ) preference
+      from  (select rey.pon_id
+             ,      rte.id rte_id
+             ,      rey.rst_id
+             ,      cast (collect ( rey.preference
+                                    order by decode( rey.preference
+                                                   , lm_constant.g_con_rey_preference_preferred, 1
+                                                   , lm_constant.g_con_rey_preference_alternat, 2
+                                                   , 3
+                                                   )
+                                  ) as nt_number_coll
+                         ) nt_prefs
+             from   lm_full_default_rey_v rey
+             ,      lm_routing_tables rte
+             where  rey.nde_id = rte.nde_id
+             and    rey.rme_id = rte.rme_id
+             group by rey.pon_id
+             ,        rte.id
+             ,        rey.rst_id
+             order by rey.pon_id
+             ,        rte.id
+             ,        rey.rst_id
+            )
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#rey                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+      open c_rey;
+      loop
+         fetch c_rey bulk collect
+         into  l_tt_rey limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_rey.count  
+            insert /*+ APPEND */
+            into   lm_routing_entries
+            (      pon_id
+            ,      rst_id
+            ,      rte_id
+            ,      preference
+            )
+            values
+            (      l_tt_rey(indx).pon_id
+            ,      l_tt_rey(indx).rst_id
+            ,      l_tt_rey(indx).rte_id
+            ,      l_tt_rey(indx).preference
+            );
+         l_#rey := l_#rey + l_tt_rey.count;
+         exit when l_tt_rey.count < g_bulk_collect_limit;
+      end loop;
+      
+      close c_rey;
+      
+      
+      log_processing_time( i_message_name    => 'Usages'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#rey||' lm_routing_entries'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_rey%isopen
+         then
+            close c_rey;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_rey;
+
+   
+
+
+
+
+   procedure fill_roe
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_roe';
+
+      
+      cursor c_pon
+      is
+      select pon.id
+      from   lm_physical_destinations pon
+      where  pon.ind_assignable_destination = lm_constant.g_con_yesno_yes
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#roe                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+      for rec_pon in c_pon
+      loop
+         l_#roe := l_#roe
+                 + lm_in_time_delivery.update_travel_times( i_pon_id => rec_pon.id);
+      end loop;
+
+      
+      
+      log_processing_time( i_message_name    => 'Usages'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#roe||' lm_routes'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_roe;
+
+   
+
+
+
+
+   procedure upd_stn
+   is
+      l_con_proc_name   constant lm_constant.st_proc_name := g_con_package || '.upd_stn';
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#stn                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      update lm_stations stn
+      set    ind_rules_defined = lm_constant.g_con_yesno_yes
+      where  exists
+             (select ''
+              from   lm_route_influence_rules rre
+              where  rre.stn_id = stn.id
+             )
+      ;
+      l_#stn := sql%rowcount;
+      
+      
+      log_processing_time( i_message_name    => 'InfluenceRules'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Updated: '||l_#stn||' lm_stations'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end upd_stn;
+
+   
+
+
+
+
+   procedure fill_thg
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_thg';
+      
+      cursor c_tdn
+      is
+      select tdn.id
+      from   lm_task_definitions tdn
+      order by tdn.id
+      ;
+      
+      
+      
+      
+      
+      
+      cursor c_stn(b_tdn_id in lm_task_definitions.id%type)
+      is
+      select distinct sgm.stn_id_member_station stn_id
+      from   lm_station_group_members sgm
+      ,      lm_station_groups        snp
+      where  sgm.snp_id_define      = snp.id
+      and    stn_id_member_station is not null
+      and    not exists
+             (select ''
+              from    lm_task_handling
+              where   tdn_id = b_tdn_id
+              and     stn_id = sgm.stn_id_member_station
+             )
+      start with snp.id in ( select tat.snp_id
+                             from   lm_task_assignments tat
+                             where  tat.tdn_id = b_tdn_id
+                           )
+      connect by sgm.snp_id_define      = prior sgm.snp_id_member_group
+              or snp.snp_id_alternative = prior sgm.snp_id_define
+              or snp.snp_id_secondary   = prior sgm.snp_id_define
+      ;
+      
+      l_nt_stn                   nt_id_coll;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#thg                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      for rec_tdn in c_tdn
+      loop
+         open c_stn(b_tdn_id => rec_tdn.id);
+         fetch c_stn bulk collect
+         into  l_nt_stn;
+         close c_stn;
+
+         forall indx in 1 .. l_nt_stn.count  
+            insert /*+ APPEND */
+            into   lm_task_handling
+            (      tdn_id
+            ,      stn_id
+            )
+            values
+            (      rec_tdn.id
+            ,      l_nt_stn(indx)
+            )
+            ;
+         l_#thg := l_#thg + l_nt_stn.count;
+      end loop;
+      
+      
+      log_processing_time( i_message_name    => 'TaskTopology'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#thg||' lm_task_handling records'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_stn%isopen
+         then
+            close c_stn;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_thg;
+
+   procedure fill_ads
+   is
+      l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.fill_ads';
+      
+      type rt_ads is record
+       (aet_id      acl_aet_detailed_states.aet_id%type
+       ,dsd_id      acl_aet_detailed_states.dsd_id%type
+       );
+      type tt_ads is table of rt_ads index by pls_integer;
+      
+      l_tt_ads tt_ads;
+      
+      cursor c_ads
+      is
+      select aet.id as aet_id
+      ,      dsd.id as dsd_id
+      from   acl_application_elements aet
+      ,      acl_detailed_state_definitions dsd
+      order by aet.id, dsd.id
+      ;
+
+      l_start_time               timestamp := lm_common.default_timestamp;
+      l_#ads                     integer   := 0;
+   begin
+      viu_module.enter_module(i_module => l_con_proc_name);
+
+      open c_ads;
+      loop
+         fetch c_ads bulk collect
+         into  l_tt_ads limit g_bulk_collect_limit;
+
+         forall indx in 1 .. l_tt_ads.count  
+            insert /*+ APPEND */
+            into   acl_aet_detailed_states
+            (      dsd_id
+            ,      aet_id
+            ,      ind_status
+            )
+            values
+            (      l_tt_ads(indx).dsd_id
+            ,      l_tt_ads(indx).aet_id
+            ,      lm_constant.g_con_yesno_no
+            )
+            ;
+         l_#ads := l_#ads + l_tt_ads.count;
+         exit when l_tt_ads.count < g_bulk_collect_limit;
+      end loop;
+
+      close c_ads;
+      
+      
+      log_processing_time( i_message_name    => 'ApplicationElements'
+                         , i_start_time      => l_start_time
+                         , i_additional_data => 'Created: '||l_#ads||' acl_aet_detailed_states'
+                         );
+
+      viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+   exception
+      when others
+      then
+         if c_ads%isopen
+         then
+            close c_ads;
+         end if;
+         viu_module.leave_module (i_module            => l_con_proc_name, i_debug_info => sqlerrm);
+         viu_info.raise_info     (i_calling_procedure => l_con_proc_name);
+   end fill_ads;
+   
+end lm_config;
+/

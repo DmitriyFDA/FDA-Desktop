@@ -1,0 +1,17 @@
+procedure report_app_performance1(p_sortby in varchar2 default ' ') is
+v_msg      varchar2(32767);
+v_title    varchar2( 200) := 'Report Application Performance, dd '||ts2str(sysdate);
+begin
+  begin
+    inspect_table (v_title, 'FACT_APP_LOG_DATA_V', 1000, '', p_sortby);
+  exception when others then
+    htp.print(ui_menu.head_from_link('REP_APP_PERFORMANCE'));
+    v_msg := v_msg||sqlerrm;
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

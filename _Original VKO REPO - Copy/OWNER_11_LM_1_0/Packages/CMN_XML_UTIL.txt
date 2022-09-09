@@ -1,0 +1,466 @@
+create or replace PACKAGE cmn_xml_util
+AS
+   /******************************************************************************
+      NAME:       cmn_xml_util
+      PURPOSE:
+
+      REVISIONS:
+      Ver        Date        Author           Description
+      ---------  ----------  ---------------  ------------------------------------
+      1.0        06-11-2006             1. Created this package.
+   ******************************************************************************/
+   g_con_package   CONSTANT VARCHAR2( 100 ) := 'cmn_xml_util';
+
+   FUNCTION parse_xml( p_xml CLOB )
+      RETURN xmldom.domdocument;
+
+   FUNCTION get_firstchildnodevalue( i_xml IN XMLTYPE, i_xpath IN VARCHAR2 )
+      RETURN VARCHAR2;
+
+   FUNCTION get_element_value( i_xmldoc CLOB, i_element VARCHAR2 )
+      RETURN VARCHAR2;
+
+   FUNCTION extract_element( i_xml XMLTYPE, i_xpath VARCHAR2 )
+      RETURN XMLTYPE;
+
+   FUNCTION extract_value( i_xml XMLTYPE, i_xpath VARCHAR2 )
+      RETURN VARCHAR2;
+
+   FUNCTION get_root_element_name( i_xml_doc XMLTYPE )
+      RETURN VARCHAR2;
+
+   FUNCTION add_element(
+      io_doc    IN OUT   DBMS_XMLDOM.domdocument
+    , io_node   IN OUT   DBMS_XMLDOM.domnode
+    , i_name    IN       VARCHAR2
+    , i_value   IN       VARCHAR2 DEFAULT NULL
+   )
+      RETURN DBMS_XMLDOM.domnode;
+
+   PROCEDURE add_element(
+      io_doc    IN OUT   DBMS_XMLDOM.domdocument
+    , io_node   IN OUT   DBMS_XMLDOM.domnode
+    , i_name    IN       VARCHAR2
+    , i_value   IN       VARCHAR2 DEFAULT NULL
+   );
+
+   FUNCTION to_xmltype( i_node IN DBMS_XMLDOM.domnode )
+      RETURN XMLTYPE;
+END cmn_xml_util;
+/
+
+
+
+
+package body cmn_xml_util
+as
+   function parse_xml( p_xml clob )
+      return xmldom.domdocument
+   is
+      l_return_document   xmldom.domdocument;
+      parser              xmlparser.parser;
+      e_parse_error       exception;
+      pragma exception_init( e_parse_error, -20100 );
+   begin
+      parser             := xmlparser.newparser;
+      xmlparser.parsebuffer( parser
+                           , p_xml
+                           );
+      l_return_document  := xmlparser.getdocument( parser );
+      xmlparser.freeparser( parser );
+      return l_return_document;
+   exception
+      when e_parse_error
+      then
+         xmlparser.freeparser( parser );
+         return l_return_document;
+   end parse_xml;
+
+   function get_firstchildnodevalue( i_xml in xmltype, i_xpath in varchar2 )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                                     := g_con_package || '.get_firstchildnodevalue';
+      l_nlist                    dbms_xmldom.domnodelist;
+      l_node                     dbms_xmldom.domnode;
+      l_doc                      dbms_xmldom.domdocument;
+      l_doc_node                 dbms_xmldom.domnode;
+      l_nodevalue                varchar2( 4000 );
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      
+      l_doc       := dbms_xmldom.newdomdocument( xmldoc      => i_xml );
+      l_doc_node  := dbms_xmldom.makenode( doc      => l_doc );
+      l_nlist     := dbms_xslprocessor.selectnodes( n            => l_doc_node
+                                                  , pattern      => i_xpath
+                                                  );
+
+      for i in 0 .. dbms_xmldom.getlength( l_nlist ) - 1
+      loop
+         l_node       := dbms_xmldom.item( nl       => l_nlist
+                                         , idx      => i
+                                         );
+         
+         l_node       := dbms_xmldom.getfirstchild( n      => l_node );
+         l_nodevalue  := dbms_xmldom.getnodevalue( n      => l_node );
+         exit;
+      end loop;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_nodevalue;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => 'exception'
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_firstchildnodevalue;
+
+   function get_element_value( i_xmldoc clob, i_element varchar2 )
+      return varchar2
+   is
+      xd_xmldoc        xmldom.domdocument;
+      l_return_value   varchar2( 32767 );
+      l_node_list      xmldom.domnodelist;
+      l_doc_node       xmldom.domnode;
+      l_text_node      xmldom.domnode;
+   begin
+      if length( ltrim( rtrim( i_xmldoc ))) > 0
+      then
+         xd_xmldoc  := parse_xml( i_xmldoc );
+
+         if not xmldom.isnull( xd_xmldoc )
+         then
+            l_node_list     := xmldom.getelementsbytagname( xd_xmldoc
+                                                          , i_element
+                                                          );
+            l_doc_node      := xmldom.item( l_node_list
+                                          , 0
+                                          );
+            l_text_node     := xmldom.getfirstchild( l_doc_node );
+            l_return_value  := xmldom.getnodevalue( l_text_node );
+            xmldom.freedocument( xd_xmldoc );
+            return l_return_value;
+         else
+            xmldom.freedocument( xd_xmldoc );
+            return null;
+         end if;
+      else
+         return null;
+      end if;
+   exception
+      when others
+      then
+         raise_application_error( -20001
+                                , 'SQL Error occured:' || sqlerrm
+                                );
+   end get_element_value;
+
+   function extract_element( i_xml xmltype, i_xpath varchar2 )
+      return xmltype
+   is
+   begin
+      return case
+         when i_xml.extract( i_xpath ) is not null
+            then i_xml.extract( i_xpath )
+         else null
+      end;
+   exception
+      when others
+      then
+         raise_application_error( -20001
+                                , 'SQL Error occured:' || sqlerrm
+                                );
+   end extract_element;
+
+   function extract_value( i_xml xmltype, i_xpath varchar2 )
+      return varchar2
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name
+                                         := 'cmn_xml_util.extract_value';
+      l_return_xml               xmltype;
+      l_return                   varchar2 (32767);
+   begin
+      viu_module.enter_module ( i_module          => l_con_proc_name
+                              , i_debug_info      => 'i_xpath=' || i_xpath
+                              );
+      l_return_xml := i_xml.extract (i_xpath || '/text()');
+
+      if l_return_xml is not null
+      then
+         l_return := l_return_xml.getstringval ();
+
+				 
+
+
+
+         l_return := dbms_xmlgen.convert( l_return, dbms_xmlgen.entity_decode);
+      end if;
+
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => l_return
+                              );
+      return l_return;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => 'exception'
+                                );
+         raise_application_error( -20001
+                                , 'SQL Error occured:' || sqlerrm
+                                );
+   end extract_value;
+
+   
+
+
+
+
+
+
+
+
+   function get_root_element_name( i_xml_doc xmltype )
+      return varchar2
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_procedure   constant varchar2( 100 )       := g_con_package || '.get_root_element_name';
+      l_doc                      dbms_xmldom.domdocument;
+      l_element                  dbms_xmldom.domelement;
+      l_node                     dbms_xmldom.domnode;
+      l_result                   varchar2(1000);
+   begin
+      viu_module.enter_module( i_module      => l_con_procedure );
+      
+      l_doc      := dbms_xmldom.newdomdocument( i_xml_doc );
+      l_element  := dbms_xmldom.getdocumentelement( l_doc );
+      l_node     := dbms_xmldom.makenode( l_element );
+      l_result   := dbms_xmldom.getnodename( l_node );
+      dbms_xmldom.freedocument( l_doc );
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+      return l_result;
+   
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure
+                            , i_severity               => viu_info.c_severity_error
+                            );
+   end;
+
+   function add_element(
+      io_doc    in out   dbms_xmldom.domdocument
+    , io_node   in out   dbms_xmldom.domnode
+    , i_name    in       varchar2
+    , i_value   in       varchar2 default null
+   )
+      return dbms_xmldom.domnode
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_procedure   constant varchar2( 100 )        := g_con_package || '.add_element';
+      l_element                  dbms_xmldom.domelement;
+      l_node                     dbms_xmldom.domnode;
+      l_text                     dbms_xmldom.domtext;
+      l_text_node                dbms_xmldom.domnode;
+   begin
+      
+      viu_module.enter_module( i_module      => l_con_procedure );
+      
+      l_element  := dbms_xmldom.createelement( doc          => io_doc
+                                             , tagname      => i_name
+                                             );
+      l_node     := dbms_xmldom.makenode( l_element );
+      l_node     := dbms_xmldom.appendchild( n             => io_node
+                                           , newchild      => l_node
+                                           );
+
+      if i_value is not null
+      then
+         l_text       := dbms_xmldom.createtextnode( doc       => io_doc
+                                                   , data      => i_value
+                                                   );
+         l_text_node  := dbms_xmldom.makenode( l_text );
+         l_node       := dbms_xmldom.appendchild( n             => l_node
+                                                , newchild      => l_text_node
+                                                );
+      end if;
+
+      
+      viu_module.leave_module( i_module      => l_con_procedure );
+      return l_node;
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure
+                            , i_severity               => viu_info.c_severity_error
+                            );
+   end;
+
+   procedure add_element(
+      io_doc    in out   dbms_xmldom.domdocument
+    , io_node   in out   dbms_xmldom.domnode
+    , i_name    in       varchar2
+    , i_value   in       varchar2 default null
+   )
+   is
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      l_con_procedure   constant varchar2( 100 )     := g_con_package || '.add_element';
+      l_dummy_node               dbms_xmldom.domnode;
+   begin
+      viu_module.enter_module( i_module      => l_con_procedure );
+      l_dummy_node  :=
+          add_element( io_doc       => io_doc
+                     , io_node      => io_node
+                     , i_name       => i_name
+                     , i_value      => i_value
+                     );
+      viu_module.leave_module( i_module      => l_con_procedure );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_procedure
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_procedure
+                            , i_severity               => viu_info.c_severity_error
+                            );
+   end;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function to_xmltype( i_node in dbms_xmldom.domnode )
+      return xmltype
+   is
+      l_con_proc_name   constant cmn_constant.st_proc_name := g_con_package || '.to_xmltype';
+      l_clob                     clob                      := empty_clob( );
+      l_child_xml                xmltype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+      dbms_lob.createtemporary( lob_loc      => l_clob
+                              , cache        => true
+                              , dur          => 1
+                              );
+      dbms_xmldom.writetoclob( n       => i_node
+                             , cl      => l_clob
+                             );
+      l_child_xml  := xmltype( l_clob );
+      dbms_lob.freetemporary( lob_loc      => l_clob );
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_child_xml;
+   end to_xmltype;
+end cmn_xml_util;
+/

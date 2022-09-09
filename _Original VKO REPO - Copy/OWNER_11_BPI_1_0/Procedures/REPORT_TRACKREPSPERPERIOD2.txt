@@ -1,0 +1,87 @@
+procedure report_trackrepsperperiod2(p_periodtype in varchar2 default ' '
+						,p_period in varchar2 default ' '
+						,p_sortby in varchar2 default ' ') is
+v_msg      varchar2(32767);
+v_errmsg   varchar2(32767);
+v_id       varchar2(50);
+v_dt1      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24.MI');
+v_dt2      varchar2(  30) := to_char(sysdate, 'YYYYMMDD.HH24.MI');
+v_sdate date;
+v_edate date;
+v_where    varchar2(8000);
+v_title    varchar2( 200) := 'Report Tracking Reports - '||p_periodtype||' Period '||p_period||', dd '||ts2str(sysdate);
+v_view	   varchar2(50);
+v_p1 number := 0;
+v_p2 number := 0;
+v_select varchar2(2000);
+v_clob clob;
+v_filename varchar2(200);
+begin
+  v_filename := replace(v_title, ' ','_')||'.csv';
+  v_filename := replace(v_filename, ',','');
+  v_filename := replace(v_filename, ':','.');
+  htp.print(ui_menu.head_from_link('REP_ITEMHANDOVER2'));
+  htp.print('<BUTTON onClick="document.location=''DOWNLOADREPORT?p_file='||v_filename||''';">Download</BUTTON>');
+  htp.print('<br>');
+  htp.print('<div class="reports">');
+
+  v_errmsg := '';
+  begin
+
+    v_msg := 'Calculating start date time. ';
+    v_dt1 := substr(p_period, 1, 14);
+    v_sdate := to_date(v_dt1,'YYYYMMDD.HH24.MI');
+    v_msg := 'Calculating end date time. ';
+    v_dt2 := substr(p_period, 16, 14);
+    v_edate := to_date(v_dt2,'YYYYMMDD.HH24.MI');
+
+    if p_periodtype = 'M5' then
+      v_view := 'FACT_TRACKINGREPORTS_AGG_M5';
+    elsif p_periodtype = 'H1' then
+      v_view := 'FACT_TRACKINGREPORTS_AGG_H1';
+    elsif p_periodtype = 'D1' then
+      v_view := 'FACT_TRACKINGREPORTS_AGG_D1';
+    else
+      v_view := null;
+    end if;
+
+    v_msg := '';
+    if (v_view is null) then
+      htp.print(ui_menu.head_from_link('REP_TRACKREPSPERPERIOD'));
+      v_errmsg  := 'ERROR: Requested Period Type: '||p_periodtype||' is not allowed.';
+    else
+      v_p1 := period.periodid(v_sdate, p_periodtype);
+      v_p2 := period.periodid(v_edate, p_periodtype);
+      v_where := p_periodtype||'_PERIODID BETWEEN '||to_char(v_p1)||' AND '||to_char(v_p2);
+
+      v_select := 'SELECT * FROM '||v_view|| ' WHERE '||v_where;
+      if trim(p_sortby) is not null then
+        v_select := v_select||' ORDER BY '||p_sortby;
+      end if;
+
+      v_clob := tab2csv.to_csv(v_select, v_msg);
+      delete from reports where name = v_filename;
+      insert into reports (name, clob_content) values (v_filename, v_clob);
+      commit;
+      showclob(v_clob);
+
+    end if;
+  exception
+    when others then v_errmsg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  end;
+
+  if length(v_errmsg) > 0 then
+    htp.print(v_title||'<br>');
+    htp.print(v_msg||'<br>');
+    htp.print(v_errmsg||'<br></div>');
+  else
+    htp.print('<br></div>');
+    htp.print('<BUTTON onClick="document.location=''DOWNLOADREPORT?p_file='||v_filename||''';">Download</BUTTON>');
+  end if;
+
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

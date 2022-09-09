@@ -1,0 +1,4753 @@
+procedure pdm_store_derived_attributes( i_pae_id in pdm_packages.id%type
+                                                        , i_pet_id in pdm_package_events.id%type
+                                                        )
+   is
+
+      
+   
+      g_con_proc_name   constant cmn_constant.st_proc_name := 'pdm_store_derived_attributes';
+
+      type t_values     is table of varchar2(32767);
+      type t_adns       is table of pdm_attribute_definitions.id%type index by pls_integer;
+
+      l_values                   t_values;
+      l_it_attributes            pdm_attributes.attribute_coll;
+      l_it_attributes_concat     pdm_attributes.attribute_coll;
+      l_attr                     pdm_attribute_definitions.path%type;
+      l_tmp_value                varchar2(32767);
+      l_arg1                     pdm_package_attributes.value%type;
+      l_arg2                     pdm_package_attributes.value%type;
+      l_arg3                     pdm_package_attributes.value%type;
+      l_arg4                     pdm_package_attributes.value%type;
+      l_arg5                     pdm_package_attributes.value%type;
+      l_arg6                     pdm_package_attributes.value%type;
+      l_arg7                     pdm_package_attributes.value%type;
+      l_arg8                     pdm_package_attributes.value%type;
+      l_arg9                     pdm_package_attributes.value%type;
+      l_arg10                    pdm_package_attributes.value%type;
+      l_arg11                    pdm_package_attributes.value%type;
+      l_arg12                    pdm_package_attributes.value%type;
+      l_arg13                    pdm_package_attributes.value%type;
+      l_arg14                    pdm_package_attributes.value%type;
+
+
+      
+      procedure process_result( i_tmp_value      in     varchar2
+                              , i_index          in     pls_integer
+                              , i_adn_path       in     pdm_attribute_definitions.path%type
+                              , i_adn_id         in     pdm_attribute_definitions.id%type
+                              )
+      is
+         l_con_proc_name   constant cmn_constant.st_proc_name := g_con_proc_name || '.process_result';
+
+         l_separator_position integer;
+         l_value_nr           integer;
+      begin
+         
+         
+
+         if i_tmp_value is null
+            and l_values(i_index) is not null
+         then
+
+            
+            l_values(i_index) := null;
+
+            
+            l_it_attributes(i_adn_path).adn_id   := i_adn_id;
+            l_it_attributes(i_adn_path).adn_type := 'STRING';
+            l_it_attributes(i_adn_path).value(1) := null;
+         end if;
+
+         
+         
+         if     i_tmp_value is not null
+            and (   l_values(i_index) is null
+                 or i_tmp_value <> l_values(i_index) 
+                )
+         then
+
+            
+            l_values(i_index) := i_tmp_value;
+
+            
+            l_tmp_value := i_tmp_value || '<>';
+
+            
+            l_it_attributes(i_adn_path).adn_id   := i_adn_id;
+            l_it_attributes(i_adn_path).adn_type := 'STRING';
+            l_value_nr := 1;
+            loop
+               
+               l_separator_position := instr( l_tmp_value, '<>');
+
+               
+               l_it_attributes(i_adn_path).value(l_value_nr) := substr( l_tmp_value, 1, l_separator_position - 1);
+
+               
+               l_tmp_value := substr( l_tmp_value, l_separator_position + 2);
+
+               
+               exit when l_tmp_value is null;
+
+               
+               l_value_nr := l_value_nr + 1;
+            end loop;
+         end if;
+
+      exception
+         when others
+         then
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      end process_result;
+
+      
+      function get_value( i_index in pls_integer)
+      return pdm_package_attributes.value%type
+      is
+         l_con_proc_name constant cmn_constant.st_proc_name := g_con_proc_name || '.get_value';
+      begin
+         return substr( l_values(i_index)
+                      , 1
+                      , instr( l_values(i_index)||'<>', '<>')-1
+                      );
+      exception
+         when others
+         then
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      end get_value;
+
+      
+      function list_lookup( i_list in varchar2
+                          , i_value in pdm_package_attributes.value%type
+                          )
+      return boolean
+      is
+         l_con_proc_name constant cmn_constant.st_proc_name := g_con_proc_name || '.list_lookup';
+
+         l_result boolean := false;
+      begin
+         if instr( '<>'||i_list||'<>', '<>'||i_value||'<>') > 0
+            then
+               l_result := true;
+            end if;
+
+         return l_result;
+
+      exception
+         when others
+         then
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      end list_lookup;
+
+      
+      function get_stationtype( i_stn_id_cust in pdm_package_attributes.value%type)
+      return pdm_stations.type%type
+      is
+         l_con_proc_name   constant cmn_constant.st_proc_name := g_con_proc_name || '.get_stationtype';
+
+         l_rt_stn                 pdm_stations%rowtype;
+         l_found                  boolean;
+
+      begin
+      
+         
+         if i_stn_id_cust is not null
+         then
+
+            
+            if pdm_attributes.g_station_coll.exists(i_stn_id_cust)
+            then
+
+               
+               l_rt_stn.type := pdm_attributes.g_station_coll(i_stn_id_cust);
+            else
+
+               
+               l_found := pdm_stn_tapi_pck.stn_select_row_uk1( i_stn_id_cust => i_stn_id_cust
+                                                             , o_rt_stn      => l_rt_stn
+                                                             );
+
+               
+               pdm_attributes.g_station_coll(i_stn_id_cust) := l_rt_stn.type;
+            end if;
+         end if;
+   
+         return l_rt_stn.type;
+
+      exception
+         when others
+         then
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      end get_stationtype;
+
+      
+      function get_par_val( i_prr_name in cmn_parameters.name%type )
+      return cmn_parameter_values.value%type
+      is
+         l_con_proc_name   constant cmn_constant.st_proc_name := g_con_proc_name || '.get_par_val';
+   
+         l_found   boolean;
+         l_rt_ptr  cmn_parameters%rowtype;
+         l_rt_pve  cmn_parameter_values%rowtype;
+      begin
+   
+         
+         l_rt_pve.value := cmn_context.get_param( i_prr_name );
+   
+         
+         if l_rt_pve.value is null
+         then
+   
+            
+            l_found := cmn_ptr_tapi_pck.ptr_select_row_uk( i_ptr_name => i_prr_name
+                                                         , o_rt_ptr   => l_rt_ptr
+                                                         );
+            
+            if l_found
+            then
+   
+               
+               l_found := cmn_pve_tapi_pck.pve_select_row_uk( i_pve_ptr_id => l_rt_ptr.id
+                                                            , o_rt_pve     => l_rt_pve
+                                                            );
+            end if;
+         end if;
+   
+         return l_rt_pve.value;
+      exception
+         when others
+         then
+            viu_info.raise_info( i_calling_procedure => l_con_proc_name );
+      end get_par_val;
+
+   begin
+      viu_module.enter_module( i_module => g_con_proc_name );
+    
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+
+      select value_list
+      bulk   collect into l_values
+      from   ( select listagg(pbe.value, '<>') within group (order by pbe.value_nr)  value_list
+               from   ( select adn_id_child id
+                        from   pdm_attribute_dependencies ady
+                        union
+                        select adn_id_base  id
+                        from   pdm_attribute_dependencies ady
+                      ) adn
+               ,      pdm_v_pbe_active pbe
+               where  pbe.adn_id   (+) = adn.id
+               and    pbe.pae_id   (+) = i_pae_id
+               group  by adn.id
+               order  by adn.id
+             );
+
+      l_arg1  := get_value(279);   
+      l_arg2  := get_value(288);   
+      l_arg3  := get_value(282);   
+      l_arg4  := get_value(289);   
+      l_arg5  := get_value(1);     
+
+      l_tmp_value := case
+        
+        when nvl(l_arg1, 'undef') in ('999') and nvl(l_arg3,'undef') = 'ManualScan'
+        then case
+        
+        when l_arg2 is null
+        then l_arg5
+
+        
+        when not(l_arg2 = nvl(l_arg5, 'undef'))
+        then 'SCANNED'
+
+        else
+        nvl(l_arg2,l_arg4)
+        end
+
+        when get_stationtype(l_arg1) = 'ProblemBagStation' and nvl(l_arg3,'undef') = 'DataCapture'
+        then 'DATA_CAPTURED'
+
+        when get_stationtype(l_arg1) = 'ProblemBagStation' and nvl(l_arg3,'undef') = 'ManualScan' 
+        then 'SCANNED'
+
+        when get_stationtype(l_arg1) = 'ProblemBagStation' and nvl(l_arg3,'undef') = 'Retag'
+        then 'RETAGGED'
+
+        when get_stationtype(l_arg1) = 'ProblemBagStation' and not(nvl(l_arg3,'undef') in ('ProblemBag', 'RouteToMC')) 
+        then 'Y'
+
+        else
+        nvl(l_arg2,l_arg4)
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 288
+                    , i_adn_path       => 'Sortation/Derivations/SeenAtProblemBag'
+                    , i_adn_id         => 100192
+                    );
+
+      l_arg1  := get_value(544);   
+      l_arg2  := get_value(545);   
+      l_arg3  := get_value(24);    
+      l_arg4  := get_value(137);   
+
+      l_tmp_value := case
+        when  not(l_arg3 is null) and l_arg4 in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE', 
+                    'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                    'LOGICAL_DELETED', 'LOGICAL_MULTIPLE' )
+          then 'RESUME'
+        else nvl(l_arg1, l_arg2)
+    end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 544
+                    , i_adn_path       => 'Identification/Derivations/LinkToFlightResultLifeSpan'
+                    , i_adn_id         => 100641
+                    );
+
+      l_arg1  := get_value(24);    
+      l_arg2  := get_value(547);   
+      l_arg3  := get_value(125);   
+      l_arg4  := get_value(137);   
+      l_arg5  := get_value(544);   
+
+      l_tmp_value := case 
+    when  l_arg4 in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE', 
+      'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                    'LOGICAL_DELETED', 'LOGICAL_MULTIPLE' ) and l_arg5 is null
+        then coalesce(l_arg1,l_arg3) 
+        else
+        coalesce(l_arg1,l_arg2,l_arg3)
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 208
+                    , i_adn_path       => 'Identification/Results/LinkToFlightResult/SegregationID/ProcessPlanIDName'
+                    , i_adn_id         => 100017
+                    );
+
+      l_arg1  := get_value(21);    
+      l_arg2  := get_value(546);   
+      l_arg3  := get_value(124);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 236
+                    , i_adn_path       => 'Identification/Results/LinkToHandlerResult/Handler'
+                    , i_adn_id         => 100097
+                    );
+
+      l_arg1  := get_value(71);    
+      l_arg2  := get_value(299);   
+      l_arg3  := get_value(21);    
+      l_arg4  := get_value(24);    
+      l_arg5  := get_value(288);   
+
+      l_tmp_value := case
+        
+        when l_arg3 is null and l_arg4 is null and not(l_arg5 in ('SCANNED', 'RETAGGED', 'DATA_CAPTURED'))
+        then nvl(l_arg1, l_arg2)
+
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 284
+                    , i_adn_path       => 'Sortation/Results/OperationalControlResult/Instruction'
+                    , i_adn_id         => 100188
+                    );
+
+      l_arg1  := get_value(22);    
+      l_arg2  := get_value(551);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 535
+                    , i_adn_path       => 'Identification/Results/SpecialDestinationResult/ProcessDefinitionName'
+                    , i_adn_id         => 100630
+                    );
+
+      l_arg1  := get_value(213);   
+      l_arg2  := get_value(221);   
+      l_arg3  := get_value(535);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(236);   
+      l_arg6  := get_value(133);   
+      l_arg7  := get_value(137);   
+      l_arg8  := get_value(208);   
+      l_arg9  := get_value(284);   
+      l_arg10 := get_value(288);   
+      l_arg11 := get_value(304);   
+      l_arg12 := get_value(263);   
+
+      l_tmp_value := 
+        
+        case
+         
+        when not(l_arg3 is null)
+        then 'DESTINATION_CODED' 
+
+        
+        when 1 = 2 and nvl(l_arg9, 'undef') = 'DATACAPTURE_REQUEST'
+        then 'DATACAPTURE_REQUEST'
+
+         
+         
+        
+
+
+
+
+
+ 
+
+        
+        when 1 = 2 and nvl(l_arg9, 'undef') = 'RETAG_REQUEST'
+        then 'RETAG_REQUEST' 
+
+         
+         
+        
+
+
+
+
+
+
+
+
+ 
+
+         
+        when ( not(l_arg1 is null) or not(l_arg2 is null) ) and 
+      not(nvl(l_arg7,'undef') in  ( 'IN_SYSTEM_PACKAGEDATA_DELETED' , 'IN_SYSTEM_READY_PACKAGEDATA_DELETED',
+      'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+          'IN_SYSTEM_PACKAGEDATA_MULTIPLE' , 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE'  ))
+        then 'IDENTIFIED' 
+
+         
+        when nvl(l_arg6,'undef')='VFBTA' or nvl(l_arg6,'undef')='MULTI_READ_VFBTA' 
+        then 'FALLBACK_TAG' 
+
+         
+        when not(l_arg8 is null) 
+        then 'FLIGHT_CODED' 
+
+         
+        when 1 = 2 and nvl(l_arg10,'undef') = 'DATA_CAPTURED'
+        then 'DATA_CAPTURED' 
+
+    
+    when nvl(l_arg7,'undef') in  ( 'IN_SYSTEM_PACKAGEDATA_DELETED' , 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED')
+        and list_lookup( l_values(142) , 'INTER_TERMINAL_OPERATION' ) 
+        then 'IDENTIFIED'
+
+         
+        when not(l_arg5 is null) 
+        then 'HANDLER_CODED' 
+
+    
+    when nvl(l_arg7,'undef') in  ( 'IN_SYSTEM_READY_PACKAGEDATA_DELETED' , 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED'  ) 
+        then 'IDENTIFIED'
+
+         
+        when nvl(l_arg7,'undef') in ( 'IN_SYSTEM_PACKAGEDATA_DELETED' , 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED' ) 
+        then 'DELETED_BAGDATA' 
+
+         
+        when nvl(l_arg7, 'undef') in ( 'IN_SYSTEM_PACKAGEDATA_MULTIPLE' , 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE' ) or nvl(l_arg6,'undef')='MULTI_READ'
+        then 'MULTIPLE_BAGDATA' 
+
+         
+        when nvl(l_arg6,'undef')='MULTI_READ_NO_LOGICAL' 
+        then 'NO_BAGDATA' 
+
+         
+        else 
+        'NO_BAGDATA' 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 212
+                    , i_adn_path       => 'Identification/Derivations/IdentificationState'
+                    , i_adn_id         => 100026
+                    );
+
+      l_arg1  := get_value(155);   
+      l_arg2  := get_value(76);    
+      l_arg3  := get_value(137);   
+
+      l_tmp_value := case
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+                               'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        then 'N'
+
+    else
+        nvl(l_arg1,l_arg2)
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 228
+                    , i_adn_path       => 'Flight/BagData/BaggageReconciliationData/AuthorityToLoad'
+                    , i_adn_id         => 100079
+                    );
+
+      l_arg1  := get_value(211);   
+      l_arg2  := get_value(145);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+            'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+            'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+            when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+                then case 
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+            else null
+        end 
+
+        else case
+            when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+            then coalesce(l_arg1, l_arg2) 
+
+            else l_arg1
+            end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 241
+                    , i_adn_path       => 'Flight/Derivations/OutboundFlight/Airline'
+                    , i_adn_id         => 100105
+                    );
+
+      l_arg1  := get_value(220);   
+      l_arg2  := get_value(145);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+        when list_lookup(l_values(142), 'RECLAIM') 
+                then case
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+        else null
+        end 
+
+        else case
+        when list_lookup(l_values(142), 'RECLAIM') 
+        then coalesce(l_arg1, l_arg2) 
+
+        else l_arg1
+        end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 253
+                    , i_adn_path       => 'Flight/Derivations/InboundFlight/Airline'
+                    , i_adn_id         => 100121
+                    );
+
+      l_arg1  := get_value(228);   
+      l_arg2  := get_value(212);   
+      l_arg3  := get_value(233);   
+      l_arg4  := get_value(229);   
+      l_arg5  := get_value(234);   
+      l_arg6  := get_value(231);   
+      l_arg7  := get_value(230);   
+
+      l_tmp_value := case
+         
+        
+
+
+
+        
+
+
+
+        
+
+
+
+        
+
+
+ 
+        
+
+
+ 
+        
+
+
+ 
+         
+        
+        when nvl(l_arg1,'Y')='Y' 
+        then 'Y' 
+        else
+        'N'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 232
+                    , i_adn_path       => 'Flight/Derivations/Authorisation'
+                    , i_adn_id         => 100088
+                    );
+
+      l_arg1  := get_value(282);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(281);   
+      l_arg4  := get_value(253);   
+      l_arg5  := get_value(241);   
+      l_arg6  := get_value(282);   
+
+      l_tmp_value := case
+        
+    when nvl(l_arg2,'undef') in ( 'NOT_IN_SYSTEM_READY' , 'NOT_IN_SYSTEM', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED') and nvl(l_arg1,'undef') = 'Reclaim'
+        then 'TRUE'                  
+
+        
+    when not( nvl(l_arg2,'undef') in ( 'NOT_IN_SYSTEM_READY' , 'NOT_IN_SYSTEM', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED') ) and nvl(l_arg1,'undef') = 'Reclaim'
+        then 'FALSE'
+
+    
+    when (not(l_arg3 is null) or nvl(l_arg6,'undef') = 'ManualStore')  and not(l_arg4 is null) and l_arg5 is null
+        then 'TRUE'
+
+        
+        when not(l_arg1 is null) and not(nvl(l_arg1,'undef') = 'Reclaim')
+        then 'FALSE'
+
+        
+        else
+        'UNKNOWN'                   
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 278
+                    , i_adn_path       => 'Identification/Derivations/ReclaimIndicator'
+                    , i_adn_id         => 100180
+                    );
+
+      l_arg1  := get_value(234);   
+      l_arg2  := get_value(139);   
+
+      l_tmp_value := case 
+        when nvl(l_arg1,'undef') in ('OFF', 'OND', 'ONA') and l_arg2 is null
+        then 'Y' 
+
+        else 'N'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 435
+                    , i_adn_path       => 'Loading/Derivations/UnloadReported'
+                    , i_adn_id         => 100455
+                    );
+
+      l_arg1  := get_value(139);   
+      l_arg2  := get_value(143);   
+
+      l_tmp_value := case 
+        when not( l_arg1 is null) and l_arg1 = l_arg2
+        then 'Y' 
+
+        else 'N'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 442
+                    , i_adn_path       => 'Loading/Derivations/LoadReported'
+                    , i_adn_id         => 100479
+                    );
+
+      l_arg1  := get_value(233);   
+      l_arg2  := get_value(139);   
+      l_arg3  := get_value(228);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(444);   
+
+      l_tmp_value := case 
+
+        
+        when nvl(l_arg1,'undef') = 'BUM' and not( list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION')) and nvl(l_arg5,'undef') = nvl(get_par_val('AIRPORTCODE'),'unknown')
+        then 'Y'
+
+        when not( l_arg2 is null) and nvl(l_arg3,'undef') = 'N'
+        then 'Y'
+
+        else 'N'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 443
+                    , i_adn_path       => 'Loading/Derivations/InstructedToUnload'
+                    , i_adn_id         => 100480
+                    );
+
+      l_arg1  := get_value(246);   
+
+      l_tmp_value := case 
+        when nvl(l_arg1,'undef') in ('C', 'D', 'E', 'I', 'T','S') 
+        then l_arg1 
+        else
+        null
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 245
+                    , i_adn_path       => 'Flight/Derivations/OutboundFlight/FlightType'
+                    , i_adn_id         => 100109
+                    );
+
+      l_arg1  := get_value(278);   
+      l_arg2  := get_value(241);   
+      l_arg3  := get_value(253);   
+      l_arg4  := get_value(136);   
+      l_arg5  := get_value(279);   
+      l_arg6  := get_value(280);   
+      l_arg7  := get_value(281);   
+      l_arg8  := get_value(282);   
+
+      l_tmp_value := case
+         
+        when l_arg1 = 'TRUE' and not(l_arg2 is null) 
+        then 'OUTBOUND_MISSEGREGATED' 
+         
+         
+        when l_arg1 = 'FALSE' and not(l_arg3 is null) and l_arg2 is null and l_arg7 is null and not(nvl(l_arg8,'undef') = 'ManualStore')
+        then 'INBOUND_MISSEGREGATED' 
+         
+        
+
+        when l_arg1 = 'TRUE' and l_arg6 is null or nvl(l_arg6,'undef') = 'Prepare' 
+        then 'UNPLANNED' 
+         
+        when l_arg1 = 'TRUE' and not( list_lookup(l_values(136), nvl(l_arg5, 'undef') ) ) and l_arg7 is null
+        then 'WRONG_CAROUSEL'
+         
+        else
+        'CORRECT'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 277
+                    , i_adn_path       => 'Sortation/Derivations/MissegregatedIndicator'
+                    , i_adn_id         => 100179
+                    );
+
+      l_arg1  := get_value(13);    
+      l_arg2  := get_value(550);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 538
+                    , i_adn_path       => 'Identification/Results/RetagResult/LPC'
+                    , i_adn_id         => 100634
+                    );
+
+      l_arg1  := get_value(282);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(443);   
+      l_arg4  := get_value(229);   
+      l_arg5  := get_value(232);   
+      l_arg6  := get_value(259);   
+      l_arg7  := get_value(537);   
+      l_arg8  := get_value(442);   
+      l_arg9  := get_value(435);   
+      l_arg10 := get_value(562);   
+
+      l_tmp_value := case
+         
+        when l_arg2 = 'IN_SYSTEM' and not(l_arg6 is null) then
+            case
+             
+            
+            when l_arg3 = 'Y'
+            then 'N'
+
+            
+            when l_arg5 = 'N' and nvl(l_arg4,'undef') in ( 'N','S')
+            then 'N'
+
+            
+            when l_arg8 = 'Y' and l_arg9 = 'N'
+            then 'N'
+
+                      
+            when l_arg10 = 'N' and (l_arg1 is null 
+            or nvl(l_arg1,'undef') in ('RequestTask', 'OperationalControl')
+            or nvl(l_arg1,'undef') = 'ManualScan' and nvl(l_arg7,'undef') = 'ENTERED')
+            then 'N'
+
+        
+        else 'Y'
+        end
+
+        else 'N'
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 562
+                    , i_adn_path       => 'Reporting/Derivations/IndMissed'
+                    , i_adn_id         => 100678
+                    );
+
+      l_arg1  := get_value(211);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 204
+                    , i_adn_path       => 'Flight/BagData/OperationalOutboundFlightInformation/Flight/Airline'
+                    , i_adn_id         => 100005
+                    );
+
+      l_arg1  := get_value(134);   
+      l_arg2  := get_value(74);    
+
+      l_tmp_value := case 
+        
+
+        
+        when not(l_arg2 is null)
+        then 'MTT'
+
+         
+        when l_arg1 is null 
+        then 'UNKNOWN' 
+
+         
+        when nvl(l_arg1,'undef') in ('999') 
+        then 'INPUT'
+
+         
+        when nvl(l_arg1, 'undef' ) in ( '999') 
+        then 'SECURE_ENTRY' 
+
+         
+        when nvl(l_arg1,'undef') in ( '330','93')
+        then 'UPDATE'              
+
+        
+        when nvl(l_arg1,'undef') in ( '999' )
+        then 'HANDOVER'  
+
+        
+        else
+        'UNKNOWN'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 274
+                    , i_adn_path       => 'Sortation/Derivations/ResumeTrackingStation'
+                    , i_adn_id         => 100176
+                    );
+
+      l_arg1  := get_value(291);   
+      l_arg2  := get_value(278);   
+      l_arg3  := get_value(149);   
+      l_arg4  := get_value(141);   
+      l_arg5  := get_value(277);   
+
+      l_tmp_value := case
+        
+        when  l_arg1 is null and nvl(l_arg4, 'undef') = 'RECLAIM' and
+        ( nvl(l_arg2,'undef') = 'TRUE' or nvl(l_arg5,'undef') = 'OUTBOUND_MISSEGREGATED' )
+        then l_arg3
+
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 291
+                    , i_adn_path       => 'Sortation/Derivations/ReclaimPlanAtCarousel'
+                    , i_adn_id         => 100196
+                    );
+
+      l_arg1  := get_value(26);    
+      l_arg2  := get_value(2);     
+      l_arg3  := get_value(322);   
+
+      l_tmp_value :=  
+        case
+        when (l_arg3 is null) and nvl(l_arg2,'undef') in ('Registration')    
+        then
+        l_arg1
+        else
+        l_arg3
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 322
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/RequiredScreeningLevelAtRegistration'
+                    , i_adn_id         => 100279
+                    );
+
+      l_arg1  := get_value(305);   
+
+      l_tmp_value :=  
+        case
+        when nvl(l_arg1,'undef') = 'SEL' 
+        then 
+        3
+        else 
+        0
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 323
+                    , i_adn_path       => 'Security/Derivations/BaggageSecurityScreeningInstructionValue'
+                    , i_adn_id         => 100280
+                    );
+
+      l_arg1  := get_value(281);   
+
+      l_tmp_value :=  
+        case
+        when l_arg1 is not null 
+        then 
+        1
+        else 
+        null
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 324
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/DefaultRequiredScreeningLevelHTT'
+                    , i_adn_id         => 100281
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(327);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when ((nvl( l_arg1, 'undef' ) = '5') and (nvl( l_arg2, 'undef' ) in ('CLEARED')))  
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 327
+                    , i_adn_path       => 'Security/Derivations/ID1Clear5'
+                    , i_adn_id         => 100284
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(328);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when ((nvl( l_arg1, 'undef' ) = '4') and (nvl( l_arg2, 'undef' ) in ('CLEARED')))  
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 328
+                    , i_adn_path       => 'Security/Derivations/ID1Clear4'
+                    , i_adn_id         => 100285
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(329);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when ((nvl( l_arg1, 'undef' ) = '2') and (nvl( l_arg2, 'undef' ) in ('CLEARED')))  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 329
+                    , i_adn_path       => 'Security/Derivations/ID1Clear2'
+                    , i_adn_id         => 100286
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(330);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when ((nvl( l_arg1, 'undef' ) = '1') and (nvl( l_arg2, 'undef' ) in ('CLEARED')))
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 330
+                    , i_adn_path       => 'Security/Derivations/ID1Clear1'
+                    , i_adn_id         => 100287
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(333);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when (nvl( l_arg1, 'undef' ) = '5') and (nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN'))		
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 333
+                    , i_adn_path       => 'Security/Derivations/ID1Fail5'
+                    , i_adn_id         => 100290
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(334);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when (nvl( l_arg1, 'undef' ) = '4') and (nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN'))		
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 334
+                    , i_adn_path       => 'Security/Derivations/ID1Fail4'
+                    , i_adn_id         => 100291
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(335);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when (nvl( l_arg1, 'undef' ) = '3') and (nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN'))		
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 335
+                    , i_adn_path       => 'Security/Derivations/ID1Fail3'
+                    , i_adn_id         => 100292
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(336);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when (nvl( l_arg1, 'undef' ) = '2') and (nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN'))	  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 336
+                    , i_adn_path       => 'Security/Derivations/ID1Fail2'
+                    , i_adn_id         => 100293
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(337);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when (nvl( l_arg1, 'undef' ) = '1') and (nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN'))	 
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 337
+                    , i_adn_path       => 'Security/Derivations/ID1Fail1'
+                    , i_adn_id         => 100294
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(347);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when nvl( l_arg1, 'undef' ) = '5' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 347
+                    , i_adn_path       => 'Security/Derivations/ID2Clear5'
+                    , i_adn_id         => 100308
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(348);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when nvl( l_arg1, 'undef' ) = '4' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 348
+                    , i_adn_path       => 'Security/Derivations/ID2Clear4'
+                    , i_adn_id         => 100309
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(349);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when nvl( l_arg1, 'undef' ) = '2' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 349
+                    , i_adn_path       => 'Security/Derivations/ID2Clear2'
+                    , i_adn_id         => 100310
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(350);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when nvl( l_arg1, 'undef' ) = '1' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 350
+                    , i_adn_path       => 'Security/Derivations/ID2Clear1'
+                    , i_adn_id         => 100311
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(353);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when nvl( l_arg1, 'undef' ) = '5' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 353
+                    , i_adn_path       => 'Security/Derivations/ID2Fail5'
+                    , i_adn_id         => 100314
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(354);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when nvl( l_arg1, 'undef' ) = '4' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 354
+                    , i_adn_path       => 'Security/Derivations/ID2Fail4'
+                    , i_adn_id         => 100315
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(355);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when nvl( l_arg1, 'undef' ) = '3' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 355
+                    , i_adn_path       => 'Security/Derivations/ID2Fail3'
+                    , i_adn_id         => 100316
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(356);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when nvl( l_arg1, 'undef' ) = '2' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')	  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 356
+                    , i_adn_path       => 'Security/Derivations/ID2Fail2'
+                    , i_adn_id         => 100317
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(357);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when nvl( l_arg1, 'undef' ) = '1' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')	 
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 357
+                    , i_adn_path       => 'Security/Derivations/ID2Fail1'
+                    , i_adn_id         => 100318
+                    );
+
+      l_arg1  := get_value(245);   
+
+      l_tmp_value :=  
+        case
+        when nvl( l_arg1,'undef' ) not in ('I')
+		then   
+        0
+        else 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 361
+                    , i_adn_path       => 'Security/Derivations/CheckCustom'
+                    , i_adn_id         => 100324
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(364);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when nvl( l_arg1, 'undef' ) = '5' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 364
+                    , i_adn_path       => 'Security/Derivations/ID3Clear5'
+                    , i_adn_id         => 100327
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(365);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when nvl( l_arg1, 'undef' ) = '4' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 365
+                    , i_adn_path       => 'Security/Derivations/ID3Clear4'
+                    , i_adn_id         => 100328
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(366);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when nvl( l_arg1, 'undef' ) = '3' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 366
+                    , i_adn_path       => 'Security/Derivations/ID3Clear3'
+                    , i_adn_id         => 100329
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(367);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when nvl( l_arg1, 'undef' ) = '2' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 367
+                    , i_adn_path       => 'Security/Derivations/ID3Clear2'
+                    , i_adn_id         => 100330
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(368);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when nvl( l_arg1, 'undef' ) = '1' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 368
+                    , i_adn_path       => 'Security/Derivations/ID3Clear1'
+                    , i_adn_id         => 100331
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(371);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when nvl( l_arg1, 'undef' ) = '5' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 371
+                    , i_adn_path       => 'Security/Derivations/ID3Fail5'
+                    , i_adn_id         => 100334
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(372);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when nvl( l_arg1, 'undef' ) = '4' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 372
+                    , i_adn_path       => 'Security/Derivations/ID3Fail4'
+                    , i_adn_id         => 100335
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(373);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when nvl( l_arg1, 'undef' ) = '3' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 373
+                    , i_adn_path       => 'Security/Derivations/ID3Fail3'
+                    , i_adn_id         => 100336
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(374);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when nvl( l_arg1, 'undef' ) = '2' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')	  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 374
+                    , i_adn_path       => 'Security/Derivations/ID3Fail2'
+                    , i_adn_id         => 100337
+                    );
+
+      l_arg1  := get_value(402);   
+      l_arg2  := get_value(401);   
+      l_arg3  := get_value(375);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when nvl( l_arg1, 'undef' ) = '1' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')	 
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 375
+                    , i_adn_path       => 'Security/Derivations/ID3Fail1'
+                    , i_adn_id         => 100338
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(381);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when nvl( l_arg1, 'undef' ) = '5' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 381
+                    , i_adn_path       => 'Security/Derivations/ID4Clear5'
+                    , i_adn_id         => 100346
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(382);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when nvl( l_arg1, 'undef' ) = '4' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 382
+                    , i_adn_path       => 'Security/Derivations/ID4Clear4'
+                    , i_adn_id         => 100347
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(383);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when nvl( l_arg1, 'undef' ) = '3' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 383
+                    , i_adn_path       => 'Security/Derivations/ID4Clear3'
+                    , i_adn_id         => 100348
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(384);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when nvl( l_arg1, 'undef' ) = '2' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 384
+                    , i_adn_path       => 'Security/Derivations/ID4Clear2'
+                    , i_adn_id         => 100349
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(385);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when nvl( l_arg1, 'undef' ) = '1' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 385
+                    , i_adn_path       => 'Security/Derivations/ID4Clear1'
+                    , i_adn_id         => 100350
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(388);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '5'  
+        then 
+        5
+        when nvl( l_arg1, 'undef' ) = '5' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        5
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 388
+                    , i_adn_path       => 'Security/Derivations/ID4Fail5'
+                    , i_adn_id         => 100353
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(389);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '4'  
+        then 
+        4
+        when nvl( l_arg1, 'undef' ) = '4' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        4
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 389
+                    , i_adn_path       => 'Security/Derivations/ID4Fail4'
+                    , i_adn_id         => 100354
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(390);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when nvl( l_arg1, 'undef' ) = '3' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')		
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 390
+                    , i_adn_path       => 'Security/Derivations/ID4Fail3'
+                    , i_adn_id         => 100355
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(391);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '2'  
+        then 
+        2
+        when nvl( l_arg1, 'undef' ) = '2' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')	  
+        then 
+        2
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 391
+                    , i_adn_path       => 'Security/Derivations/ID4Fail2'
+                    , i_adn_id         => 100356
+                    );
+
+      l_arg1  := get_value(404);   
+      l_arg2  := get_value(403);   
+      l_arg3  := get_value(392);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '1'  
+        then 
+        1
+        when nvl( l_arg1, 'undef' ) = '1' and nvl( l_arg2, 'undef' ) in ('REJECT', 'OPERATOR_TIME_OUT', 'NODECISION', 'UNCLEARED', 'ERROR_UNKNOWN')	 
+        then 
+        1
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 392
+                    , i_adn_path       => 'Security/Derivations/ID4Fail1'
+                    , i_adn_id         => 100357
+                    );
+
+      l_arg1  := get_value(9);     
+      l_arg2  := get_value(428);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 417
+                    , i_adn_path       => 'Classification/Results/Weight'
+                    , i_adn_id         => 100412
+                    );
+
+      l_arg1  := get_value(5);     
+      l_arg2  := get_value(429);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 419
+                    , i_adn_path       => 'Classification/Results/Length'
+                    , i_adn_id         => 100414
+                    );
+
+      l_arg1  := get_value(133);   
+      l_arg2  := get_value(537);   
+      l_arg3  := get_value(538);   
+
+      l_tmp_value := case 
+         
+        when l_arg1 is null 
+        then 'UNKNOWN' 
+
+         
+        when nvl(l_arg1,'undef')='NO_READ' 
+        then 'NO_READ' 
+
+         
+        when nvl(l_arg1,'undef')='MULTI_READ' or nvl(l_arg1,'undef')='MULTI_READ_NO_LOGICAL' or nvl(l_arg1,'undef')='MULTI_READ_VFBTA' 
+        then 'MULTI_READ' 
+
+         
+        when (nvl(l_arg1,'undef')='READ' or nvl(l_arg1,'undef')='VFBTA') and ( nvl(l_arg2,'undefined-string')='MANUAL' or l_arg3 is not null ) 
+        then 'MANUAL_READ' 
+
+         
+        when (nvl(l_arg1,'undef')='READ' or nvl(l_arg1,'undef')='VFBTA') and ( nvl(l_arg2,'undefined-string')='AUTO' or l_arg2 is null ) 
+        then 'AUTO_READ' 
+
+         
+        when (nvl(l_arg1,'undef')='READ' or nvl(l_arg1,'undef')='VFBTA') and nvl(l_arg2,'undefined-string')='ENTERED' 
+        then 'ENTERED' 
+
+         
+        else 'UNKNOWN' 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 536
+                    , i_adn_path       => 'Identification/Derivations/RecognitionState'
+                    , i_adn_id         => 100631
+                    );
+
+      l_arg1  := get_value(561);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(265);   
+      l_arg4  := get_value(138);   
+      l_arg5  := get_value(442);   
+      l_arg6  := get_value(128);   
+      l_arg7  := get_value(277);   
+      l_arg8  := get_value(562);   
+      l_arg9  := get_value(262);   
+      l_arg10 := get_value(435);   
+      l_arg11 := get_value(443);   
+      l_arg12 := get_value(141);   
+      l_arg13 := get_value(151);   
+      l_arg14 := get_value(129);   
+
+      l_tmp_value := case
+
+when not(l_arg1 is null) then
+case
+
+when nvl(l_arg5,'undef') = 'Y' and nvl(l_arg11, 'undef') = 'Y' and nvl(l_arg10, 'undef') = 'N'
+  and l_arg2 in ( 'IN_SYSTEM_READY', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'LOGICAL_READY', 'LOGICAL_DELETED_READY', 'LOGICAL_MULTIPLE_READY')
+then 'TO_BE_UNLOADED'
+when nvl(l_arg5,'undef') = 'Y' and nvl(l_arg10, 'undef') = 'N'
+  and l_arg2 in ( 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED')
+then 'TO_BE_UNLOADED'
+
+ 
+when nvl(l_arg10, 'undef') = 'Y' and l_arg2 in ( 'IN_SYSTEM_READY', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'LOGICAL_READY', 'LOGICAL_DELETED_READY', 'LOGICAL_MULTIPLE_READY' )
+then 'UNLOADED' 
+
+ 
+when nvl(l_arg11, 'undef') = 'Y' and nvl(l_arg14, 'undef') in ('BUM') and l_arg2 in ('NOT_IN_SYSTEM','NOT_IN_SYSTEM_READY')
+then 'TO_BE_UNLOADED'  
+
+ 
+when l_arg2 in  ( 'IN_SYSTEM_READY', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'LOGICAL_READY', 'LOGICAL_DELETED_READY', 'LOGICAL_MULTIPLE_READY'  ) 
+        and nvl(l_arg5, 'undef') = 'Y'
+then 'LOADED' 
+ 
+when l_arg2 in ( 'NOT_IN_SYSTEM', 'NOT_IN_SYSTEM_READY', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED' ) and nvl(l_arg7, 'undef' ) in ('OUTBOUND_MISSEGREGATED', 'WRONG_CAROUSEL' )
+then 'IN_PROGRESS_MISSEGREGATED' 
+ 
+when l_arg2 in ( 'IN_SYSTEM', 'IN_SYSTEM_PACKAGEDATA_DELETED' ,  'IN_SYSTEM_PACKAGEDATA_MULTIPLE' ) then
+case                
+     
+    when nvl(l_arg13, 'undef' ) = 'Y'
+    then 'EXPECTED_HA' 
+
+   
+    when l_arg8 = 'Y' 
+    then 'MISSED' 
+
+   
+    when nvl(l_arg7, 'undef' ) in ('OUTBOUND_MISSEGREGATED', 'INBOUND_MISSEGREGATED', 'WRONG_CAROUSEL' ) 
+    then 'IN_PROGRESS_MISSEGREGATED' 
+
+   
+    when not( nvl(l_arg12, 'undef' ) in ('RECLAIM','FLIGHT_BUILD'))
+    then 'IN_PROGRESS_OTHER' 
+
+   
+    when  nvl(l_arg12, 'undef' )  in ( 'RECLAIM' , 'FLIGHT_BUILD' ) and
+    (nvl(l_arg6, 'undef') in ( 'Store', 'StoreProduct') or (nvl(l_arg6, 'undef') = 'Batch'  and  l_arg9 is null))
+    then 'IN_PROGRESS_STORE'
+
+    
+    else 'IN_PROGRESS'
+end
+
+
+when l_arg2 in ('NOT_IN_SYSTEM_READY', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED')
+then 'DELIVERED_PRODUCTION'
+
+
+when l_arg2 in ( 'NOT_IN_SYSTEM' ,  'NOT_IN_SYSTEM_PACKAGEDATA_DELETED' , 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE'  ) and nvl(l_arg4, 'undef') = 'IN_PROGRESS_MISSEGREGATED'
+then 'EXPECTED_MISSEGREGATED'
+
+
+when l_arg2 in ( 'NOT_IN_SYSTEM' ,  'NOT_IN_SYSTEM_PACKAGEDATA_DELETED' , 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE'  ) and not( nvl(l_arg4, 'undef') = 'IN_PROGRESS_MISSEGREGATED'   )
+then 'EXPECTED_HA'
+
+
+when l_arg2 in ( 'NOT_IN_SYSTEM' ,  'NOT_IN_SYSTEM_PACKAGEDATA_DELETED' , 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE' , 'LOGICAL' ) and  not(l_arg3 is null)  and not (nvl(l_arg3,'undef') = nvl(get_par_val('HANDLINGAREA'),'unknown'))
+then 'EXPECTED_OTHER_HA'
+
+
+when l_arg2 in ( 'NOT_IN_SYSTEM' , 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED' , 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE' , 'LOGICAL' ) 
+then 'EXPECTED'
+
+
+else
+'EXPECTED'
+end                 
+
+
+else
+  null              
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 540
+                    , i_adn_path       => 'Reporting/Derivations/ProductionProgress'
+                    , i_adn_id         => 100637
+                    );
+
+      l_arg1  := get_value(145);   
+      l_arg2  := get_value(204);   
+      l_arg3  := get_value(236);   
+      l_arg4  := get_value(237);   
+      l_arg5  := get_value(238);   
+      l_arg6  := get_value(239);   
+      l_arg7  := get_value(240);   
+      l_arg8  := get_value(133);   
+      l_arg9  := get_value(137);   
+
+      l_tmp_value := case 
+        when ( l_arg8='MULTI_READ' and nvl(l_arg5,'XH')!='XH'
+        and (  nvl(l_arg5,'XH') = nvl(l_arg6,'XH') or (l_arg6 is null) )
+        and (  nvl(l_arg5,'XH') = nvl(l_arg7,'XH') or (l_arg7 is null) )  )
+        then l_arg4 
+
+    when nvl(l_arg9,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+                               'LOGICAL_DELETED')
+        then coalesce(l_arg1, l_arg3, l_arg2) 
+
+    when nvl(l_arg9,'undef') in ('IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'LOGICAL_MULTIPLE')
+        then coalesce(l_arg1, l_arg3,'XH')
+
+        else
+        coalesce(l_arg1, l_arg2, l_arg3)
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 235
+                    , i_adn_path       => 'Flight/Derivations/HandlerAirline'
+                    , i_adn_id         => 100095
+                    );
+
+      l_arg1  := get_value(12);    
+      l_arg2  := get_value(303);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 270
+                    , i_adn_path       => 'Sortation/BIR_Info/DestinationHandlingArea'
+                    , i_adn_id         => 100170
+                    );
+
+      l_arg1  := get_value(72);    
+      l_arg2  := get_value(300);   
+      l_arg3  := get_value(13);    
+      l_arg4  := get_value(21);    
+      l_arg5  := get_value(24);    
+      l_arg6  := get_value(30);    
+      l_arg7  := get_value(58);    
+
+      l_tmp_value := case
+        
+        when l_arg3 is null and l_arg4 is null and l_arg5 is null and l_arg6 is null and l_arg7 is null 
+        then nvl(l_arg1, l_arg2) 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 286
+                    , i_adn_path       => 'Sortation/Results/OperationalControlResult/StationID'
+                    , i_adn_id         => 100190
+                    );
+
+      l_arg1  := get_value(290);   
+      l_arg2  := get_value(142);   
+      l_arg3  := get_value(278);   
+      l_arg4  := get_value(141);   
+      l_arg5  := get_value(291);   
+      l_arg6  := get_value(277);   
+      l_arg7  := get_value(149);   
+      l_arg8  := get_value(292);   
+      l_arg9  := get_value(293);   
+
+      l_tmp_value := case
+          when nvl(l_arg8, 'undef') = 'CLOSED'
+            then 'CLOSED'
+
+        
+        when l_arg1 is null
+        then 'INITIAL'
+
+         
+        when nvl(l_arg1, 'undef') = 'INITIAL' and list_lookup(l_values(142), 'RECLAIM') and not(nvl(l_arg3,'undef') = 'TRUE')
+        then 'BSM'
+
+        
+        when nvl(l_arg1, 'undef') in ('BSM', 'INITIAL') and list_lookup(l_values(142), 'RECLAIM')
+        and ( nvl(l_arg3,'undef') = 'TRUE' or  
+        nvl(l_arg6,'undef') = 'OUTBOUND_MISSEGREGATED' )
+        then 'PRESENT'
+
+           
+        when nvl(l_arg1, 'undef') = 'PRESENT' and not(l_arg5 is null)  and ( l_arg7 is null  or not(l_arg5 = l_arg7) ) and nvl(l_arg4,'undef') = 'RECLAIM'
+        then 'CLOSED'
+
+             
+          when nvl(l_arg8, 'undef') = 'PRESENT' and not(l_arg9 is null)  and (not(l_arg9 = l_arg7) ) and nvl(l_arg4,'undef') = 'RECLAIM'
+            then 'CLOSED'
+
+        else
+        l_arg1
+
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 290
+                    , i_adn_path       => 'Sortation/Derivations/ReclaimState'
+                    , i_adn_id         => 100195
+                    );
+
+      l_arg1  := get_value(294);   
+      l_arg2  := get_value(280);   
+      l_arg3  := get_value(295);   
+      l_arg4  := get_value(137);   
+      l_arg5  := get_value(282);   
+
+      l_tmp_value := 
+      case
+        when l_arg1 is null
+          then 'FALSE'
+        when l_arg3 = 'TRUE'
+          then 'TRUE'
+        when nvl(l_arg2,'undef') = 'Execute' and nvl(l_arg4,'undef') in ('NOT_IN_SYSTEM_READY' , 'NOT_IN_SYSTEM', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED') and nvl(l_arg5,'undef') = 'Reclaim'
+          then 'TRUE'
+        else l_arg1
+      end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 294
+                    , i_adn_path       => 'Sortation/Derivations/ReclaimBagSeenInExecutePhase'
+                    , i_adn_id         => 100199
+                    );
+
+      l_arg1  := get_value(3);     
+      l_arg2  := get_value(297);   
+      l_arg3  := get_value(274);   
+
+      l_tmp_value := case
+        when nvl(l_arg3,'undef') = 'MTT'
+        then nvl(l_arg1,l_arg2)
+
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 296
+                    , i_adn_path       => 'Sortation/Results/RouteResult'
+                    , i_adn_id         => 100202
+                    );
+
+      l_arg1  := get_value(306);   
+      l_arg2  := get_value(319);   
+      l_arg3  := get_value(320);   
+      l_arg4  := get_value(321);   
+      l_arg5  := get_value(278);   
+      l_arg6  := get_value(322);   
+      l_arg7  := get_value(318);   
+      l_arg8  := get_value(323);   
+      l_arg9  := get_value(324);   
+
+      l_tmp_value := 
+        case
+        
+        when (nvl(l_arg5, 'undef' ) = 'TRUE') 
+        then 0
+
+         
+        else greatest( to_number(nvl(l_arg1, '0')) , to_number(nvl(l_arg2, '0')), to_number(nvl(l_arg3 , '0' )) , to_number( nvl(l_arg4,'0')), to_number( nvl(l_arg6,'0')), to_number( nvl(l_arg7,'0')), to_number(nvl(l_arg8,'0')), to_number(nvl(l_arg9,'0')) )
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 318
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/RequiredScreeningLevel'
+                    , i_adn_id         => 100270
+                    );
+
+      l_arg1  := get_value(307);   
+      l_arg2  := get_value(326);   
+      l_arg3  := get_value(325);   
+      l_arg4  := get_value(327);   
+      l_arg5  := get_value(328);   
+      l_arg6  := get_value(329);   
+      l_arg7  := get_value(329);   
+      l_arg8  := get_value(330);   
+
+      l_tmp_value := 
+			greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 325
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/ReachedScreeningLevel'
+                    , i_adn_id         => 100282
+                    );
+
+      l_arg1  := get_value(308);   
+      l_arg2  := get_value(332);   
+      l_arg3  := get_value(331);   
+      l_arg4  := get_value(333);   
+      l_arg5  := get_value(334);   
+      l_arg6  := get_value(335);   
+      l_arg7  := get_value(336);   
+      l_arg8  := get_value(337);   
+
+      l_tmp_value := 
+		greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 331
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/FailedScreeningLevel'
+                    , i_adn_id         => 100288
+                    );
+
+      l_arg1  := get_value(309);   
+      l_arg2  := get_value(344);   
+
+      l_tmp_value := greatest( to_number(nvl(l_arg1, '0')) , to_number(nvl(l_arg2, '0')));
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 343
+                    , i_adn_path       => 'Security/Derivations/Screening[ID2]/RequiredScreeningLevel'
+                    , i_adn_id         => 100303
+                    );
+
+      l_arg1  := get_value(310);   
+      l_arg2  := get_value(346);   
+      l_arg3  := get_value(310);   
+      l_arg4  := get_value(347);   
+      l_arg5  := get_value(348);   
+      l_arg6  := get_value(349);   
+      l_arg7  := get_value(349);   
+      l_arg8  := get_value(350);   
+
+      l_tmp_value := 
+			greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 345
+                    , i_adn_path       => 'Security/Derivations/Screening[ID2]/ReachedScreeningLevel'
+                    , i_adn_id         => 100306
+                    );
+
+      l_arg1  := get_value(311);   
+      l_arg2  := get_value(352);   
+      l_arg3  := get_value(311);   
+      l_arg4  := get_value(353);   
+      l_arg5  := get_value(354);   
+      l_arg6  := get_value(355);   
+      l_arg7  := get_value(356);   
+      l_arg8  := get_value(357);   
+
+      l_tmp_value := 
+		greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 351
+                    , i_adn_path       => 'Security/Derivations/Screening[ID2]/FailedScreeningLevel'
+                    , i_adn_id         => 100312
+                    );
+
+      l_arg1  := get_value(312);   
+      l_arg2  := get_value(360);   
+      l_arg3  := get_value(361);   
+      l_arg4  := get_value(154);   
+
+      l_tmp_value := 
+			case
+				when (nvl(l_arg3,'undef') ='0') and (nvl( l_arg4, 'VKO' ) not in ('AAQ','ABA','ACS','ADH','AER','AMV','ARH','ASF','BAX','BCX','BKA','BQS','BTK','BWO','BZK','CEE','CEK','CIT','CKH','CKL','CNN','CSH','CSY','CYX','DKS','DME','DYR','EGO','EIE','ESL','EVN','GDG','GDX','GDZ','GOJ','GRV','GSV','HMA','HTA','HTG','IAA','IAR','IGT','IJK','IKS','IKT','INA','IWA','JOK','KEJ','KGD','KGF','KGP','KHV','KJA','KLD','KLF','KMW','KRO','KRR','KSZ','KUF','KVK','KVX','KXK','KYZ','KZN','LDG','LED','LNX','LPK','LWN','MCX','MJZ','MMK','MQF','MRV','MSQ','NAL','NBC','NEF','NER','NFG','NJC','NNM','NOI','NOJ','NOZ','NUX','NVR','NYA','NYM','OEL','OGZ','OHO','OKT','OMS','OSW','OVB','PEE','PES','PEX','PEZ','PKC','PKV','PVS','PVX','PWE','PYJ','RAT','REN','RGK','ROV','RTW','RVH','RYB','RZN','SCO','SCW','SGC','SIP','SKX','SLY','STW','SVO','SVX','SWT','TBW','TJM','TOF','TOX','TYA','TYD','UCT','UFA','UIK','UKX','ULV','ULY','URJ','URS','USK','UUA','UUD','UUS','VGD','VKO','VKT','VLK','VLU','VOG','VOZ','VUS','VVO','YKS')) 
+				then 1  
+				when nvl(l_arg3,'undef') ='0'
+				then 0	
+				else greatest( to_number(nvl(l_arg1, '0')) , to_number(nvl(l_arg2, '0')),to_number(nvl(l_arg3, '0')))
+			end	
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 359
+                    , i_adn_path       => 'Security/Derivations/Screening[ID3]/RequiredScreeningLevel'
+                    , i_adn_id         => 100321
+                    );
+
+      l_arg1  := get_value(313);   
+      l_arg2  := get_value(363);   
+      l_arg3  := get_value(362);   
+      l_arg4  := get_value(364);   
+      l_arg5  := get_value(365);   
+      l_arg6  := get_value(366);   
+      l_arg7  := get_value(367);   
+      l_arg8  := get_value(368);   
+
+      l_tmp_value := 
+			greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 362
+                    , i_adn_path       => 'Security/Derivations/Screening[ID3]/ReachedScreeningLevel'
+                    , i_adn_id         => 100325
+                    );
+
+      l_arg1  := get_value(314);   
+      l_arg2  := get_value(370);   
+      l_arg3  := get_value(369);   
+      l_arg4  := get_value(371);   
+      l_arg5  := get_value(372);   
+      l_arg6  := get_value(373);   
+      l_arg7  := get_value(374);   
+      l_arg8  := get_value(375);   
+
+      l_tmp_value := 
+		greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 369
+                    , i_adn_path       => 'Security/Derivations/Screening[ID3]/FailedScreeningLevel'
+                    , i_adn_id         => 100332
+                    );
+
+      l_arg1  := get_value(315);   
+      l_arg2  := get_value(378);   
+      l_arg3  := get_value(361);   
+      l_arg4  := get_value(154);   
+
+      l_tmp_value := 
+			case
+				when (nvl(l_arg3,'undef') ='0') and (nvl( l_arg4, 'VKO') not in ('AAQ','ABA','ACS','ADH','AER','AMV','ARH','ASF','BAX','BCX','BKA','BQS','BTK','BWO','BZK','CEE','CEK','CIT','CKH','CKL','CNN','CSH','CSY','CYX','DKS','DME','DYR','EGO','EIE','ESL','EVN','GDG','GDX','GDZ','GOJ','GRV','GSV','HMA','HTA','HTG','IAA','IAR','IGT','IJK','IKS','IKT','INA','IWA','JOK','KEJ','KGD','KGF','KGP','KHV','KJA','KLD','KLF','KMW','KRO','KRR','KSZ','KUF','KVK','KVX','KXK','KYZ','KZN','LDG','LED','LNX','LPK','LWN','MCX','MJZ','MMK','MQF','MRV','MSQ','NAL','NBC','NEF','NER','NFG','NJC','NNM','NOI','NOJ','NOZ','NUX','NVR','NYA','NYM','OEL','OGZ','OHO','OKT','OMS','OSW','OVB','PEE','PES','PEX','PEZ','PKC','PKV','PVS','PVX','PWE','PYJ','RAT','REN','RGK','ROV','RTW','RVH','RYB','RZN','SCO','SCW','SGC','SIP','SKX','SLY','STW','SVO','SVX','SWT','TBW','TJM','TOF','TOX','TYA','TYD','UCT','UFA','UIK','UKX','ULV','ULY','URJ','URS','USK','UUA','UUD','UUS','VGD','VKO','VKT','VLK','VLU','VOG','VOZ','VUS','VVO','YKS')) 
+				then 1       
+				when nvl(l_arg3,'undef') ='0'
+				then 0		
+				else greatest( to_number(nvl(l_arg1, '0')) , to_number(nvl(l_arg2, '0')),to_number(nvl(l_arg3, '0')))
+			end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 377
+                    , i_adn_path       => 'Security/Derivations/Screening[ID4]/RequiredScreeningLevel'
+                    , i_adn_id         => 100341
+                    );
+
+      l_arg1  := get_value(316);   
+      l_arg2  := get_value(380);   
+      l_arg3  := get_value(316);   
+      l_arg4  := get_value(381);   
+      l_arg5  := get_value(382);   
+      l_arg6  := get_value(383);   
+      l_arg7  := get_value(384);   
+      l_arg8  := get_value(385);   
+
+      l_tmp_value := 
+			greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 379
+                    , i_adn_path       => 'Security/Derivations/Screening[ID4]/ReachedScreeningLevel'
+                    , i_adn_id         => 100344
+                    );
+
+      l_arg1  := get_value(317);   
+      l_arg2  := get_value(387);   
+      l_arg3  := get_value(317);   
+      l_arg4  := get_value(388);   
+      l_arg5  := get_value(389);   
+      l_arg6  := get_value(390);   
+      l_arg7  := get_value(391);   
+      l_arg8  := get_value(392);   
+
+      l_tmp_value := 
+		greatest( to_number(coalesce( l_arg2 , l_arg1, '0' )) , to_number(nvl(l_arg3, '0')), to_number(nvl(l_arg4, '0')), to_number(nvl(l_arg5, '0')), to_number(nvl(l_arg6, '0')), to_number(nvl(l_arg7, '0')), to_number(nvl(l_arg8, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 386
+                    , i_adn_path       => 'Security/Derivations/Screening[ID4]/FailedScreeningLevel'
+                    , i_adn_id         => 100351
+                    );
+
+      l_arg1  := get_value(4);     
+      l_arg2  := get_value(432);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 414
+                    , i_adn_path       => 'Classification/Results/PhysicalClass'
+                    , i_adn_id         => 100407
+                    );
+
+      l_arg1  := get_value(11);    
+      l_arg2  := get_value(433);   
+      l_arg3  := get_value(274);   
+
+      l_tmp_value := case
+        when nvl(l_arg3,'undef') = 'MTT'
+        then nvl(l_arg2,l_arg1)
+        else nvl(l_arg1,l_arg2)
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 415
+                    , i_adn_path       => 'Classification/BIRInfo/PhysicalClass'
+                    , i_adn_id         => 100409
+                    );
+
+      l_arg1  := get_value(407);   
+      l_arg2  := get_value(417);   
+
+      l_tmp_value := case 
+        when l_arg2 is not null 
+        then 'K' 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 416
+                    , i_adn_path       => 'Classification/Derivations/PiecesOrWeightIndicator'
+                    , i_adn_id         => 100411
+                    );
+
+      l_arg1  := get_value(419);   
+      l_arg2  := get_value(411);   
+
+      l_tmp_value := case 
+        when l_arg1 is not null 
+        then 'CM' 
+        else
+        l_arg2
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 420
+                    , i_adn_path       => 'Classification/Derivations/Unit'
+                    , i_adn_id         => 100415
+                    );
+
+      l_arg1  := get_value(6);     
+      l_arg2  := get_value(430);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 422
+                    , i_adn_path       => 'Classification/Results/Width'
+                    , i_adn_id         => 100417
+                    );
+
+      l_arg1  := get_value(7);     
+      l_arg2  := get_value(431);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 424
+                    , i_adn_path       => 'Classification/Results/Height'
+                    , i_adn_id         => 100419
+                    );
+
+      l_arg1  := get_value(260);   
+      l_arg2  := get_value(150);   
+      l_arg3  := get_value(133);   
+      l_arg4  := get_value(238);   
+      l_arg5  := get_value(239);   
+      l_arg6  := get_value(240);   
+
+      l_tmp_value := 
+        case 
+         
+        when not( l_arg1 is null) or not(l_arg2 is null) 
+        then coalesce(l_arg1, l_arg2, 'XH') 
+        
+        when ( l_arg3='MULTI_READ' and nvl(l_arg4,'XH')!='XH'
+        and (  nvl(l_arg4,'XH') = nvl(l_arg5,'XH') or (l_arg5 is null) )
+        and (  nvl(l_arg4,'XH') = nvl(l_arg6,'XH') or (l_arg6 is null) )  )
+        then l_arg4 
+        else
+        'XH'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 534
+                    , i_adn_path       => 'Identification/Derivations/Handler'
+                    , i_adn_id         => 100628
+                    );
+
+      l_arg1  := get_value(536);   
+      l_arg2  := get_value(212);   
+      l_arg3  := get_value(232);   
+      l_arg4  := get_value(540);   
+      l_arg5  := get_value(129);   
+      l_arg6  := get_value(229);   
+      l_arg7  := get_value(234);   
+      l_arg8  := get_value(443);   
+      l_arg9  := get_value(231);   
+      l_arg10 := get_value(228);   
+      l_arg11 := get_value(142);   
+
+      l_tmp_value := 
+        case 
+    when nvl( l_arg5, 'undef' ) in ( 'Reclaim' ) or (list_lookup(l_values(142), 'RECLAIM'))
+        then null
+
+    when nvl(l_arg2, 'undef') = 'DESTINATION_CODED'
+        then null
+    when nvl(l_arg11, 'undef') = 'SPECIAL_DESTINATION'
+        then 'NO_FLIGHT_RELATION'
+
+     
+        when nvl(l_arg2, 'undef') = 'NO_BAGDATA' and nvl(l_arg1, 'undef') = 'UNKNOWN' 
+        then 'NOT_SCANNED' 
+         
+        when nvl(l_arg2, 'undef') = 'NO_BAGDATA' and nvl(l_arg1, 'undef') = 'NO_READ' 
+        then 'NO_READ' 
+         
+        when nvl(l_arg2, 'undef') = 'FALLBACK_TAG' and nvl(l_arg1, 'undef') = 'MULTI_READ' 
+        then 'MULTI_FALLBACK' 
+         
+        when nvl(l_arg2, 'undef') in ( 'NO_BAGDATA', 'MULTIPLE_BAGDATA', 'FLIGHT_CODED', 'HANDLER_CODED' )   
+        and nvl(l_arg1, 'undef') = 'MULTI_READ' 
+        then 'MULTI_TAG' 
+         
+        when nvl(l_arg2, 'undef') = 'RETAG_REQUEST' 
+        then 'RETAG_REQUEST' 
+         
+        when nvl(l_arg2, 'undef') = 'DATACAPTURE_REQUEST' 
+        then 'DATACAPTURE_REQUEST' 
+
+         
+        when nvl(l_arg2, 'undef') = 'DATA_CAPTURED' 
+        then 'INVESTIGATION_RESULT_AVAILABLE' 
+
+         
+        when nvl(l_arg2, 'undef') = 'DELETED_BAGDATA' 
+        then 'DELETED_BAGDATA' 
+
+         
+        when nvl(l_arg2, 'undef') = 'NO_BAGDATA' and nvl(l_arg1, 'undef') in ( 'AUTO_READ', 'MANUAL_READ', 'ENTERED' ) 
+        then 'NO_BAGDATA' 
+
+         
+        when nvl(l_arg2, 'undef') = 'MULTIPLE_BAGDATA' and nvl(l_arg1, 'undef') in ('AUTO_READ', 'MANUAL_READ', 'ENTERED' ) 
+        then 'MULTI_BAGDATA' 
+
+        when nvl(l_arg2, 'undef') in ( 'IDENTIFIED', 'FLIGHT_CODED') 
+        then case 
+         
+        when nvl(l_arg8, 'undef') = 'Y' 
+        then 'BAG_UNLOAD' 
+
+         
+        when nvl(l_arg4, 'undef') = 'MISSED' 
+        then 'MISSED_FLIGHT' 
+
+         
+        when nvl( l_arg5, 'undef' ) in ( 'No Plan', 'Unplanned flight') 
+        then 'UNPLANNED' 
+
+        when nvl(l_arg2, 'undef') = 'FLIGHT_CODED' and not(list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION'))
+        then 'MANUAL_ASSIGNED_FLIGHT' 
+
+         
+        when nvl(l_arg3, 'undef') = 'N' and nvl(l_arg7, 'undef') in ( 'NAL', 'OND') 
+        and not(list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION'))
+        then 'UTL_BY_BAG_STATUS' 
+
+         
+        when nvl(l_arg3, 'undef') = 'N' and nvl(l_arg9, 'undef') = 'I'
+        and not(list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION'))
+        then 'UTL_INACTIVE_BAG' 
+
+         
+        when nvl(l_arg3, 'undef') = 'N' and nvl(l_arg6, 'undef') = 'C' and nvl(l_arg10, 'undef') = 'N' 
+        and not(list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION'))
+        then 'UTL_PAX_NOT_BOARDED' 
+
+         
+        when nvl(l_arg3, 'undef') = 'N' and nvl(l_arg6, 'undef') = 'N' 
+        and not(list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION'))
+        then 'UTL_PAX_NOT_CHECKED_IN' 
+         
+        when nvl(l_arg3, 'undef') = 'N' and nvl(l_arg6, 'undef') = 'S' 
+        and not(list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION'))
+        then 'UTL_PAX_ON_STANDBY'             
+
+
+        when nvl(l_arg3, 'undef') = 'N' and not(list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION'))
+        then 'UTL' 
+         
+        else 
+        null 
+        end 
+         
+        when nvl(l_arg2, 'undef') = 'HANDLER_CODED' and nvl(l_arg1, 'undef') in ('NO_READ' , 'AUTO_READ', 'MANUAL_READ', 'ENTERED' ) 
+        then 'NO_FLIGHT_RELATION' 
+         
+        when nvl( l_arg5, 'undef' ) in ( 'No Plan', 'Unplanned flight') 
+        then 'UNPLANNED' 
+        else null 
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 539
+                    , i_adn_path       => 'Identification/Derivations/IdentificationReason'
+                    , i_adn_id         => 100635
+                    );
+
+      l_arg1  := get_value(341);   
+      l_arg2  := get_value(340);   
+      l_arg3  := get_value(566);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when ((nvl( l_arg1, 'undef' ) = '3') and (nvl( l_arg2, 'undef' ) in ('CLEARED')))  
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 566
+                    , i_adn_path       => 'Security/Derivations/ID1Clear3'
+                    , i_adn_id         => 100708
+                    );
+
+      l_arg1  := get_value(400);   
+      l_arg2  := get_value(399);   
+      l_arg3  := get_value(567);   
+
+      l_tmp_value :=  
+        case
+		when nvl( l_arg3, 'undef' ) = '3'  
+        then 
+        3
+        when nvl( l_arg1, 'undef' ) = '3' and nvl( l_arg2, 'undef' ) in ('CLEARED')  
+        then 
+        3
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 567
+                    , i_adn_path       => 'Security/Derivations/ID2Clear3'
+                    , i_adn_id         => 100709
+                    );
+
+      l_arg1  := get_value(213);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 205
+                    , i_adn_path       => 'Flight/BagData/OperationalOutboundFlightInformation/Flight/FlightNumber'
+                    , i_adn_id         => 100006
+                    );
+
+      l_arg1  := get_value(220);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 206
+                    , i_adn_path       => 'Flight/BagData/InboundFlightInformation/Flight/Airline'
+                    , i_adn_id         => 100010
+                    );
+
+      l_arg1  := get_value(221);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 207
+                    , i_adn_path       => 'Flight/BagData/InboundFlightInformation/Flight/FlightNumber'
+                    , i_adn_id         => 100011
+                    );
+
+      l_arg1  := get_value(210);   
+      l_arg2  := get_value(132);   
+      l_arg3  := get_value(131);   
+
+      l_tmp_value := case
+						
+						when l_arg1 = 'Prepare'
+						then l_arg3
+						else
+						l_arg2
+					end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 209
+                    , i_adn_path       => 'DerivedTimeLimit'
+                    , i_adn_id         => 100018
+                    );
+
+      l_arg1  := get_value(215);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 214
+                    , i_adn_path       => 'Flight/BagData/OperationalOutboundFlightInformation/Flight/Date'
+                    , i_adn_id         => 100028
+                    );
+
+      l_arg1  := get_value(217);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 216
+                    , i_adn_path       => 'Flight/BagData/OperationalOutboundFlightInformation/AirportCode'
+                    , i_adn_id         => 100030
+                    );
+
+      l_arg1  := get_value(219);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 218
+                    , i_adn_path       => 'Flight/BagData/OperationalOutboundFlightInformation/ClassOfTravel'
+                    , i_adn_id         => 100032
+                    );
+
+      l_arg1  := get_value(223);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 222
+                    , i_adn_path       => 'Flight/BagData/InboundFlightInformation/Flight/Date'
+                    , i_adn_id         => 100037
+                    );
+
+      l_arg1  := get_value(225);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 224
+                    , i_adn_path       => 'Flight/BagData/InboundFlightInformation/OriginatingAirportCode'
+                    , i_adn_id         => 100039
+                    );
+
+      l_arg1  := get_value(227);   
+      l_arg2  := get_value(137);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg2,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE')
+        and nvl(l_arg3, 'undef') = 'FLIGHT_CODED'
+        then null 
+
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 226
+                    , i_adn_path       => 'Flight/BagData/InboundFlightInformation/ClassOfTravel'
+                    , i_adn_id         => 100041
+                    );
+
+      l_arg1  := get_value(213);   
+      l_arg2  := get_value(146);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+        when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+                then case 
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+        else null
+        end 
+
+        else case
+        when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+        then coalesce(l_arg1, l_arg2) 
+
+        else l_arg1
+        end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 242
+                    , i_adn_path       => 'Flight/Derivations/OutboundFlight/FlightNumber'
+                    , i_adn_id         => 100106
+                    );
+
+      l_arg1  := get_value(215);   
+      l_arg2  := get_value(147);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+        when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+                then case 
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+        else null
+        end 
+
+        else case
+        when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+        then coalesce(l_arg1, l_arg2) 
+
+        else l_arg1
+        end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 243
+                    , i_adn_path       => 'Flight/Derivations/OutboundFlight/Date'
+                    , i_adn_id         => 100107
+                    );
+
+      l_arg1  := get_value(217);   
+      l_arg2  := get_value(148);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+        when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+                then case 
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+        else null
+        end 
+
+        else case
+        when list_lookup(l_values(142), 'FLIGHT_BUILD') or list_lookup(l_values(142), 'INTER_TERMINAL_OPERATION') 
+        then coalesce(l_arg1, l_arg2) 
+
+        else l_arg1
+        end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 244
+                    , i_adn_path       => 'Flight/Derivations/OutboundFlight/AirportCode'
+                    , i_adn_id         => 100108
+                    );
+
+      l_arg1  := get_value(248);   
+      l_arg2  := get_value(144);   
+
+      l_tmp_value := case 
+        when l_arg1 is null or l_arg2 is null 
+        then 'FALSE' 
+        when list_lookup(l_values(248), nvl(l_arg2, 'undef')) 
+        then 'TRUE' 
+        else
+        'FALSE'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 247
+                    , i_adn_path       => 'Flight/Derivations/UTLAllowed/InTimeBuild'
+                    , i_adn_id         => 100113
+                    );
+
+      l_arg1  := get_value(250);   
+      l_arg2  := get_value(144);   
+
+      l_tmp_value := case 
+        when l_arg1 is null or l_arg2 is null 
+        then 'FALSE' 
+        when list_lookup(l_values(250), nvl(l_arg2, 'undef')) 
+        then 'TRUE' 
+        else
+        'FALSE'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 249
+                    , i_adn_path       => 'Flight/Derivations/UTLAllowed/EarlyBatchBuild'
+                    , i_adn_id         => 100116
+                    );
+
+      l_arg1  := get_value(252);   
+      l_arg2  := get_value(144);   
+
+      l_tmp_value := case 
+        when l_arg1 is null or l_arg2 is null 
+        then 'FALSE' 
+        when list_lookup(l_values(252), nvl(l_arg2, 'undef')) 
+        then 'TRUE' 
+        else
+        'FALSE'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 251
+                    , i_adn_path       => 'Flight/Derivations/UTLAllowed/InTimeBatchBuild'
+                    , i_adn_id         => 100118
+                    );
+
+      l_arg1  := get_value(221);   
+      l_arg2  := get_value(146);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+                               'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+        when list_lookup(l_values(142), 'RECLAIM') 
+                then case
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+        else null
+        end 
+
+        else case
+        when list_lookup(l_values(142), 'RECLAIM') 
+        then coalesce(l_arg1, l_arg2) 
+
+        else l_arg1
+        end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 254
+                    , i_adn_path       => 'Flight/Derivations/InboundFlight/FlightNumber'
+                    , i_adn_id         => 100122
+                    );
+
+      l_arg1  := get_value(223);   
+      l_arg2  := get_value(147);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+    'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+        when list_lookup(l_values(142), 'RECLAIM') 
+                then case
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+        else null
+        end 
+
+        else case
+        when list_lookup(l_values(142), 'RECLAIM') 
+        then coalesce(l_arg1, l_arg2) 
+
+        else l_arg1
+        end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 255
+                    , i_adn_path       => 'Flight/Derivations/InboundFlight/Date'
+                    , i_adn_id         => 100123
+                    );
+
+      l_arg1  := get_value(225);   
+      l_arg2  := get_value(148);   
+      l_arg3  := get_value(137);   
+      l_arg4  := get_value(142);   
+      l_arg5  := get_value(212);   
+
+      l_tmp_value := case 
+    when nvl(l_arg3,'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+    'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE') 
+        then case 
+        when list_lookup(l_values(142), 'RECLAIM') 
+                then case
+                    when nvl(l_arg5, 'undef') = 'FLIGHT_CODED'
+                        then coalesce(l_arg2, l_arg1)
+                    else coalesce(l_arg1, l_arg2)
+                end
+        else null
+        end 
+
+        else case
+        when list_lookup(l_values(142), 'RECLAIM') 
+        then coalesce(l_arg1, l_arg2) 
+
+        else l_arg1
+        end 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 256
+                    , i_adn_path       => 'Flight/Derivations/InboundFlight/OriginatingAirportCode'
+                    , i_adn_id         => 100124
+                    );
+
+      l_arg1  := get_value(137);   
+      l_arg2  := get_value(212);   
+      l_arg3  := get_value(258);   
+
+      l_tmp_value := case
+
+        when nvl(l_arg2, 'undef') = 'FLIGHT_CODED' and nvl(l_arg3, 'undef') = 'MISSING'
+        then 'N'
+
+        when nvl(l_arg1, 'undef') in ('IN_SYSTEM', 
+            'NOT_IN_SYSTEM', 
+            'LOGICAL', 
+            'IN_SYSTEM_READY', 
+            'NOT_IN_SYSTEM_READY', 
+            'LOGICAL_READY',
+            'LOGICAL_DELETED_READY',
+            'LOGICAL_MULTIPLE_READY')
+        then 'Y'
+
+        when nvl(l_arg1, 'undef') in ('IN_SYSTEM_PACKAGEDATA_DELETED', 
+            'IN_SYSTEM_READY_PACKAGEDATA_DELETED',
+            'IN_SYSTEM_PACKAGEDATA_MULTIPLE', 
+            'NOT_IN_SYSTEM_PACKAGEDATA_DELETED',
+            'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED',
+            'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+            'LOGICAL_DELETED',
+            'LOGICAL_MULTIPLE')
+        and nvl(l_arg2, 'undef') in ( 'IDENTIFIED', 'FLIGHT_CODED' )
+        then 'Y'
+
+        else
+        'N'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 257
+                    , i_adn_path       => 'Flight/Derivations/IndFlightInformationActive'
+                    , i_adn_id         => 100125
+                    );
+
+      l_arg1  := get_value(156);   
+      l_arg2  := get_value(140);   
+      l_arg3  := get_value(77);    
+      l_arg4  := get_value(127);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 264
+                    , i_adn_path       => 'Sortation/BagData/HandlingLocationExtension/HandlingBHS'
+                    , i_adn_id         => 100144
+                    );
+
+      l_arg1  := get_value(128);   
+      l_arg2  := get_value(261);   
+
+      l_tmp_value := case 
+      
+    when nvl(l_arg1,'undef') in ( 'Store' ) and nvl(l_arg2,'undef') in ( 'ProductBased' )
+        then 'StoreProduct'
+        else
+            
+            l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 267
+                    , i_adn_path       => 'Sortation/Derivations/TaskInstruction/TaskType'
+                    , i_adn_id         => 100166
+                    );
+
+      l_arg1  := get_value(137);   
+      l_arg2  := get_value(265);   
+
+      l_tmp_value := case 
+    when l_arg1 in ( 'IN_SYSTEM',  'IN_SYSTEM_READY' , 'IN_SYSTEM_PACKAGEDATA_DELETED',  'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE' )
+        then nvl(get_par_val('HANDLINGAREA'),'undef') 
+
+    when l_arg1 in ( 'NOT_IN_SYSTEM',  'NOT_IN_SYSTEM_READY' , 'NOT_IN_SYSTEM_PACKAGEDATA_DELETED',  'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE' )
+        then coalesce(l_arg2, get_par_val('HANDLINGAREA'),'undef')
+
+        else
+        l_arg2
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 268
+                    , i_adn_path       => 'Sortation/Derivations/CurrentHA'
+                    , i_adn_id         => 100167
+                    );
+
+      l_arg1  := get_value(266);   
+      l_arg2  := get_value(270);   
+
+      l_tmp_value := case 
+         
+        when coalesce(l_arg1, l_arg2, 'UNKNOWN') not in ('01','02','03','04','05','06','07','08','09') 
+        then 'UNKNOWN' 
+        else 
+        coalesce(l_arg1, l_arg2) 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 269
+                    , i_adn_path       => 'Sortation/Derivations/DestHA'
+                    , i_adn_id         => 100168
+                    );
+
+      l_arg1  := get_value(210);   
+      l_arg2  := get_value(212);   
+      l_arg3  := get_value(141);   
+
+      l_tmp_value := 
+        case
+        
+        when nvl(l_arg1, 'undef')='Expedite'
+        then 'HIGH'
+
+        
+        when nvl(l_arg2,'undef') in ( 'DATACAPTURE_REQUEST' , 'RETAG_REQUEST' )
+        then 'HIGH'
+    
+    when nvl(l_arg3,'undef') in ( 'OPERATIONAL_CONTROL' , 'SPECIAL_DESTINATION' )
+    then 'HIGH'
+
+        else
+        'LOW'
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 271
+                    , i_adn_path       => 'Sortation/Derivations/ReleasePriority'
+                    , i_adn_id         => 100171
+                    );
+
+      l_arg1  := get_value(141);   
+      l_arg2  := get_value(152);   
+      l_arg3  := get_value(273);   
+      l_arg4  := get_value(274);   
+
+      l_tmp_value := case
+        
+
+
+
+
+                  
+        when nvl(l_arg4,'undef') in ( 'UPDATE' )
+        and ( nvl(l_arg3, 'undef') in ( 'CANNOT_REACH_DESTINATION' , 'ROUTE_IMPOSSIBLE' , 'STATION_UNAVAILABLE' ) ) 
+        and not( nvl(l_arg1, 'undef') in ( 'DESTINATION_CONTROL', 'OPERATIONAL_CONTROL', 'SPECIAL_DESTINATION' ) ) 
+        then l_arg2 
+        else
+        null
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 272
+                    , i_adn_path       => 'Sortation/Derivations/ResumeActiveProcess'
+                    , i_adn_id         => 100172
+                    );
+
+      l_arg1  := get_value(135);   
+      l_arg2  := get_value(276);   
+
+      l_tmp_value := case 
+        when nvl(l_arg1, 'undef') = 'FALSE' 
+        then l_arg2 
+        else
+        null
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 275
+                    , i_adn_path       => 'Sortation/Derivations/RoutingException'
+                    , i_adn_id         => 100177
+                    );
+
+      l_arg1  := get_value(284);   
+      l_arg2  := get_value(129);   
+
+      l_tmp_value := case 
+        when nvl(l_arg2, 'undef') in ('not-used') 
+        then l_arg1 
+        else
+        null
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 283
+                    , i_adn_path       => 'Sortation/Derivations/OperationalControlOverride'
+                    , i_adn_id         => 100186
+                    );
+
+      l_arg1  := get_value(130);   
+      l_arg2  := get_value(286);   
+      l_arg3  := get_value(129);   
+
+      l_tmp_value := case 
+        when (l_arg2 is not null) and l_arg3 in ( 'not-used') and list_lookup(l_values(130), nvl(l_arg2,'undef'))
+        then l_values(286)
+        else
+        l_values(130)
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 285
+                    , i_adn_path       => 'Sortation/Derivations/NextStation'
+                    , i_adn_id         => 100189
+                    );
+
+      l_arg1  := get_value(153);   
+      l_arg2  := get_value(274);   
+
+      l_tmp_value := case 
+        when nvl(l_arg2,'undef') in ( 'UPDATE' ) 
+        then l_arg1 
+        else
+        null
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 287
+                    , i_adn_path       => 'Sortation/Derivations/ResumeProcessPlanIDName'
+                    , i_adn_id         => 100191
+                    );
+
+      l_arg1  := get_value(73);    
+      l_arg2  := get_value(302);   
+      l_arg3  := get_value(13);    
+      l_arg4  := get_value(21);    
+      l_arg5  := get_value(24);    
+      l_arg6  := get_value(30);    
+      l_arg7  := get_value(58);    
+
+      l_tmp_value := case
+        
+        when l_arg3 is null and l_arg4 is null and l_arg5 is null and l_arg6 is null and l_arg7 is null 
+        then nvl(l_arg1, l_arg2) 
+        else
+        l_arg1
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 301
+                    , i_adn_path       => 'Sortation/Results/OperationalControlResult/Message'
+                    , i_adn_id         => 100209
+                    );
+
+      l_arg1  := get_value(318);   
+      l_arg2  := get_value(325);   
+      l_arg3  := get_value(331);   
+
+      l_tmp_value := 
+        case 
+        
+        when (l_arg1 is null) or (l_arg2 is null) or (l_arg3 is null) 
+        then 'UCL'
+         
+        when nvl(l_arg1, 'undef') = '0' and nvl(l_arg3, '0') = '0'
+        then 'CLR' 
+
+        
+        when to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg2,'0')) 
+        and not(nvl(l_arg3, 'undef')='0')
+        then 'REJ'
+
+         
+        when (to_number(nvl(l_arg2,'0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg2,'0')) > to_number(nvl(l_arg3, '0'))) 
+        then 'CLR' 
+
+         
+        when (to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg2,'0')) and to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg3, '0'))) 
+        then 'UCL' 
+
+         
+        else 'UCL' 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 338
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/ScreeningState'
+                    , i_adn_id         => 100295
+                    );
+
+      l_arg1  := get_value(340);   
+      l_arg2  := get_value(341);   
+
+      l_tmp_value :=  
+        case
+        when nvl(l_arg1,'undef') in ('NODECISION') and nvl(l_arg2,'undef') = '1'
+        then
+           'TRUE'
+        else 
+          'FALSE'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 339
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/NoDecisionL1'
+                    , i_adn_id         => 100296
+                    );
+
+      l_arg1  := get_value(340);   
+      l_arg2  := get_value(341);   
+
+      l_tmp_value :=  
+        case
+        when nvl(l_arg1,'undef') in ('NODECISION', 'OPERATOR_TIME_OUT') and nvl(l_arg2,'undef') = '2'
+        then
+           'TRUE'
+        else 
+          'FALSE'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 342
+                    , i_adn_path       => 'Security/Derivations/Screening[ID1]/NoDecisionL2'
+                    , i_adn_id         => 100301
+                    );
+
+      l_arg1  := get_value(343);   
+      l_arg2  := get_value(345);   
+      l_arg3  := get_value(351);   
+
+      l_tmp_value := case
+         
+        when nvl(l_arg1, 'undef') = '0' and nvl(l_arg3, '0') = '0'
+        then 'CLR' 
+         
+        when (to_number(nvl(l_arg2,'0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg2,'0')) > to_number(nvl(l_arg3, '0'))) 
+        then 'CLR' 
+         
+        when (to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg2,'0')) and to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg3, '0'))) 
+        then 'UCL' 
+         
+        when to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg2,'0')) 
+        then 'REJ' 
+         
+        else
+        'UCL'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 358
+                    , i_adn_path       => 'Security/Derivations/Screening[ID2]/ScreeningState'
+                    , i_adn_id         => 100319
+                    );
+
+      l_arg1  := get_value(359);   
+      l_arg2  := get_value(362);   
+      l_arg3  := get_value(369);   
+
+      l_tmp_value := case
+         
+        when nvl(l_arg1, 'undef') = '0' 
+        then 'CLR' 
+         
+        when (to_number(nvl(l_arg2,'0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg2,'0')) > to_number(nvl(l_arg3, '0'))) 
+        then 'CLR' 
+         
+        when (to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg2,'0')) and to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg3, '0'))) 
+        then 'UCL' 
+         
+        when to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg2,'0')) 
+        then 'REJ' 
+         
+        else
+        'UCL'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 376
+                    , i_adn_path       => 'Security/Derivations/Screening[ID3]/ScreeningState'
+                    , i_adn_id         => 100339
+                    );
+
+      l_arg1  := get_value(377);   
+      l_arg2  := get_value(379);   
+      l_arg3  := get_value(386);   
+
+      l_tmp_value := case
+         
+        when nvl(l_arg1, 'undef') = '0' 
+        then 'CLR' 
+         
+        when (to_number(nvl(l_arg2,'0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg2,'0')) >= to_number(nvl(l_arg3, '0'))) 
+        then 'CLR' 
+         
+        when (to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg2,'0')) and to_number(nvl(l_arg1,'0')) > to_number(nvl(l_arg3, '0'))) 
+        then 'UCL' 
+         
+        when to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg1,'0')) and to_number(nvl(l_arg3, '0')) >= to_number(nvl(l_arg2,'0')) 
+        then 'REJ' 
+         
+        else
+        'UCL'
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 393
+                    , i_adn_path       => 'Security/Derivations/Screening[ID4]/ScreeningState'
+                    , i_adn_id         => 100358
+                    );
+
+      l_arg1  := get_value(361);   
+      l_arg2  := get_value(395);   
+
+      l_tmp_value := 
+				greatest( to_number(nvl(l_arg1, '0')) , to_number(nvl(l_arg2, '0')))
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 394
+                    , i_adn_path       => 'Security/Derivations/Screening[ID5]/RequiredScreeningLevel'
+                    , i_adn_id         => 100360
+                    );
+
+      l_arg1  := get_value(361);   
+
+      l_tmp_value := case
+			when to_number(nvl(l_arg1, '0')) = '1'
+			then 1
+			else 0
+			end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 396
+                    , i_adn_path       => 'Security/Derivations/Screening[ID5]/ReachedScreeningLevel'
+                    , i_adn_id         => 100363
+                    );
+
+      l_arg1  := get_value(361);   
+
+      l_tmp_value := case
+			when to_number(nvl(l_arg1, '0')) = '1'
+			then 1
+			else 0
+			end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 397
+                    , i_adn_path       => 'Security/Derivations/Screening[ID5]/FailedScreeningLevel'
+                    , i_adn_id         => 100364
+                    );
+
+      l_arg1  := get_value(361);   
+
+      l_tmp_value := case
+			when to_number(nvl(l_arg1, '0')) = '1'
+			then 'UCL'
+			else 'CLR'
+			end
+        ;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 398
+                    , i_adn_path       => 'Security/Derivations/Screening[ID5]/ScreeningState'
+                    , i_adn_id         => 100365
+                    );
+
+      l_arg1  := get_value(30);    
+      l_arg2  := get_value(406);   
+      l_arg3  := get_value(157);   
+      l_arg4  := get_value(78);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 405
+                    , i_adn_path       => 'Classification/BagData/BaggageDetails/BagTypeCode'
+                    , i_adn_id         => 100393
+                    );
+
+      l_arg1  := get_value(414);   
+      l_arg2  := get_value(415);   
+      l_arg3  := get_value(158);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 413
+                    , i_adn_path       => 'Classification/BagData/BaggageDetailsExtension/PhysicalClass'
+                    , i_adn_id         => 100405
+                    );
+
+      l_arg1  := get_value(419);   
+      l_arg2  := get_value(408);   
+      l_arg3  := get_value(420);   
+
+      l_tmp_value := case 
+        when l_arg1 is not null 
+        then round( to_number( nvl( l_arg1, '0' )) / 10 ) 
+        when l_arg3 = 'CM' 
+        then l_arg2 
+        else
+        null
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 418
+                    , i_adn_path       => 'Classification/Derivations/Length'
+                    , i_adn_id         => 100413
+                    );
+
+      l_arg1  := get_value(422);   
+      l_arg2  := get_value(409);   
+      l_arg3  := get_value(420);   
+
+      l_tmp_value := case 
+        when l_arg1 is not null 
+        then round( to_number( nvl( l_arg1, '0' )) / 10 ) 
+        when l_arg3 = 'CM' 
+        then l_arg2 
+        else
+        null
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 421
+                    , i_adn_path       => 'Classification/Derivations/Width'
+                    , i_adn_id         => 100416
+                    );
+
+      l_arg1  := get_value(424);   
+      l_arg2  := get_value(410);   
+      l_arg3  := get_value(420);   
+
+      l_tmp_value := case 
+        when l_arg1 is not null 
+        then round( to_number( coalesce( l_arg1, '0' )) / 10 ) 
+        when l_arg3 = 'CM' 
+        then l_arg2 
+        else
+        null
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 423
+                    , i_adn_path       => 'Classification/Derivations/Height'
+                    , i_adn_id         => 100418
+                    );
+
+      l_arg1  := get_value(417);   
+      l_arg2  := get_value(412);   
+      l_arg3  := get_value(416);   
+
+      l_tmp_value := case 
+        when l_arg1 is not null 
+        then round( to_number( coalesce( l_arg1, '0' )) / 10 ) 
+        when l_arg3 = 'K' 
+        then l_arg2 
+        else
+        null
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 425
+                    , i_adn_path       => 'Classification/Derivations/CheckedWeight'
+                    , i_adn_id         => 100420
+                    );
+
+      l_arg1  := get_value(8);     
+      l_arg2  := get_value(427);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 426
+                    , i_adn_path       => 'Classification/Results/MeasuredVolume'
+                    , i_adn_id         => 100421
+                    );
+
+      l_arg1  := get_value(435);   
+      l_arg2  := get_value(17);    
+      l_arg3  := get_value(159);   
+      l_arg4  := get_value(79);    
+
+      l_tmp_value := case
+    when nvl(l_arg1,'undef') = 'Y'
+        then null
+    else coalesce(l_arg2,l_arg3,l_arg4)
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 434
+                    , i_adn_path       => 'Loading/BagData/LoadSequence/LoadSequenceNumber'
+                    , i_adn_id         => 100453
+                    );
+
+      l_arg1  := get_value(435);   
+      l_arg2  := get_value(14);    
+
+      l_tmp_value := case
+    when nvl(l_arg1,'undef') = 'Y'
+        then null
+    else l_arg2
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 436
+                    , i_adn_path       => 'Loading/BagData/LoadingDataExtension/ULDIdentificationCode/ULDTypeCode'
+                    , i_adn_id         => 100469
+                    );
+
+      l_arg1  := get_value(435);   
+      l_arg2  := get_value(15);    
+
+      l_tmp_value := case
+    when nvl(l_arg1,'undef') = 'Y'
+        then null
+    else l_arg2
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 437
+                    , i_adn_path       => 'Loading/BagData/LoadingDataExtension/ULDIdentificationCode/ULDSerialNumber'
+                    , i_adn_id         => 100470
+                    );
+
+      l_arg1  := get_value(435);   
+      l_arg2  := get_value(16);    
+
+      l_tmp_value := case
+    when nvl(l_arg1,'undef') = 'Y'
+        then null
+    else l_arg2
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 438
+                    , i_adn_path       => 'Loading/BagData/LoadingDataExtension/ULDIdentificationCode/ULDOwnerCode'
+                    , i_adn_id         => 100471
+                    );
+
+      l_arg1  := get_value(435);   
+      l_arg2  := get_value(18);    
+
+      l_tmp_value := case
+    when nvl(l_arg1,'undef') = 'Y'
+        then null
+    else l_arg2
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 439
+                    , i_adn_path       => 'Loading/BagData/LoadingDataExtension/PositionInULD/XPos'
+                    , i_adn_id         => 100473
+                    );
+
+      l_arg1  := get_value(435);   
+      l_arg2  := get_value(19);    
+
+      l_tmp_value := case
+    when nvl(l_arg1,'undef') = 'Y'
+        then null
+    else l_arg2
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 440
+                    , i_adn_path       => 'Loading/BagData/LoadingDataExtension/PositionInULD/YPos'
+                    , i_adn_id         => 100474
+                    );
+
+      l_arg1  := get_value(435);   
+      l_arg2  := get_value(20);    
+
+      l_tmp_value := case
+    when nvl(l_arg1,'undef') = 'Y'
+        then null
+    else l_arg2
+end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 441
+                    , i_adn_path       => 'Loading/BagData/LoadingDataExtension/PositionInULD/ZPos'
+                    , i_adn_id         => 100475
+                    );
+
+      l_arg1  := get_value(27);    
+      l_arg2  := get_value(447);   
+      l_arg3  := get_value(160);   
+      l_arg4  := get_value(80);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 446
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagTagNumber/LPC'
+                    , i_adn_id         => 100504
+                    );
+
+      l_arg1  := get_value(28);    
+      l_arg2  := get_value(449);   
+      l_arg3  := get_value(161);   
+      l_arg4  := get_value(81);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 448
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagTagNumber/LPC_Extension'
+                    , i_adn_id         => 100510
+                    );
+
+      l_arg1  := get_value(29);    
+      l_arg2  := get_value(451);   
+      l_arg3  := get_value(162);   
+      l_arg4  := get_value(82);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 450
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagColour'
+                    , i_adn_id         => 100512
+                    );
+
+      l_arg1  := get_value(30);    
+      l_arg2  := get_value(453);   
+      l_arg3  := get_value(163);   
+      l_arg4  := get_value(83);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 452
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagTypeCode'
+                    , i_adn_id         => 100514
+                    );
+
+      l_arg1  := get_value(31);    
+      l_arg2  := get_value(455);   
+      l_arg3  := get_value(164);   
+      l_arg4  := get_value(84);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 454
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagBrandName'
+                    , i_adn_id         => 100516
+                    );
+
+      l_arg1  := get_value(32);    
+      l_arg2  := get_value(457);   
+      l_arg3  := get_value(165);   
+      l_arg4  := get_value(85);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 456
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagMaterial'
+                    , i_adn_id         => 100518
+                    );
+
+      l_arg1  := get_value(33);    
+      l_arg2  := get_value(459);   
+      l_arg3  := get_value(166);   
+      l_arg4  := get_value(86);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 458
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[1]/Category'
+                    , i_adn_id         => 100521
+                    );
+
+      l_arg1  := get_value(34);    
+      l_arg2  := get_value(461);   
+      l_arg3  := get_value(167);   
+      l_arg4  := get_value(87);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 460
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[1]/Description'
+                    , i_adn_id         => 100524
+                    );
+
+      l_arg1  := get_value(35);    
+      l_arg2  := get_value(463);   
+      l_arg3  := get_value(168);   
+      l_arg4  := get_value(88);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 462
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[2]/Category'
+                    , i_adn_id         => 100527
+                    );
+
+      l_arg1  := get_value(36);    
+      l_arg2  := get_value(465);   
+      l_arg3  := get_value(169);   
+      l_arg4  := get_value(89);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 464
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[2]/Description'
+                    , i_adn_id         => 100530
+                    );
+
+      l_arg1  := get_value(37);    
+      l_arg2  := get_value(467);   
+      l_arg3  := get_value(170);   
+      l_arg4  := get_value(90);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 466
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[3]/Category'
+                    , i_adn_id         => 100533
+                    );
+
+      l_arg1  := get_value(38);    
+      l_arg2  := get_value(469);   
+      l_arg3  := get_value(171);   
+      l_arg4  := get_value(91);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 468
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[3]/Description'
+                    , i_adn_id         => 100536
+                    );
+
+      l_arg1  := get_value(39);    
+      l_arg2  := get_value(471);   
+      l_arg3  := get_value(172);   
+      l_arg4  := get_value(92);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 470
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[4]/Category'
+                    , i_adn_id         => 100539
+                    );
+
+      l_arg1  := get_value(40);    
+      l_arg2  := get_value(473);   
+      l_arg3  := get_value(173);   
+      l_arg4  := get_value(93);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 472
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[4]/Description'
+                    , i_adn_id         => 100542
+                    );
+
+      l_arg1  := get_value(41);    
+      l_arg2  := get_value(475);   
+      l_arg3  := get_value(174);   
+      l_arg4  := get_value(94);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 474
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[5]/Category'
+                    , i_adn_id         => 100545
+                    );
+
+      l_arg1  := get_value(42);    
+      l_arg2  := get_value(477);   
+      l_arg3  := get_value(175);   
+      l_arg4  := get_value(95);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 476
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[5]/Description'
+                    , i_adn_id         => 100548
+                    );
+
+      l_arg1  := get_value(43);    
+      l_arg2  := get_value(479);   
+      l_arg3  := get_value(176);   
+      l_arg4  := get_value(96);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 478
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[6]/Category'
+                    , i_adn_id         => 100551
+                    );
+
+      l_arg1  := get_value(44);    
+      l_arg2  := get_value(481);   
+      l_arg3  := get_value(177);   
+      l_arg4  := get_value(97);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 480
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[6]/Description'
+                    , i_adn_id         => 100554
+                    );
+
+      l_arg1  := get_value(45);    
+      l_arg2  := get_value(483);   
+      l_arg3  := get_value(178);   
+      l_arg4  := get_value(98);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 482
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[7]/Category'
+                    , i_adn_id         => 100557
+                    );
+
+      l_arg1  := get_value(46);    
+      l_arg2  := get_value(485);   
+      l_arg3  := get_value(179);   
+      l_arg4  := get_value(99);    
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 484
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[7]/Description'
+                    , i_adn_id         => 100560
+                    );
+
+      l_arg1  := get_value(47);    
+      l_arg2  := get_value(487);   
+      l_arg3  := get_value(180);   
+      l_arg4  := get_value(100);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 486
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[8]/Category'
+                    , i_adn_id         => 100563
+                    );
+
+      l_arg1  := get_value(48);    
+      l_arg2  := get_value(489);   
+      l_arg3  := get_value(181);   
+      l_arg4  := get_value(101);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 488
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[8]/Description'
+                    , i_adn_id         => 100566
+                    );
+
+      l_arg1  := get_value(49);    
+      l_arg2  := get_value(491);   
+      l_arg3  := get_value(182);   
+      l_arg4  := get_value(102);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 490
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[9]/Category'
+                    , i_adn_id         => 100569
+                    );
+
+      l_arg1  := get_value(50);    
+      l_arg2  := get_value(493);   
+      l_arg3  := get_value(183);   
+      l_arg4  := get_value(103);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 492
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[9]/Description'
+                    , i_adn_id         => 100572
+                    );
+
+      l_arg1  := get_value(51);    
+      l_arg2  := get_value(495);   
+      l_arg3  := get_value(184);   
+      l_arg4  := get_value(104);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 494
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[10]/Category'
+                    , i_adn_id         => 100575
+                    );
+
+      l_arg1  := get_value(52);    
+      l_arg2  := get_value(497);   
+      l_arg3  := get_value(185);   
+      l_arg4  := get_value(105);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 496
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[10]/Description'
+                    , i_adn_id         => 100578
+                    );
+
+      l_arg1  := get_value(53);    
+      l_arg2  := get_value(499);   
+      l_arg3  := get_value(186);   
+      l_arg4  := get_value(106);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 498
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[11]/Category'
+                    , i_adn_id         => 100581
+                    );
+
+      l_arg1  := get_value(54);    
+      l_arg2  := get_value(501);   
+      l_arg3  := get_value(187);   
+      l_arg4  := get_value(107);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 500
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[11]/Description'
+                    , i_adn_id         => 100584
+                    );
+
+      l_arg1  := get_value(55);    
+      l_arg2  := get_value(503);   
+      l_arg3  := get_value(188);   
+      l_arg4  := get_value(108);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 502
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[12]/Category'
+                    , i_adn_id         => 100587
+                    );
+
+      l_arg1  := get_value(56);    
+      l_arg2  := get_value(505);   
+      l_arg3  := get_value(189);   
+      l_arg4  := get_value(109);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 504
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/BagContent[12]/Description'
+                    , i_adn_id         => 100590
+                    );
+
+      l_arg1  := get_value(58);    
+      l_arg2  := get_value(507);   
+      l_arg3  := get_value(191);   
+      l_arg4  := get_value(111);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 506
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Names[1]/SurName'
+                    , i_adn_id         => 100593
+                    );
+
+      l_arg1  := get_value(57);    
+      l_arg2  := get_value(509);   
+      l_arg3  := get_value(190);   
+      l_arg4  := get_value(110);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 508
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Names[1]/Initials'
+                    , i_adn_id         => 100596
+                    );
+
+      l_arg1  := get_value(60);    
+      l_arg2  := get_value(511);   
+      l_arg3  := get_value(193);   
+      l_arg4  := get_value(113);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 510
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Names[2]/SurName'
+                    , i_adn_id         => 100599
+                    );
+
+      l_arg1  := get_value(59);    
+      l_arg2  := get_value(513);   
+      l_arg3  := get_value(192);   
+      l_arg4  := get_value(112);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 512
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Names[2]/Initials'
+                    , i_adn_id         => 100602
+                    );
+
+      l_arg1  := get_value(62);    
+      l_arg2  := get_value(515);   
+      l_arg3  := get_value(195);   
+      l_arg4  := get_value(115);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 514
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Names[3]/SurName'
+                    , i_adn_id         => 100605
+                    );
+
+      l_arg1  := get_value(61);    
+      l_arg2  := get_value(517);   
+      l_arg3  := get_value(194);   
+      l_arg4  := get_value(114);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 516
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Names[3]/Initials'
+                    , i_adn_id         => 100608
+                    );
+
+      l_arg1  := get_value(63);    
+      l_arg2  := get_value(519);   
+      l_arg3  := get_value(196);   
+      l_arg4  := get_value(116);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 518
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/AirportCode'
+                    , i_adn_id         => 100610
+                    );
+
+      l_arg1  := get_value(64);    
+      l_arg2  := get_value(521);   
+      l_arg3  := get_value(197);   
+      l_arg4  := get_value(117);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 520
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Airline'
+                    , i_adn_id         => 100612
+                    );
+
+      l_arg1  := get_value(65);    
+      l_arg2  := get_value(523);   
+      l_arg3  := get_value(198);   
+      l_arg4  := get_value(118);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 522
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/FlightNumber'
+                    , i_adn_id         => 100614
+                    );
+
+      l_arg1  := get_value(66);    
+      l_arg2  := get_value(525);   
+      l_arg3  := get_value(199);   
+      l_arg4  := get_value(119);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 524
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/Date'
+                    , i_adn_id         => 100616
+                    );
+
+      l_arg1  := get_value(67);    
+      l_arg2  := get_value(527);   
+      l_arg3  := get_value(200);   
+      l_arg4  := get_value(120);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 526
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummary/FreeFormInformation'
+                    , i_adn_id         => 100618
+                    );
+
+      l_arg1  := get_value(68);    
+      l_arg2  := get_value(529);   
+      l_arg3  := get_value(201);   
+      l_arg4  := get_value(121);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 528
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummaryExtension/PassengerAddress'
+                    , i_adn_id         => 100621
+                    );
+
+      l_arg1  := get_value(69);    
+      l_arg2  := get_value(531);   
+      l_arg3  := get_value(202);   
+      l_arg4  := get_value(122);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 530
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummaryExtension/FrequentTravellerIDNumber'
+                    , i_adn_id         => 100624
+                    );
+
+      l_arg1  := get_value(70);    
+      l_arg2  := get_value(533);   
+      l_arg3  := get_value(203);   
+      l_arg4  := get_value(123);   
+
+      l_tmp_value := coalesce(l_arg1,l_arg2,l_arg3,l_arg4);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 532
+                    , i_adn_path       => 'Identification/BagData/OnHandBaggageSummaryExtension/TierIdentifier'
+                    , i_adn_id         => 100626
+                    );
+
+      l_arg1  := get_value(539);   
+
+      l_tmp_value := 
+        case 
+         
+        when nvl(l_arg1,'undef') in ( 'MULTI_TAG', 'MULTI_FALLBACK', 'NO_READ', 'NOT_SCANNED' ) 
+        then 'SCAN_ENTER_LPN' 
+
+         
+        when nvl(l_arg1,'undef') = 'RETAG_REQUEST' 
+        then 'REPRINT_TAG' 
+
+         
+        when nvl(l_arg1,'undef') = 'NO_BAGDATA' 
+        then 'LINK_TO_FLIGHT' 
+
+         
+        when nvl(l_arg1,'undef') in ('NO_FLIGHT_RELATION', 'DATACAPTURE_REQUEST' ) 
+        then 'DATA_CAPTURE' 
+
+         
+         
+        else 
+        null 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 541
+                    , i_adn_path       => 'Identification/Derivations/ManualIdTask'
+                    , i_adn_id         => 100638
+                    );
+
+      l_arg1  := get_value(258);   
+      l_arg2  := get_value(536);   
+      l_arg3  := get_value(212);   
+
+      l_tmp_value := case
+        
+        when nvl(l_arg1,'undef') = 'MISSING' and ( nvl(l_arg2,'undef') = 'NO_READ' or nvl(l_arg3,'undef') = 'FLIGHT_CODED' )
+        then 'TRUE'                  
+
+        
+        else
+        'FALSE'                   
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 542
+                    , i_adn_path       => 'Identification/Derivations/UnrecognizedMistrackInd'
+                    , i_adn_id         => 100639
+                    );
+
+      l_arg1  := get_value(235);   
+      l_arg2  := get_value(534);   
+
+      l_tmp_value := case 
+        when nvl(l_arg2,'XH') = 'XH' 
+        then 'XH' 
+        else
+        coalesce( l_arg1, 'XH')
+        end
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 543
+                    , i_adn_path       => 'Identification/Derivations/TaskHandler'
+                    , i_adn_id         => 100640
+                    );
+
+      l_arg1  := get_value(25);    
+      l_arg2  := get_value(549);   
+      l_arg3  := get_value(126);   
+      l_arg4  := get_value(137);   
+      l_arg5  := get_value(544);   
+
+      l_tmp_value := case 
+    when  l_arg4 in ('IN_SYSTEM_PACKAGEDATA_DELETED', 'IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'IN_SYSTEM_PACKAGEDATA_MULTIPLE', 
+        'NOT_IN_SYSTEM_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_READY_PACKAGEDATA_DELETED', 'NOT_IN_SYSTEM_PACKAGEDATA_MULTIPLE',
+        'LOGICAL_DELETED', 'LOGICAL_MULTIPLE' ) and l_arg5 is null
+        then nvl(l_arg1,l_arg3) 
+        else
+        coalesce(l_arg1,l_arg2,l_arg3)
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 548
+                    , i_adn_path       => 'Identification/Results/LinkToFlightResult/SegregationID/ProductName'
+                    , i_adn_id         => 100654
+                    );
+
+      l_arg1  := get_value(23);    
+      l_arg2  := get_value(553);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2)
+			;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 552
+                    , i_adn_path       => 'Identification/Results/SpecialDestinationResult/Handler'
+                    , i_adn_id         => 100664
+                    );
+
+      l_arg1  := get_value(10);    
+      l_arg2  := get_value(75);    
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 554
+                    , i_adn_path       => 'Identification/Results/SpecialDestinationResult/SpecialDestination'
+                    , i_adn_id         => 100666
+                    );
+
+      l_arg1  := get_value(58);    
+      l_arg2  := get_value(556);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 555
+                    , i_adn_path       => 'Identification/Results/DataCaptureResult/Surname'
+                    , i_adn_id         => 100668
+                    );
+
+      l_arg1  := get_value(30);    
+      l_arg2  := get_value(558);   
+
+      l_tmp_value := nvl(l_arg1,l_arg2);
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 557
+                    , i_adn_path       => 'Identification/Results/DataCaptureResult/BagTypeCode'
+                    , i_adn_id         => 100671
+                    );
+
+      l_arg1  := get_value(129);   
+      l_arg2  := get_value(210);   
+      l_arg3  := get_value(141);   
+
+      l_tmp_value := 
+        case 
+         
+        when l_arg1 is null 
+        then 'EXCEPTION_LOGICAL' 
+
+         
+        when nvl(l_arg2, 'undef') = 'NoResource' 
+        then 'EXCEPTION_NORESOURCE' 
+
+        
+        when nvl(l_arg1, 'undef') in ( 'Early Batch Build' , 'Batch Planned Build' )
+        then 'OUTBOUND_FLIGHTPLAN_BATCH'
+
+           
+        when nvl(l_arg3, 'undef') = 'FLIGHT_BUILD'
+        then 'OUTBOUND_FLIGHTPLAN'
+
+         
+        when nvl(l_arg3, 'undef')= 'RECLAIM' 
+        then 'INBOUND_FLIGHTPLAN' 
+
+         
+        when nvl(l_arg1, 'undef') in ( 'Unplanned flight' )
+        then 'EXCEPTION_NOOUTBOUNDPLAN' 
+
+         
+        when nvl(l_arg1, 'undef') = 'Unplanned Inbound' 
+        then 'EXCEPTION_NOINBOUNDPLAN' 
+
+         
+        else 
+        'PROCESSPLAN' 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 559
+                    , i_adn_path       => 'Qualification/Derivations/QualificationState'
+                    , i_adn_id         => 100675
+                    );
+
+      l_arg1  := get_value(258);   
+      l_arg2  := get_value(276);   
+      l_arg3  := get_value(282);   
+      l_arg4  := get_value(128);   
+      l_arg5  := get_value(130);   
+      l_arg6  := get_value(279);   
+      l_arg7  := get_value(296);   
+      l_arg8  := get_value(445);   
+      l_arg9  := get_value(442);   
+      l_arg10 := get_value(151);   
+
+      l_tmp_value := case
+        
+        when nvl(l_arg1, 'undef')='MISSING'
+        then 'MISTRACKED'      
+
+        
+        when nvl(l_arg1,'undef')='HAND-OVER'   or   nvl(l_arg1,'undef')='END-OF-TRACING' 
+        then case
+
+        
+
+
+
+
+        when    nvl(l_arg2, 'undef')='UNEXPECTED_STATION' or
+    (   nvl(l_arg4, 'undef') in ('ManualDeliver', 'ManualStore') and 
+                    not( list_lookup(l_values(130), nvl(l_arg6, 'undef') ) )  ) or
+        nvl(l_arg8,'undef') in ( 'EQUIPMENT_FAILURE', 'OPERATOR_OVERRULED' , 'NOT_SECURE', 'NOT_IN_BATCH', 'BAGLOADEVENT_FAILED', 'DESTINATION_OVERFLOW', 'DESTINATION_UNKOWN' )
+        then 'MISDELIVERED'      
+
+        
+
+
+
+        when nvl(l_arg7, 'undef')='ARRIVED' or nvl(l_arg9,'undef')='Y' or nvl(l_arg1,'undef')='HAND-OVER'
+        then 'DELIVERED'                  
+
+        
+        else 
+        'EN_ROUTE_NOT_TRACKED'
+        end
+
+        
+        when (l_arg1 is null)  
+        then case
+
+           
+          when nvl(l_arg10, 'undef' ) = 'Y'
+            then 'MISTRACKED' 
+
+          
+
+
+
+    
+          when      nvl(l_arg2, 'undef')='UNEXPECTED_STATION'  or   
+          ( nvl(l_arg4,'undef') in ('Store' , 'StoreProduct' ) and 
+          not(  l_arg5 is null  )  and  
+          nvl(l_arg3,'undef') in ('Store' , 'StoreProduct' )  and   
+                        not( list_lookup(l_values(130), nvl(l_arg6, 'undef') ) )  )  or
+                    (   nvl(l_arg4, 'undef') in ('ManualDeliver', 'ManualStore') and not( list_lookup(l_values(130), nvl(l_arg6, 'undef') ) )   ) or
+          nvl(l_arg8,'undef') in ( 'EQUIPMENT_FAILURE', 'OPERATOR_OVERRULED' , 'NOT_SECURE', 'NOT_IN_BATCH', 'BAGLOADEVENT_FAILED', 'DESTINATION_OVERFLOW', 'DESTINATION_UNKOWN' ) 
+          then 'MISSORTED'
+
+          
+
+
+
+
+          when  nvl(l_arg7, 'undef')='ARRIVED' or nvl(l_arg9,'undef')='Y' or        
+          (  
+          nvl(l_arg3,'undef') in ( 'Store' , 'StoreProduct', 'ProblemBagStore', 'OperationalControl' ) and  
+          (  nvl(  l_arg5, 'undef' ) =  nvl(  l_arg6, 'undef' )  or   l_arg5 is null  )  
+          )  or 
+          (  
+          nvl(l_arg4,'undef') in ( 'Batch' , 'ProblemBag' ,  'ManualScan', 'RequestTask' )  and 
+          get_stationtype( l_arg6 ) in ('Store', 'ProblemBagStore', 'ManualStore', 'SecurityStore' )
+          )
+          then 'SORTED'
+
+          
+          when nvl(l_arg3,'undef') = 'Reclaim'
+          then 'DELIVERED'
+
+          
+          else 'EN_ROUTE'
+          end                           
+
+        
+        else null
+      end       ;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 560
+                    , i_adn_path       => 'Reporting/Derivations/RoutingProgress'
+                    , i_adn_id         => 100676
+                    );
+
+      l_arg1  := get_value(210);   
+      l_arg2  := get_value(562);   
+
+      l_tmp_value := case 
+         
+        when l_arg2 = 'Y' 
+        then 'MISSED' 
+
+         
+        when nvl(l_arg1, 'undef') in ( 'Prepare' , 'EarlyBatch' ) 
+        then 'EARLY' 
+
+         
+        when nvl(l_arg1, 'undef') in ( 'InTimeBatch', 'BatchWrapup' , 'Planned' , 'OOGBuild' ) 
+        then 'ONTIME' 
+
+         
+        when nvl(l_arg1, 'undef') in ( 'Expedite' , 'NoResource' ) 
+        then 'EXPEDITE' 
+
+        
+        when nvl(l_arg1, 'undef') = 'Late'
+        then 'LATE' 
+
+        else null 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 563
+                    , i_adn_path       => 'Reporting/Derivations/FlightBuildTimeliness'
+                    , i_adn_id         => 100679
+                    );
+
+      l_arg1  := get_value(210);   
+      l_arg2  := get_value(262);   
+      l_arg3  := get_value(129);   
+
+      l_tmp_value := 
+        case
+        when nvl(l_arg3, 'undef') in ( 'Early Batch Build' , 'In Time Batch Build' ) 
+        then 
+        case 
+         
+        when nvl(l_arg1, 'undef') = 'Prepare' 
+        then 'DORMANT' 
+
+         
+        when nvl(l_arg1, 'undef') in ( 'InTimeBatch' , 'EarlyBatch' ) and l_arg2 is null 
+        then 'COLD' 
+
+         
+        when nvl(l_arg1, 'undef') in ( 'InTimeBatch' , 'EarlyBatch' ) and not(l_arg2 is null) 
+        then 'WARM' 
+
+         
+        when nvl(l_arg1, 'undef') = 'BatchWrapup' 
+        then 'HOT' 
+        else null 
+        end 
+        else null 
+        end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 564
+                    , i_adn_path       => 'Reporting/Derivations/BatchBuildTimeliness'
+                    , i_adn_id         => 100680
+                    );
+
+      l_arg1  := get_value(212);   
+      l_arg2  := get_value(142);   
+
+      l_tmp_value := case
+        
+         
+        when nvl(l_arg1,'undef') not in ( 'IDENTIFIED','FALLBACK_TAG','FLIGHT_CODED','DESTINATION_CODED' ) 
+             and not list_lookup(l_values(142), 'FLIGHT_BUILD') 
+             and not list_lookup(l_values(142), 'RECLAIM') 
+                then 'Y' 
+		else
+			'N'
+		end;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 565
+                    , i_adn_path       => 'Identification/Derivations/AirlineSortationIndicator'
+                    , i_adn_id         => 100707
+                    );
+
+      l_arg1  := get_value(298);   
+
+      l_tmp_value :=  
+        case
+        when nvl( l_arg1, 'undef' ) in ('0010','10')		
+        then 
+        1
+        else 
+        0
+        end
+		;
+
+      process_result( i_tmp_value      => l_tmp_value
+                    , i_index          => 568
+                    , i_adn_path       => 'Security/Derivations/FinalSortFlag'
+                    , i_adn_id         => 100710
+                    );
+
+
+      
+      if l_it_attributes.count > 0
+      then
+
+         
+         pdm_attributes.store_attributes( i_pae_id                     => i_pae_id
+                                        , i_it_attributes              => l_it_attributes
+                                        , i_pet_id                     => i_pet_id
+                                        , i_event_time                 => cmn_common.default_timestamp
+                                        , i_ind_use_attribs_event_time => false
+                                        );
+
+      end if;
+
+      
+      pdm_attributes.store_concat_attributes ( i_pae_id        => i_pae_id
+                                             , i_pet_id        => i_pet_id
+                                             , o_it_attributes => l_it_attributes_concat
+                                             );
+
+      if l_it_attributes_concat.count > 0
+      then
+
+         
+         pdm_attributes.store_attributes( i_pae_id                     => i_pae_id
+                                        , i_it_attributes              => l_it_attributes_concat
+                                        , i_pet_id                     => i_pet_id
+                                        , i_event_time                 => cmn_common.default_timestamp
+                                        , i_ind_use_attribs_event_time => false
+                                        );
+
+      end if;
+
+      viu_module.leave_module( i_module => g_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module     => g_con_proc_name
+                                , i_debug_info => 'exception'
+                                );
+
+         viu_info.raise_info( i_calling_procedure => g_con_proc_name );
+   end pdm_store_derived_attributes;
+/

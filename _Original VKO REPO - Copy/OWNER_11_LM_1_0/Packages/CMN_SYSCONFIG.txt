@@ -1,0 +1,610 @@
+create or replace PACKAGE cmn_sysconfig IS
+ 
+   g_con_package CONSTANT cmn_constant.st_proc_name := 'cmn_sysconfig';
+   
+   /* Sets the active DATA id -- to be visible in the view CMN_V_SYSCONFIG_DATA */
+   PROCEDURE set_sysconfig_row
+   ( i_sca_id IN cmn_sysconfig_data.id%TYPE);
+   
+   /* Gets the active DATA id (used in the view CMN_V_SYSCONFIG_DATA) */
+   FUNCTION get_sysconfig_row
+   RETURN cmn_sysconfig_data.id%TYPE;
+  
+   /* Gets the last added DATA id for a given document type. For custom handling */
+   FUNCTION get_last_sysconfig_row
+   ( i_sde_doc_type IN cmn_sysconfig_data_types.doc_type%TYPE)
+   RETURN cmn_sysconfig_data.id%TYPE;
+  
+   /* Process given DATA with given handler. For custom handling  */
+   PROCEDURE process_sysconfig
+   ( i_sca_id IN cmn_sysconfig_data.id%TYPE
+   , i_handler IN cmn_sysconfig_data_types.handler%TYPE
+   );
+
+   /* Make a given CMN_SYSCONFIG_DATA the active one. For custom handling. */
+   PROCEDURE set_active
+   ( i_sca_id IN cmn_sysconfig_data.id%TYPE);
+   
+   /* Process a CLOB file and parse it to CMN_SYSCONFIG_DATA. */
+   PROCEDURE process_clob_trg
+   ( i_data  IN CLOB
+   );
+   
+END cmn_sysconfig;
+/
+
+
+
+
+package body cmn_sysconfig is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   g_process_sca_id cmn_sysconfig_data.id%type;
+
+   
+   
+   
+   procedure process_sysconfig_log_start
+   ( io_rt_sca in out cmn_sysconfig_data%rowtype)
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.process_sysconfig_log_start';
+      
+      l_rows                   number;
+      pragma autonomous_transaction;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      io_rt_sca.datetime_processing_start := cmn_common.default_timestamp;
+      io_rt_sca.datetime_processing_end   := null; 
+      io_rt_sca.errors_encountered        := null; 
+
+      l_rows := cmn_sca_tapi_pck.sca_update_row( i_sca_id  => io_rt_sca.id
+                                               , io_rt_sca => io_rt_sca
+                                               );
+      commit;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_sysconfig_log_start;
+   
+   procedure process_sysconfig_log_stop
+   ( io_rt_sca in out cmn_sysconfig_data%rowtype)
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.process_sysconfig_log_stop';
+      
+      l_rows                   number;
+
+      pragma autonomous_transaction;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      io_rt_sca.datetime_processing_end := cmn_common.default_timestamp;
+
+      l_rows := cmn_sca_tapi_pck.sca_update_row( i_sca_id  => io_rt_sca.id
+                                               , io_rt_sca => io_rt_sca
+                                               );
+      commit;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_sysconfig_log_stop;
+   
+   procedure set_active
+   ( i_sca_id in cmn_sysconfig_data.id%type)
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.set_active';
+      
+      l_rt_sca                 cmn_sysconfig_data%rowtype;
+      l_rows                   number;
+
+      pragma autonomous_transaction;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      if cmn_sca_tapi_pck.sca_select_row( i_sca_id => i_sca_id
+                                        , o_rt_sca => l_rt_sca)
+      then
+         
+         
+         update cmn_sysconfig_data
+         set    ind_active = cmn_constant.g_con_yesno_no
+         where  (case  when "IND_ACTIVE"='Y' then "SDE_DOC_TYPE" end) = l_rt_sca.sde_doc_type
+         ;
+         
+         
+         l_rt_sca.ind_active := cmn_constant.g_con_yesno_yes;
+            
+         
+         delete cmn_sysconfig_data
+         where  sde_doc_type  = l_rt_sca.sde_doc_type
+         and    id           != l_rt_sca.id;
+            
+         l_rows := cmn_sca_tapi_pck.sca_update_row( i_sca_id  => l_rt_sca.id
+                                                  , io_rt_sca => l_rt_sca
+                                                  );
+      end if;
+
+      commit;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end set_active;
+   
+   procedure exec_autonomous
+   (i_plsql_block in varchar2)
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.exec_autonomous';
+      pragma autonomous_transaction;
+
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   begin
+      viu_module.enter_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    '"i_plsql_block = "'
+                                                    || i_plsql_block
+                                                    || '"'
+                             );
+
+      execute immediate ( 'BEGIN '||i_plsql_block||' END;');
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+         
+   end exec_autonomous;
+
+   procedure parse_data
+   ( i_data   in     clob
+   , o_sca_id    out cmn_sysconfig_data.id%type
+   , o_handler   out cmn_sysconfig_data_types.handler%type
+   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.parse_data';
+
+      l_version_xml            xmltype;
+      l_rt_sca                 cmn_sysconfig_data%rowtype;
+      l_rt_sde                 cmn_sysconfig_data_types%rowtype;
+
+      pragma autonomous_transaction;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      l_rt_sca.data := xmltype(i_data);
+      
+      
+      l_rt_sca.sde_doc_type := l_rt_sca.data.getrootelement();
+      
+      if not cmn_sde_tapi_pck.sde_select_row( i_sde_doc_type => l_rt_sca.sde_doc_type
+                                            , o_rt_sde       => l_rt_sde
+                                            )
+      then
+         
+         viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_cmninvaliddoctype
+                            , i_calling_procedure  => l_con_proc_name
+                            , i_severity           => viu_info.c_severity_error
+                            , i_info_arguments     => l_rt_sca.sde_doc_type
+                            );
+      end if;
+
+      
+      
+      l_version_xml := l_rt_sca.data.extract(l_rt_sde.xpath_version);
+      if l_version_xml is not null
+      then
+         l_rt_sca.version := l_version_xml.getstringval();
+      else
+         viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_cmninvalidversionxpath
+                            , i_calling_procedure  => l_con_proc_name
+                            , i_severity           => viu_info.c_severity_error
+                            , i_info_arguments     => l_rt_sde.xpath_version||'##'||l_rt_sca.sde_doc_type
+                            );
+      end if;
+
+      l_rt_sca.ind_active := cmn_constant.g_con_yesno_no;
+
+      
+      cmn_sca_tapi_pck.sca_insert_row( io_rt_sca => l_rt_sca);
+      o_sca_id  := l_rt_sca.id;
+      o_handler := l_rt_sde.handler;
+
+      commit;
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         rollback;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end parse_data;
+   
+   function parse_handler(i_handler cmn_sysconfig_data_types.handler%type)
+   return boolean
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.parse_handler';
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      
+      
+      execute immediate 'BEGIN RETURN; '||i_handler||' END;';
+      return true;
+
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         return false;
+   end parse_handler;
+     
+   procedure process_sysconfig_internal
+   ( i_sca_id     in cmn_sysconfig_data.id%type
+   , i_handler    in cmn_sysconfig_data_types.handler%type
+   , i_set_active in boolean
+   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.process_sysconfig_internal';
+      
+      l_rt_sca                 cmn_sysconfig_data%rowtype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+  
+      if not cmn_sca_tapi_pck.sca_select_row( i_sca_id => i_sca_id
+                                            , o_rt_sca => l_rt_sca
+                                            )
+      then
+         viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_cmnnosysconfigdata
+                            , i_calling_procedure  => l_con_proc_name
+                            , i_severity           => viu_info.c_severity_error
+                            , i_info_arguments     => '[unknown]'
+                            , i_additional_data    => 'No row in CMN_SYSCONFIG_DATA with id='||i_sca_id
+                            );
+      end if;
+        
+      
+      
+      
+      if not parse_handler( i_handler => i_handler)
+      then
+         viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_cmninvalidhandler
+                            , i_calling_procedure  => l_con_proc_name
+                            , i_severity           => viu_info.c_severity_error
+                            , i_info_arguments     => i_handler
+                            );
+      end if;
+
+      
+      
+      
+      set_sysconfig_row(i_sca_id => i_sca_id);
+
+      
+      process_sysconfig_log_start(io_rt_sca => l_rt_sca);
+         
+      
+      
+      
+      
+      
+      
+      
+      
+      begin
+         exec_autonomous(i_handler);
+      exception
+         when others
+         then
+            l_rt_sca.errors_encountered := cmn_constant.g_con_yesno_yes;
+            viu_info.raise_info;
+      end;
+      
+      
+      
+      l_rt_sca.errors_encountered := cmn_constant.g_con_yesno_no;
+      process_sysconfig_log_stop(io_rt_sca => l_rt_sca);
+      
+      
+      if i_set_active
+      then
+         set_active(i_sca_id => l_rt_sca.id);
+      end if;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when viu_constant.exc_cmninvalidhandler
+      then
+         
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      when others
+      then
+         
+         process_sysconfig_log_stop(io_rt_sca => l_rt_sca);
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_sysconfig_internal;
+   
+   
+   
+   
+
+   procedure set_sysconfig_row(i_sca_id in cmn_sysconfig_data.id%type)
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.set_sysconfig_row';
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+  
+      g_process_sca_id := i_sca_id;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end set_sysconfig_row;
+
+   function get_sysconfig_row return cmn_sysconfig_data.id%type
+   is
+   begin
+      
+
+
+
+
+
+
+      return g_process_sca_id;
+   end get_sysconfig_row;
+  
+   
+   function get_last_sysconfig_row
+   ( i_sde_doc_type in cmn_sysconfig_data_types.doc_type%type)
+   return cmn_sysconfig_data.id%type
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.get_last_sysconfig_row';
+      
+      cursor c_sca(b_doc_type cmn_sysconfig_data.sde_doc_type%type)
+      is
+      
+      select sca.id
+      from   cmn_sysconfig_data sca
+      where  sca.id = (select max(sca1.id)
+                       from   cmn_sysconfig_data sca1
+                       where  sca1.sde_doc_type = b_doc_type
+                      )
+      ;
+      
+      l_sca_id                 cmn_sysconfig_data.id%type;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+  
+      open c_sca(b_doc_type => i_sde_doc_type);
+      fetch c_sca into l_sca_id;
+      close c_sca;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      return l_sca_id;
+   exception
+      when others
+      then
+         if c_sca%isopen
+         then
+            close c_sca;
+         end if;
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end get_last_sysconfig_row;
+
+   procedure process_sysconfig
+   ( i_sca_id  in cmn_sysconfig_data.id%type
+   , i_handler in cmn_sysconfig_data_types.handler%type
+   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.process_sysconfig';
+      
+      l_rt_sca                 cmn_sysconfig_data%rowtype;
+      l_rt_sde                 cmn_sysconfig_data_types%rowtype;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+  
+      if not cmn_sca_tapi_pck.sca_select_row( i_sca_id => i_sca_id
+                                            , o_rt_sca => l_rt_sca
+                                            )
+      then
+         viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_cmnnosysconfigdata
+                            , i_calling_procedure  => l_con_proc_name
+                            , i_severity           => viu_info.c_severity_error
+                            , i_info_arguments     => '[unknown]'
+                            , i_additional_data    => 'No row in CMN_SYSCONFIG_DATA with id='||i_sca_id
+                            );
+      end if;
+        
+      if not cmn_sde_tapi_pck.sde_select_row( i_sde_doc_type => l_rt_sca.sde_doc_type
+                                            , o_rt_sde       => l_rt_sde
+                                            )
+      then
+         
+         viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_cmninvaliddoctype
+                            , i_calling_procedure  => l_con_proc_name
+                            , i_severity           => viu_info.c_severity_error
+                            , i_info_arguments     => l_rt_sca.sde_doc_type
+                            );
+      end if;
+      
+      l_rt_sde.handler := i_handler;
+      
+      process_sysconfig_internal( i_sca_id     => i_sca_id
+                                , i_handler    => l_rt_sde.handler
+                                , i_set_active => false           
+                                );
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_sysconfig;
+   
+   procedure process_clob_trg
+   ( i_data  in clob
+   )
+   is
+      l_con_proc_name constant cmn_constant.st_proc_name := g_con_package || '.process_clob_trg';
+      
+      l_sca_id                 cmn_sysconfig_data.id%type;
+      l_handler                cmn_sysconfig_data_types.handler%type;
+   begin
+      viu_module.enter_module( i_module      => l_con_proc_name );
+
+      
+      
+      
+      
+      
+      parse_data( i_data    => i_data
+                , o_sca_id  => l_sca_id
+                , o_handler => l_handler
+                );
+
+      
+      
+      
+      
+      
+      if l_handler is not null
+      then
+         
+         process_sysconfig_internal( i_sca_id     => l_sca_id
+                                   , i_handler    => l_handler
+                                   , i_set_active => true
+                                   );
+      end if;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+
+   exception
+      when others
+      then
+         viu_module.leave_module( i_module          => l_con_proc_name
+                                , i_debug_info      => sqlerrm
+                                );
+         viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+   end process_clob_trg;
+
+end cmn_sysconfig;
+/

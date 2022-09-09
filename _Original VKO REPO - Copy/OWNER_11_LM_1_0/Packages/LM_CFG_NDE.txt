@@ -1,0 +1,179 @@
+create or replace PACKAGE lm_cfg_nde
+IS
+g_con_package        CONSTANT VARCHAR2( 30 ) := 'LM_CFG_NDE';
+
+PROCEDURE load_node_data;
+
+END lm_cfg_nde;
+/
+
+
+
+
+package body lm_cfg_nde is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+function translate_type( i_nde_type in varchar2 )
+   return lm_nodes.nde_type%type
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.translate_type';
+
+   l_nde_type lm_nodes.nde_type%type;
+   
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   if i_nde_type = lm_constant.g_con_cfg_divert_abr
+   then
+      l_nde_type  := lm_constant.g_con_nde_type_divert;
+
+   
+   elsif i_nde_type in( lm_constant.g_con_cfg_coll1_abr
+   	                  , lm_constant.g_con_cfg_coll2_abr
+   	                  , lm_constant.g_con_cfg_coll3_abr
+   	                  , lm_constant.g_con_cfg_coll4_abr
+   	                  , lm_constant.g_con_cfg_coll5_abr
+   	                  )
+   then
+      l_nde_type  := lm_constant.g_con_nde_type_collector_line;
+
+   else
+      l_nde_type  := lm_constant.g_con_nde_type_merge;
+   end if;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+   return l_nde_type;
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end translate_type;
+
+
+
+
+
+
+
+procedure load_node_data
+is
+   l_con_proc_name constant lm_constant.st_proc_name
+                               := g_con_package || '.load_node_data';
+
+   l_rt_nde     lm_nodes%rowtype;
+   l_rt_sct     lm_system_components%rowtype;
+   l_start_time timestamp := lm_common.default_timestamp;
+   l_#nde       integer;
+
+   
+   
+   cursor c_nodes
+   is
+       select nde.id
+       ,      nde.isc_id_reporting
+       ,      nde.type
+       ,      nde.ind_autonomous_routing
+       ,      nde.ind_initial_registration
+       from   cmn_v_sysconfig_data pd
+       ,      xmltable( '/project_definition/nodes/node[@isc_id_reporting!="" and @ind_physical="TRUE"]'
+                        passing pd.data
+                        columns id                       number        path '@id'
+                        ,       isc_id_reporting         varchar2(30)  path '@isc_id_reporting'         
+                        ,       type                     varchar2(100) path '@type'                     
+                        ,       ind_autonomous_routing   varchar2(5)   path '@ind_autonomous_routing'   
+                        ,       ind_initial_registration varchar2(5)   path '@ind_initial_registration' 
+                      ) nde
+      ;
+
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   for l_rec_nodes in c_nodes
+   loop
+   	
+      
+      if      lm_sct_tapi_pck.sct_select_row_uk2( i_sct_id_cust_full => l_rec_nodes.isc_id_reporting
+                                                , o_rt_sct           => l_rt_sct
+                                                )
+          and l_rt_sct.sct_type in ( lm_constant.g_con_sct_type_sen
+                                   , lm_constant.g_con_sct_type_zne
+                                   )
+      then
+         
+         
+         
+         
+         
+         
+         if l_rt_sct.sct_type = lm_constant.g_con_sct_type_sen
+         then
+            l_rt_nde.sct_id                        := l_rt_sct.sct_id_section_zone;
+            l_rt_nde.identifier_within_sct         := l_rt_sct.id_cust;
+         else
+            l_rt_nde.sct_id                        := l_rt_sct.id;
+            l_rt_nde.identifier_within_sct         := '0';
+         end if;
+         
+         l_rt_nde.id                            := l_rec_nodes.id;
+         l_rt_nde.nde_type                      := translate_type ( i_nde_type => l_rec_nodes.type );
+         l_rt_nde.ind_autonomous_routing        := lm_config.translate_truefalse( i_truefalse => l_rec_nodes.ind_autonomous_routing );
+         l_rt_nde.ind_normal_registration_point := lm_config.translate_truefalse( i_truefalse => l_rec_nodes.ind_initial_registration );
+         l_rt_nde.description                   := 'Node of type ' || l_rec_nodes.type;
+
+         lm_nde_tapi_pck.nde_insert_row( io_rt_nde => l_rt_nde );
+
+      else
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'For node '
+                                  || l_rec_nodes.id
+                                  || ', no section or zone found for isc_id_reporting: '
+                                  || l_rec_nodes.isc_id_reporting
+            );
+      end if;
+   
+   end loop;
+
+   
+   select count(*)
+   into   l_#nde
+   from   lm_nodes
+   ;
+   lm_config.log_processing_time( i_message_name    => 'nodes'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#nde||' lm_nodes'
+                                );
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_node_data;
+
+end lm_cfg_nde;
+/

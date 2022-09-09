@@ -1,0 +1,32 @@
+procedure rep_app_performance is
+type array_str is table of varchar2(2000) index by pls_integer;
+a_js array_str;
+v_msg varchar2(32767);
+begin
+  a_js( 1) := 'function exec_rep1() { var s1="REPORT_APP_PERFORMANCE1?p_sortby="+trimAll(p_sortby.value); confirm_long_jump("Produce Report",s1); }';
+  a_js( 2) := 'function exec_rep2() { var s1="REPORT_APP_PERFORMANCE2?p_sortby="+trimAll(p_sortby.value); confirm_long_jump("Produce Report",s1); }';
+
+  htp.print(ui_menu.head_from_link('REP_APP_PERFORMANCE'));
+  htp.print('<div class="operate"><br>');
+
+  htp.print('<SCRIPT>');
+  for i in 1..a_js.count loop
+    htp.print(replace(a_js(i), '@', chr(38)));
+  end loop;
+  htp.print('</SCRIPT>');
+
+  htp.print('<br><TABLE></tr><tr><td align="RIGHT">order by: </td><td>');
+  htp.print('<INPUT TYPE=TEXT NAME="p_sortby" value="APPLICATION,COMPONENT,SUBCOMPONENT,SEVERITY,str_to_num(EXCEPTIONS) desc" STYLE="font-size=11;width:400px;">');
+  htp.print('</tr></TABLE>');
+
+  htp.print('<br>');
+  htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="HTML Report" onClick=exec_rep1()>');
+  htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="CSV Report" onClick=exec_rep2()>');
+  htp.print('<br><br>');
+
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

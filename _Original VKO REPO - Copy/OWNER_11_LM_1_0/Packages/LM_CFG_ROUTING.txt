@@ -1,0 +1,1000 @@
+create or replace PACKAGE lm_cfg_routing
+IS
+   g_con_package       CONSTANT lm_constant.st_proc_name := 'LM_CFG_ROUTING';
+
+   PROCEDURE load_destination_groups;
+   PROCEDURE load_usages;
+   PROCEDURE load_rules;
+   PROCEDURE load_porr;
+
+END lm_cfg_routing;
+/
+
+
+
+
+package body lm_cfg_routing is
+
+
+
+
+
+
+
+   
+   type nt_rre is table of lm_route_influence_rules%rowtype;
+
+
+
+
+
+
+procedure load_destination_groups
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_destination_groups';
+
+   
+   
+   cursor c_drp
+   is
+      select drp.id
+      ,      drp.name
+      ,      drp.description
+      ,      cast( multiset( select destination_id
+                             from   xmltable( 'Destinations/DestinationID'
+                                              passing drp.destinations_xml
+                                              columns destination_id integer path '/text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_pon
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/Routing/DestinationRoutingGroups/DestinationRoutingGroup'
+                       passing cfg.data
+                       columns id               integer       path 'ID/text()'
+                       ,       name             varchar2(100) path 'Name/text()'
+                       ,       description      varchar2(240) path 'Description/text()'
+                       ,       destinations_xml xmltype       path 'Destinations'
+                     ) drp
+      ;
+      
+   type nt_routing_groups is table of c_drp%rowtype;
+   type nt_drr            is table of lm_dest_routing_members%rowtype;
+
+   l_nt_drr                            nt_drr := nt_drr();
+   l_nt_pon                            nt_id_coll := nt_id_coll();
+   l_nt_routing_groups                 nt_routing_groups;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_idx_drr                           binary_integer;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_drp;
+   fetch c_drp bulk collect into l_nt_routing_groups;
+   close c_drp;
+
+   
+   for idx_drp in 1..l_nt_routing_groups.count
+   loop
+      l_idx_drr := l_nt_drr.count;
+      l_nt_drr.extend(l_nt_routing_groups(idx_drp).nt_pon.count);
+      for idx_pon in 1..l_nt_routing_groups(idx_drp).nt_pon.count
+      loop
+         l_nt_drr(l_idx_drr + idx_pon).drp_id := l_nt_routing_groups(idx_drp).id;
+         l_nt_drr(l_idx_drr + idx_pon).pon_id := l_nt_routing_groups(idx_drp).nt_pon(idx_pon);
+      end loop;
+   end loop;
+
+   
+   l_nt_pon.extend(l_nt_drr.count);
+   for idx in 1 .. l_nt_drr.count
+   loop
+      
+      l_nt_pon(idx) := l_nt_drr(idx).pon_id;
+   end loop;
+   
+   for rec_pon in (select distinct column_value
+                   from   table(l_nt_pon)
+                  )
+   loop
+      lm_config.check_destination(i_pon_id => rec_pon.column_value);
+   end loop;
+
+   
+   forall idx in 1 .. l_nt_routing_groups.count
+      insert
+      into   lm_destination_routing_groups drp
+      (      id
+      ,      name
+      ,      description
+      ) values
+      (      l_nt_routing_groups(idx).id
+      ,      l_nt_routing_groups(idx).name
+      ,      l_nt_routing_groups(idx).description
+      );
+
+   forall idx in 1 .. l_nt_drr.count
+      insert
+      into   lm_dest_routing_members
+      (      drp_id
+      ,      pon_id
+      ) values
+      (      l_nt_drr(idx).drp_id
+      ,      l_nt_drr(idx).pon_id
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'DestinationRoutingGroups'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_routing_groups.count||' lm_destination_routing_groups'
+                                                    ||' and '||l_nt_drr.count||' lm_dest_routing_members'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_drp%isopen
+      then
+         close c_drp;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_destination_groups;
+
+
+
+
+
+
+procedure load_usages
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_usages';
+
+   
+   cursor c_usages
+   is
+      select usg.rse_id
+      ,      usg.drp_id
+      ,      rme.id rme_id
+      ,      ras.id ras_id
+      ,      rst.rst_id
+      ,      dvt.nde_id
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/Routing/Usages/Divert'
+                       passing cfg.data
+                       columns nde_id             integer       path 'NodeID/text()'
+                       ,       routing_mode       varchar2(10 ) path 'RoutingMode/text()'
+                       ,       route_segments_xml xmltype       path 'RouteSegment'
+                     ) dvt
+      ,      xmltable( 'RouteSegment'
+                        passing dvt.route_segments_xml
+                        columns rst_id            integer     path 'RouteSegmentID/text()'
+                        ,       usg_xml           xmltype     path 'Usage'
+                      ) rst
+      ,      xmltable( 'Usage'
+                        passing rst.usg_xml
+                        columns rse_id            integer     path 'ID/text()'
+                        ,       drp_id            integer     path 'DestinationRoutingGroupID/text()'
+                        ,       acc_type          varchar2(1) path 'Type/text()'
+                      ) usg
+      ,      lm_route_accesses ras
+      ,      lm_route_modes rme
+      where  dvt.routing_mode = rme.name
+      and    usg.acc_type     = ras.name
+      order by nde_id, rst_id 
+      ;
+   
+   type nt_usages is table of c_usages%rowtype;
+   type nt_drp_id is table of number index by binary_integer; 
+
+   l_rt_rtt                            lm_route_sets%rowtype;
+   l_nde_id                            lm_nodes.id%type;
+   l_rst_id                            lm_route_segments.id%type;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_nt_rse                            nt_usages;
+   l_nt_drp_id                         nt_drp_id;
+   idx_drp                             binary_integer;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   l_rt_rtt.id                      := 1; 
+   l_rt_rtt.name                    := 'Factory default';
+   l_rt_rtt.description             := 'Factory default route set';
+   l_rt_rtt.ind_factory_default_set := lm_constant.g_con_yesno_yes;
+   l_rt_rtt.active                  := lm_constant.g_con_yesno_yes;
+   lm_rtt_tapi_pck.rtt_insert_row(io_rt_rtt => l_rt_rtt);
+
+   open c_usages;
+   fetch c_usages
+   bulk collect into l_nt_rse;
+   close c_usages;
+
+   
+   for idx in 1..l_nt_rse.count
+   loop
+      if l_nde_id <> l_nt_rse(idx).nde_id
+      or l_nde_id is null
+      then
+         
+         l_nde_id := l_nt_rse(idx).nde_id;
+         lm_config.check_node( i_nde_id            => l_nde_id
+                             , i_ind_routing_table => true
+                             );
+      end if;
+         
+      
+      
+      if l_rst_id <> l_nt_rse(idx).rst_id
+      or l_rst_id is null
+      then
+         
+         l_rst_id := l_nt_rse(idx).rst_id;
+         lm_config.check_route_segment( i_rst_id       => l_rst_id
+                                      , i_nde_id_start => l_nde_id
+                                      );
+      end if;
+      
+      
+      l_nt_drp_id(l_nt_rse(idx).drp_id) := 1; 
+   end loop;
+   
+   
+   idx_drp := l_nt_drp_id.first;
+   while idx_drp is not null
+   loop
+      lm_config.check_dest_routing_group( i_drp_id => idx_drp);
+      idx_drp := l_nt_drp_id.next(idx_drp);
+   end loop;
+
+   
+   forall idx_rse in 1 .. l_nt_rse.count
+      insert
+      into   lm_route_segment_usages
+      (      id
+      ,      rtt_id
+      ,      rme_id
+      ,      rst_id
+      ,      drp_id
+      ,      ras_id
+      ) values
+      (      l_nt_rse(idx_rse).rse_id
+      ,      l_rt_rtt.id
+      ,      l_nt_rse(idx_rse).rme_id
+      ,      l_nt_rse(idx_rse).rst_id
+      ,      l_nt_rse(idx_rse).drp_id
+      ,      l_nt_rse(idx_rse).ras_id
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'Usages'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_rse.count||' lm_route_segment_usages'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_usages%isopen
+      then
+         close c_usages;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_usages;
+
+
+
+
+
+
+
+
+
+procedure set_activating_object( i_idx    in     binary_integer
+                               , i_nt_lst in     nt_rule_lst
+                               , i_nt_has in     nt_rule_has
+                               , o_rt_lst    out rt_rule_lst
+                               , o_rt_has    out rt_rule_has
+                               )
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.set_activating_object';
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   
+   if i_idx <= i_nt_lst.count
+   then
+      o_rt_lst := i_nt_lst(i_idx);
+      o_rt_has := null;
+   elsif i_idx <= i_nt_lst.count + i_nt_has.count
+   then
+      o_rt_lst := null;
+      o_rt_has := i_nt_has(i_idx - i_nt_lst.count);
+   else
+      
+      
+      
+      
+      o_rt_lst := null;
+      o_rt_has := null;
+   end if;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end set_activating_object;
+
+
+
+
+
+
+
+
+
+procedure set_affected_object( i_idx            in     binary_integer
+                             , i_nt_rse         in     nt_id_coll
+                             , i_nt_stn         in     nt_id_coll
+                             , i_nt_haa_id_cust in     nt_vc2_coll
+                             , i_nt_lnk_id_cust in     nt_vc2_coll
+                             , o_rse_id            out lm_route_influence_rules.rse_id%type
+                             , o_stn_id            out lm_route_influence_rules.stn_id%type
+                             , o_haa_id_cust       out lm_handling_areas.id_cust%type
+                             , o_lnk_id_cust       out lm_links.id_cust%type
+                             )
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.set_affected_object';
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   
+   if i_idx <= i_nt_rse.count
+   then
+      o_rse_id      := i_nt_rse(i_idx);
+      o_stn_id      := null;
+      o_haa_id_cust := null;
+      o_lnk_id_cust := null;
+   elsif i_idx <= i_nt_rse.count + i_nt_stn.count
+   then
+      o_rse_id      := null;
+      o_stn_id      := i_nt_stn(i_idx - i_nt_rse.count);
+      o_haa_id_cust := null;
+      o_lnk_id_cust := null;
+   elsif i_idx <= i_nt_rse.count + i_nt_stn.count + i_nt_haa_id_cust.count
+   then
+      o_rse_id      := null;
+      o_stn_id      := null;
+      o_haa_id_cust := i_nt_haa_id_cust(i_idx - i_nt_rse.count - i_nt_stn.count);
+      o_lnk_id_cust := i_nt_lnk_id_cust(i_idx - i_nt_rse.count - i_nt_stn.count);
+   else
+      
+      
+      
+      
+      o_rse_id      := null;
+      o_stn_id      := null;
+      o_haa_id_cust := null;
+      o_lnk_id_cust := null;
+   end if;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end set_affected_object;
+
+
+
+
+
+
+procedure create_rre( i_activation_delay      in     varchar2
+                    , i_deactivation_delay    in     varchar2
+                    , i_rre_id_external       in     lm_route_influence_rules.id_external%type
+                    , i_rrp_id                in     lm_route_influence_rules.rrp_id%type
+                    , i_lst_id                in     lm_route_influence_rules.lst_id%type
+                    , i_ssm_id_min_level      in     lm_route_influence_rules.ssm_id_min_level%type
+                    , i_ssm_id_max_level      in     lm_route_influence_rules.ssm_id_max_level%type
+                    , i_haa_id_cust_apply     in     lm_handling_areas.id_cust%type
+                    , i_lnk_id_cust_apply     in     lm_links.id_cust%type
+                    , i_hsm_id_min_level      in     lm_route_influence_rules.hsm_id_min_level%type
+                    , i_hsm_id_max_level      in     lm_route_influence_rules.hsm_id_max_level%type
+                    , i_rse_id                in     lm_route_influence_rules.rse_id%type
+                    , i_stn_id                in     lm_route_influence_rules.stn_id%type
+                    , i_haa_id_cust_influence in     lm_handling_areas.id_cust%type
+                    , i_lnk_id_cust_influence in     lm_links.id_cust%type
+                    , i_description           in     lm_route_influence_rules.description%type
+                    , io_nt_rre               in out nocopy  nt_rre
+                    )
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.create_rre';
+
+   l_activation_delay                  lm_route_influence_rules.delay_activate%type;
+   l_deactivation_delay                lm_route_influence_rules.delay_activate%type;
+   l_rt_has_apply                      lm_handling_area_accesses%rowtype;
+   l_rt_has_influence                  lm_handling_area_accesses%rowtype;
+   l_rt_rre                            lm_route_influence_rules%rowtype;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   
+   l_activation_delay   := lm_config.duration_to_dsinterval(i_xsduration => i_activation_delay);
+   l_deactivation_delay := lm_config.duration_to_dsinterval(i_xsduration => i_deactivation_delay);
+   
+   if i_lst_id is not null
+   then
+      lm_config.check_logical_segment(i_lst_id => i_lst_id);
+   end if;
+   
+   if i_haa_id_cust_apply is not null
+   then
+       l_rt_has_apply := lm_config.check_handling_area_access( i_haa_id_cust => i_haa_id_cust_apply
+                                                             , i_lnk_id_cust => i_lnk_id_cust_apply
+                                                             );
+   end if;
+
+   if i_rse_id is not null
+   then
+      lm_config.check_route_segment_usage(i_rse_id => i_rse_id);
+   end if;
+   
+   if i_stn_id is not null
+   then
+      lm_config.check_station(i_stn_id => i_stn_id);
+   end if;
+
+   if i_haa_id_cust_influence is not null
+   then
+       l_rt_has_influence := lm_config.check_handling_area_access( i_haa_id_cust => i_haa_id_cust_influence
+                                                                 , i_lnk_id_cust => i_lnk_id_cust_influence
+                                                                 );
+   end if;
+   
+   l_rt_rre.id               := io_nt_rre.count + 1;
+   l_rt_rre.id_external      := i_rre_id_external;
+   l_rt_rre.description      := i_description;
+   l_rt_rre.rrp_id           := i_rrp_id;
+   l_rt_rre.delay_activate   := l_activation_delay;
+   l_rt_rre.delay_deactivate := l_deactivation_delay;
+   l_rt_rre.lst_id           := i_lst_id;
+   l_rt_rre.ssm_id_min_level := i_ssm_id_min_level;
+   l_rt_rre.ssm_id_max_level := i_ssm_id_max_level;
+   l_rt_rre.has_id_apply     := l_rt_has_apply.id;
+   l_rt_rre.hsm_id_min_level := i_hsm_id_min_level;
+   l_rt_rre.hsm_id_max_level := i_hsm_id_max_level;
+   l_rt_rre.rse_id           := i_rse_id;
+   l_rt_rre.stn_id           := i_stn_id;
+   l_rt_rre.has_id_influence := l_rt_has_influence.id;
+   
+   io_nt_rre.extend(1);
+   io_nt_rre(l_rt_rre.id) := l_rt_rre;
+   
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end create_rre;
+
+
+
+
+
+
+procedure load_rules
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_rules';
+
+   
+   
+   
+   cursor c_rules
+   is
+      select rule.rule_id
+      ,      rule.description
+      ,      cast( multiset ( select act.segment_id
+                              ,      ssm_l.id
+                              ,      ssm_h.id
+                              ,      act.act_delay
+                              ,      act.deact_delay
+                              from   xmltable( 'ActivatingObjects/StatusSegment'
+                                               passing rule.activating_objects
+                                               columns xmlrownum          for ordinality
+                                               ,       segment_id         integer       path 'StatusSegmentID/text()'
+                                               ,       min_level          varchar2(100) path 'MinimumLevel/text()'
+                                               ,       max_level          varchar2(100) path 'MaximumLevel/text()'
+                                               ,       act_delay          varchar2(100) path 'ActivationDelay/text()'
+                                               ,       deact_delay        varchar2(100) path 'DeactivationDelay/text()'
+                                             ) act
+                              ,      lm_segment_status_dom ssm_l
+                              ,      lm_segment_status_dom ssm_h
+                              where  act.min_level = ssm_l.id_cust
+                              and    act.max_level = ssm_h.id_cust
+                              order by act.xmlrownum
+                           ) as nt_rule_lst
+                     ) nt_lst
+      ,      cast( multiset ( select act.handling_area_id_cust
+                              ,      act.link_id_cust
+                              ,      hsm_l.id
+                              ,      hsm_h.id
+                              ,      act.act_delay
+                              ,      act.deact_delay
+                              from   xmltable( 'ActivatingObjects/DownstreamHandlingArea'
+                                               passing rule.activating_objects
+                                               columns xmlrownum             for ordinality
+                                               ,       handling_area_id_cust varchar2(30)  path 'HandlingAreaID/text()'
+                                               ,       link_id_cust          varchar2(30)  path 'LinkID/text()'
+                                               ,       min_level             varchar2(100) path 'MinimumLevel/text()'
+                                               ,       max_level             varchar2(100) path 'MaximumLevel/text()'
+                                               ,       act_delay             varchar2(100) path 'ActivationDelay/text()'
+                                               ,       deact_delay           varchar2(100) path 'DeactivationDelay/text()'
+                                             ) act
+                              ,      lm_haa_access_status_dom hsm_l
+                              ,      lm_haa_access_status_dom hsm_h
+                              where  act.min_level = hsm_l.id_cust
+                              and    act.max_level = hsm_h.id_cust
+                              order by act.xmlrownum
+                           ) as nt_rule_has
+                     ) nt_has
+      ,      cast( multiset( select rse_id
+                             from   xmltable( 'AffectedObjects/UsageID'
+                                              passing rule.affected_objects
+                                              columns xmlrownum for ordinality
+                                              ,       rse_id    integer path '/text()'
+                                            )
+                             order by xmlrownum
+                           ) as nt_id_coll
+                 ) nt_rse
+      ,      cast( multiset( select stn_id
+                             from   xmltable( 'AffectedObjects/StationID'
+                                              passing rule.affected_objects
+                                              columns xmlrownum for ordinality
+                                              ,       stn_id    integer path '/text()'
+                                            )
+                             order by xmlrownum
+                           ) as nt_id_coll
+                 ) nt_stn
+      ,      cast( multiset( select haa_id_cust
+                             from   xmltable( 'AffectedObjects/HandlingAreaAccess'
+                                              passing rule.affected_objects
+                                              columns xmlrownum   for ordinality
+                                              ,       haa_id_cust varchar2(30) path 'HandlingAreaID/text()'
+                                            )
+                             order by xmlrownum
+                           ) as nt_vc2_coll
+                 ) nt_haa_id_cust
+      ,      cast( multiset( select link_id_cust
+                             from   xmltable( 'AffectedObjects/HandlingAreaAccess'
+                                              passing rule.affected_objects
+                                              columns xmlrownum          for ordinality
+                                              ,       link_id_cust varchar2(30) path 'LinkID/text()'
+                                            )
+                             order by xmlrownum
+                           ) as nt_vc2_coll
+                 ) nt_lnk_id_cust
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/Routing/InfluenceRules/Rule'
+                       passing cfg.data
+                       columns xmlrownum          for ordinality
+                       ,       rule_id            integer       path 'ID/text()'
+                       ,       description        varchar2(240) path 'Description/text()'
+                       ,       activating_objects xmltype       path 'ActivatingObjects'
+                       ,       affected_objects   xmltype       path 'AffectedObjects'
+                     ) rule
+      order by rule.xmlrownum
+     ;
+
+   type nt_infl_rules is table of c_rules%rowtype;
+
+   l_nt_infl_rules                     nt_infl_rules;
+  
+   l_rt_rrp                            lm_route_influence_rule_groups%rowtype;
+   
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_#rrp                              integer := 0;
+   l_#act_objects                      integer;
+   l_#aff_objects                      integer;
+   
+   l_nt_rre                            nt_rre := nt_rre();
+
+   l_rt_rule_lst                    rt_rule_lst;
+   l_rt_rule_has                    rt_rule_has;
+   l_rse_id                            lm_route_influence_rules.rse_id%type;
+   l_stn_id                            lm_route_influence_rules.stn_id%type;
+   l_haa_id_cust                       lm_handling_areas.id_cust%type;
+   l_lnk_id_cust                       lm_links.id_cust%type;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_rules;
+   fetch c_rules
+   bulk collect into l_nt_infl_rules;
+   close c_rules;
+
+   
+   
+   for idx_rre in 1..l_nt_infl_rules.count
+   loop
+      case
+         when (l_nt_infl_rules(idx_rre).nt_lst.count = 0 and l_nt_infl_rules(idx_rre).nt_has.count = 0)
+         then
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'Rule '|| l_nt_infl_rules(idx_rre).rule_id || ' has no activating objects'
+               );
+         when (    l_nt_infl_rules(idx_rre).nt_stn.count         = 0
+               and l_nt_infl_rules(idx_rre).nt_rse.count         = 0
+               and l_nt_infl_rules(idx_rre).nt_haa_id_cust.count = 0
+              )
+         then
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'Rule '|| l_nt_infl_rules(idx_rre).rule_id || ' has no affected objects'
+               );
+         when (l_nt_infl_rules(idx_rre).nt_lst.count = 1 and l_nt_infl_rules(idx_rre).nt_has.count = 0)
+         or   (l_nt_infl_rules(idx_rre).nt_lst.count = 0 and l_nt_infl_rules(idx_rre).nt_has.count = 1)
+         then
+            
+            
+            
+            
+            set_activating_object( i_idx          => 1
+                                 , i_nt_lst       => l_nt_infl_rules(idx_rre).nt_lst
+                                 , i_nt_has       => l_nt_infl_rules(idx_rre).nt_has
+                                 , o_rt_lst       => l_rt_rule_lst
+                                 , o_rt_has       => l_rt_rule_has
+                                 );
+            for idx in 1 .. l_nt_infl_rules(idx_rre).nt_rse.count
+                          + l_nt_infl_rules(idx_rre).nt_stn.count
+                          + l_nt_infl_rules(idx_rre).nt_haa_id_cust.count
+            loop
+               
+               
+               set_affected_object( i_idx            => idx
+                                  , i_nt_rse         => l_nt_infl_rules(idx_rre).nt_rse
+                                  , i_nt_stn         => l_nt_infl_rules(idx_rre).nt_stn
+                                  , i_nt_haa_id_cust => l_nt_infl_rules(idx_rre).nt_haa_id_cust
+                                  , i_nt_lnk_id_cust => l_nt_infl_rules(idx_rre).nt_lnk_id_cust
+                                  , o_rse_id         => l_rse_id
+                                  , o_stn_id         => l_stn_id
+                                  , o_haa_id_cust    => l_haa_id_cust
+                                  , o_lnk_id_cust    => l_lnk_id_cust
+                                  );
+               
+               
+               
+               
+               
+               create_rre( i_activation_delay      => nvl(l_rt_rule_lst.act_delay, l_rt_rule_has.act_delay)
+                         , i_deactivation_delay    => nvl(l_rt_rule_lst.deact_delay, l_rt_rule_has.deact_delay)
+                         , i_rre_id_external       => l_nt_infl_rules(idx_rre).rule_id
+                         , i_rrp_id                => null
+                         , i_lst_id                => l_rt_rule_lst.lst_id
+                         , i_ssm_id_min_level      => l_rt_rule_lst.ssm_id_min_level
+                         , i_ssm_id_max_level      => l_rt_rule_lst.ssm_id_max_level
+                         , i_haa_id_cust_apply     => l_rt_rule_has.haa_id_cust
+                         , i_lnk_id_cust_apply     => l_rt_rule_has.lnk_id_cust
+                         , i_hsm_id_min_level      => l_rt_rule_has.hsm_id_min_level
+                         , i_hsm_id_max_level      => l_rt_rule_has.hsm_id_max_level
+                         , i_rse_id                => l_rse_id
+                         , i_stn_id                => l_stn_id
+                         , i_haa_id_cust_influence => l_haa_id_cust
+                         , i_lnk_id_cust_influence => l_lnk_id_cust
+                         , i_description           => l_nt_infl_rules(idx_rre).description
+                         , io_nt_rre               => l_nt_rre
+                         );
+            end loop;
+            
+         else
+            
+            
+            l_#rrp := l_#rrp + 1;
+            l_rt_rrp.id          := l_#rrp;
+            l_rt_rrp.name        := l_nt_infl_rules(idx_rre).rule_id;
+            l_rt_rrp.description := l_nt_infl_rules(idx_rre).description;
+            lm_rrp_tapi_pck.rrp_insert_row(io_rt_rrp => l_rt_rrp);
+           
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            l_#act_objects := l_nt_infl_rules(idx_rre).nt_lst.count
+                            + l_nt_infl_rules(idx_rre).nt_has.count;
+            l_#aff_objects := l_nt_infl_rules(idx_rre).nt_rse.count
+                            + l_nt_infl_rules(idx_rre).nt_stn.count
+                            + l_nt_infl_rules(idx_rre).nt_haa_id_cust.count;
+            for idx_rrp in 1 .. greatest( l_#act_objects, l_#aff_objects)
+            loop
+               case
+                  when idx_rrp > l_#act_objects
+                  then
+                     
+                     
+                     
+
+                     
+                     
+                     set_activating_object( i_idx          => 1
+                                          , i_nt_lst       => l_nt_infl_rules(idx_rre).nt_lst
+                                          , i_nt_has       => l_nt_infl_rules(idx_rre).nt_has
+                                          , o_rt_lst       => l_rt_rule_lst
+                                          , o_rt_has       => l_rt_rule_has
+                                          );
+                     set_affected_object( i_idx            => idx_rrp
+                                        , i_nt_rse         => l_nt_infl_rules(idx_rre).nt_rse
+                                        , i_nt_stn         => l_nt_infl_rules(idx_rre).nt_stn
+                                        , i_nt_haa_id_cust => l_nt_infl_rules(idx_rre).nt_haa_id_cust
+                                        , i_nt_lnk_id_cust => l_nt_infl_rules(idx_rre).nt_lnk_id_cust
+                                        , o_rse_id         => l_rse_id
+                                        , o_stn_id         => l_stn_id
+                                        , o_haa_id_cust    => l_haa_id_cust
+                                        , o_lnk_id_cust    => l_lnk_id_cust
+                                        );
+                  when idx_rrp > l_#aff_objects
+                  then
+                     
+                     
+                     
+
+                     
+                     
+                     set_activating_object( i_idx          => idx_rrp
+                                          , i_nt_lst       => l_nt_infl_rules(idx_rre).nt_lst
+                                          , i_nt_has       => l_nt_infl_rules(idx_rre).nt_has
+                                          , o_rt_lst       => l_rt_rule_lst
+                                          , o_rt_has       => l_rt_rule_has
+                                          );
+
+                     
+                     
+                     set_affected_object( i_idx            => 1
+                                        , i_nt_rse         => l_nt_infl_rules(idx_rre).nt_rse
+                                        , i_nt_stn         => l_nt_infl_rules(idx_rre).nt_stn
+                                        , i_nt_haa_id_cust => l_nt_infl_rules(idx_rre).nt_haa_id_cust
+                                        , i_nt_lnk_id_cust => l_nt_infl_rules(idx_rre).nt_lnk_id_cust
+                                        , o_rse_id         => l_rse_id
+                                        , o_stn_id         => l_stn_id
+                                        , o_haa_id_cust    => l_haa_id_cust
+                                        , o_lnk_id_cust    => l_lnk_id_cust
+                                        );
+                  else
+                     
+                     
+                     
+
+                     
+                     
+                     set_activating_object( i_idx          => idx_rrp
+                                          , i_nt_lst       => l_nt_infl_rules(idx_rre).nt_lst
+                                          , i_nt_has       => l_nt_infl_rules(idx_rre).nt_has
+                                          , o_rt_lst       => l_rt_rule_lst
+                                          , o_rt_has       => l_rt_rule_has
+                                          );
+
+                     
+                     
+                     set_affected_object( i_idx            => idx_rrp
+                                        , i_nt_rse         => l_nt_infl_rules(idx_rre).nt_rse
+                                        , i_nt_stn         => l_nt_infl_rules(idx_rre).nt_stn
+                                        , i_nt_haa_id_cust => l_nt_infl_rules(idx_rre).nt_haa_id_cust
+                                        , i_nt_lnk_id_cust => l_nt_infl_rules(idx_rre).nt_lnk_id_cust
+                                        , o_rse_id         => l_rse_id
+                                        , o_stn_id         => l_stn_id
+                                        , o_haa_id_cust    => l_haa_id_cust
+                                        , o_lnk_id_cust    => l_lnk_id_cust
+                                        );
+               end case;
+              
+               
+               
+               
+               
+               
+               create_rre( i_activation_delay      => nvl(l_rt_rule_lst.act_delay, l_rt_rule_has.act_delay)
+                         , i_deactivation_delay    => nvl(l_rt_rule_lst.deact_delay, l_rt_rule_has.deact_delay)
+                         , i_rre_id_external       => l_nt_infl_rules(idx_rre).rule_id
+                         , i_rrp_id                => l_rt_rrp.id
+                         , i_lst_id                => l_rt_rule_lst.lst_id
+                         , i_ssm_id_min_level      => l_rt_rule_lst.ssm_id_min_level
+                         , i_ssm_id_max_level      => l_rt_rule_lst.ssm_id_max_level
+                         , i_haa_id_cust_apply     => l_rt_rule_has.haa_id_cust
+                         , i_lnk_id_cust_apply     => l_rt_rule_has.lnk_id_cust
+                         , i_hsm_id_min_level      => l_rt_rule_has.hsm_id_min_level
+                         , i_hsm_id_max_level      => l_rt_rule_has.hsm_id_max_level
+                         , i_rse_id                => l_rse_id
+                         , i_stn_id                => l_stn_id
+                         , i_haa_id_cust_influence => l_haa_id_cust
+                         , i_lnk_id_cust_influence => l_lnk_id_cust
+                         , i_description           => l_nt_infl_rules(idx_rre).description
+                         , io_nt_rre               => l_nt_rre
+                         );
+           end loop;
+        end case;
+   end loop;  
+
+   
+   forall idx_rre in 1 .. l_nt_rre.count
+      insert
+      into   lm_route_influence_rules
+      (      id
+      ,      description
+      ,      id_external
+      ,      rrp_id
+      ,      delay_activate
+      ,      delay_deactivate
+      ,      lst_id
+      ,      ssm_id_min_level
+      ,      ssm_id_max_level
+      ,      has_id_apply
+      ,      hsm_id_min_level
+      ,      hsm_id_max_level
+      ,      rse_id
+      ,      stn_id
+      ,      has_id_influence
+      ) values
+      (      l_nt_rre(idx_rre).id
+      ,      l_nt_rre(idx_rre).description
+      ,      l_nt_rre(idx_rre).id_external
+      ,      l_nt_rre(idx_rre).rrp_id
+      ,      l_nt_rre(idx_rre).delay_activate
+      ,      l_nt_rre(idx_rre).delay_deactivate
+      ,      l_nt_rre(idx_rre).lst_id
+      ,      l_nt_rre(idx_rre).ssm_id_min_level
+      ,      l_nt_rre(idx_rre).ssm_id_max_level
+      ,      l_nt_rre(idx_rre).has_id_apply
+      ,      l_nt_rre(idx_rre).hsm_id_min_level
+      ,      l_nt_rre(idx_rre).hsm_id_max_level
+      ,      l_nt_rre(idx_rre).rse_id
+      ,      l_nt_rre(idx_rre).stn_id
+      ,      l_nt_rre(idx_rre).has_id_influence
+      );
+      
+   lm_config.log_processing_time( i_message_name    => 'Rules'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_#rrp||' lm_route_influence_rule_groups'
+                                                    ||' and '||l_nt_rre.count||' lm_route_influence_rules'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_rules%isopen
+      then
+         close c_rules;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_rules;
+
+
+
+
+
+
+procedure load_porr
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_porr';
+
+   
+   cursor c_porr
+   is
+      select porr.destination_id
+      ,      rst.routesegment_id
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/Routing/PointOfReasonableReturn/DestinationProximitiy'
+                       passing cfg.data
+                       columns destination_id    integer       path 'DestinationID/text()'
+                       ,       routesegments_xml xmltype       path 'RouteSegments'
+                     ) porr
+      ,      xmltable( 'RouteSegments/RouteSegmentID'
+                       passing porr.routesegments_xml
+                       columns routesegment_id integer path '/text()'
+                     ) rst
+      ;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_nt_pon                            nt_id_coll;
+   l_nt_rst                            nt_id_coll;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_porr;
+   fetch c_porr
+   bulk collect into l_nt_pon, l_nt_rst;
+   close c_porr;
+
+   
+   for rec_pon in (select distinct column_value
+                   from   table(l_nt_pon)
+                  )
+   loop
+     lm_config.check_destination(i_pon_id => rec_pon.column_value);
+   end loop;
+
+   for rec_rst in (select distinct column_value
+                   from   table(l_nt_rst)
+                  )
+   loop
+      lm_config.check_route_segment(i_rst_id => rec_rst.column_value);
+   end loop;
+
+   forall idx in 1 .. l_nt_pon.count
+      insert
+      into   lm_destination_proximities
+      (      pon_id
+      ,      rst_id
+      ) values
+      (      l_nt_pon(idx)
+      ,      l_nt_rst(idx)
+      );
+   
+   lm_config.log_processing_time( i_message_name    => 'DestinationProximities'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_pon.count||' lm_destination_proximities'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_porr%isopen
+      then
+         close c_porr;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_porr;
+
+end lm_cfg_routing;
+/

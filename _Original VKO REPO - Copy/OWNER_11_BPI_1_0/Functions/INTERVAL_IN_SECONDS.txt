@@ -1,0 +1,11 @@
+function interval_in_seconds(ts1 timestamp, ts2 timestamp) return number as
+num_val number(19,6);
+diff interval day(9) to second;
+begin
+  diff := (ts2 - ts1);
+  num_val := extract(second from diff);
+  num_val := num_val + extract(minute from diff) * 60;
+  num_val := num_val + extract(hour from diff)   * 60 * 60;
+  num_val := num_val + extract(day from diff)  * 60 * 60 * 24;
+  return num_val;
+/

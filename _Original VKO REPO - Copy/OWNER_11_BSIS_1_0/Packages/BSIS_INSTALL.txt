@@ -1,0 +1,112 @@
+create or replace PACKAGE bsis_install
+AUTHID DEFINER
+AS
+  /*
+  ** Populate table ACL_AET_DETAILED_STATES with derived configuration data 
+  */
+  PROCEDURE fill_acl_aet_detailed_states;
+  
+END bsis_install;
+/
+
+
+
+
+package body bsis_install
+is
+  
+
+
+
+
+
+
+
+
+
+
+  g_con_package        constant varchar2(30) := 'bsis_install';
+  g_bulk_collect_limit constant integer      := 200000;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  procedure fill_acl_aet_detailed_states
+  is
+    l_con_proc_name constant varchar2(60) := g_con_package || '.fill_acl_aet_detailed_states';
+    
+    type rt_ads is record
+      ( aet_id      acl_aet_detailed_states.aet_id%type
+      , dsd_id      acl_aet_detailed_states.dsd_id%type
+      );
+    type tt_ads is table of rt_ads index by pls_integer;
+    
+    l_tt_ads tt_ads;
+    
+    cursor c_ads
+    is
+      select aet.id as aet_id
+      ,      dsd.id as dsd_id
+      from   acl_application_elements       aet
+      ,      acl_detailed_state_definitions dsd
+      order by aet.id, dsd.id
+    ;
+    
+  begin
+    viu_module.enter_module(i_module => l_con_proc_name);
+    delete from acl_aet_detailed_states;
+    
+    open c_ads;
+    loop
+      fetch c_ads bulk collect
+      into  l_tt_ads limit g_bulk_collect_limit;
+      
+      forall indx in 1 .. l_tt_ads.count  
+        insert
+        into   acl_aet_detailed_states
+          (      dsd_id
+          ,      aet_id
+          ,      ind_status
+          )
+        values
+          (      l_tt_ads(indx).dsd_id
+          ,      l_tt_ads(indx).aet_id
+          ,      cmn_constant.g_con_yesno_no
+          )
+        ;
+      exit when l_tt_ads.count < g_bulk_collect_limit;
+    end loop;
+
+    close c_ads;
+    
+    viu_module.leave_module ( i_module     => l_con_proc_name
+                            , i_debug_info => sqlerrm
+                            );
+  exception
+    when others
+    then
+       if c_ads%isopen
+       then
+          close c_ads;
+       end if;
+       viu_module.leave_module ( i_module            => l_con_proc_name
+                               , i_debug_info        => sqlerrm
+                               );
+       viu_info.raise_info     ( i_calling_procedure => l_con_proc_name
+                               );
+  end fill_acl_aet_detailed_states;
+
+end bsis_install;
+/

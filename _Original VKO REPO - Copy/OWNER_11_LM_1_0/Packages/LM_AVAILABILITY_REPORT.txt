@@ -1,0 +1,1241 @@
+create or replace PACKAGE LM_AVAILABILITY_REPORT IS
+
+G_CON_PACKAGE CONSTANT LM_CONSTANT.ST_PROC_NAME := 'LM_AVAILABILITY_REPORT';
+
+/* ART_001: Handles a report of availability received from low level */
+PROCEDURE HDL_REPORT_OF_AVAILABILITY;
+
+/* ART_002: Get message attributes of AvailabilityReport */
+PROCEDURE GET_MESSAGE_ATTRIBUTES_ART
+ (i_it_art IN lm_interface.g_it_ima
+ ,o_event_time OUT lm_package_events.event_time%TYPE
+ ,o_destination OUT lm_physical_destinations.id_cust%TYPE
+ ,o_area_id_cust OUT lm_areas_v.id_cust%TYPE
+ ,o_zone_id_cust OUT lm_zones_v.id_cust%TYPE
+ ,o_equipment_id_cust OUT lm_nodes.identifier_within_sct%TYPE
+ ,o_ssd_id OUT lm_station_availabilities.ssd_id%TYPE
+ ,o_function_mode OUT lm_station_availabilities.function_mode%TYPE
+ ,o_sod_id OUT lm_stn_operational_state_dom.id%TYPE
+ ,o_ims_id OUT lm_ifc_messages.id%TYPE
+ ,o_nt_son_id_cust OUT nt_son_id_cust
+ );
+ 
+/* ART_003: Process the station availability */
+PROCEDURE PROCESS_STN_AVAILABILITY
+ (i_pon_id_cust IN lm_physical_destinations.id_cust%TYPE
+ ,i_ssd_id IN lm_station_availabilities.ssd_id%TYPE
+ ,i_event_time IN lm_station_availabilities.event_time%TYPE
+ ,i_function_mode IN lm_station_availabilities.function_mode%TYPE
+ ,i_sod_id IN lm_stn_operational_state_dom.id%TYPE
+ ,i_ims_id IN lm_ifc_messages.id%type
+ ,i_nt_son_id_cust IN nt_son_id_cust
+ ,o_processed_availability OUT BOOLEAN
+ ,o_type_of_reevaluation OUT VARCHAR2
+ ,o_stn_id OUT lm_stations.id%type
+ );
+
+/* ART_004: Send a NodeAvailabilityReport message on a timely basis */
+PROCEDURE SEND_NODE_AVAILABILITY_REP_JOB;
+
+/* ART_005: Send a NodeAvailabilityReport message */
+PROCEDURE SEND_NODE_AVAILABILITY_REPORT
+ ( I_NT_STN_ID IN NT_STN_ID
+ );
+END LM_AVAILABILITY_REPORT;
+/
+
+
+
+
+package body lm_availability_report is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+procedure hdl_report_of_availability
+ is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.HDL_REPORT_OF_AVAILABILITY';
+ 
+   
+   cursor c_destination_by_sct_id
+    (i_sct_id in lm_physical_destinations.sct_id%type
+    )
+   is
+   select pon.id_cust
+   from   lm_physical_destinations pon
+   where  pon.sct_id = i_sct_id;
+
+   l_event_time             lm_station_availabilities.event_time%type;
+   l_destination            lm_physical_destinations.id_cust%type;
+   l_area_id_cust           lm_areas_v.id_cust%type;
+   l_stn_id                 lm_stations.id%type;
+   l_processed_availability boolean := false;
+   l_type_of_reevaluation   varchar2(10) := null;
+   l_pon_id_cust            lm_physical_destinations.id_cust%type;
+   l_sct_id_dest            lm_system_components.id%type;
+   l_zone_id_cust           lm_zones_v.id_cust%type;
+   l_equipment_id_cust      lm_sections_v.id_cust%type;
+   l_ssd_id                 lm_station_availabilities.ssd_id%type;
+   l_function_mode          lm_station_availabilities.function_mode%type;
+   l_sod_id                 lm_stn_operational_state_dom.id%type;
+   l_ims_id                 lm_ifc_messages.id%type;
+   l_nt_son_id_cust         nt_son_id_cust;
+   l_nt_tin                 nt_id_coll := nt_id_coll();
+ 
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   lm_availability_report.get_message_attributes_art( i_it_art                 => lm_interface.g_it_message_content
+                                                    , o_event_time             => l_event_time
+                                                    , o_destination            => l_destination
+                                                    , o_area_id_cust           => l_area_id_cust
+                                                    , o_zone_id_cust           => l_zone_id_cust
+                                                    , o_equipment_id_cust      => l_equipment_id_cust
+                                                    , o_ssd_id                 => l_ssd_id
+                                                    , o_function_mode          => l_function_mode
+                                                    , o_sod_id                 => l_sod_id
+                                                    , o_ims_id                 => l_ims_id
+                                                    , o_nt_son_id_cust         => l_nt_son_id_cust
+                                                    );
+   
+
+
+
+   
+
+
+   if (     l_area_id_cust is not null
+        and l_zone_id_cust is not null
+        and l_equipment_id_cust is not null )
+   then
+      
+      lm_topology_administration.chk_area_zone_section( i_area_id_cust         => l_area_id_cust
+                                                      , i_zone_id_cust         => l_zone_id_cust
+                                                      , i_section_id_cust      => l_equipment_id_cust
+                                                      );
+      l_sct_id_dest  :=
+         lm_topology_administration.get_sct_id( i_area_id_cust         => l_area_id_cust
+                                              , i_zone_id_cust         => l_zone_id_cust
+                                              , i_section_id_cust      => l_equipment_id_cust
+                                              );
+
+      
+      open c_destination_by_sct_id( i_sct_id      => l_sct_id_dest );
+
+      fetch c_destination_by_sct_id
+      into  l_pon_id_cust;
+
+      if c_destination_by_sct_id%notfound
+      then
+         close c_destination_by_sct_id;
+
+         
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_nophysicaldestfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        =>    'AreaID:"'
+                                                          || l_area_id_cust
+                                                          || '"'
+                                                          || ' ZoneID:"'
+                                                          || l_zone_id_cust
+                                                          || '"'
+                                                          || ' SectionID:"'
+                                                          || l_equipment_id_cust
+                                                          || '"'
+                            );
+      else
+         close c_destination_by_sct_id;
+      end if;
+
+      
+      lm_availability_report.process_stn_availability( i_pon_id_cust            => l_pon_id_cust
+                                                     , i_ssd_id                 => l_ssd_id
+                                                     , i_event_time             => l_event_time
+                                                     , i_function_mode          => l_function_mode
+                                                     , i_sod_id                 => l_sod_id
+                                                     , i_ims_id                 => l_ims_id
+                                                     , i_nt_son_id_cust         => l_nt_son_id_cust
+                                                     , o_processed_availability => l_processed_availability
+                                                     , o_type_of_reevaluation   => l_type_of_reevaluation
+                                                     , o_stn_id                 => l_stn_id
+                                                     );
+   
+
+
+   elsif l_destination is not null
+   then
+      
+      lm_availability_report.process_stn_availability( i_pon_id_cust            => l_destination
+                                                     , i_ssd_id                 => l_ssd_id
+                                                     , i_event_time             => l_event_time
+                                                     , i_function_mode          => l_function_mode
+                                                     , i_sod_id                 => l_sod_id
+                                                     , i_ims_id                 => l_ims_id
+                                                     , i_nt_son_id_cust         => l_nt_son_id_cust
+                                                     , o_processed_availability => l_processed_availability
+                                                     , o_type_of_reevaluation   => l_type_of_reevaluation
+                                                     , o_stn_id                 => l_stn_id
+                                                     );
+   end if;
+
+   if l_type_of_reevaluation is not null
+   then
+      
+      lm_flow_administration.reevaluate_pae_destination( i_stn_id               => l_stn_id
+                                                       , i_type_of_reevaluation => l_type_of_reevaluation
+                                                       , io_nt_tin_processed    => l_nt_tin
+                                                       );
+   end if;
+
+   
+
+
+
+   if l_processed_availability
+   then
+      
+      
+      
+      
+      
+      lm_availability_report.send_node_availability_report( i_nt_stn_id => nt_stn_id(l_stn_id));
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_destination_by_sct_id%isopen
+      then
+         close c_destination_by_sct_id;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_report_of_availability;
+
+
+procedure get_message_attributes_art
+ (i_it_art in lm_interface.g_it_ima
+ ,o_event_time out lm_package_events.event_time%type
+ ,o_destination out lm_physical_destinations.id_cust%type
+ ,o_area_id_cust out lm_areas_v.id_cust%type
+ ,o_zone_id_cust out lm_zones_v.id_cust%type
+ ,o_equipment_id_cust out lm_nodes.identifier_within_sct%type
+ ,o_ssd_id out lm_station_availabilities.ssd_id%type
+ ,o_function_mode out lm_station_availabilities.function_mode%type
+ ,o_sod_id out lm_stn_operational_state_dom.id%type
+ ,o_ims_id out lm_ifc_messages.id%type
+ ,o_nt_son_id_cust out nt_son_id_cust
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name        constant lm_constant.st_proc_name := g_con_package || '.get_message_attributes_art';
+   l_son_id_cust_counter  number := 0;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   o_nt_son_id_cust := nt_son_id_cust();
+
+   
+   for idx_art in i_it_art.first .. i_it_art.last
+   loop
+      case i_it_art( idx_art ).attribute
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp      => i_it_art( idx_art ).value );
+         when 'Destination'
+         then
+            o_destination  := i_it_art( idx_art ).value;
+         when 'PhysicalLocation/AreaID'
+         then
+            o_area_id_cust  := i_it_art( idx_art ).value;
+         when 'PhysicalLocation/ZoneID'
+         then
+            o_zone_id_cust  := i_it_art( idx_art ).value;
+         when 'PhysicalLocation/EquipmentID'
+         then
+            o_equipment_id_cust  := i_it_art( idx_art ).value;
+         when 'Availability'
+         then
+            case i_it_art( idx_art ).value
+               when lm_constant.g_con_mae_available
+               then
+                  o_ssd_id := lm_constant.g_con_ssd_id_available;
+               when lm_constant.g_con_mae_not_available
+               then
+                  o_ssd_id := lm_constant.g_con_ssd_id_not_available;
+               else
+                  
+
+
+
+
+
+
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_unexpectedattributevalue
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_info_arguments         =>    lm_constant.g_con_name_msg_availabilityrep
+                                                                   || '##'
+                                                                   || i_it_art( idx_art ).value
+                                                                   || '##'
+                                                                   || i_it_art( idx_art ).attribute
+                                     );
+            end case;
+         when 'FunctionMode'
+         then
+            o_function_mode  := i_it_art( idx_art ).value;
+         when 'OperationalState'
+         then
+           case i_it_art( idx_art ).value
+              when lm_constant.g_con_mae_operstate_logged_on
+                  then o_sod_id := lm_constant.g_con_sod_id_logged_on;
+              when lm_constant.g_con_mae_operstate_logoff_req
+                  then o_sod_id := lm_constant.g_con_sod_id_logoff_req;
+              when lm_constant.g_con_mae_operstate_logged_off
+                  then o_sod_id := lm_constant.g_con_sod_id_logged_off;
+              else
+                  
+
+
+
+
+
+
+                  viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_unexpectedattributevalue
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_info_arguments         =>    lm_constant.g_con_name_msg_availabilityrep
+                                                                   || '##'
+                                                                   || i_it_art( idx_art ).value
+                                                                   || '##'
+                                                                   || i_it_art( idx_art ).attribute
+                                     );
+            end case;
+         when 'ActiveAirlineSet/Airline'
+         then
+            l_son_id_cust_counter := l_son_id_cust_counter + 1;
+            o_nt_son_id_cust.extend;
+            o_nt_son_id_cust(l_son_id_cust_counter) := i_it_art( idx_art ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_art( idx_art ).value;
+         else
+            
+            if i_it_art( idx_art ).attribute not in ( 'Header/MessageTime'
+                                                    , 'Header/Source/ProcessID'
+                                                    , 'Header/Source/InstanceID'
+                                                    , 'Header/Target/ProcessID'
+                                                    , 'Header/Target/InstanceID'
+                                                    , 'Header/OperatorID'
+                                                    , 'Handler'
+                                                    )
+            then
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: '
+                                                                   || lm_constant.g_con_msg_availability
+                                                                   || ' ; Attribute: '''
+                                                                   || i_it_art( idx_art ).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_art( idx_art ).value
+                                                                   || ''''
+                                     );
+            end if;
+      end case;
+   end loop;
+   
+   
+   o_nt_son_id_cust := set(o_nt_son_id_cust);
+ 
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes_art;
+
+
+function get_functional_availability
+ (i_ind_use_operational_state in varchar2
+ ,i_ssd_id                    in lm_station_availabilities.ssd_id%type
+ ,i_sod_id                    in lm_station_availabilities.sod_id%type
+ )
+ return varchar2
+is
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.GET_FUNCTIONAL_AVAILABILITY';
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return
+   case i_ind_use_operational_state
+      when lm_constant.g_con_yesno_yes
+      then
+         case
+            when i_ssd_id in ( lm_constant.g_con_ssd_id_initial
+                             , lm_constant.g_con_ssd_id_available)
+            then
+               case
+                  when ( i_sod_id = lm_constant.g_con_sod_id_logged_on
+                       or
+                         i_sod_id is null
+                       )
+                  then
+                     lm_constant.g_con_stn_functional_avail_yes
+                  when i_sod_id = lm_constant.g_con_sod_id_logoff_req
+                  then
+                     lm_constant.g_con_stn_functional_avail_par
+                  else 
+                     lm_constant.g_con_stn_functional_avail_no
+               end 
+            else 
+               lm_constant.g_con_stn_functional_avail_no
+         end 
+   else 
+      case
+         when i_ssd_id in ( lm_constant.g_con_ssd_id_available
+                          , lm_constant.g_con_ssd_id_initial)
+         then
+            lm_constant.g_con_stn_functional_avail_yes
+         else
+            lm_constant.g_con_stn_functional_avail_no
+      end
+   end;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_functional_availability;
+
+
+procedure process_stn_availability
+ (i_pon_id_cust in lm_physical_destinations.id_cust%type
+ ,i_ssd_id in lm_station_availabilities.ssd_id%type
+ ,i_event_time in lm_station_availabilities.event_time%type
+ ,i_function_mode in lm_station_availabilities.function_mode%type
+ ,i_sod_id in lm_stn_operational_state_dom.id%type
+ ,i_ims_id in lm_ifc_messages.id%type
+ ,i_nt_son_id_cust in nt_son_id_cust
+ ,o_processed_availability out boolean
+ ,o_type_of_reevaluation out varchar2
+ ,o_stn_id out lm_stations.id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.PROCESS_STN_AVAILABILITY';
+
+   
+   cursor c_sct
+   (i_pon_id_cust in lm_physical_destinations.id_cust%type
+   )
+   is
+   select ara.id_cust
+   from   lm_physical_destinations pon
+   ,      lm_system_components sen
+   ,      lm_system_components zne
+   ,      lm_system_components ara
+   where  pon.sct_id  = sen.id
+   and    sen.sct_id_section_zone = zne.id
+   and    zne.sct_id_zone_area = ara.id
+   and    pon.id_cust = i_pon_id_cust
+   union  all
+   select ara.id_cust
+   from   lm_physical_destinations pon
+   ,      lm_system_components zne
+   ,      lm_system_components ara
+   where  pon.sct_id  = zne.id
+   and    zne.sct_id_zone_area = ara.id
+   and    pon.id_cust = i_pon_id_cust;
+
+   
+
+   cursor c_son(i_say_stn_id in lm_scope_of_operation.say_stn_id%type)
+   is
+   select son.id_cust
+   from   lm_scope_of_operation son
+   where  son.say_stn_id = i_say_stn_id;
+
+   
+
+   cursor c_son_agg(i_say_stn_id in lm_scope_of_operation.say_stn_id%type)
+   is
+   select listagg(son.id_cust,',') within group (order by id_cust) as scope_of_operation
+   from  lm_scope_of_operation son
+   where son.say_stn_id = i_say_stn_id;
+
+   r_sct c_sct%rowtype;
+
+   l_update_son                   boolean;
+   l_area_healthy                 boolean;
+   l_continue                     boolean := true;
+   l_found                        boolean;
+   l_functional_available_old     varchar2(10);
+   l_functional_available_new     varchar2(10);
+   l_rows_updated                 number;
+   l_rt_say                       lm_station_availabilities%rowtype;
+   l_rt_say_old                   lm_station_availabilities%rowtype;
+   l_rt_son                       lm_scope_of_operation%rowtype;
+   l_rt_sah                       lm_stn_availabilities_history%rowtype;
+   l_rt_stn                       lm_stations%rowtype;
+   l_rt_lne_dummy                 lm_ebs_lanes%rowtype;
+   l_rt_ste                       lm_station_types%rowtype;
+   l_stn_id                       lm_stations.id%type;
+   l_nt_son_to_be_deleted_id_cust nt_son_id_cust := nt_son_id_cust();
+   l_nt_son_to_be_created_id_cust nt_son_id_cust := nt_son_id_cust();
+   l_nt_old_son_id_cust           nt_son_id_cust := nt_son_id_cust();
+
+   pragma autonomous_transaction;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   o_processed_availability := false;
+   o_type_of_reevaluation   := null;
+
+   begin
+      
+
+
+
+
+
+
+
+
+
+
+      select sry.stn_id stn_id
+      into   l_stn_id
+      from   lm_station_reachabilities sry
+      where  sry.pon_id = ( select pon.id
+                            from lm_physical_destinations pon
+                            where pon.id_cust = i_pon_id_cust
+                          );
+
+   exception
+      when too_many_rows
+      then
+         
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_stationavailabilityerror
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_info_arguments         => i_pon_id_cust
+                            );
+
+      when others
+      then
+         
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_nostationspdfound
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Physical Destination = "' || i_pon_id_cust || '"'
+                            );
+   end;
+
+   
+   o_stn_id  := l_stn_id;
+
+   
+   l_found := lm_stn_tapi_pck.stn_select_row_upd(i_stn_id => l_stn_id
+                                                ,o_rt_stn => l_rt_stn
+                                                );
+                                                
+   
+   l_found := lm_say_tapi_pck.say_select_row( i_say_stn_id => l_stn_id
+                                            , o_rt_say     => l_rt_say
+                                            );
+                                            
+   
+   l_found := lm_ste_tapi_pck.ste_select_row( i_ste_id => l_rt_stn.ste_id
+                                            , o_rt_ste => l_rt_ste
+                                            );
+                                            
+   l_rt_say_old := l_rt_say;  
+   
+   if i_event_time < l_rt_say_old.event_time
+   then
+      
+
+
+
+      l_continue := false;
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_obsoletemessage
+                             , i_calling_procedure      => l_con_proc_name
+                             , i_severity               => viu_info.c_severity_warning
+                             , i_additional_data        => 'Message ' || lm_constant.g_con_msg_availability || ', Message ID "' || i_ims_id || '"'
+                             );
+   else
+      if l_rt_stn.ind_availability_reporting = lm_constant.g_con_yesno_no
+      then
+         
+
+
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_stationisreporting
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_info_arguments         => l_stn_id
+                               , i_additional_data        => 'Message ID "' || i_ims_id || '"'
+                               );
+      end if;
+
+      open c_sct(i_pon_id_cust => i_pon_id_cust );
+      fetch c_sct
+      into  r_sct;
+      close c_sct;
+
+      l_area_healthy := true;
+      if r_sct.id_cust is not null
+      then
+         l_area_healthy := lm_lifesign.determine_area_healthiness(i_area_id_cust => r_sct.id_cust);
+      end if;
+
+      if  not l_area_healthy
+      then
+         l_continue := false;
+         
+         
+         
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_areaunhealthy
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_warning
+                               , i_info_arguments    => l_stn_id || '##' || r_sct.id_cust
+                               , i_additional_data   => 'Message ID "' || i_ims_id || '"'
+                               );
+      end if; 
+   end if;    
+
+   if l_continue
+   then
+      
+
+      if l_rt_say_old.ssd_id <> i_ssd_id
+         or
+         l_rt_say_old.sod_id <> i_sod_id
+         or
+         (l_rt_say_old.sod_id is null     and i_sod_id is not null)
+         or
+         (l_rt_say_old.sod_id is not null and i_sod_id is null)
+         or
+         l_rt_say_old.function_mode <> i_function_mode
+         or
+         (l_rt_say_old.function_mode is null     and i_function_mode is not null)
+         or
+         (l_rt_say_old.function_mode is not null and i_function_mode is null)
+      then
+         
+         o_processed_availability := true; 
+
+         l_rt_say.ssd_id        := i_ssd_id;
+         l_rt_say.event_time    := i_event_time;
+         l_rt_say.sod_id        := i_sod_id;
+         l_rt_say.function_mode := i_function_mode;
+
+         l_rows_updated := lm_say_tapi_pck.say_update_row( i_say_stn_id      => l_stn_id
+                                                         , io_rt_say         => l_rt_say
+                                                         );
+      end if;
+
+      
+
+
+
+      open c_son(l_rt_stn.id);
+      fetch c_son
+      bulk collect into l_nt_old_son_id_cust;
+      close c_son;
+
+      l_update_son := not l_nt_old_son_id_cust = i_nt_son_id_cust;
+
+      if l_update_son
+      then
+         
+         l_nt_son_to_be_deleted_id_cust := l_nt_old_son_id_cust multiset except i_nt_son_id_cust;
+         if l_nt_son_to_be_deleted_id_cust.count > 0
+         then
+            for idx_i in l_nt_son_to_be_deleted_id_cust.first .. l_nt_son_to_be_deleted_id_cust.last
+            loop
+               if lm_son_tapi_pck.son_select_row_uk1(i_son_say_stn_id => l_rt_stn.id
+                                                    ,i_son_id_cust    => l_nt_son_to_be_deleted_id_cust(idx_i)
+                                                    ,o_rt_son         => l_rt_son)
+               then
+                  l_found := lm_son_tapi_pck.son_delete_row(i_son_id  => l_rt_son.id);
+               end if;
+            end loop;
+         end if;
+         
+         l_nt_son_to_be_created_id_cust :=  i_nt_son_id_cust multiset except l_nt_old_son_id_cust;
+         if l_nt_son_to_be_created_id_cust.count > 0
+         then
+            l_rt_son.say_stn_id := l_rt_stn.id;
+            for idx_i in l_nt_son_to_be_created_id_cust.first .. l_nt_son_to_be_created_id_cust.last
+            loop
+               l_rt_son.id         := null;
+               l_rt_son.id_cust    := l_nt_son_to_be_created_id_cust(idx_i);
+               lm_son_tapi_pck.son_insert_row(l_rt_son);
+            end loop;
+         end if;
+      end if;
+      
+      if o_processed_availability
+         or
+         l_update_son
+      then
+         
+
+
+         l_rt_sah.stn_id                 := l_rt_say.stn_id;
+         l_rt_sah.ssd_id                 := l_rt_say.ssd_id;
+         l_rt_sah.ind_available_derived  := l_rt_say.ind_available_derived;
+         l_rt_sah.sod_id                 := l_rt_say.sod_id;
+         l_rt_sah.reason                 := lm_constant.g_con_sah_rsn_receivedreport;
+         l_rt_sah.event_time             := i_event_time;
+         l_rt_sah.function_mode          := l_rt_say.function_mode;
+
+         
+         open c_son_agg(l_stn_id);
+         fetch c_son_agg
+         into  l_rt_sah.scope_of_operation;
+         close c_son_agg;
+
+         lm_sah_tapi_pck.sah_insert_row( io_rt_sah       => l_rt_sah );
+      end if;
+
+      
+      
+
+
+      if o_processed_availability
+         or
+         l_update_son
+      then
+         
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+         l_functional_available_old := get_functional_availability
+                                       ( i_ind_use_operational_state => l_rt_ste.ind_use_oper_state_for_avlblty
+                                       , i_ssd_id                    => l_rt_say_old.ssd_id
+                                       , i_sod_id                    => l_rt_say_old.sod_id
+                                       );
+                                            
+
+         l_functional_available_new := get_functional_availability
+                                       ( i_ind_use_operational_state => l_rt_ste.ind_use_oper_state_for_avlblty
+                                       , i_ssd_id                    => l_rt_say.ssd_id
+                                       , i_sod_id                    => l_rt_say.sod_id
+                                       );
+                                       
+         
+
+
+
+
+         if lm_lne_tapi_pck.lne_select_row( i_lne_stn_id => l_stn_id
+                                          , o_rt_lne     => l_rt_lne_dummy
+                                          )
+         then
+            o_type_of_reevaluation := null; 
+         elsif
+            (     l_functional_available_old = lm_constant.g_con_stn_functional_avail_yes
+              and l_functional_available_new = lm_constant.g_con_stn_functional_avail_no
+            )
+            or
+            (     l_functional_available_old = lm_constant.g_con_stn_functional_avail_par
+              and l_functional_available_new = lm_constant.g_con_stn_functional_avail_no
+            )
+         then
+            o_type_of_reevaluation := lm_constant.g_con_eval_type_all; 
+         elsif
+            (     l_functional_available_old = lm_constant.g_con_stn_functional_avail_yes
+              and l_functional_available_new = lm_constant.g_con_stn_functional_avail_par
+            )
+         then
+            o_type_of_reevaluation := lm_constant.g_con_eval_type_partial; 
+         else
+            o_type_of_reevaluation := null; 
+         end if;
+
+         if
+            l_update_son
+            and
+            l_functional_available_old = l_functional_available_new
+            and
+            l_functional_available_new = lm_constant.g_con_stn_functional_avail_yes
+            
+         then
+            
+
+
+
+
+            l_nt_son_to_be_deleted_id_cust := l_nt_old_son_id_cust multiset except i_nt_son_id_cust;
+            
+            
+            if (    i_nt_son_id_cust.count > 0                 
+                and l_nt_son_to_be_deleted_id_cust.count > 0   
+               )
+               or
+               (    l_nt_old_son_id_cust.count = 0             
+                and i_nt_son_id_cust.count > 0                 
+               )
+            then
+               o_type_of_reevaluation := lm_constant.g_con_eval_type_scope; 
+            end if;
+         end if; 
+
+      end if; 
+   end if;    
+
+   
+
+
+
+   commit;  
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+
+   when others
+   then
+      if c_sct%isopen
+      then
+         close c_sct;
+      end if;
+      if c_son%isopen
+      then
+         close c_son;
+      end if;
+      if c_son_agg%isopen
+      then
+         close c_son_agg;
+      end if;
+
+      rollback;  
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+end process_stn_availability;
+
+
+procedure send_node_availability_rep_job
+ is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.send_node_availability_rep_job';
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   lm_availability_report.send_node_availability_report( i_nt_stn_id => nt_stn_id());
+   
+
+   commit;  
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when lm_constant.exc_internal_error
+   then
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      
+
+
+
+
+
+
+
+
+      
+      lm_common.abort_application_fatal;
+   
+   when others
+   then
+      rollback;
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.handle_info;
+end send_node_availability_rep_job;
+
+procedure send_node_availability_report
+ ( i_nt_stn_id in nt_stn_id
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.send_node_availability_report';
+
+   
+   cursor c_say_explicit
+    (i_nt_stn_id in nt_stn_id
+    )
+    is
+   select xmlagg
+          ( xmlelement
+            ( "NodeAvailabilityReportEntryList"
+            , xmlconcat
+              ( xmlelement( "StatusChangeTime", lm_common.timestamp_to_varchar
+                                                (nvl( sah.event_time
+                                                    , say.event_time
+                                                    )
+                                                )
+                          )
+              , xmlelement( "StationID", stn.id_cust)
+              , xmlelement
+                ( "Availability"
+                ,  case say.ind_available_derived
+                     when lm_constant.g_con_yesno_yes then
+                         case say.ssd_id
+                            when lm_constant.g_con_ssd_id_initial then
+                               case stn.ind_availability_reporting
+                                  when lm_constant.g_con_yesno_yes then
+                                     'INITIAL'
+                                  else
+                                     'AVAILABLE'
+                               end
+                            when lm_constant.g_con_ssd_id_available then
+                               'AVAILABLE'
+                            when lm_constant.g_con_ssd_id_not_available then
+                               'NOT-AVAILABLE'
+                            when lm_constant.g_con_ssd_id_unhealthy then
+                               'UNHEALTHY'
+                         else
+                           null
+                         end
+                     when lm_constant.g_con_yesno_no  then
+                         'NOT-AVAILABLE'
+                     else
+                        null
+                     end
+                 )
+              , xmlelement
+                ( "Reason"
+                ,  case say.ind_available_derived
+                     when lm_constant.g_con_yesno_yes then
+                         case say.ssd_id
+                            when lm_constant.g_con_ssd_id_initial then
+                               'SYSTEM'
+                            when lm_constant.g_con_ssd_id_available then
+                               'SYSTEM_LOGISTIC'
+                            when lm_constant.g_con_ssd_id_not_available then
+                               'SYSTEM'
+                            when lm_constant.g_con_ssd_id_unhealthy then
+                               'SYSTEM'
+                         else
+                           null
+                         end
+                     when lm_constant.g_con_yesno_no  then
+                         case say.ssd_id
+                            when lm_constant.g_con_ssd_id_initial then
+                               'LOGISTIC'
+                            when lm_constant.g_con_ssd_id_available then
+                               'LOGISTIC'
+                            when lm_constant.g_con_ssd_id_not_available then
+                               'SYSTEM_LOGISTIC'
+                            when lm_constant.g_con_ssd_id_unhealthy then
+                               'LOGISTIC'
+                         else
+                           null
+                         end
+                     else
+                        null
+                     end
+                 )
+              , nvl2( say.function_mode
+                   , xmlelement( "FunctionMode", say.function_mode)
+                   , null
+                   )
+              , nvl2( say.sod_id
+                   , xmlelement( "OperationalState",
+                                     case say.sod_id
+                                         when lm_constant.g_con_sod_id_logged_on
+                                             then 'LOGGED_ON'
+                                         when lm_constant.g_con_sod_id_logoff_req
+                                             then 'LOG_OFF_REQUEST'
+                                         when lm_constant.g_con_sod_id_logged_off
+                                             then 'LOGGED_OFF'
+                                     end
+                               )
+                   , null
+                   )
+              )
+            )
+            order by stn.id 
+          ) stationlist
+   from   (select sah1.stn_id
+           ,      max(sah1.event_time) keep (dense_rank last order by sah1.id) event_time
+                  
+           from   lm_stn_availabilities_history sah1
+           group by sah1.stn_id
+          ) sah
+   ,      lm_station_availabilities say
+   ,      lm_stations stn
+   where  say.stn_id                 = stn.id
+   and    say.stn_id                 = sah.stn_id (+) 
+   and    ( (    i_nt_stn_id                        is empty      
+                                                                  
+             and (   stn.ind_availability_reporting = lm_constant.g_con_yesno_yes
+                  or stn.ind_rules_defined          = lm_constant.g_con_yesno_yes
+                 )
+            )
+            or stn.id                member of(i_nt_stn_id) 
+          )
+   ;
+   
+   l_ims_id                 lm_ifc_messages.id%type;
+   l_stationlist            xmltype;
+   l_event_time             timestamp;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   l_event_time := lm_common.default_timestamp;
+
+   open c_say_explicit(i_nt_stn_id => i_nt_stn_id);
+   fetch c_say_explicit
+   into  l_stationlist;
+   close c_say_explicit;
+
+   
+   if l_stationlist is not null
+   then
+      
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'NodeAvailabilityOverviewReport'
+                 , i_message         => l_stationlist
+                 , i_event_time      => l_event_time
+                 , i_pty_id_cust     => lm_common.get_parameter_value( lm_constant.g_con_pve_operational_dashb)
+                 , i_pty_instance_id => null
+                 , i_sct_id          => null
+                );
+   end if;
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when others
+   then
+      if c_say_explicit%isopen
+      then
+         close c_say_explicit;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_node_availability_report;
+
+end lm_availability_report;
+/

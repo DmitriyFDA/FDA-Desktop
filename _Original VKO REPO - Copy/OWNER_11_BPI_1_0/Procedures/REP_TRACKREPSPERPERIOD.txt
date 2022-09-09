@@ -1,0 +1,154 @@
+procedure rep_trackrepsperperiod is
+type array_str is table of varchar2(2000) index by pls_integer;
+a_js array_str;
+l_dd varchar2(10) := to_char(sysdate, 'dd');
+l_mm varchar2(10) := to_char(sysdate, 'mm');
+l_yyyy varchar2(10) := to_char(sysdate, 'yyyy');
+l_hh varchar2(10) := to_char(sysdate, 'hh24');
+l_mi varchar2(10) := to_char(sysdate, 'mi');
+l_num number;
+v_msg varchar2(32767);
+begin
+
+  a_js( 1) := 'function exec_rep1() { var h1=trimAll(p_yyyy1.value)+trimAll(p_mm1.value)+trimAll(p_dd1.value)+"."+trimAll(p_hh1.value)+"."+trimAll(p_mi1.value)';
+  a_js( 2) := '  + "-" + trimAll(p_yyyy2.value)+trimAll(p_mm2.value)+trimAll(p_dd2.value)+"."+trimAll(p_hh2.value)+"."+trimAll(p_mi2.value);';
+  a_js( 3) := '                      var h2=trimAll(p_periodtype.value);';
+  a_js( 4) := '                      var s1="REPORT_TRACKREPSPERPERIOD1?p_periodtype="+h2+"@p_period="+h1+"@p_sortby="+trimAll(p_sortby.value);';
+  a_js( 5) := '                      confirm_long_jump("Produce Report",s1);';
+  a_js( 6) := '                    }';
+  a_js( 7) := 'function exec_rep2() { var h1=trimAll(p_yyyy1.value)+trimAll(p_mm1.value)+trimAll(p_dd1.value)+"."+trimAll(p_hh1.value)+"."+trimAll(p_mi1.value)';
+  a_js( 8) := '  + "-" + trimAll(p_yyyy2.value)+trimAll(p_mm2.value)+trimAll(p_dd2.value)+"."+trimAll(p_hh2.value)+"."+trimAll(p_mi2.value);';
+  a_js( 9) := '                      var h2=trimAll(p_periodtype.value);';
+  a_js(10) := '                      var s1="REPORT_TRACKREPSPERPERIOD2?p_periodtype="+h2+"@p_period="+h1+"@p_sortby="+trimAll(p_sortby.value);';
+  a_js(11) := '                      confirm_long_jump("Produce Report",s1);';
+  a_js(12) := '                    }';
+
+
+  htp.print(ui_menu.head_from_link('REP_TRACKREPSPERPERIOD'));
+  htp.print('<div class="operate"><br>');
+
+  htp.print('<SCRIPT>');
+  for i in 1..a_js.count loop
+    htp.print(replace(a_js(i), '@', chr(38)));
+  end loop;
+  htp.print('</SCRIPT>');
+
+  begin
+
+    htp.print('<TABLE>');
+
+    htp.print('</tr><tr><td colspan=2><br><p STYLE="font-size=12;">Select period (based on EVENTTS):</p></td>');
+
+    htp.print('</tr><tr><tr/><td align=RIGHT>Start date time (DD-MM-YYYY HH:MI) : <td>');
+
+    htp.print('<SELECT NAME="p_dd1" SIZE="1">');
+    for i in 1..31 loop
+      v_msg := '<OPTION ';
+      if to_number(l_dd) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'09')||'">'||to_char(i,'09'));
+    end loop;
+    htp.print('</SELECT>-');
+
+    htp.print('<SELECT NAME="p_mm1" SIZE="1">');
+    for i in 1..12 loop
+      v_msg := '<OPTION ';
+      if to_number(l_mm) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'09')||'">'||to_char(i,'09'));
+    end loop;
+    htp.print('</SELECT>-');
+
+    htp.print('<SELECT NAME="p_yyyy1" SIZE="1">');
+    htp.print('<OPTION SELECTED value="'||l_yyyy||'">'||l_yyyy);
+    for i in 1..4 loop
+      l_num := to_number(l_yyyy) - i;
+      htp.print('<OPTION value="'||to_char(l_num)||'">'||to_char(l_num));
+    end loop;
+    htp.print('</SELECT>');
+
+    htp.print('<SELECT NAME="p_hh1" SIZE="1">');
+    for i in 0..23 loop
+      v_msg := '<OPTION ';
+      if to_number(l_hh) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'00')||'">'||to_char(i,'00'));
+    end loop;
+    htp.print('</SELECT>:');
+
+    htp.print('<SELECT NAME="p_mi1" SIZE="1">');
+    for i in 0..59 loop
+      v_msg := '<OPTION ';
+      if to_number(l_mi) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'00')||'">'||to_char(i,'00'));
+    end loop;
+    htp.print('</SELECT>');
+
+    htp.print('</tr>');
+
+    htp.print('<tr><td align=RIGHT>End date time (DD-MM-YYYY HH:MI) : <td>');
+    htp.print('<SELECT NAME="p_dd2" SIZE="1">');
+    for i in 1..31 loop
+      v_msg := '<OPTION ';
+      if to_number(l_dd) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'09')||'">'||to_char(i,'09'));
+    end loop;
+    htp.print('</SELECT>-');
+
+    htp.print('<SELECT NAME="p_mm2" SIZE="1">');
+    for i in 1..12 loop
+      v_msg := '<OPTION ';
+      if to_number(l_mm) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'09')||'">'||to_char(i,'09'));
+    end loop;
+    htp.print('</SELECT>-');
+
+    htp.print('<SELECT NAME="p_yyyy2" SIZE="1">');
+    htp.print('<OPTION SELECTED value="'||l_yyyy||'">'||l_yyyy);
+    for i in 1..4 loop
+      l_num := to_number(l_yyyy) - i;
+      htp.print('<OPTION value="'||to_char(l_num)||'">'||to_char(l_num));
+    end loop;
+    htp.print('</SELECT>');
+
+    htp.print('<SELECT NAME="p_hh2" SIZE="1">');
+    for i in 0..23 loop
+      v_msg := '<OPTION ';
+      if to_number(l_hh) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'00')||'">'||to_char(i,'00'));
+    end loop;
+    htp.print('</SELECT>:');
+
+    htp.print('<SELECT NAME="p_mi2" SIZE="1">');
+    for i in 0..59 loop
+      v_msg := '<OPTION ';
+      if to_number(l_mi) = i then v_msg := v_msg||'SELECTED '; end if;
+      htp.print(v_msg||'value="'||to_char(i,'00')||'">'||to_char(i,'00'));
+    end loop;
+    htp.print('</SELECT>');
+
+
+    htp.print('<tr><td align=RIGHT>Period Type : </td><td>');
+    htp.print('<SELECT NAME="p_periodtype" STYLE="font-size=17;">');
+    htp.print('<OPTION SELECTED value="M5">M5 (five minutely)<OPTION value="H1">H1 (hourly)<OPTION value="D1">D1 Daily</SELECT>');
+
+    htp.print('<br><br></tr><tr><td align="RIGHT">order by: </td><td>');
+    htp.print('<INPUT TYPE=TEXT NAME="p_sortby" value="4 desc,7,8" STYLE="font-size=11;width:200px;">');
+    htp.print('</tr>');
+
+    htp.print(gui.table_input_tail('-'));
+
+    htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="HTML Report" onClick=exec_rep1()>');
+    htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="CSV Report" onClick=exec_rep2()>');
+    htp.print('<br><br>');
+
+    htp.print(gui.tail);
+
+  exception when others then
+
+    v_msg := sqlerrm;
+    htp.print(v_msg||'<br><br>');
+	htp.print(gui.tail);
+  end;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

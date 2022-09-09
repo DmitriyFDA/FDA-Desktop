@@ -1,0 +1,197 @@
+create or replace PACKAGE document_api AS
+function mimetype(file IN VARCHAR2) return varchar2;
+PROCEDURE upload;
+PROCEDURE upload (file IN VARCHAR2);
+PROCEDURE download;
+PROCEDURE download (file IN VARCHAR2);
+END;
+/
+
+
+
+
+package body document_api as
+
+function mimetype(file in varchar2) return varchar2 as
+l_ext varchar2(50) := '';
+l_mimetype varchar2(50) := 'application/octet-stream'; 
+begin
+  l_ext := upper(substr(file, instr(file, '.', -1) + 1));
+  
+  if l_ext = 'DOC' then l_mimetype := 'application/msword';
+  elsif l_ext = 'PDF' then l_mimetype := 'application/pdf';
+  elsif l_ext = 'ZIP' then l_mimetype := 'application/x-zip-compressed';
+  elsif l_ext = 'XSD' then l_mimetype := 'application/xml';
+  elsif l_ext = 'XSLT' then l_mimetype := 'application/xml';
+  elsif l_ext = 'GIF' then l_mimetype := 'image/gif';
+  elsif l_ext = 'JPG' then l_mimetype := 'image/pjpeg';
+  elsif l_ext = 'CSS' then l_mimetype := 'text/css';
+  elsif l_ext = 'HTML' then l_mimetype := 'text/html';
+  elsif l_ext = 'TXT' then l_mimetype := 'text/plain';
+  elsif l_ext = 'XML' then l_mimetype := 'text/xml';
+  end if;
+  
+  
+  
+  
+  return l_mimetype;
+end;
+
+procedure upload as
+l_real_name varchar2(1000);
+v_msg varchar2(32767);
+begin
+
+  htp.htmlopen;
+  htp.headopen;
+  htp.title('Select and Upload a file');
+  htp.headclose;
+  htp.bodyopen;
+
+  htp.print('<div style="position: absolute; top: 50px; left: 100px;">');
+
+  htp.print('<BUTTON ACCESSKEY="." onClick="document.location=''BPIR_HOME'';">Home</BUTTON>');
+  htp.print('<br><br>');
+
+  htp.header(1, 'Select and Upload a file');
+
+  htp.print('<form enctype="multipart/form-data" action="document_api.upload" method="post">');
+  htp.print('  File to upload: <input type="file" name="file" size="50"><br />');
+  htp.print('  <br><input type="submit" value="Upload">');
+  htp.print('</form>');
+
+  htp.print('<br><br>Uploaded files: ');
+
+  htp.print('<TABLE border=2 bordercolor="#8B4513" bgcolor="#FFEBCD" cellspacing=2 cellpadding=1><TR><TH>Name</TH><TH>File Last Modified</TH><TH>Uploaded</TH><TH>Size</TH></TR>');
+
+  for rec in (select name,file_last_modified,last_updated,doc_size from documents order by name) loop
+    htp.print('<TR>');
+    htp.print('<TD>'||rec.name||'</TD>');
+    htp.print('<TD>'||ts2str(rec.file_last_modified)||'</TD>');
+    htp.print('<TD>'||ts2str(rec.last_updated)||'</TD>');
+    htp.print('<TD ALIGN=RIGHT>'||to_char(rec.doc_size)||'</TD>');
+    htp.p('</TR>');
+  end loop;
+
+  htp.print('</div>');
+
+  htp.bodyclose;
+  htp.htmlclose;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end upload;
+
+
+procedure upload (file  in  varchar2) as
+v_msg varchar2(32767) := '';
+l_real_name  varchar2(1000);
+begin
+
+  htp.htmlopen;
+  htp.headopen;
+  htp.title('File Uploaded');
+  htp.headclose;
+  htp.bodyopen;
+  htp.print('<div style="position: absolute; top: 50px; left: 100px;">');
+  htp.print('<BUTTON ACCESSKEY="." onClick="document.location=''BPIR_HOME'';">Home</BUTTON>');
+  htp.print('<br><br>');
+  htp.header(1, 'Upload Status');
+
+  if file is null or trim(file) = '' then
+    htp.print('Nothing to upload.');
+  else
+    l_real_name := substr(file, instr(file, '/') + 1);
+    begin
+      
+      delete from documents where upper(name) = upper(l_real_name);
+      
+      update documents set name = l_real_name where name = file;
+      htp.print('Uploaded ' || l_real_name || ' successfully.');
+    exception
+      when others then
+        htp.print('Upload of ' || l_real_name || ' failed.');
+        htp.print(sqlerrm);
+    end;
+  end if;
+
+  htp.br;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  htp.print('<br><BUTTON onClick="document.location=''document_api.upload'';">Back</BUTTON>');
+  htp.print('</div>');
+  htp.bodyclose;
+  htp.htmlclose;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end upload;
+
+
+procedure download is
+l_filename  varchar2(255);
+v_msg varchar2(32767) := '';
+begin
+  l_filename := substr(owa_util.get_cgi_env('PATH_INFO'), 2);
+  wpg_docload.download_file(l_filename);
+exception when others then
+  htp.htmlopen;
+  htp.headopen;
+  htp.title('File Downloaded');
+  htp.headclose;
+  htp.bodyopen;
+  htp.header(1, 'Download Status');
+  htp.print('Download of ' || l_filename || ' failed.');
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+  htp.bodyclose;
+  htp.htmlclose;
+end download;
+
+
+procedure download (file in  varchar2) as
+l_blob_content documents.blob_content%type;
+l_mime_type documents.mime_type%type;
+v_msg varchar2(32767) := '';
+begin
+  select blob_content, mime_type into l_blob_content, l_mime_type
+  from documents where  name = file;
+  
+  owa_util.mime_header('application/octet-stream', false);
+  htp.p('Content-Length: ' || dbms_lob.getlength(l_blob_content));
+  htp.p('Content-Disposition: attachment; filename="'||file||'"');
+  owa_util.http_header_close;
+  wpg_docload.download_file(l_blob_content);
+exception when others then
+  htp.htmlopen;
+  htp.headopen;
+  htp.title('File Downloaded');
+  htp.headclose;
+  htp.bodyopen;
+  htp.header(1, 'Download Status');
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+  htp.bodyclose;
+  htp.htmlclose;
+end download;
+
+end;
+/

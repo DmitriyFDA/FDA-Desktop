@@ -1,0 +1,32 @@
+procedure bpir_home is
+v_msg          varchar2(32767);
+v_app          varchar2(200);
+v_buttons      varchar2(7) := 'BRLE';
+begin
+  htp.print(gui.head( gui.app_name||' Home', '', v_buttons));
+  htp.print('<div class="homewhite">');
+  htp.print('<IMG SRC="DOCS/baggagehandling.jpg" align="middle">');
+  htp.print('</div>');
+
+  begin
+    select distinct terminal into v_app
+    from v$session
+    where username = user and terminal is not null and rownum = 1;
+  exception when others then
+    v_app := '<unknown>';
+  end;
+
+  select 'User '||user||' logged in on server '
+        ||sys_context('USERENV','SERVER_HOST')||' from terminal '
+        ||v_app||' at '
+        ||ts2str(sysdate)
+  into v_msg from dual;
+
+  htp.print('<br><br>'||v_msg||'<br>');
+  htp.print(gui.tail(v_buttons));
+
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

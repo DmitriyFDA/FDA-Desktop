@@ -1,0 +1,597 @@
+create or replace PACKAGE Metrics
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'Metrics';
+
+   FUNCTION dimensions_string( i_metric_id IN metric_config.metric_id%TYPE )
+      RETURN VARCHAR2;
+
+   FUNCTION coverage_string( i_metric_id IN metric_config.metric_id%TYPE )
+      RETURN VARCHAR2;
+
+   FUNCTION get_metric_config( i_metric_procedure  IN  metric_config.metric_procedure%TYPE )
+      RETURN metric_config%ROWTYPE;
+
+   PROCEDURE execute_per_period_type_job( i_period_type IN metric_config.period_type%TYPE
+                                        , i_job         IN metric_config.job%TYPE
+                                        );
+
+   procedure create_metric_tab(p_tmp_tab in varchar2, p_fact_tab in varchar2);
+   procedure create_basic_agg_tab(p_tmp_tab in varchar2, p_fact_tab in varchar2);
+   procedure create_INT_STAT_VW(p_periodtype varchar2, p_verbose boolean, p_immediate boolean);
+   
+   PROCEDURE unfinished( i_proc metric_config.metric_procedure%TYPE );
+
+   -- OBSOLETE. PRODUCT_TBD. Refernces to these procedure shoudl be replaced
+   PROCEDURE raise_fatal_error(p_con_proc_name varchar2, p_msg varchar2);
+   FUNCTION string_to_number(str in varchar2)
+      RETURN NUMBER DETERMINISTIC;
+   FUNCTION convert_eventtime(p_eventtime VARCHAR2, p_default_eventts TIMESTAMP)
+      RETURN TIMESTAMP DETERMINISTIC;
+   -- End PRODUCT_TBD
+END Metrics;
+/
+
+
+
+
+package body metrics
+is
+   g_partitioning varchar2(20) := '???';
+
+   type t_workload is record ( metric_procedure metric_config.metric_procedure%type
+                             , job              metric_config.job%type
+                             , sequence         metric_config.sequence%type
+                             , executions       integer
+                             , done             char(1)
+                             );
+   type t_workloads is table of t_workload;
+
+   g_workloads t_workloads;
+
+
+
+
+
+
+procedure raise_fatal_error(p_con_proc_name varchar2, p_msg varchar2) is
+l_msg viu_info_logs.additional_data%type :=  substr(p_msg,1,4000);
+begin
+  
+  viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => p_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_msg);
+                         
+  viu_module.leave_module(i_module => p_con_proc_name);
+
+  viu_info.raise_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                       , i_calling_procedure  => p_con_proc_name
+                       , i_severity           => viu_info.c_severity_error
+                       , i_info_arguments     => null
+                       , i_additional_data    => l_msg);
+end;
+
+function convert_eventtime(p_eventtime varchar2, p_default_eventts timestamp) return timestamp deterministic is
+l_eventtime varchar2(50) := p_eventtime;
+l_eventts timestamp with time zone;
+begin
+  begin
+    l_eventts := to_timestamp_tz(l_eventtime, 'YYYY-MM-DD"T"HH24:MI:SS.FF"Z"');
+  exception when others then
+    begin
+      
+      l_eventts := sys_extract_utc(to_timestamp_tz(l_eventtime, 'YYYY-MM-DD"T"HH24:MI:SS.FF"Z"'));
+    exception when others then
+      begin
+        
+        l_eventtime := replace(l_eventtime, 'T', ' ');
+        l_eventtime := replace(l_eventtime, 'Z', '');
+        l_eventts := to_timestamp(l_eventtime, 'YYYY-MM-DD HH24:MI:SS.FF');
+      exception when others then
+        
+        l_eventts := p_default_eventts;
+      end;
+    end;
+  end;
+  return l_eventts;
+end;
+
+function string_to_number(str in varchar2) return number deterministic is
+n number(23,6) := 0;
+begin
+  if str is null then return null; end if;
+  n := to_number(str);
+  return n;
+exception when others then
+  
+  return 0;
+end;
+
+
+
+
+
+function dimensions_string( i_metric_id in metric_config.metric_id%type )
+   return varchar2
+is
+   l_str varchar2(4000);
+begin
+   select listagg( column_name, ',') within group (order by column_id)
+   into   l_str
+   from   metric_config
+   ,      user_tab_columns
+   where  metric_id = i_metric_id
+   and    table_name = metric_table
+   and    column_name not in ( 'ID', 'INSERTTS', 'UPDATETS' )
+   and    column_name not in ( select name
+                               from   metric_occurrence
+                               where  metric_id = i_metric_id
+                             );
+
+   return l_str;
+end;
+
+
+
+function coverage_string( i_metric_id in metric_config.metric_id%type )
+   return varchar2
+is
+v_str varchar2(4000) := '';
+v_out varchar2(16000) := '';
+v_table_name varchar2(30);
+v_cnt number;
+cursor c_occs is
+select * from metric_occurrence
+where metric_id = i_metric_id order by name;
+begin
+  select count(*) into v_cnt from metric_occurrence where metric_id = i_metric_id;
+  if v_cnt > 0 then
+    select metric_name||':'
+    ||chr(10)||substr('====================================',1,length(metric_name)+1)
+    ||chr(10)||description||chr(10)
+    ||chr(10)||'Derives data from tables '||source_tables
+    ||chr(10)||'and aggregates to table '||metric_table
+    ||chr(10)||'for dimensions '||metrics.dimensions_string(i_metric_id)||'.'
+    into v_str
+    from metric_config where metric_id = i_metric_id;
+    v_out := v_str||chr(10)||chr(10)||'Measurements: '||chr(10)||'============='||chr(10);
+    for c_rec in c_occs loop
+      v_out := v_out||c_rec.name||': '||c_rec.description||chr(10);
+    end loop;
+  else
+    
+    
+    select metric_name||':'
+    ||chr(10)||substr('====================================',1,length(metric_name)+1)
+    ||chr(10)||description||chr(10)
+    ||chr(10)||'Derives data from tables '||source_tables
+    ||chr(10)||'to table '||metric_table||'.'
+    into v_out
+    from metric_config where metric_id = i_metric_id;
+  end if;
+  return v_out;
+end;
+
+
+
+
+
+
+
+
+
+
+function get_metric_config( i_metric_procedure  in  metric_config.metric_procedure%type )
+return
+   metric_config%rowtype
+is
+   l_metric_config  metric_config%rowtype;
+begin
+   select metric_id
+   ,      metric_name
+   ,      description
+   ,      name_project
+   ,      purpose
+   ,      metric_type
+   ,      period_type
+   ,      source_tables
+   ,      metric_table
+   ,      metric_procedure
+   ,      job
+   ,      status
+   ,      sequence
+   ,      lag
+   ,      exclude_current_period
+   ,      max_measurements
+   ,      statisticalgroup
+   ,      kpigroup
+   ,      catch_up_repeat
+   into   l_metric_config
+   from   metric_config
+   where  upper(metric_procedure) = upper(i_metric_procedure)
+   ;
+   
+   return l_metric_config;
+exception
+   when others then
+      return null;
+end get_metric_config;
+
+procedure execute_sp( i_proc in metric_config.metric_procedure%type )
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.execute_sp';
+   
+   l_proc metric_config.metric_procedure%type := trim(i_proc);
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+   
+   if l_proc not like '%;'
+   then
+      l_proc := l_proc||';';
+   end if;
+   
+   begin
+      execute immediate 'begin '||l_proc||' end;';
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+  
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+procedure unfinished( i_proc metric_config.metric_procedure%type )
+is
+   l_idx pls_integer;
+begin
+   l_idx := g_workloads.first;
+   while l_idx is not null
+   loop
+      if upper(i_proc) = upper(g_workloads(l_idx).metric_procedure)
+      then
+         g_workloads(l_idx).done := 'N';
+      end if;
+      
+      l_idx := g_workloads.next(l_idx);
+   end loop;
+end;
+
+
+
+procedure execute_per_period_type_job( i_period_type in metric_config.period_type%type
+                                     , i_job         in metric_config.job%type
+                                     )
+is
+   l_con_proc constant varchar2(200) := g_con_package||'.execute_per_period_type_job';
+   
+   cursor c_jobs
+   is
+      select metric_procedure
+      ,      job
+      ,      sequence
+      ,      catch_up_repeat + 1 as executions
+      ,      'Y'                 as done
+      from   metric_config
+      where  period_type = i_period_type
+      and    job         = i_job
+      and    status      = 1
+      order by sequence;
+
+   l_idx      pls_integer;
+   l_next_idx pls_integer;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      open c_jobs;
+      fetch c_jobs bulk collect into g_workloads;
+
+      loop
+         l_idx      := null;
+         l_next_idx := g_workloads.first;
+         while l_next_idx is not null
+         loop
+            l_idx := l_next_idx;
+
+            bpi_log.notify( i_con_proc => l_con_proc
+                          , i_data     => l_con_proc||' STARTING '||g_workloads(l_idx).metric_procedure
+                                                    ||', Job '||to_char(g_workloads(l_idx).job)
+                                                    ||', Seq '||to_char(g_workloads(l_idx).sequence)
+                          );
+            begin
+               execute_sp( i_proc => g_workloads(l_idx).metric_procedure );
+            exception
+               when others then
+                  bpi_log.warn( i_con_proc => l_con_proc
+                              , i_data     => g_workloads(l_idx).metric_procedure
+                              );
+            end;
+            l_next_idx := g_workloads.next(l_idx);
+            if g_workloads(l_idx).executions > 0 and g_workloads(l_idx).done = 'N'
+            then
+               g_workloads(l_idx).executions := g_workloads(l_idx).executions - 1;
+            else
+               g_workloads.delete(l_idx);
+            end if;
+         end loop;
+
+         exit when l_idx is null;
+            
+      end loop;
+   exception when others then
+      bpi_log.handle_error( i_con_proc => l_con_proc);
+   end;
+   
+   
+   
+   
+   commit;
+  
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+
+
+procedure create_metric_tab(p_tmp_tab in varchar2, p_fact_tab in varchar2) is
+
+
+l_ddl varchar2(4000);
+l_pclause varchar2(2000);
+l_par varchar2(50);
+l_ts varchar2(50);
+l_colcount number := 0;
+l_indexname varchar2(30) := '';
+cursor ctabcols(ctab varchar2) is
+  select column_name, data_type, data_length from user_tab_columns
+  where table_name = ctab and column_name not in ('ID', 'INSERTTS', 'UPDATETS', 'EVENTTS')
+  order by column_id;
+begin
+  drop_table(p_fact_tab);
+  l_par := 'P'||to_char(sysdate,'YYYYMMDD');
+  l_ts := to_char(sysdate,'YYYY-MM-DD')||' 00:00:00';
+  l_ddl := 'CREATE TABLE '||p_fact_tab ||' (ID NUMBER(23,0) NOT NULL'||chr(10)||', INSERTTS TIMESTAMP NOT NULL, UPDATETS TIMESTAMP NOT NULL, EVENTTS TIMESTAMP NOT NULL'||chr(10);
+  for c_rec in ctabcols(p_tmp_tab) loop
+    l_ddl := l_ddl||', '||c_rec.column_name;
+    
+    if c_rec.data_type = 'VARCHAR2' then
+      l_ddl := l_ddl||' VARCHAR2('||to_char(c_rec.data_length)||')';
+    else
+      l_ddl := l_ddl||' NUMBER'||chr(10);
+    end if;
+    l_colcount := l_colcount + 1;
+  end loop;
+
+  if g_partitioning = 'Yes' then
+    l_pclause := 'TABLESPACE USER_DATA PARTITION BY RANGE (EVENTTS) INTERVAL (NUMTODSINTERVAL(1,''DAY'')) '||chr(10)
+    ||' STORE IN (USER_DATA) ( PARTITION P1 VALUES LESS THAN ( TIMESTAMP'' 2010-01-01 00:00:00'' ) STORAGE (INITIAL 512K NEXT 512K) )'||chr(10);
+  else
+    l_pclause := 'TABLESPACE USER_DATA';
+  end if;
+
+  l_ddl := l_ddl||' , CONSTRAINT '||replace(p_fact_tab,'METRIC','M')||'_PK PRIMARY KEY (ID)'||chr(10)
+  ||' USING INDEX TABLESPACE INDEX_DATA )'||chr(10)||l_pclause;
+
+  dbms_output.put_line(l_ddl);
+  if l_colcount = 0 then
+    dbms_output.put_line('ORA Error -20000: Originating temp table '||p_tmp_tab||' does not exist!');
+  end if;
+  execute immediate l_ddl;
+  dbms_output.put_line(chr(10)||'Table '||p_fact_tab||' created.'||chr(10));
+  
+  l_indexname := substr('I_'||replace(p_fact_tab, '_', '')||'_E',1,30);
+  l_ddl := 'CREATE INDEX '||l_indexname||' ON '||p_fact_tab||' (EVENTTS) TABLESPACE INDEX_DATA';
+  dbms_output.put_line(l_ddl);
+  execute immediate l_ddl;
+  dbms_output.put_line(chr(10)||'Created index '||l_indexname||' on table '||p_fact_tab||', column EVENTTS.'||chr(10));
+
+end;
+
+
+procedure create_basic_agg_tab(p_tmp_tab in varchar2, p_fact_tab in varchar2) is
+
+
+l_ddl varchar2(4000);
+l_pclause varchar2(2000);
+l_sep varchar2(5) := '( ';
+l_indexname varchar2(30) := '';
+cursor ctabcols(ctab varchar2) is
+  select column_name, data_type, data_length from user_tab_columns
+  where table_name = ctab
+  order by column_id;
+begin
+  drop_table(p_fact_tab);
+  l_ddl := 'CREATE TABLE '||p_fact_tab ||' '||chr(10);
+  for c_rec in ctabcols(p_tmp_tab) loop
+    l_ddl := l_ddl||l_sep||c_rec.column_name;
+    
+    if c_rec.data_type = 'VARCHAR2' then
+      l_ddl := l_ddl||' VARCHAR2('||to_char(c_rec.data_length)||')';
+    elsif c_rec.data_type like 'TIMESTAMP%' then
+      l_ddl := l_ddl||' TIMESTAMP'||chr(10);
+    else
+      l_ddl := l_ddl||' NUMBER'||chr(10);
+    end if;
+    l_sep := ', ';
+  end loop;
+
+  if g_partitioning = 'Yes' then
+    l_pclause := 'TABLESPACE USER_DATA PARTITION BY RANGE (EVENTTS) INTERVAL (NUMTODSINTERVAL(1,''DAY'')) '||chr(10)
+    ||' STORE IN (USER_DATA) ( PARTITION P1 VALUES LESS THAN ( TIMESTAMP'' 2010-01-01 00:00:00'' ) STORAGE (INITIAL 512K NEXT 512K) )'||chr(10);
+  else
+    l_pclause := 'TABLESPACE USER_DATA';
+  end if;
+
+  l_ddl := l_ddl||') '||l_pclause;
+  dbms_output.put_line(l_ddl);
+  execute immediate l_ddl;
+  dbms_output.put_line(chr(10)||'Table '||p_fact_tab||' created.'||chr(10));
+  
+  l_indexname := substr('I_'||replace(p_fact_tab, '_', '')||'_E',1,30);
+  l_ddl := 'CREATE INDEX '||l_indexname||' ON '||p_fact_tab||' (EVENTTS) TABLESPACE INDEX_DATA';
+  dbms_output.put_line(l_ddl);
+  execute immediate l_ddl;
+  dbms_output.put_line(chr(10)||'Created index '||l_indexname||' on table '||p_fact_tab||', column EVENTTS.'||chr(10));
+
+end;
+
+
+function pk_to_idstring(p_tablename varchar2) return varchar2 is
+cursor c_pks is select cols.column_name, cols.position, cons.status
+from user_constraints cons, user_cons_columns cols
+where cons.constraint_type = 'P'
+and cons.constraint_name = cols.constraint_name
+and cols.table_name = upper(p_tablename)
+order by cols.position;
+l_sep varchar2(10) := '';
+l_string varchar2(250) := '';
+begin
+  for c_rec in c_pks loop
+    l_string := l_string||l_sep||'to_char('||c_rec.column_name||')';
+    l_sep := '||';
+  end loop;
+  return l_string;
+end;
+
+
+procedure create_int_stat_vw(p_periodtype varchar2, p_verbose boolean, p_immediate boolean) is
+cursor c_mo(c_periodtype varchar2) is
+  select a.metric_table, b.name, a.metric_name, a.metric_type
+  , (select 1 from user_tab_columns where table_name=a.metric_table and column_name='MARK_CODE') as has_mark_code
+  , (select 1 from user_tab_columns where table_name=a.metric_table and column_name='AREAID') as has_areaid
+  , (select 1 from user_tab_columns where table_name=a.metric_table and column_name='ZONEID') as has_zoneid
+  , (select 1 from user_tab_columns where table_name=a.metric_table and column_name='EQUIPMENTID') as has_equipmentid
+  , (select 1 from user_tab_columns where table_name=a.metric_table and column_name='SUBJECTTYPE') as has_subjecttype
+  , (select 1 from user_tab_columns where table_name=a.metric_table and column_name='UPDATETS') as has_updatets
+  from metric_config a, metric_occurrence b
+  where a.metric_id = b.metric_id
+  and a.period_type = c_periodtype
+  and b.type = 'INTERNAL STATISTIC'
+  order by 1,2;
+l_id  varchar2(200) := '';
+l_periodid  varchar2(50) := '';
+l_insertts  varchar2(50) := '';
+l_areaid varchar2(50) := '';
+l_zoneid varchar2(50) := '';
+l_equipmentid varchar2(50) := '';
+l_subjecttype varchar2(50) := '';
+l_subjectid varchar2(50) := '';
+l_mark_code varchar2(50) := '';
+l_subsystem_type varchar2(50) := '';
+l_process_step varchar2(50) := '';
+l_stype varchar2(50) := '';
+l_statistical varchar2(50) := '';
+l_statistical_group varchar2(100) := '';
+l_statistical_subgroup varchar2(50) := '';
+l_value varchar2(50) := '';
+l_sampletype varchar2(50) := '';
+l_exceptionid varchar2(50) := '';
+l_severity varchar2(50) := '';
+l_clob clob := '';
+l_separator varchar2(10) := '';
+l_select varchar2(4000) := '';
+begin
+  l_clob := 'CREATE OR REPLACE VIEW FACT_STATISTICAL_INT_'||p_periodtype||'_V
+( ID
+, '||p_periodtype||'_PERIODID
+, INSERTTS
+, AREAID
+, ZONEID
+, EQUIPMENTID
+, SUBJECTTYPE
+, SUBJECTID
+, MARK_CODE
+, SUBSYSTEM_TYPE
+, PROCESS_STEP
+, STYPE
+, STATISTICAL
+, STATISTICAL_GROUP
+, STATISTICAL_SUBGROUP
+, VALUE
+, SAMPLETYPE
+, EXCEPTIONID
+, SEVERITY) AS
+';
+  for c_rec in c_mo(p_periodtype) loop
+    
+    l_id := pk_to_idstring(c_rec.metric_table)||'||'''||c_rec.name||'''';
+    l_periodid := p_periodtype||'_PERIODID';
+    l_insertts := 'INSERTTS';
+    l_areaid := 'null';
+    l_zoneid := 'null';
+    l_equipmentid := 'null';
+    l_subjecttype := 'null';
+    l_subjectid := 'null';
+    l_mark_code := 'null';
+    l_subsystem_type := 'null';
+    l_process_step := 'null';
+    l_stype := 'null';
+    l_statistical := ''''||c_rec.name||'''';
+    l_statistical_group := ''''||c_rec.metric_name||'''';
+    l_statistical_subgroup := 'null';
+    l_value := c_rec.name;
+    l_sampletype := '''CUMULATIVE''';
+    l_exceptionid := 'null';
+    l_severity := 'null';
+    
+    if c_rec.has_updatets = 1 then
+      l_insertts := 'UPDATETS';
+    end if;
+
+    if c_rec.has_mark_code = 1 then
+      l_areaid := 'AREAID';
+      l_zoneid := 'ZONEID';
+      l_equipmentid := 'EQUIPMENTID';
+      l_subjecttype := 'SUBJECTTYPE';
+      l_mark_code := 'MARK_CODE';
+      l_subsystem_type := 'SUBSYSTEM_TYPE';
+      l_process_step := 'PROCESS_STEP';
+      l_stype := 'STYPE';
+    else
+      l_subjecttype := '''HANDLINGAREA''';
+      l_subjectid := '''TBS''';
+    end if;
+    
+    
+    
+    
+    
+    if upper(substr(c_rec.metric_table,1,16)) = 'FACT_APPLOGGING_' then
+      l_subjecttype := '''APPLICATION''';
+      l_subjectid := 'SUBCOMPONENT';
+      l_statistical := '''NUMBER_OF_EXCEPTIONS''';
+      l_statistical_group := '''Application Performance''';
+      l_statistical_subgroup := 'PROCESSID';
+      l_exceptionid := 'LOGMESSAGEID';
+      l_severity := 'LOGMESSAGESEVERITY';
+    end if;
+    
+    if (instr(c_rec.name, 'MAX_') > 0) or (instr(c_rec.name, 'MIN_') > 0) then
+      l_sampletype := '''INCREMENTAL''';
+    end if;
+
+    l_select := 'select '||l_id||','||l_periodid||','||l_insertts||chr(10)
+    ||','||l_areaid||','||l_zoneid||','||l_equipmentid||','||l_subjecttype||','||l_subjectid||chr(10)
+    ||','||l_mark_code||','||l_subsystem_type||','||l_process_step||','||l_stype||','||l_statistical||chr(10)
+    ||','||l_statistical_group||','||l_statistical_subgroup||','||l_value||','||l_sampletype||','||l_exceptionid||','||l_severity||chr(10)
+    ||'from '||c_rec.metric_table||chr(10);
+    
+    l_clob := l_clob||l_separator||l_select;
+    l_separator := 'union'||chr(10);
+  end loop;
+  if p_verbose then
+    dbms_output.put_line(l_clob||';'||chr(10));
+  end if;
+  if p_immediate then
+    execute immediate l_clob;
+  end if;
+end;
+
+
+begin
+  
+  g_partitioning := is_partitioning_available;
+
+end metrics;
+/

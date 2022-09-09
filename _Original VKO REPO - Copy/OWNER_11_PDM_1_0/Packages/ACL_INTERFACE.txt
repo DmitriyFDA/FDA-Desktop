@@ -1,0 +1,139 @@
+create or replace PACKAGE ACL_INTERFACE IS
+
+G_CON_PACKAGE CONSTANT ACL_CONSTANT.ST_PROC_NAME := 'ACL_Interface';
+
+/* IFC_001: Invoke an external ACL function; to be called by ACL_042 */
+FUNCTION INVOKE
+ (I_NAME IN ACL_APPLICATION_ELEMENTS.NAME%TYPE
+ ,I_VERB IN ACL_AET_CONTROL_REQUEST_TYPES.ID_CUST%TYPE
+ ,I_OBJECT_NAME IN ACL_CONSTANT.st_AppMon_ObjectName := NULL
+ )
+ RETURN ACL_CONSTANT.st_AppMon_Return_Value;
+END ACL_INTERFACE;
+/
+
+
+
+
+package body acl_interface is
+
+
+function invoke
+ (i_name in acl_application_elements.name%type
+ ,i_verb in acl_aet_control_request_types.id_cust%type
+ ,i_object_name in acl_constant.st_appmon_objectname := null
+ )
+ return acl_constant.st_appmon_return_value
+ is
+
+l_con_proc_name constant acl_constant.st_proc_name := g_con_package||'.Invoke';
+
+l_sql varchar2(240);
+
+l_return_value acl_constant.st_appmon_return_value;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module          => l_con_proc_name
+                          , i_debug_info      => 'i_name = "' || i_name
+                                                 || '"  i_verb = "' || i_verb
+                                                 || '"  i_object_name = "'||i_object_name
+                          );
+   
+   
+   
+   
+   
+   
+   l_sql := 'BEGIN ' ||
+                ':l_return_value := ' || i_name || '_acl_app_control.invoke' ||
+                                 '( ' || '''' || i_verb        || '''' ||
+                                 ', ' || '''' || i_object_name || '''' ||
+                                 ');' ||
+            'END;';
+
+   
+   begin
+      execute immediate l_sql
+      using   out l_return_value;
+   exception
+      when others
+      then
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_aclcalltosubappfailed
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_error
+                            , i_additional_data        => 'Called code: ' || l_sql
+                            );
+   end;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return l_return_value;
+exception
+   
+   
+   
+   
+   when others
+   then
+      
+      
+      viu_info.handle_info;
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      return null;
+      
+end invoke;
+
+end acl_interface;
+/

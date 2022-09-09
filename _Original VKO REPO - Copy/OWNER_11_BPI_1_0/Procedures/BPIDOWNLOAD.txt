@@ -1,0 +1,25 @@
+procedure bpidownload as
+v_msg varchar2(32767) := '';
+l_real_name  varchar2(1000);
+begin
+  htp.htmlopen;
+  htp.headopen;
+  htp.title('Download BPI GUI');
+  htp.headclose;
+  htp.bodyopen;
+  htp.print('<div style="position: absolute; top: 50px; left: 100px;">');
+  htp.print('<BUTTON ACCESSKEY="." onClick="document.location=''BPIR_HOME'';">Home</BUTTON>');
+  htp.print('<br><br><br>');
+  htp.header(1, 'Download BPI GUI');
+  htp.print('<br><p>This will download an installable Windows based GUI for BPI.<br>This requires Microsoft .NET Framework 4, and that previous versions be uninstalled.');
+  htp.print('<br>N.B. The preferred browser for downloading is Google Chrome.<br>After downloading, install by running Install.msi.</p>');
+  htp.print('<br><BUTTON style="width:165;height:85" onClick="document.location=''document_api.download?file=Install.msi'';">Press this button to<BR>download Install.msi</BUTTON>');
+  htp.print('<BUTTON style="width:165;height:85" onClick="document.location=''document_api.download?file=InstantClient.zip'';">Press this button to<BR>download InstantClient.zip</BUTTON>');
+  htp.print('</div>');
+  htp.bodyclose;
+  htp.htmlclose;
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

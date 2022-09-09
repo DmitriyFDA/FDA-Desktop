@@ -1,0 +1,614 @@
+create or replace package gen_core_tables as
+
+procedure print_all;
+procedure print_create_table(p_table in varchar2);
+function msg_header(p_table in varchar2) return varchar2;
+function msg_body(p_table in varchar2) return varchar2;
+function msg_footer(p_table in varchar2) return varchar2;
+procedure print_trigger(p_table in varchar2);
+
+end gen_core_tables;
+/
+
+
+
+
+package body gen_core_tables is
+
+g_partitioning varchar2(20) := '???';
+g_bagfact_table  varchar2(20) := 'BAGTRACE';
+g_bagfacthist_table  varchar2(20) := 'BAGTRACE_HIST';
+g_uldfact_table  varchar2(20) := 'ULDTRACE';
+g_fact_prefix varchar2(10) := 'FACT_';
+g_core_prefix varchar2(10) := 'WC_';
+g_varchar2  varchar2(10) := 'VARCHAR2';
+g_xmltype   varchar2(10) := 'XMLTYPE';
+
+cursor c_bagall is select distinct column_name
+from ( select column_name, data_type, data_length from user_tab_columns
+where table_name in
+( 'TMP_BAGGAGEEVENT'
+, 'TMP_BAGLOADEVENT'
+, 'TMP_BAGLOADRESPONSE'
+, 'TMP_BATCHBAGREQUEST'
+, 'TMP_BATCHINSTRUCTION'
+, 'TMP_CAPTUREIMAGE'
+, 'TMP_CAPTURERESULT'
+, 'TMP_DEREGISTERPACKAGE'
+, 'TMP_EJECTCOMMAND'
+, 'TMP_HANDOVERDATAREPORT'
+, 'TMP_IDCHANGEREPORT'
+, 'TMP_LOADEXECUTIONREPORT'
+, 'TMP_LOADINSTRUCTION'
+, 'TMP_LOADREQUEST'
+, 'TMP_PACKAGEDATA'
+, 'TMP_PACKAGEDATASUBSCRIBE'
+, 'TMP_PACKAGEDATASUBSCRIBERESPON'
+, 'TMP_PACKAGEINFO'
+, 'TMP_PACKAGEINFOREQUEST'
+, 'TMP_PACKAGEINSTRUCTION'
+, 'TMP_PACKAGEREPORT'
+, 'TMP_PROCESSSTATUSMESSAGE'
+, 'TMP_REGISTERPACKAGE'
+, 'TMP_STOREIMAGE'
+, 'TMP_STORERESULT'
+, 'TMP_TASKINSTRUCTION'
+, 'TMP_TASKREPORT'
+, 'TMP_TRACKINGREPORT'
+, 'TMP_ORIGINALPACKAGEEVENT'
+
+)
+and ((data_type=g_varchar2 and data_length>=2000)))
+order by column_name;
+
+cursor c_uldall is select distinct column_name
+from ( select column_name, data_type, data_length from user_tab_columns
+where table_name in
+('TMP_ULDTRANSPORTREQUEST','TMP_ULDREPORT','TMP_ULDPROCESSSTATUSREPORT'
+,'TMP_ULDLOGISTICTRACKINGREPORT','TMP_ULDINSTRUCTION','TMP_ULDHANDOVERREPORT')
+and ((data_type=g_varchar2 and data_length>=2000)))
+order by column_name;
+
+cursor c_tab(p_tab varchar2) is select column_name from user_tab_columns
+where table_name = substr('TMP_'||p_tab,1,30)
+and ((data_type=g_varchar2 and data_length>=2000))
+order by column_name;
+
+cursor c_xmltype(p_tab varchar2) is select column_name from user_tab_columns
+where table_name = substr('TMP_'||p_tab,1,30)
+and data_type=g_xmltype
+order by column_name;
+
+procedure print_create_table(p_table in varchar2) is
+msg varchar2(32000) := '';
+begin
+  msg := msg_header(p_table);
+  msg := msg||msg_body(p_table);
+  msg := msg||msg_footer(p_table);
+  dbms_output.put_line(msg);
+  print_trigger(p_table);
+end;
+
+function msg_header(p_table in varchar2) return varchar2 is
+msg varchar2(32000) := '';
+tab varchar2(30) := upper(p_table);
+begin
+  if tab = g_bagfact_table or tab = g_bagfacthist_table then
+    msg := 'exec drop_table('''||g_fact_prefix||tab||''');'||chr(10)
+         ||'CREATE TABLE '||g_fact_prefix||tab||chr(10)
+         ||'( IDEVENT NUMBER(23,0) NOT NULL'||chr(10)
+         ||', KEY NUMBER(23,0) NOT NULL'||chr(10)
+         ||', EVENTTS TIMESTAMP (6) NOT NULL'||chr(10)
+         ||', INSERTTS TIMESTAMP (6) NOT NULL'||chr(10)
+         ||', UPDATETS TIMESTAMP (6) NOT NULL'||chr(10)
+         ||', REPORTTYPE VARCHAR2(30) NOT NULL'||chr(10)
+         ||', SUMMARIZED VARCHAR2(1) DEFAULT ''N'' NOT NULL'||chr(10)
+         ||', BagRunID NUMBER(23,0) '||chr(10)
+         ||', XBID VARCHAR2(50) '||chr(10)
+         ||', XLPC NUMBER(23,0) '||chr(10)
+         ||', XPID NUMBER(23,0) '||chr(10);
+  elsif tab = g_uldfact_table then
+    msg := 'exec drop_table('''||g_fact_prefix||tab||''');'||chr(10)
+         ||'CREATE TABLE '||g_fact_prefix||tab||chr(10)
+         ||'( IDEVENT NUMBER(23,0) NOT NULL'||chr(10)
+         ||', KEY NUMBER(23,0) NOT NULL'||chr(10)
+         ||', EVENTTS TIMESTAMP (6) NOT NULL'||chr(10)
+         ||', INSERTTS TIMESTAMP (6) NOT NULL'||chr(10)
+         
+         ||', REPORTTYPE VARCHAR2(30) NOT NULL'||chr(10);
+  else
+    msg := 'exec drop_table('''||g_core_prefix||tab||''');'||chr(10)
+         ||'CREATE TABLE '||g_core_prefix||tab||chr(10)
+         ||'( IDEVENT NUMBER(23,0) NOT NULL'||chr(10)
+         ||', KEY NUMBER(23,0) NOT NULL'||chr(10)
+         ||', EVENTTS TIMESTAMP (6) NOT NULL'||chr(10)
+         ||', INSERTTS TIMESTAMP (6) NOT NULL'||chr(10);
+  end if;
+  return (msg);
+end;
+
+
+function data_declaration
+(p_column_name  in  varchar2
+,p_datatype     in  varchar2
+)
+return
+   varchar2
+is
+   big_sdatatype varchar2(30) := 'VARCHAR2(4000)';
+   sdatatype     varchar2(30) := 'VARCHAR2(250)';
+   
+   data_decl     varchar2(50) := '';
+begin
+  if p_datatype = g_xmltype
+  then
+     data_decl := ', '||p_column_name||' '||p_datatype||chr(10);
+  
+  elsif substr(p_column_name,1,2) = 'L_'
+        
+  or    p_column_name in ('MESSAGE','TEXT')
+  then
+     data_decl := ', '||p_column_name||' '||big_sdatatype||chr(10);
+  else
+     data_decl := ', '||p_column_name||' '||sdatatype||chr(10);
+  end if;
+  return data_decl;
+end;
+
+
+function msg_body(p_table in varchar2)
+return
+   varchar2
+is
+   msg varchar2(32000) := '';
+   tab varchar2(30) := upper(p_table);
+begin
+  if tab = g_bagfact_table or tab = g_bagfacthist_table
+  then
+    for c_rec in c_bagall loop
+      msg := msg||data_declaration(c_rec.column_name,g_varchar2);
+    end loop;
+  elsif tab = g_uldfact_table
+  then
+    for c_rec in c_uldall loop
+      msg := msg||data_declaration(c_rec.column_name,g_varchar2);
+    end loop;
+  else
+    
+    for c_rec in c_xmltype(tab) loop
+      msg := msg||data_declaration(c_rec.column_name,g_xmltype);
+    end loop;
+    
+    for c_rec in c_tab(tab) loop
+      msg := msg||data_declaration(c_rec.column_name,g_varchar2);
+    end loop;
+  end if;
+  return (msg);
+end;
+
+
+function msg_footer(p_table in varchar2)
+return
+   varchar2
+is
+   msg               varchar2(32000) := '';
+   tab               varchar2(30)    := upper(p_table);
+   l_pclause         varchar2(1000);
+   l_xmltype_clause  varchar2(1000);
+   l_pk              varchar2(30);
+   l_partcol         varchar2(30)    := 'EVENTTS';
+begin
+   if tab = g_bagfact_table
+   or tab = g_bagfacthist_table
+   then
+      l_pk := g_fact_prefix||tab;
+   else
+      l_pk := g_core_prefix||tab;
+   end if;
+   l_pk := substr(l_pk, 1, 27)||'_PK';
+
+   
+   for c_rec in c_xmltype(tab)
+   loop
+      l_xmltype_clause := l_xmltype_clause||' XMLTYPE '||c_rec.column_name||' STORE AS BINARY XML ( TABLESPACE LOGGING_SMALL ENABLE STORAGE IN ROW CACHE STORAGE ( INITIAL 8M NEXT 8M ) ) '||chr(10);
+   end loop;
+   
+   
+   if g_partitioning = 'Yes'
+   then
+      l_pclause := 'TABLESPACE USER_DATA PARTITION BY RANGE ('||l_partcol||') INTERVAL (NUMTODSINTERVAL(1,''DAY'')) '||chr(10)
+                 ||' STORE IN (USER_DATA) ( PARTITION P1 VALUES LESS THAN ( TIMESTAMP'' 2010-01-01 00:00:00'' ) STORAGE (INITIAL 512K NEXT 512K) );'||chr(10);
+      
+      case
+         when tab = 'APPLICATIONLOGDATA'
+         then
+            
+            msg := ', CONSTRAINT '||l_pk||' PRIMARY KEY (KEY,'||l_partcol||')'||chr(10)
+                 ||'USING INDEX TABLESPACE INDEX_DATA LOCAL PCTFREE 10 COMPUTE STATISTICS ) '||chr(10)||l_xmltype_clause||l_pclause;
+         else
+            
+            msg := ', CONSTRAINT '||l_pk||' PRIMARY KEY (KEY)'||chr(10)
+                 ||'USING INDEX TABLESPACE INDEX_DATA PCTFREE 10 COMPUTE STATISTICS ) '||chr(10)||l_xmltype_clause||l_pclause;
+      end case;
+   else
+      
+      msg := ', CONSTRAINT '||l_pk||' PRIMARY KEY (KEY)'||chr(10)
+           ||'USING INDEX TABLESPACE INDEX_DATA PCTFREE 10 COMPUTE STATISTICS ) '||chr(10)||l_xmltype_clause||'TABLESPACE USER_DATA;';
+   end if;
+ 
+   return (msg);
+end;
+
+procedure print_trigger(p_table in varchar2) is
+msg varchar2(32000) := '';
+tab varchar2(30) := upper(p_table);
+trg varchar2(30);
+vfbta_regexp varchar2(50) := '^1[0-9]{3}2794[0-9]{2}$';
+
+begin
+  begin
+    vfbta_regexp := cmn_common.get_parameter_value('VFBTA_REGEXP');
+  exception when others then
+    vfbta_regexp := '^1[0-9]{3}2794[0-9]{2}$';
+  end;
+
+  if tab in ( 'BAGGAGEEVENT'
+            , 'BAGLOADEVENT'
+            , 'BAGLOADRESPONSE'
+            , 'BATCHBAGREQUEST'
+            , 'BATCHINSTRUCTION'
+            , 'CAPTUREIMAGE'
+            , 'CAPTURERESULT'
+            , 'DEREGISTERPACKAGE'
+            , 'EJECTCOMMAND'
+            , 'HANDOVERDATAREPORT'
+            , 'IDCHANGEREPORT'
+            , 'LOADEXECUTIONREPORT'
+            , 'LOADINSTRUCTION'
+            , 'LOADREQUEST'
+            , 'PACKAGEDATA'
+            , 'PACKAGEDATASUBSCRIBE'
+            , 'PACKAGEDATASUBSCRIBERESPONS'
+            , 'PACKAGEINFO'
+            , 'PACKAGEINFOREQUEST'
+            , 'PACKAGEINSTRUCTION'
+            , 'PACKAGEREPORT'
+            , 'PROCESSSTATUSMESSAGE'
+            , 'REGISTERPACKAGE'
+            , 'STOREIMAGE'
+            , 'STORERESULT'
+            , 'TASKINSTRUCTION'
+            , 'TASKREPORT'
+            , 'TRACKINGREPORT'
+            , 'ORIGINALPACKAGEEVENT'
+            )  then
+
+    
+    trg := substr(g_core_prefix||tab,1,26)||'_TRG';
+    msg := 'CREATE OR REPLACE TRIGGER '||trg||chr(10)
+         ||'AFTER INSERT ON '||g_core_prefix||tab||' FOR EACH ROW'||chr(10)
+         ||'BEGIN'||chr(10)
+         
+         ||case when tab = 'PACKAGEDATA' then 'IF :new.targetprocessid LIKE ''%ODB%'' OR UPPER(:new.updatedindicator) = ''FALSE'' THEN RETURN; END IF;'||chr(10) end
+         ||case when tab = 'PACKAGEINFO' then 'IF :new.targetprocessid LIKE ''%ODB%'' THEN RETURN; END IF;'||chr(10) end
+         ||'INSERT INTO '||g_fact_prefix||g_bagfact_table||chr(10)
+         ||'( IDEVENT '||chr(10)
+         ||', KEY '||chr(10)
+         ||', EVENTTS'||chr(10)
+         ||', INSERTTS'||chr(10)
+         ||', REPORTTYPE'||chr(10);
+    for c_rec in c_tab(tab) loop
+      msg := msg||', '||c_rec.column_name||chr(10);
+    end loop;
+    msg := msg||') VALUES'||chr(10)
+              ||'( :new.IDEVENT '||chr(10)
+              ||', :new.KEY '||chr(10)
+              ||', :new.EVENTTS'||chr(10)
+              ||', :new.INSERTTS'||chr(10)
+              ||', '''||tab||''''||chr(10);
+    for c_rec in c_tab(tab) loop
+      msg := msg||', :new.'||c_rec.column_name||chr(10);
+    end loop;
+    msg := msg||');'||chr(10)
+              ||'END;'||chr(10)
+              ||'/'||chr(10)
+              ||'sho err'||chr(10);
+    dbms_output.put_line(msg);
+
+  elsif tab = g_bagfact_table then
+    
+    msg := 'CREATE OR REPLACE TRIGGER '||g_fact_prefix||tab||'_INS_TRG'||chr(10)
+           ||'BEFORE INSERT ON '||g_fact_prefix||tab||' FOR EACH ROW'||chr(10)
+           ||'DECLARE l_num NUMBER;'||chr(10)
+           ||'l_num3 NUMBER;'||chr(10)
+           ||'BEGIN'||chr(10)
+           ||'  :new.UPDATETS := sys_extract_utc(systimestamp);'||chr(10)
+           ||'  if :new.BID is not null then'||chr(10)
+           ||'    :new.XBID := :new.BID_EXTENSION||:new.BID;'||chr(10)
+           ||'  else'||chr(10)
+           ||'    if :new.BIRBID is not null then'||chr(10)
+           ||'      :new.XBID := :new.BIRBID_EXTENSION||:new.BIRBID;'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'  if :new.PID is not null then'||chr(10)
+           ||'    begin l_num := to_number(:new.PID); exception when others then l_num := 0; end;'||chr(10)
+           ||'    :new.XPID := l_num;'||chr(10)
+           ||'  else'||chr(10)
+           ||'    if :new.BIRPID is not null then'||chr(10)
+           ||'      begin l_num := to_number(:new.BIRPID); exception when others then l_num := 0; end;'||chr(10)
+           ||'      :new.XPID := l_num;'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'  if :new.LPC is not null and not REGEXP_LIKE(:new.LPC, '''||vfbta_regexp||''') then'||chr(10)
+           ||'    begin l_num := to_number(:new.LPC); exception when others then l_num := 0; end;'||chr(10)
+           ||'    :new.XLPC := l_num;'||chr(10)
+           ||'  else'||chr(10)
+           ||'    if :new.BIRLPC is not null and not REGEXP_LIKE(:new.BIRLPC, '''||vfbta_regexp||''') then'||chr(10)
+           ||'      begin l_num := to_number(:new.BIRLPC); exception when others then l_num := 0; end;'||chr(10)
+           ||'      :new.XLPC := l_num;'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'  if :new.REPORTTYPE in (''RECLAIMPACKAGEREPORT'', ''PACKAGEREPORT'') and :new.L_BAGGAGETAG is not null then'||chr(10)
+           ||'    l_num3 := ((length(:new.L_BAGGAGETAG))-(length(replace(:new.L_BAGGAGETAG, ''LPC='', ''''))))/4;'||chr(10)
+           ||'    if l_num3=1 then'||chr(10)
+           ||'      :new.XLPC := substr(:new.L_BAGGAGETAG,5,10);'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'END;'||chr(10)
+           ||'/'||chr(10)
+           ||'sho err'||chr(10);
+    dbms_output.put_line(msg);
+    msg := 'CREATE OR REPLACE TRIGGER '||g_fact_prefix||tab||'_UPD_TRG'||chr(10)
+           
+           
+           
+           
+           ||'BEFORE UPDATE OF SUMMARIZED,BAGRUNID,XBID,XLPC,XPID ON FACT_BAGTRACE FOR EACH ROW'||chr(10)
+           ||'BEGIN'||chr(10)
+           ||'  if UPDATING (''SUMMARIZED'') then'||chr(10)
+           ||'    if :OLD.SUMMARIZED <> :NEW.SUMMARIZED then'||chr(10)
+           ||'      :new.UPDATETS := sys_extract_utc(systimestamp);'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'  if UPDATING (''BAGRUNID'') then'||chr(10)
+           ||'    if nvl(:OLD.BAGRUNID,0) <> nvl(:NEW.BAGRUNID,0) then'||chr(10)
+           ||'      :new.UPDATETS := sys_extract_utc(systimestamp);'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'  if UPDATING (''XBID'') then'||chr(10)
+           ||'    if nvl(:OLD.XBID,''-'') <> nvl(:NEW.XBID,''-'') then'||chr(10)
+           ||'      :new.UPDATETS := sys_extract_utc(systimestamp);'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'  if UPDATING (''XLPC'') then'||chr(10)
+           ||'    if nvl(:OLD.XLPC,0) <> nvl(:NEW.XLPC,0) then'||chr(10)
+           ||'      :new.UPDATETS := sys_extract_utc(systimestamp);'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'  if UPDATING (''XPID'') then'||chr(10)
+           ||'    if nvl(:OLD.XPID,0) <> nvl(:NEW.XPID,0) then'||chr(10)
+           ||'      :new.UPDATETS := sys_extract_utc(systimestamp);'||chr(10)
+           ||'    end if;'||chr(10)
+           ||'  end if;'||chr(10)
+           ||'END;'||chr(10)
+           ||'/'||chr(10)
+           ||'sho err'||chr(10);
+    dbms_output.put_line(msg);
+
+  elsif tab in ('ULDREPORT','ULDPROCESSSTATUSREPORT'
+               ,'ULDLOGISTICTRACKINGREPORT','ULDINSTRUCTION','ULDHANDOVERREPORT') then
+    
+    trg := substr(g_core_prefix||tab,1,26)||'_TRG';
+    msg := 'CREATE OR REPLACE TRIGGER '||trg||chr(10)
+         ||'AFTER INSERT ON '||g_core_prefix||tab||' FOR EACH ROW'||chr(10)
+         ||'BEGIN'||chr(10)
+         ||'INSERT INTO '||g_fact_prefix||g_uldfact_table||chr(10)
+         ||'( IDEVENT '||chr(10)
+         ||', KEY '||chr(10)
+         ||', EVENTTS'||chr(10)
+         ||', INSERTTS'||chr(10)
+         ||', REPORTTYPE'||chr(10);
+    for c_rec in c_tab(tab) loop
+      msg := msg||', '||c_rec.column_name||chr(10);
+    end loop;
+    msg := msg||') VALUES'||chr(10)
+              ||'( :new.IDEVENT '||chr(10)
+              ||', :new.KEY '||chr(10)
+              ||', :new.EVENTTS'||chr(10)
+              ||', :new.INSERTTS'||chr(10)
+              ||', '''||tab||''''||chr(10);
+    for c_rec in c_tab(tab) loop
+      msg := msg||', :new.'||c_rec.column_name||chr(10);
+    end loop;
+    msg := msg||');'||chr(10)
+              ||'END;'||chr(10)
+              ||'/'||chr(10)
+              ||'sho err'||chr(10);
+    dbms_output.put_line(msg);
+  elsif tab in ('ULDTRANSPORTREQUEST') then
+    
+    
+    trg := substr(g_core_prefix||tab,1,26)||'_TRG';
+    msg := 'CREATE OR REPLACE TRIGGER '||trg||chr(10)
+         ||'AFTER INSERT ON '||g_core_prefix||tab||' FOR EACH ROW'||chr(10)
+         ||'BEGIN'||chr(10)
+         ||'IF :new.ULDRequest <> ''DELIVER_EMPTY_ULD'' THEN'||chr(10)
+         ||'INSERT INTO '||g_fact_prefix||g_uldfact_table||chr(10)
+         ||'( IDEVENT '||chr(10)
+         ||', KEY '||chr(10)
+         ||', EVENTTS'||chr(10)
+         ||', INSERTTS'||chr(10)
+         ||', REPORTTYPE'||chr(10);
+    for c_rec in c_tab(tab) loop
+      msg := msg||', '||c_rec.column_name||chr(10);
+    end loop;
+    msg := msg||') VALUES'||chr(10)
+              ||'( :new.IDEVENT '||chr(10)
+              ||', :new.KEY '||chr(10)
+              ||', :new.EVENTTS'||chr(10)
+              ||', :new.INSERTTS'||chr(10)
+              ||', '''||tab||''''||chr(10);
+    for c_rec in c_tab(tab) loop
+      msg := msg||', :new.'||c_rec.column_name||chr(10);
+    end loop;
+    msg := msg||');'||chr(10)
+              ||'END IF;'||chr(10)
+              ||'END;'||chr(10)
+              ||'/'||chr(10)
+              ||'sho err'||chr(10);
+    dbms_output.put_line(msg);
+
+  elsif tab = g_uldfact_table then
+    
+    msg := 'CREATE OR REPLACE TRIGGER '||g_fact_prefix||tab||'_INS_TRG'||chr(10)
+           ||'BEFORE INSERT ON '||g_fact_prefix||tab||' FOR EACH ROW'||chr(10)
+           ||'BEGIN'||chr(10)
+           
+           ||'  :new.FLIGHTNR := nvl(:new.FLIGHTNR, trim(:new.AIRLINE)||trim(:new.FLIGHTNUMBER));'||chr(10)
+           ||'END;'||chr(10)
+           ||'/'||chr(10)
+           ||'sho err'||chr(10);
+    dbms_output.put_line(msg);
+    
+  end if;
+end;
+
+procedure print_all is
+begin
+  
+  print_create_table('BAGTRACE');
+  print_create_table('BAGTRACE_HIST');
+
+  
+  print_create_table('BAGGAGEEVENT');
+  print_create_table('BAGLOADEVENT');
+  print_create_table('BAGLOADRESPONSE');
+  print_create_table('BATCHBAGREQUEST');
+  print_create_table('BATCHINSTRUCTION');
+  print_create_table('CAPTUREIMAGE');
+  print_create_table('CAPTURERESULT');
+  print_create_table('DEREGISTERPACKAGE');
+  print_create_table('EJECTCOMMAND');
+  print_create_table('IATA');
+  print_create_table('HANDOVERDATAREPORT');
+  print_create_table('IDCHANGEREPORT');
+  print_create_table('LOADEXECUTIONREPORT');
+  print_create_table('LOADINSTRUCTION');
+  print_create_table('LOADREQUEST');
+  print_create_table('PACKAGEDATA');
+  print_create_table('PACKAGEDATASUBSCRIBE');
+  print_create_table('PACKAGEDATASUBSCRIBERESPONS');
+  print_create_table('PACKAGEINFO');
+  print_create_table('PACKAGEINFOREQUEST');
+  print_create_table('PACKAGEINSTRUCTION');
+  print_create_table('PACKAGEREPORT');
+  print_create_table('PROCESSSTATUSMESSAGE');
+  print_create_table('REGISTERPACKAGE');
+  print_create_table('ROUTINGTABLEUPDATE');
+  print_create_table('STOREIMAGE');
+  print_create_table('STORERESULT');
+  print_create_table('TASKINSTRUCTION');
+  print_create_table('TASKREPORT');
+  print_create_table('TRACKINGREPORT');
+  print_create_table('ORIGINALPACKAGEEVENT');
+
+  
+  print_create_table('ULDTRACE');
+  
+  
+  print_create_table('ULDTRANSPORTREQUEST');
+  print_create_table('ULDREPORT');
+  print_create_table('ULDPROCESSSTATUSREPORT');
+  print_create_table('ULDLOGISTICTRACKINGREPORT');
+  print_create_table('ULDINSTRUCTION');
+  print_create_table('ULDHANDOVERREPORT');
+
+  
+  print_create_table('APPLICATIONLOGDATA');
+  print_create_table('APPLICATIONSTATUSREPORT');
+  print_create_table('APPLICATIONVERSIONREPORT');
+  print_create_table('AUDITLOGDATA');
+  print_create_table('AVAILABILITYREPORT');
+  print_create_table('BAGSINSEGMENT');
+  print_create_table('BAGSORTCONTROLUPDATE');
+  print_create_table('BAGSREPORT');
+  print_create_table('BATCHCOMMAND');
+  print_create_table('BATCHOVERVIEWREQUEST');
+  print_create_table('BATCHOVERVIEWRESPONSE');
+  print_create_table('BATCHREPORT');
+  print_create_table('BATCHRESOURCECONFIGCOMMAND');
+  print_create_table('BATCHRESOURCECONFIGUPDATE');
+  print_create_table('BATCHTASKCOMMAND');
+  print_create_table('BATCHTASKUPDATE');
+  print_create_table('BATCHTRANSPORTREPORT');
+  print_create_table('BATCHULDINSTRUCTION');
+  print_create_table('BATCHULDOVERVIEWREQUEST');
+  print_create_table('BATCHULDOVERVIEWRESPONSE');
+  print_create_table('BATCHULDREPORT');
+  print_create_table('BATCHUPDATE');
+  print_create_table('CAPACITYINFLUENCEOVERVIEWRE');
+  print_create_table('CAPACITYINSTRUCTION');
+  print_create_table('CAPACITYREPORT');
+  print_create_table('CRANEORDER');
+  print_create_table('CRANEPREFERENCELIST');
+  print_create_table('CRANEREPLY');
+  print_create_table('EBSLANESTATUSREPORT');
+  print_create_table('EMPTYLANEINSTRUCTION');
+  print_create_table('ELAPPLICATIONLOGDATA');
+  print_create_table('ELINITSYNC');
+  print_create_table('ELLIFESIGNREQUEST');
+  print_create_table('ELLIFESIGNRESPONSE');
+  print_create_table('ELINTERFACELOGDATA');
+  print_create_table('EQUIPMENTEVENTREPORT');
+  print_create_table('FLIGHTDATARECORDMESSAGE');
+  print_create_table('FLIGHTDATAREQUESTMESSAGE');
+  print_create_table('FLIGHTPLANENDMESSAGE');
+  print_create_table('FLIGHTPLANREQUESTMESSAGE');
+  print_create_table('FLIGHTPLANSTARTMESSAGE');
+  print_create_table('FLIGHTQUERYRESPONSEMESSAGE');
+  print_create_table('FLIGHTSCHEDULE');
+  print_create_table('FLIGHTUPDATEMESSAGE');
+  print_create_table('FLIGHTUPDATERESPONSEMESSAGE');
+  print_create_table('FLOWCONTROLSYSTEMSTATUS');
+  print_create_table('HANDLINGAREASTATUSOVERRIDE');
+  print_create_table('HANDLINGAREASTATUSREPORT');
+  print_create_table('IATA_AIDX_FLIGHTLEGNOTIFRQ');
+  print_create_table('IATA_AIDX_FLIGHTLEGRQ');
+  print_create_table('IATA_AIDX_FLIGHTLEGRS');
+  print_create_table('ICSMAINTENANCEREPLY');
+  print_create_table('ICSMAINTENANCEREQUEST');
+  print_create_table('ICSEXCEPTIONTRACE');
+  print_create_table('INFLUENCERULEOVERVIEWREPORT');
+  print_create_table('INTERFACELOGDATA');
+  print_create_table('ITEMSREQUEST');
+  print_create_table('LIFESIGNREQUEST');
+  print_create_table('LIFESIGNRESPONSE');
+  print_create_table('NODEAVAILABILITYOVERVIEWREP');
+  print_create_table('OPERATIONSTATUSMESSAGE');
+  print_create_table('POTENTIALBATCHOVERVIEW');
+  print_create_table('PROCESSEVENTREPORT');
+  print_create_table('PROCESSPLANREQUEST');
+  print_create_table('PROCESSPLANMESSAGE');
+  print_create_table('PROCESSSTATISTICALREPORT');
+  print_create_table('RELEASECONTROLUPDATE');
+  print_create_table('SEGMENTPERFORMANCEREPORT');
+  print_create_table('SEGMENTSTATUSOVERVIEWREPORT');
+  print_create_table('SEGMENTSTATUSREPORT');
+  print_create_table('SMTPMESSAGE');
+  print_create_table('SORTCONTROLUPDATE');
+  print_create_table('STATISTICALDATA');
+  print_create_table('STATISTICALREPORT');
+  print_create_table('STATUSREPORT');
+  print_create_table('TRANSPORTDIRECTIONREPORT');
+  print_create_table('TUBRELEASEREQUEST');
+  print_create_table('TUBSREPORT');
+  print_create_table('ORIGINALEQUIPMENTEVENT');
+
+end;
+
+begin
+  
+  g_partitioning := is_partitioning_available;
+  
+end gen_core_tables;
+/

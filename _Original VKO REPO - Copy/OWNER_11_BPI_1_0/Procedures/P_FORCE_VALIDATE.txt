@@ -1,0 +1,23 @@
+procedure p_force_validate (p_log_it in boolean default false) is
+  v_msg       varchar2(2000) := '';
+  v_obj_type  varchar2(  30) := '';
+  v_cursor    integer;
+  v_return    integer;
+  cursor c_obj is select * from user_objects
+                  where status = 'INVALID'
+				  and not ((object_type like 'JAVA%') and (instr(object_name,'/') > 0));
+begin
+  for c_rec in c_obj loop
+    begin
+      dbms_utility.validate(c_rec.object_id);
+    exception  when others then
+      v_msg := 'ERROR: Validating '||c_rec.object_name||': '||sqlerrm;
+      if p_log_it then
+        plog(v_msg, 'error');
+      else
+        dbms_output.put_line(v_msg);
+      end if;
+    end;
+  end loop;
+end;
+/

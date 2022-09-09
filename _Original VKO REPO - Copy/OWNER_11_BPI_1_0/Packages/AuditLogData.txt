@@ -1,0 +1,130 @@
+create or replace PACKAGE AuditLogData
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'AuditLogData';
+
+
+   PROCEDURE summarize_user_actions;
+
+END AuditLogData;
+/
+
+
+
+
+package body auditlogdata
+is
+
+
+procedure summarize_user_actions is
+l_con_proc constant varchar2(61) := g_con_package||'.SUMMARIZE_USER_ACTIONS';
+l_max_id number := 0;
+l_maxrecs number;
+l_curr_id number := 0;
+l_count number := 0;
+l_msg varchar2(4000);
+l_conf_rec metric_config%rowtype;
+nid number(5);
+nresult number(1);
+l_eventtime varchar2(250);
+l_sourceprocessid  varchar2(250);
+
+cursor c_user_actions(c_id number, c_maxrecs number) is
+select * from
+( select
+    key, eventts, auditevent, auditvalue, ipaddress, upper(operatorid) as operatorid, sourceprocessid
+  from wc_auditlogdata
+  where key > c_id
+  order by key
+) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                            , i_calling_procedure  => l_con_proc
+                            , i_severity           => viu_info.c_severity_notification
+                            , i_info_arguments     => null
+                            , i_additional_data    => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.' );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_auditlogdata;
+
+        viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure      => l_con_proc
+                              , i_severity               => viu_info.c_severity_notification
+                              , i_info_arguments         => null
+                              , i_additional_data        => l_con_proc||' STARTED. Processing audit logdata with ID greater than '||to_char(l_max_id) );
+        for c_rec in c_user_actions(l_max_id, l_maxrecs) loop
+          l_curr_id         := c_rec.key;
+          l_sourceprocessid := c_rec.sourceprocessid;
+          l_eventtime       := c_rec.eventts;
+          begin
+            insert into fact_auditlogdata
+                ( id
+                , eventts
+                , insertts
+                , updatets
+                , event
+                , auditvalue
+                , operatorid
+                , ipaddress
+                , sourceprocess
+                )
+                values
+                ( c_rec.key 
+                , c_rec.eventts 
+                , sys_extract_utc(systimestamp) 
+                , sys_extract_utc(systimestamp) 
+                , c_rec.auditevent
+                , c_rec.auditvalue
+                , c_rec.operatorid
+                , c_rec.ipaddress
+                , c_rec.sourceprocessid
+                );
+          end;
+          
+          commit;
+          l_count := l_count + 1;
+        end loop;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc||' finished successfully. Processed '||to_char(l_count)||' user actions.'
+                         );
+      exception when others then
+        l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)
+        ||', SourceProcessID: '||l_sourceprocessid||', Eventtime: '||l_eventtime
+        ||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+    bpi_log.raise_fatal_error(l_con_proc, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+end auditlogdata;
+/

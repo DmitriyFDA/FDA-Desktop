@@ -1,0 +1,412 @@
+create or replace PACKAGE bsis_lifesign
+AUTHID DEFINER
+AS
+/******************************************************************************
+   NAME:       BSIS_LIFESIGN
+   PURPOSE:
+
+   REVISIONS:
+   Ver        Date        Author           Description
+   ---------  ----------  ---------------  ------------------------------------
+   1.0        25-11-2010  nlsbi            Created this package
+   2          03-04-2020  nlmv2            Renamed procedure: monitor_lifesigns
+   3          20-03-2020  nlmv2            vbss-200: Code optimization, documentation
+******************************************************************************/
+  /* 
+  ** Handles received lifesign messages
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE handle_lifesign(i_msg IN XMLTYPE);
+  /*
+  ** Sends a lifesign message
+  */
+  PROCEDURE send_lifesign
+    (i_pty_id_cust IN cmn_parties.id_cust%TYPE
+    ,i_pty_id      IN cmn_parties.id%TYPE
+    );
+  /*
+  ** Update the party status table (BSIS_PARTY_STATUS).
+  ** Sets the timestamp of the last message sent to this party.
+  */
+  PROCEDURE update_last_msg_sent
+    (i_pty_id_cust IN cmn_parties.id_cust%TYPE
+    ,i_pty_id      IN cmn_parties.id%TYPE := NULL
+    );
+  /*
+  ** Update the party status table (BSIS_PARTY_STATUS).
+  ** Sets the timestamp of the last message received from a party.
+  */
+  PROCEDURE update_last_msg_received
+    (i_pty_id_cust IN cmn_parties.id_cust%TYPE
+    ,i_pty_id      IN cmn_parties.id%TYPE
+    );
+  /*
+  ** Monitors the status.
+  ** when when no msg received for <<parametervalue>> seconds: set offline and detailed state 
+  ** when last msg received within last <<parametervalue>> seconds: set online and no detailed state 
+  */
+  PROCEDURE monitor_lifesign_status;
+  /*
+  ** Execute the standard CMN library lifesign request handler, but take into account
+  ** whether BSIS is in ACTIVE- or BACKUP-mode
+  ** This procedure may be configured as message handler (in table CMN_PARTY_MSG_DEFINITIONS)
+  */
+  PROCEDURE hdl_lifesign_request(i_msg IN XMLTYPE);
+  --
+END bsis_lifesign;
+/
+
+
+
+
+package body bsis_lifesign
+as
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  g_con_package   constant varchar2 (13) := 'bsis_lifesign';
+
+  
+
+
+
+  procedure handle_lifesign (i_msg in xmltype)
+  is
+    l_con_proc_name    constant cmn_constant.st_proc_name
+                                  := g_con_package || '.handle_lifesign' ;
+    
+    l_source           cmn_parties.id_cust%type;
+    l_party_status_row bsis_party_status%rowtype;
+    l_pty_id           cmn_parties.id%type;
+    l_msg_type         varchar2(100);
+  begin
+    
+    l_msg_type := cmn_interface.get_message_name ( i_message      => i_msg );
+    l_source   := bsis_interface.get_src_pcs_id  ( i_pmd_name     => null
+                                                 , i_msg          => i_msg
+                                                 , i_root_element => l_msg_type
+                                                 );
+  
+    
+    select pty.id
+      into l_pty_id
+      from cmn_parties pty
+     where pty.id_cust = l_source;
+    
+
+
+
+    if cmn_interface.get_message_name (i_message => i_msg) != bsis_constant.g_con_msg_type_lifesign
+    then
+      cmn_lifesignresponse.hdl_response ( i_message => i_msg );
+    end if;
+    
+    if bsis_pst_tapi_pck.pst_select_row_upd (
+          i_pst_pty_id   => l_pty_id,
+          o_rt_pst       => l_party_status_row)
+    then
+      l_party_status_row.last_message_received := cmn_common.default_timestamp;
+  
+      if bsis_pst_tapi_pck.pst_update_row (
+           i_pst_pty_id => l_party_status_row.pty_id,
+           io_rt_pst    => l_party_status_row) <> 1
+      then
+        viu_info.handle_info (
+           i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+           i_calling_procedure   => l_con_proc_name,
+           i_info_arguments      => 'Message: '
+                                 || substr (i_msg.getclobval, 0, 1000),
+           i_additional_data     =>   'Update row id '
+                                 || l_party_status_row.pty_id
+                                 || ' failed');
+       end if;
+    end if;
+    
+    commit;
+  exception
+    when others
+    then
+       rollback;
+       viu_info.raise_info (i_calling_procedure   => l_con_proc_name,
+                            i_additional_data     => sqlerrm);
+  end handle_lifesign;
+  
+  
+
+
+  procedure send_lifesign (i_pty_id_cust in cmn_parties.id_cust%type
+                         ,i_pty_id      in cmn_parties.id%type
+                         )
+  is
+    l_con_proc_name    constant cmn_constant.st_proc_name
+                                  := g_con_package || '.send_lifesign' ;
+    l_lifesign_message xmltype;
+  begin
+    l_lifesign_message := cmn_interface.add_header
+                            (i_message          => xmltype('<Lifesign></Lifesign>')
+                            ,i_source_processid => null 
+                            ,i_target_processid => i_pty_id_cust
+                            );
+    begin
+      cmn_interface.send_message ( i_message     => l_lifesign_message
+                                 , i_pty_id_cust => i_pty_id_cust
+                                 );
+      
+      update_last_msg_sent ( i_pty_id_cust => i_pty_id_cust
+                           , i_pty_id      => i_pty_id
+                           );
+    exception
+      when others
+      then
+         rollback;
+         viu_info.handle_info (i_calling_procedure => l_con_proc_name
+                              ,i_additional_data   => 'SEND MESSAGE failed'
+                              );
+    end;
+  exception
+    when others
+    then
+       rollback;
+       viu_info.handle_info (i_calling_procedure => l_con_proc_name, i_additional_data => sqlerrm);
+  end send_lifesign;
+  
+  
+
+
+
+  procedure update_last_msg_received
+    (i_pty_id_cust in cmn_parties.id_cust%type
+    ,i_pty_id      in cmn_parties.id%type
+    )
+  is
+    l_con_proc_name    constant cmn_constant.st_proc_name
+                                := g_con_package || '.update_last_msg_received' ;
+    l_party_status_row bsis_party_status%rowtype;
+  begin
+    
+    if bsis_pst_tapi_pck.pst_select_row_upd (
+          i_pst_pty_id   => i_pty_id,
+          o_rt_pst       => l_party_status_row)
+    then
+      l_party_status_row.last_message_received := cmn_common.default_timestamp;
+      
+      if bsis_pst_tapi_pck.pst_update_row (
+           i_pst_pty_id => l_party_status_row.pty_id,
+           io_rt_pst    => l_party_status_row) <> 1
+      then
+        viu_info.handle_info (
+           i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+           i_calling_procedure   => l_con_proc_name,
+           i_info_arguments      => 'Party' || i_pty_id_cust,
+           i_additional_data     =>   'Update row id '
+                                   || l_party_status_row.pty_id
+                                   || ' failed');
+      end if;
+    end if;
+    
+    commit;
+  exception
+    when others
+    then
+      viu_info.handle_info (
+         i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+         i_calling_procedure   => l_con_proc_name,
+         i_info_arguments      => sqlerrm,
+         i_additional_data     =>   'Update lifesign party '
+                               || i_pty_id
+                               || 'failed');
+  end update_last_msg_received;
+  
+  
+
+
+
+  procedure update_last_msg_sent
+    (i_pty_id_cust in cmn_parties.id_cust%type
+    ,i_pty_id      in cmn_parties.id%type := null
+    )
+  is
+    l_con_proc_name    constant cmn_constant.st_proc_name
+                        := g_con_package || '.update_last_msg_sent' ;
+    l_party_status_row  bsis_party_status%rowtype;
+    l_pty_id_cust       cmn_parties.id_cust%type;
+    l_pty_id            cmn_parties.id%type;
+  begin
+    if i_pty_id is null
+    then
+      
+      select pty.id
+      into   l_pty_id
+      from   cmn_parties pty
+      where  pty.id_cust = i_pty_id_cust;
+    else
+      l_pty_id := i_pty_id;
+    end if;
+    
+    
+    if bsis_pst_tapi_pck.pst_select_row_upd
+           ( i_pst_pty_id   => l_pty_id
+           , o_rt_pst       => l_party_status_row
+           )
+    then
+      l_party_status_row.last_message_sent := cmn_common.default_timestamp;
+      
+      if bsis_pst_tapi_pck.pst_update_row (
+            i_pst_pty_id => l_party_status_row.pty_id,
+            io_rt_pst    => l_party_status_row) <> 1
+      then
+         viu_info.handle_info (
+            i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+            i_calling_procedure   => l_con_proc_name,
+            i_info_arguments      => 'Party' || i_pty_id_cust,
+            i_additional_data     =>   'Update row id '
+                                    || l_party_status_row.pty_id
+                                    || ' failed');
+      end if;
+    end if;
+  
+  
+    commit;
+  exception
+    when others
+    then
+       viu_info.handle_info (
+          i_ifo_nr              => viu_constant.c_ifo_updatefailed,
+          i_calling_procedure   => l_con_proc_name,
+          i_info_arguments      => sqlerrm,
+          i_additional_data     =>   'Update lifesign party '
+                                  || i_pty_id_cust
+                                  || 'failed');
+  end update_last_msg_sent;
+  
+  
+
+
+
+
+  procedure monitor_lifesign_status
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name
+                                 := g_con_package || '.monitor_lifesigns' ;
+    l_pty_id_cust              cmn_parties.id_cust%type;
+    l_party_status_row         bsis_party_status%rowtype;
+    l_lifesign_timeout         number (5);
+    l_all_parties_online       boolean;
+    
+    cursor c_party_status (b_timeout in number)
+    is
+      select pst.pty_id,
+             pst.status,
+             case
+                when nvl(pst.last_message_received,(cmn_common.default_timestamp - numtodsinterval (b_timeout*2 + 5, 'SECOND'))) <
+                        (cmn_common.default_timestamp - numtodsinterval (b_timeout*2, 'SECOND'))
+                then
+                   'EXPIRED'
+                else
+                   'VALID'
+             end lst_msg
+        from bsis_party_status pst;
+  begin
+    l_all_parties_online := true;
+    
+    l_lifesign_timeout := cmn_common.get_parameter_value ('LIFESIGN_TIMEOUT');
+    
+    <<loop_bsis_party_status>>
+    for r_party_status in c_party_status (l_lifesign_timeout)
+    loop
+    
+      if bsis_pst_tapi_pck.pst_select_row_upd ( i_pst_pty_id   => r_party_status.pty_id
+                                              , o_rt_pst       => l_party_status_row
+                                              )
+      then
+        
+        if r_party_status.lst_msg = 'VALID'
+        then
+          l_party_status_row.status := 'ONLINE';
+        else
+          l_party_status_row.status := 'OFFLINE';
+        end if;
+    
+        if bsis_pst_tapi_pck.pst_update_row ( i_pst_pty_id   => r_party_status.pty_id
+                                            , io_rt_pst      => l_party_status_row
+                                            ) <> 1
+        then
+          select pty.id_cust
+            into l_pty_id_cust
+            from cmn_parties pty
+           where pty.id = r_party_status.pty_id;
+           
+           viu_info.handle_info ( i_ifo_nr            => viu_constant.c_ifo_updatefailed
+                                , i_calling_procedure => l_con_proc_name
+                                , i_info_arguments    => 'Party' || l_pty_id_cust
+                                , i_additional_data   => 'Update row id '||r_party_status.pty_id|| ' failed'
+                                );
+        end if;
+      end if;
+      
+      if r_party_status.lst_msg != 'VALID'
+      then
+        l_all_parties_online  := false;
+      end if;
+    end loop loop_bsis_party_status;
+    
+    if l_all_parties_online then
+      
+      acl_application_control.clear_detailed_state ( i_dsd_name   => l_party_status_row.dsd_name
+                                                   , i_aet_id     => null
+                                                   );
+    else
+      
+      acl_application_control.set_detailed_state ( i_dsd_name   => l_party_status_row.dsd_name
+                                                 , i_aet_id     => null
+                                                 );
+    end if;
+    commit;
+  exception
+    when others
+    then
+      rollback;
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end monitor_lifesign_status;
+  
+  
+
+
+
+
+  procedure hdl_lifesign_request(i_msg in xmltype)
+  is
+    l_con_proc_name   constant cmn_constant.st_proc_name
+                                  := g_con_package || '.hdl_lifesign_request' ;
+  begin
+    if bsis_interface.active_mode
+    then
+      cmn_lifesignrequest.hdl_request(i_message => i_msg);
+    end if;
+  exception
+    when others
+    then
+      rollback;
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+  end hdl_lifesign_request;
+  
+end bsis_lifesign;
+/

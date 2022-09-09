@@ -1,0 +1,11 @@
+function ts2str(ts in timestamp) return varchar2 is
+s varchar2(50);
+begin
+  if ts is null then return '-'; end if;
+  
+  s := to_char(ts, 'DD-MM-YYYY HH24:MI:SS');
+  return s;
+exception when others then
+  return 'ts2str error:'||sqlerrm;
+end;
+/

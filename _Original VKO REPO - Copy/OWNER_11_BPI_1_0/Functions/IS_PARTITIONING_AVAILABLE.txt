@@ -1,0 +1,16 @@
+function is_partitioning_available return varchar2 is
+v_partitioning varchar2(20) := '???';
+begin
+  
+                   
+  begin
+    select decode(count(*), 0, 'No', 'Yes') into v_partitioning
+    from ( select 1 from all_part_tables
+           where owner not in ('SYSMAN', 'SH', 'SYS', 'SYSTEM') and rownum = 1 );
+  exception when others then
+    
+    v_partitioning := 'Unknown';
+  end;
+  return v_partitioning;  
+end;
+/

@@ -1,0 +1,11 @@
+function str_to_num(str in varchar2) return number is
+n number(23,6) := 0;
+begin
+  if str is null then return null; end if;
+  n := to_number(str);
+  return n;
+exception when others then
+  
+  return 0;
+end;
+/

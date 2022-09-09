@@ -1,0 +1,402 @@
+create or replace PACKAGE VIU_TRANSACTION IS
+
+/* Give current date/time within a transaction */
+FUNCTION CURRENT_DATETIME
+ RETURN TIMESTAMP;
+PRAGMA RESTRICT_REFERENCES (CURRENT_DATETIME, WNDS, WNPS);
+/* Set the value for v_current_datetime */
+PROCEDURE SET_CURRENT_DATETIME
+ (I_CURRENT_DATETIME IN TIMESTAMP
+ );
+/* Interface to v_master_procedure */
+FUNCTION MASTER_PROCEDURE
+ RETURN VARCHAR2;
+PRAGMA RESTRICT_REFERENCES (MASTER_PROCEDURE, WNDS, WNPS);
+/* Set the value for v_master_procedure */
+PROCEDURE SET_MASTER_PROCEDURE
+ (I_MASTER_PROCEDURE IN VARCHAR2
+ );
+/* Interface to v_initialized */
+FUNCTION INITIALIZED
+ RETURN BOOLEAN;
+PRAGMA RESTRICT_REFERENCES (INITIALIZED, WNDS, WNPS);
+/* Set the value for v_initialized */
+PROCEDURE SET_INITIALIZED
+ (I_INITIALIZED IN BOOLEAN
+ );
+/* Start for a transaction */
+PROCEDURE START_TRANSACTION
+ (I_PROCEDURE IN VARCHAR2
+ ,I_ACTION IN NUMBER := NULL
+ ,I_AUTONOMOUS IN BOOLEAN := TRUE
+ );
+/* End a transaction with COMMIT or ROLLBACK */
+PROCEDURE END_TRANSACTION
+ (I_PROCEDURE IN VARCHAR2
+ ,I_SUCCESS IN BOOLEAN
+ ,I_AUTONOMOUS IN BOOLEAN := TRUE
+ );
+/* Give date/time within last transaction */
+FUNCTION LAST_DATETIME
+ RETURN TIMESTAMP;
+PRAGMA RESTRICT_REFERENCES (LAST_DATETIME, WNDS, WNPS);
+/* Initialize global-settings for a transaction */
+PROCEDURE INIT_TRANSACTION
+ (I_ACTION IN NUMBER := NULL
+ );
+/* De-initialize global-settings for a transaction */
+PROCEDURE RESET_TRANSACTION;
+/* Current tansaction timestamp in UTC */
+FUNCTION CURRENT_TIMESTAMP_UTC
+ RETURN TIMESTAMP WITH TIME ZONE;
+/* Current tansaction date/time in UTC */
+FUNCTION CURRENT_DATETIME_UTC
+ RETURN date;
+/* Current tansaction timestamp in local time */
+FUNCTION CURRENT_TIMESTAMP_LOCAL
+ RETURN TIMESTAMP WITH TIME ZONE;
+/* Current tansaction date/time in local time */
+FUNCTION CURRENT_DATETIME_LOCAL
+ RETURN date;
+/* Returns the current dbtimezone. */
+FUNCTION GET_DBTIMEZONE
+ RETURN VARCHAR2;
+END VIU_TRANSACTION;
+/
+
+
+
+
+package body viu_transaction is
+
+v_dbtimezone varchar2(100);
+
+v_current_datetime timestamp;
+
+v_master_procedure varchar2(100);
+
+v_initialized boolean := false;
+
+
+
+function current_datetime
+ return timestamp
+ is
+
+
+
+
+
+begin
+if viu_transaction.initialized then
+  return v_current_datetime;
+else
+  return sys_extract_utc(systimestamp);
+end if;
+end current_datetime;
+
+procedure set_current_datetime
+ (i_current_datetime in timestamp
+ )
+ is
+begin
+v_current_datetime := i_current_datetime;
+end set_current_datetime;
+
+function master_procedure
+ return varchar2
+ is
+begin
+return v_master_procedure;
+end master_procedure;
+
+procedure set_master_procedure
+ (i_master_procedure in varchar2
+ )
+ is
+begin
+v_master_procedure := i_master_procedure;
+end set_master_procedure;
+
+function initialized
+ return boolean
+ is
+begin
+return v_initialized;
+end initialized;
+
+procedure set_initialized
+ (i_initialized in boolean
+ )
+ is
+begin
+v_initialized := i_initialized;
+end set_initialized;
+
+procedure start_transaction
+ (i_procedure in varchar2
+ ,i_action in number := null
+ ,i_autonomous in boolean := true
+ )
+ is
+
+
+c_proc constant varchar2(100) := 'viu_transaction.start_transaction';
+begin
+viu_trace.enter(c_proc);
+
+if not viu_transaction.initialized then
+  
+  viu_transaction.init_transaction(i_action => i_action);
+  viu_transaction.set_master_procedure(i_procedure);
+
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_transactioninit
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_debug
+                         ,i_info_arguments    => i_procedure
+                         ,i_autonomous        => i_autonomous
+                         ,i_additional_data   => 'Action: ['||viu_action.description(i_action)||']');
+                         
+  viu_module.increase_nesting_level;
+else
+  
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_transactioninitalready
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_debug
+                         ,i_info_arguments    => viu_transaction.master_procedure
+                         ,i_additional_data   => 'Procedure trying to start new transaction: ['||i_procedure||']'
+                         ,i_autonomous        => i_autonomous);
+
+end if;
+
+viu_trace.leave;
+
+exception
+  when others then
+    viu_trace.leave;
+    raise;
+end start_transaction;
+
+procedure end_transaction
+ (i_procedure in varchar2
+ ,i_success in boolean
+ ,i_autonomous in boolean := true
+ )
+ is
+
+
+c_proc constant varchar2(100) := 'viu_transaction.end_transaction';
+begin
+viu_trace.enter(c_proc);
+
+if not viu_transaction.initialized then
+  
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_transactionnotinit
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_warning
+                         ,i_info_arguments    => null
+                         ,i_autonomous        => i_autonomous
+                        );
+
+  
+  
+  if not i_success then
+     
+     
+     
+     viu_module.leave_module(i_module     => i_procedure,
+                             i_debug_info => 'Called from ['||c_proc||']',
+                             i_autonomous => i_autonomous);
+
+     viu_info.raise_info;
+  end if;
+elsif viu_transaction.master_procedure != i_procedure then
+  
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_transactioninitalready
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_debug
+                         ,i_info_arguments    => viu_transaction.master_procedure
+                         ,i_additional_data   => 'Procedure trying to end transaction: ['||i_procedure||']'
+                         ,i_autonomous        => i_autonomous
+                        );
+
+  
+  
+  if not i_success then
+     
+     
+     
+     viu_module.leave_module(i_module     => i_procedure,
+                             i_debug_info => 'Called from ['||c_proc||']',
+                             i_autonomous => i_autonomous);
+
+     viu_info.raise_info;
+  end if;
+else
+  viu_module.decrease_nesting_level;
+
+  if i_success then
+    commit;
+
+    viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_transactionsuccessfull
+                           ,i_calling_procedure => c_proc
+                           ,i_severity          => viu_info.c_severity_debug
+                           ,i_info_arguments    => i_procedure
+                           ,i_autonomous        => i_autonomous
+                          );
+
+    if not i_autonomous then
+      commit;
+    end if;
+
+  else
+    
+    viu_info.handle_info(i_autonomous => i_autonomous);
+    rollback;
+
+    viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_transactionfailed
+                           ,i_calling_procedure => c_proc
+                           ,i_severity          => viu_info.c_severity_warning
+                           ,i_info_arguments    => i_procedure
+                           ,i_autonomous        => i_autonomous
+                          );
+
+    if not i_autonomous then
+      commit;
+    end if;
+   
+  end if;
+
+  
+  viu_transaction.reset_transaction;
+end if;
+
+viu_trace.leave;
+
+exception
+  when others then
+    viu_trace.leave;
+    raise;
+end end_transaction;
+
+function last_datetime
+ return timestamp
+ is
+
+
+
+
+begin
+return v_current_datetime;
+end last_datetime;
+
+procedure init_transaction
+ (i_action in number := null
+ )
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Transaction.init_transaction';
+begin
+viu_trace.enter(c_proc);
+
+  viu_transaction.set_current_datetime(sys_extract_utc(systimestamp));
+  viu_info.reset_package_variables;
+  viu_action.set_current_action(i_current_action => i_action);
+  viu_module.set_current_nesting_level(i_current_nesting_level => 0);
+
+  
+  viu_info.v_maxlvloprinfologged :=
+    viu_configuration.get_parameter_value(i_param_id => viu_info.c_ptr_maxlvloprinfologged);
+
+  viu_transaction.set_initialized(true);
+
+  viu_trace.leave;
+end init_transaction;
+
+procedure reset_transaction
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Transaction.reset_transaction';
+begin
+viu_trace.enter(c_proc);
+
+  viu_action.set_current_action(i_current_action => null);
+  viu_module.set_current_nesting_level(i_current_nesting_level => null);
+  viu_transaction.set_initialized(false);
+
+  viu_trace.leave;
+end reset_transaction;
+
+function current_timestamp_utc
+ return timestamp with time zone
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Transaction.current_timestamp_utc';
+
+
+
+
+begin
+  return from_tz(current_datetime, '00:00');
+end current_timestamp_utc;
+
+function current_datetime_utc
+ return date
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Transaction.current_datetime_utc';
+
+
+
+
+begin
+  return cast(current_datetime as date);
+end current_datetime_utc;
+
+function current_timestamp_local
+ return timestamp with time zone
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Transaction.current_timestamp_local';
+
+
+
+
+begin
+  return from_tz(current_datetime, '00:00') at time zone v_dbtimezone;
+end current_timestamp_local;
+
+function current_datetime_local
+ return date
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Transaction.current_datetime_local';
+
+
+
+
+begin
+  return cast(current_timestamp_local as date);
+end current_datetime_local;
+
+function get_dbtimezone
+ return varchar2
+ is
+
+
+
+begin
+  return v_dbtimezone;
+end get_dbtimezone;
+begin
+   select dbtimezone
+   into v_dbtimezone
+   from dual;
+end viu_transaction;
+/

@@ -1,0 +1,20 @@
+create or replace package xml2tab as
+procedure create_event (i_message in varchar2);
+procedure create_event (i_message in clob);
+end xml2tab;
+/
+
+
+package body xml2tab is
+procedure create_event (i_message in varchar2) is
+begin
+  xml2table.process_message(i_message);
+end;
+
+procedure create_event (i_message in clob) is
+begin
+  xml2table.process_message(i_message);
+end;
+
+end xml2tab;
+/

@@ -1,0 +1,8 @@
+function get_value( i_index in pls_integer)
+return pdm_package_attributes.value%type
+is
+begin
+   return 'x';
+
+end get_value;
+/

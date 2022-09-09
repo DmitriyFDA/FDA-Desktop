@@ -1,0 +1,1242 @@
+create or replace PACKAGE BagTrace
+AS
+   -- Interface
+   PROCEDURE link_bag_messages;
+   PROCEDURE move_bagrun( i_bagrunid IN fact_bagtrace.bagrunid%TYPE );
+
+   $IF $$PLSQL_DEBUG
+   $THEN
+      PROCEDURE process_registers_oripkgevt;
+      PROCEDURE process_deregisters;
+      PROCEDURE get_exiting_value_for_isc
+      (
+        i_area_id      IN  dim_iscs.areaid%TYPE
+      , i_zone_id      IN  dim_iscs.zoneid%TYPE
+      , i_equipment_id IN  dim_iscs.equipmentid%TYPE
+      , o_exiting      OUT dim_iscs.EXITING%TYPE
+      , o_isc_id       OUT VARCHAR2
+      );
+      PROCEDURE link_xbid_xpid;
+      PROCEDURE link_xlpc_xbid;
+      PROCEDURE link_xlpc_xpid;
+      PROCEDURE link_xbid_bagrunid( i_bagrunid IN fact_bagtrace.bagrunid%TYPE );
+      PROCEDURE link_xlpc_bagrunid( i_bagrunid IN fact_bagtrace.bagrunid%TYPE );
+      PROCEDURE link_xpid_bagrunid( i_bagrunid IN fact_bagtrace.bagrunid%TYPE );
+      PROCEDURE process_timeouts;
+   $END
+
+END BagTrace;
+/
+
+
+
+
+package body bagtrace
+is
+   g_con_package constant varchar2(30) := 'BagTrace';
+
+   
+   
+   g_linktimeout            interval day(9) to second(9) := numtodsinterval(30, 'MINUTE');
+   g_linktimeoutpd          interval day(9) to second(9) := g_linktimeout;
+   g_resumedtrackingtimeout interval day(9) to second(9) := numtodsinterval(15, 'MINUTE');
+   g_ind_linktimeout        integer := -2;
+   g_allowedtimedrift       interval day(9) to second(9) := numtodsinterval(1, 'SECOND');
+   g_allowed_pi_delay       interval day(9) to second(9) := numtodsinterval(60, 'SECOND');
+   g_max_bag_updates        integer := 10000;
+   g_bagtrace_retention     interval day(9) to second(9) := numtodsinterval(7, 'DAY');
+
+
+function next_registerpackage_exists( i_eventts  in fact_bagtrace.eventts%type
+                                    , i_xlpc     in fact_bagtrace.xlpc%type
+                                    )
+   return boolean
+is
+   l_found  boolean;
+begin
+   l_found := false;
+   for rp in ( select 1
+               from   fact_bagtrace
+               where  reporttype = 'REGISTERPACKAGE'
+               and    eventts > i_eventts
+               and    eventts < i_eventts + g_resumedtrackingtimeout
+               and    xlpc = i_xlpc
+               and    rownum = 1
+             )
+   loop
+      l_found := true;
+   end loop;
+
+   return l_found;
+end;
+
+
+procedure find_next_packageinstruction( i_eventts   in  fact_bagtrace.eventts%type
+                                      , i_lic       in  fact_bagtrace.lic%type
+                                      , i_processid in  fact_bagtrace.targetprocessid%type
+                                      , o_key       out fact_bagtrace.key%type
+                                      , o_eventts   out fact_bagtrace.eventts%type
+                                      , o_xpid      out fact_bagtrace.xpid%type
+                                      )
+is
+begin
+   for pi in ( select *
+               from   ( select /*+ INDEX(fact_bagtrace IDX_FACT_BAGTRACE_EVT_LIC) */
+                               key
+                        ,      eventts
+                        ,      xpid
+                        from   fact_bagtrace
+                        where  reporttype = 'PACKAGEINSTRUCTION'
+                        and    eventts > i_eventts - g_allowedtimedrift
+                        and    eventts < i_eventts + g_allowed_pi_delay
+                        and    lic = i_lic
+                        and    targetprocessid = i_processid
+                        and    xpid > 0
+                        order by eventts
+                        ,        key
+                      )
+               where rownum = 1
+             )
+   loop
+      o_key     := pi.key;
+      o_eventts := pi.eventts;
+      o_xpid    := pi.xpid;
+   end loop;
+end;
+
+
+procedure find_next_taskinstruction( i_eventts  in  fact_bagtrace.eventts%type
+                                   , i_xpid     in  fact_bagtrace.xpid%type
+                                   , o_key      out fact_bagtrace.key%type
+                                   , o_xbid     out fact_bagtrace.xbid%type
+                                   )
+is
+begin
+   for ti in ( select *
+               from   ( select key
+                        ,      xbid
+                        from   fact_bagtrace
+                        where  reporttype = 'TASKINSTRUCTION'
+                        and    eventts > i_eventts - g_allowedtimedrift
+                        and    xpid = i_xpid
+                        order by eventts
+                        ,        key
+                      )
+               where rownum = 1
+             )
+   loop
+      o_key  := ti.key;
+      o_xbid := ti.xbid;
+   end loop;
+end;
+
+procedure process_registers_oripkgevt
+is
+   l_con_proc  constant varchar2(61) := g_con_package||'.process_registers_oripkgevt';
+
+   l_msg      varchar2(32767);
+   l_startts  timestamp := sys_extract_utc(systimestamp);
+
+   l_pi_eventts   fact_bagtrace.eventts%type;
+   l_pi_key       fact_bagtrace.key%type;
+   l_xpid         fact_bagtrace.xpid%type;
+   l_ti_key       fact_bagtrace.key%type;
+   l_xbid         fact_bagtrace.xbid%type;
+
+   l_total_updates pls_integer := 0;
+   l_updates       pls_integer;
+
+   snapshot_too_old exception;
+   pragma exception_init(snapshot_too_old, -1555);
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      for reg in ( select key
+                   ,      eventts
+                   ,      lic
+                   ,      sourceprocessid
+                   ,      reporttype
+                   from   fact_bagtrace
+                   where  reporttype in ( 'REGISTERPACKAGE','ORIGINALPACKAGEEVENT')
+                   and    xpid is null
+                   order by key
+                 )
+      loop
+         begin
+            if reg.reporttype='REGISTERPACKAGE'
+            then
+              l_msg := 'RegisterPackage<'||to_char(reg.key)||'>';
+            else
+              l_msg := 'OriginalPackageEvent<'||to_char(reg.key)||'>';
+            end if;
+            find_next_packageinstruction( i_eventts   => reg.eventts
+                                        , i_lic       => reg.lic
+                                        , i_processid => reg.sourceprocessid
+                                        , o_key       => l_pi_key
+                                        , o_eventts   => l_pi_eventts
+                                        , o_xpid      => l_xpid
+                                        );
+            if l_xpid is not null
+            then
+               
+               l_msg := l_msg||',PackageInstruction<'||to_char(l_pi_key)||'>';
+   
+               find_next_taskinstruction( i_eventts  => l_pi_eventts
+                                        , i_xpid     => l_xpid
+                                        , o_key      => l_ti_key
+                                        , o_xbid     => l_xbid
+                                        );
+   
+               update /*+ INDEX (fact_bagtrace FACT_BAGTRACE_PK) */ fact_bagtrace
+               set    xpid = l_xpid
+               ,      xbid = nvl( xbid, l_xbid )
+               where  key = reg.key;
+               l_updates := sql%rowcount;
+   
+               if l_xbid is not null
+               then
+                  
+                  l_msg := l_msg||',TaskInstruction<'||to_char(l_ti_key)||'>';
+               else
+                  bpi_log.debug_info( i_con_proc => l_con_proc
+                                    , i_data     => l_msg||', No linkable TaskInstruction found.'
+                                    );
+               end if;
+   
+               bpi_log.debug_info( i_con_proc => l_con_proc
+                                 , i_data     => l_msg||', '||to_char(l_updates)||' rows updated.'
+                                 );
+               l_total_updates := l_total_updates + l_updates;
+            else
+               bpi_log.debug_info( i_con_proc => l_con_proc
+                                 , i_data     => l_msg||', No linkable PackageInstruction found.'
+                                 );
+            end if;
+   
+         exception
+            when others then
+               
+               bpi_log.warn( i_con_proc => l_con_proc
+                           , i_data     => l_msg
+                           );
+         end;
+
+         exit when l_total_updates >= g_max_bag_updates;
+      end loop;
+
+      commit;
+
+   exception
+      when snapshot_too_old then
+         commit;
+         bpi_log.warn( i_con_proc => l_con_proc );
+
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc
+                                  , i_msg      => l_msg
+                                  );
+   end;
+
+   bpi_log.notify( i_con_proc  => l_con_proc
+                 , i_data      => l_con_proc||': A total of '||to_char(l_total_updates)
+                                            ||' FACT_BAGTRACE rows were updated. Duration in seconds: '
+                                            ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                 );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure link_xlpc_xbid
+is
+   l_con_proc  constant varchar2(61) := g_con_package||'.Link_XLPC_XBID';
+   l_con_limit constant pls_integer  := 1000;  
+
+   l_startts   timestamp := sys_extract_utc(systimestamp);
+   l_updates   integer := 0;
+
+   type rt_xbid_xlpc is record ( xbid  fact_bagtrace.xbid%type
+                               , xlpc  fact_bagtrace.xlpc%type
+                               );
+   type it_xbid_xlpc is table of rt_xbid_xlpc index by pls_integer;
+
+   l_xbid_xlpcs  it_xbid_xlpc;
+
+   cursor c_xbid_xlpc
+   is
+      select distinct xbid
+             ,        xlpc
+      from   fact_bagtrace
+      where  xbid <> to_char(g_ind_linktimeout)
+      and    xlpc > 0;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      open c_xbid_xlpc;
+
+      loop
+         fetch c_xbid_xlpc
+         bulk collect into l_xbid_xlpcs
+         limit l_con_limit;
+
+         exit when l_xbid_xlpcs.count = 0;
+
+         forall i in 1 .. l_xbid_xlpcs.count
+            update fact_bagtrace
+            set    xlpc = l_xbid_xlpcs(i).xlpc
+            where  xbid = l_xbid_xlpcs(i).xbid
+            and    xlpc is null;
+         l_updates := l_updates + sql%rowcount;
+
+         commit;
+      end loop;
+
+      close c_xbid_xlpc;
+   exception
+      when others then
+         if c_xbid_xlpc%isopen
+         then
+            close c_xbid_xlpc;
+         end if;
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.notify( i_con_proc  => l_con_proc
+                 , i_data      => l_con_proc||': '||to_char(l_updates)
+                                            ||' rows updated. Duration in seconds: '
+                                            ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                 );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure link_xlpc_xpid
+is
+   l_con_proc  constant varchar2(61) := g_con_package||'.Link_XLPC_XPID';
+   l_con_limit constant pls_integer  := 1000;  
+
+   l_startts   timestamp := sys_extract_utc(systimestamp);
+   l_updates   integer := 0;
+
+   type rt_xpid_xlpc is record ( xpid  fact_bagtrace.xpid%type
+                               , xlpc  fact_bagtrace.xlpc%type
+                               );
+   type it_xpid_xlpc is table of rt_xpid_xlpc index by pls_integer;
+
+   l_xpid_xlpcs  it_xpid_xlpc;
+
+   cursor c_xpid_xlpc
+   is
+      select distinct xpid
+             ,        xlpc
+      from   fact_bagtrace
+      where  xpid > 0
+      and    xlpc > 0;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      open c_xpid_xlpc;
+
+      loop
+         fetch c_xpid_xlpc
+         bulk collect into l_xpid_xlpcs
+         limit l_con_limit;
+
+         exit when l_xpid_xlpcs.count = 0;
+
+         forall i in 1 .. l_xpid_xlpcs.count
+            update fact_bagtrace
+            set    xlpc = l_xpid_xlpcs(i).xlpc
+            where  xpid = l_xpid_xlpcs(i).xpid
+            and   (xlpc is null or xlpc = g_ind_linktimeout);
+         l_updates := l_updates + sql%rowcount;
+
+         commit;
+      end loop;
+
+      close c_xpid_xlpc;
+   exception
+      when others then
+         if c_xpid_xlpc%isopen
+         then
+            close c_xpid_xlpc;
+         end if;
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.notify( i_con_proc  => l_con_proc
+                 , i_data      => l_con_proc||': '||to_char(l_updates)
+                                            ||' rows updated. Duration in seconds: '
+                                            ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                 );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure link_xbid_xpid
+is
+   l_con_proc  constant varchar2(61) := g_con_package||'.Link_XBID_XPID';
+   l_con_limit constant pls_integer  := 1000;  
+
+   l_startts   timestamp := sys_extract_utc(systimestamp);
+   l_updates   integer := 0;
+
+   type rt_xpid_xbid is record ( xpid  fact_bagtrace.xpid%type
+                               , xbid  fact_bagtrace.xbid%type
+                               );
+   type it_xpid_xbid is table of rt_xpid_xbid index by pls_integer;
+
+   l_xpid_xbids  it_xpid_xbid;
+
+   cursor c_xpid_xbid
+   is
+      select distinct xpid
+             ,        xbid
+      from   fact_bagtrace
+      where  xpid > 0
+      and    xbid <> to_char(g_ind_linktimeout);
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      open c_xpid_xbid;
+
+      loop
+         fetch c_xpid_xbid
+         bulk collect into l_xpid_xbids
+         limit l_con_limit;
+
+         exit when l_xpid_xbids.count = 0;
+
+         forall i in 1 .. l_xpid_xbids.count
+            update fact_bagtrace
+            set    xbid = l_xpid_xbids(i).xbid
+            where  xpid = l_xpid_xbids(i).xpid
+            and    xbid is null;
+         l_updates := l_updates + sql%rowcount;
+
+         commit;
+      end loop;
+
+      close c_xpid_xbid;
+   exception
+      when others then
+         if c_xpid_xbid%isopen
+         then
+            close c_xpid_xbid;
+         end if;
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.notify( i_con_proc  => l_con_proc
+                 , i_data      => l_con_proc||': '||to_char(l_updates)
+                                            ||' rows updated. Duration in seconds: '
+                                            ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                 );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure link_xbid_bagrunid( i_bagrunid in fact_bagtrace.bagrunid%type )
+is
+   l_con_proc       constant varchar2(61) := g_con_package||'.Link_XBID_BagRunId';
+
+   l_xbid           fact_bagtrace.xbid%type;
+   l_start_eventts  fact_bagtrace.eventts%type;
+   l_end_eventts    fact_bagtrace.eventts%type;
+   l_updates        pls_integer;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      
+      update fact_bagtrace bte1
+      set    bte1.xbid = ( select bte2.xbid
+                           from   fact_bagtrace bte2
+                           where  bte2.bagrunid = i_bagrunid
+                           and    bte2.xpid = bte1.xpid
+                           and    bte2.xbid <> to_char(g_ind_linktimeout)
+                           and    rownum = 1
+                         )
+      where  bte1.bagrunid = i_bagrunid
+      and    bte1.xbid is null;
+      l_updates := sql%rowcount;
+
+      begin
+         select xbid
+         into   l_xbid
+         from   fact_bagtrace
+         where  bagrunid = i_bagrunid
+         and    xbid <> to_char(g_ind_linktimeout)
+         group by xbid;
+
+         
+
+         
+         update fact_bagtrace
+         set    xbid = l_xbid
+         where  bagrunid = i_bagrunid
+         and    xbid is null;
+         l_updates := l_updates + sql%rowcount;
+
+         
+         select min(eventts)
+         ,      max(eventts)
+         into   l_start_eventts
+         ,      l_end_eventts
+         from   fact_bagtrace
+         where  bagrunid = i_bagrunid;
+
+         
+         update fact_bagtrace
+         set    bagrunid = i_bagrunid
+         where  bagrunid is null
+         and    xbid = l_xbid
+         and    eventts between l_start_eventts and l_end_eventts;
+         l_updates := l_updates + sql%rowcount;
+      exception
+         when others then null;
+      end;
+
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.debug_info( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||': BagRunId:'||to_char(i_bagrunid)||', '
+                                               ||to_char(l_updates)||' FACT_BAGTRACE rows were updated.'
+                     );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure link_xlpc_bagrunid( i_bagrunid in fact_bagtrace.bagrunid%type )
+is
+   l_con_proc       constant varchar2(61) := g_con_package||'.Link_XLPC_BagRunId';
+
+   l_xlpc           fact_bagtrace.xlpc%type;
+   l_start_eventts  fact_bagtrace.eventts%type;
+   l_end_eventts    fact_bagtrace.eventts%type;
+   l_updates        pls_integer;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      
+      update fact_bagtrace bte1
+      set    bte1.xlpc = ( select bte2.xlpc
+                           from   fact_bagtrace bte2
+                           where  bte2.bagrunid = i_bagrunid
+                           and    bte2.xbid = bte1.xbid
+                           and    bte2.xlpc > 0
+                           and    rownum = 1
+                         )
+      where  bte1.bagrunid = i_bagrunid
+      and    bte1.xlpc is null;
+      l_updates := sql%rowcount;
+
+      begin
+         select xlpc
+         into   l_xlpc
+         from   fact_bagtrace
+         where  bagrunid = i_bagrunid
+         and    xlpc > 0
+         group by xlpc;
+
+         
+
+         
+         update fact_bagtrace
+         set    xlpc = l_xlpc
+         where  bagrunid = i_bagrunid
+         and    xlpc is null;
+         l_updates := l_updates + sql%rowcount;
+
+         
+         select min(eventts) - g_linktimeout
+         ,      max(eventts)
+         into   l_start_eventts
+         ,      l_end_eventts
+         from   fact_bagtrace
+         where  bagrunid = i_bagrunid;
+
+         
+         update fact_bagtrace
+         set    bagrunid = i_bagrunid
+         where  bagrunid is null
+         and    xlpc = l_xlpc
+         and    eventts between l_start_eventts and l_end_eventts
+         
+         
+         and    reporttype <> 'PACKAGEDATA';
+         l_updates := l_updates + sql%rowcount;
+
+         
+         
+         update fact_bagtrace
+         set    bagrunid = i_bagrunid
+         where  bagrunid is null
+         and    xlpc = l_xlpc
+         and    reporttype in ( 'PACKAGEINFO'
+                              , 'PROCESSSTATUSMESSAGE'
+                              , 'BPM'
+                              , 'BSM'
+                              , 'BTM'
+                              , 'BUM'
+                              )
+         and    eventts between l_start_eventts - g_linktimeoutpd and l_start_eventts;
+      exception
+         when others then null;
+      end;
+
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.debug_info( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||': BagRunId:'||to_char(i_bagrunid)||', '
+                                               ||to_char(l_updates)||' FACT_BAGTRACE rows were updated.'
+                     );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure link_xpid_bagrunid( i_bagrunid in fact_bagtrace.bagrunid%type )
+is
+   l_con_proc       constant varchar2(61) := g_con_package||'.Link_XPID_BagRunId';
+
+   l_xpid           fact_bagtrace.xpid%type;
+   l_start_eventts  fact_bagtrace.eventts%type;
+   l_end_eventts    fact_bagtrace.eventts%type;
+   l_updates        pls_integer;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      
+      update fact_bagtrace bte1
+      set    bte1.xpid = ( select bte2.xpid
+                           from   fact_bagtrace bte2
+                           where  bte2.bagrunid = i_bagrunid
+                           and    bte2.xbid = bte1.xbid
+                           and    bte2.xpid > 0
+                           and    rownum = 1
+                         )
+      where  bte1.bagrunid = i_bagrunid
+      and    bte1.xpid is null;
+      l_updates := sql%rowcount;
+
+      begin
+         select xpid
+         into   l_xpid
+         from   fact_bagtrace
+         where  bagrunid = i_bagrunid
+         and    xpid > 0
+         group by xpid;
+
+         
+
+         
+         update fact_bagtrace
+         set    xpid = l_xpid
+         where  bagrunid = i_bagrunid
+         and    xpid is null;
+         l_updates := l_updates + sql%rowcount;
+
+         
+         select min(eventts)
+         ,      max(eventts)
+         into   l_start_eventts
+         ,      l_end_eventts
+         from   fact_bagtrace
+         where  bagrunid = i_bagrunid;
+
+         
+         update fact_bagtrace
+         set    bagrunid = i_bagrunid
+         where  bagrunid is null
+         and    xpid = l_xpid
+         and    eventts between l_start_eventts and l_end_eventts;
+         l_updates := l_updates + sql%rowcount;
+      exception
+         when others then null;
+      end;
+
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.debug_info( i_con_proc => l_con_proc
+                     , i_data     => l_con_proc||': BagRunId:'||to_char(i_bagrunid)||', '
+                                               ||to_char(l_updates)||' FACT_BAGTRACE rows were updated.'
+                     );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+procedure get_exiting_value_for_isc
+(
+  i_area_id      in  dim_iscs.areaid%type
+, i_zone_id      in  dim_iscs.zoneid%type
+, i_equipment_id in  dim_iscs.equipmentid%type
+, o_exiting      out dim_iscs.exiting%type
+, o_isc_id       out varchar2
+)
+is
+begin
+   
+   if i_equipment_id is null
+   then
+      
+      o_isc_id := bpi_util.isc_id(i_area_id, i_zone_id, i_equipment_id, bpi_util.format_as_area_zone);
+      
+      select exiting
+      into   o_exiting
+      from   dim_iscs
+      where  id like o_isc_id ||'.%'
+      and    rownum = 1;
+   else
+      
+      o_isc_id := bpi_util.isc_id(i_area_id,i_zone_id, i_equipment_id );
+      
+      select exiting
+      into   o_exiting
+      from   dim_iscs
+      where  id = o_isc_id
+      and    rownum = 1;
+   end if;
+exception
+   when others then
+      o_exiting := '-';
+end get_exiting_value_for_isc;
+
+procedure process_deregisters
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.process_deregisters';
+
+   l_msg              varchar2(32767);
+   l_startts          timestamp;
+   type t_keys        is table of fact_bagtrace.key%type;
+   l_dereg_keys       t_keys;
+   l_xbid             fact_bagtrace.xbid%type;
+   l_xlpc             fact_bagtrace.xlpc%type;
+   l_xpid             fact_bagtrace.xpid%type;
+   l_deregisterreason fact_bagtrace.deregisterreason%type;
+   l_eventts          fact_bagtrace.eventts%type;
+   l_reporttype        fact_bagtrace.reporttype%type;
+   l_exiting          dim_iscs.exiting%type;
+   l_total_updates    pls_integer;
+   l_updates          pls_integer;
+   l_bagrunid         fact_bagtrace.bagrunid%type;
+   l_existing_bagrunid fact_bagtrace.bagrunid%type;
+   l_complete_bagrun  boolean;
+   l_isc_id           varchar2(50);  
+   l_area_id          dim_iscs.areaid%type;
+   l_zone_id          dim_iscs.zoneid%type;
+   l_equipment_id     dim_iscs.equipmentid%type;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   l_startts := sys_extract_utc(systimestamp);
+   begin
+      select key
+      bulk collect into l_dereg_keys
+      from ( select key
+      from   fact_bagtrace
+      where  reporttype = 'DEREGISTERPACKAGE'
+             union all
+             select key
+             from fact_bagtrace
+             where reporttype = 'TASKREPORT'
+             and tasktype = 'Deregistration'
+             and deregisterreason = 'MISSING'
+           )
+      where rownum <= g_max_bag_updates;
+
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.notify( i_con_proc  => l_con_proc
+                 , i_data      => l_con_proc||': Found '||to_char(l_dereg_keys.count)
+                                  ||' messages to be processed. Duration in seconds: '
+                                  ||bpi_util.vc2( systimestamp - l_startts )
+                 );
+
+   begin
+      l_startts       := sys_extract_utc(systimestamp);
+      l_total_updates := 0;
+
+      for i in 1..l_dereg_keys.count
+      loop
+         
+         
+         l_complete_bagrun := true;
+         l_updates         := 0;
+
+         
+         begin
+            select eventts
+            ,      reporttype
+            ,      xbid
+            ,      xlpc
+            ,      xpid
+            ,      deregisterreason
+            ,      areaid
+            ,      zoneid
+            ,      equipmentid
+            ,      bagrunid
+            into   l_eventts
+            ,      l_reporttype
+            ,      l_xbid
+            ,      l_xlpc
+            ,      l_xpid
+            ,      l_deregisterreason
+            ,      l_area_id
+            ,      l_zone_id
+            ,      l_equipment_id
+            ,      l_existing_bagrunid
+            from   fact_bagtrace
+            where  key = l_dereg_keys(i);
+
+            
+            
+            if l_existing_bagrunid is null
+            then
+               l_msg := l_reporttype||'<'||to_char(l_dereg_keys(i))
+                        ||'>, XBID<'||l_xbid
+                        ||'> XLPC<'||to_char(l_xlpc)
+                        ||'> XPID<'||to_char(l_xpid)
+                        ||'> ';
+                               
+               if l_reporttype in ('DEREGISTERPACKAGE','TASKREPORT')
+               then
+                  if l_reporttype = 'DEREGISTERPACKAGE'
+                  then
+                     
+                     get_exiting_value_for_isc( i_area_id       => l_area_id
+                                              , i_zone_id      => l_zone_id
+                                              , i_equipment_id => l_equipment_id
+                                              , o_exiting      => l_exiting
+                                              , o_isc_id       =>  l_isc_id);
+
+                  end if;
+
+                  l_msg := l_msg||l_deregisterreason||' '||l_isc_id||' - ';
+
+                  if l_deregisterreason in ( 'END-OF-TRACING'
+                                           , 'MISSING'
+                                           )
+                  then
+                     
+                     
+                     if  l_reporttype = 'TASKREPORT'
+                     or (    l_reporttype = 'DEREGISTERPACKAGE'
+                         and nvl(l_exiting, 'FALSE') <> 'TRUE'
+                        )
+                     then
+                        
+                        
+                        if l_eventts + g_resumedtrackingtimeout < sys_extract_utc(systimestamp)
+                        then 
+                           if next_registerpackage_exists( i_eventts => l_eventts
+                                                         , i_xlpc    => l_xlpc
+                                                         )
+                           then 
+                               l_complete_bagrun := false;
+                           end if;
+                        else 
+                           l_complete_bagrun := false;
+                        end if;
+                     end if;
+                  end if;
+                  
+               
+               elsif l_reporttype = 'PROCESSSTATUSMESSAGE'
+               and   l_xpid > 0
+               then
+                  l_msg := l_msg||' - ';
+               
+               else
+                  l_complete_bagrun := false;
+                  l_msg := 'Not completing bagrun for '||l_msg||'- ';
+               end if;
+
+               if l_complete_bagrun
+               then
+                  
+                  select bagrunid_seq.nextval
+                  into   l_bagrunid
+                  from   dual;
+
+                  if l_xlpc > 0
+                  then
+                     
+                     
+                     update fact_bagtrace
+                     set    bagrunid = l_bagrunid
+                     where  xlpc = l_xlpc
+                     and    bagrunid is null
+                     
+                     
+                     and    eventts <= l_eventts + g_linktimeout;
+
+                     l_updates := l_updates + sql%rowcount;
+                  end if;
+                  if l_xbid <> to_char(g_ind_linktimeout)
+                  then
+                     
+                     
+                     update fact_bagtrace
+                     set    bagrunid = l_bagrunid
+                     where  xbid = l_xbid
+                     and    bagrunid is null
+                     and    eventts <= l_eventts + g_linktimeout;
+
+                     l_updates := l_updates + sql%rowcount;
+                  end if;
+                  if l_xpid > 0
+                  then
+                     
+                     
+                     update fact_bagtrace
+                     set    bagrunid = l_bagrunid
+                     where  xpid = l_xpid
+                     and    bagrunid is null
+                     and    eventts <= l_eventts + g_linktimeout;
+
+                     l_updates := l_updates + sql%rowcount;
+                  end if;
+
+                  link_xbid_bagrunid(l_bagrunid);
+                  link_xlpc_bagrunid(l_bagrunid);
+                  link_xpid_bagrunid(l_bagrunid);
+                  l_total_updates := l_total_updates + l_updates;
+                  l_msg := l_msg||to_char(l_updates)||' updates.';
+               end if;
+               
+               bpi_log.debug_info( i_con_proc => l_con_proc
+                                 , i_data     => l_msg
+                                 );
+
+               commit;
+               
+            end if;
+            
+         exception
+            when no_data_found then
+               
+               bpi_log.warn( i_con_proc => l_con_proc
+                           , i_data      => 'Expected '||l_msg||' is missing - assuming that it has been removed due to clean up!'
+                           );
+            when others then
+               
+               bpi_log.warn( i_con_proc => l_con_proc
+                           , i_data     => l_msg
+                           );
+         end;
+
+         commit;
+      end loop;
+
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc
+                                  , i_msg      =>  l_msg
+                                  );
+   end;
+
+   bpi_log.notify( i_con_proc  => l_con_proc
+                 , i_data      => l_con_proc||': A total of '||to_char(l_total_updates)
+                                            ||' FACT_BAGTRACE rows were updated. Duration in seconds: '
+                                            ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                 );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure move_bagrun( i_bagrunid in fact_bagtrace.bagrunid%type )
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.move_bagrun';
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      insert into fact_bagtrace_hist
+         select *
+         from   fact_bagtrace
+         where  bagrunid = i_bagrunid;
+      delete from fact_bagtrace
+      where  bagrunid = i_bagrunid;
+
+      commit;
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure process_timeouts
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.process_timeouts';
+
+   l_startts           timestamp := systimestamp;
+   l_total_updates     pls_integer := 0;
+   l_timeout_point    fact_bagtrace.eventts%type;
+   l_timeout_pointpd  fact_bagtrace.eventts%type;
+   type t_keys        is table of fact_bagtrace.key%type;
+   l_keys             t_keys;
+   l_timeout_pointbte fact_bagtrace.eventts%type;
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   l_timeout_point := sys_extract_utc(l_startts) - g_linktimeout;
+   l_timeout_pointpd := sys_extract_utc(l_startts) - g_linktimeoutpd;
+   l_timeout_pointbte := sys_extract_utc(l_startts) - g_bagtrace_retention;
+   begin
+      update fact_bagtrace
+      set    xlpc = g_ind_linktimeout
+      where  eventts < l_timeout_point
+      and    xlpc is null
+      and    bagrunid is null
+      and    rownum <= g_max_bag_updates;
+      l_total_updates := l_total_updates + sql%rowcount;
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': XLPC LinkTimeout: '||to_char(sql%rowcount)||' rows updated.'
+                        );
+
+      commit;
+
+      update fact_bagtrace
+      set    xbid = to_char(g_ind_linktimeout)
+      where  eventts < l_timeout_point
+      and    xbid is null
+      and    reporttype <> 'PACKAGEDATA'
+      and    bagrunid is null
+      and    rownum <= g_max_bag_updates;
+      l_total_updates := l_total_updates + sql%rowcount;
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': XBID LinkTimeout: '||to_char(sql%rowcount)||' rows updated.'
+                        );
+
+      commit;
+
+      update fact_bagtrace
+      set    xbid = to_char(g_ind_linktimeout)
+      where  eventts < l_timeout_pointpd
+      and    xbid is null
+      and    reporttype = 'PACKAGEDATA'
+      and    bagrunid is null
+      and    rownum <= g_max_bag_updates;
+      l_total_updates := l_total_updates + sql%rowcount;
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': XBID LinkTimeoutPD: '||to_char(sql%rowcount)||' rows updated.'
+                        );
+
+      commit;
+      
+      update fact_bagtrace
+      set    xpid = g_ind_linktimeout
+      where  eventts < l_timeout_point
+      and    xpid is null
+      and    reporttype <> 'PACKAGEDATA'
+      and    bagrunid is null
+      and    rownum <= g_max_bag_updates;
+      l_total_updates := l_total_updates + sql%rowcount;
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': XPID LinkTimeout: '||to_char(sql%rowcount)||' rows updated.'
+                        );
+
+      commit;
+
+      update fact_bagtrace
+      set    xpid = g_ind_linktimeout
+      where  eventts < l_timeout_pointpd
+      and    xpid is null
+      and    reporttype = 'PACKAGEDATA'
+      and    bagrunid is null
+      and    rownum <= g_max_bag_updates;
+      l_total_updates := l_total_updates + sql%rowcount;
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': XPID LinkTimeoutPD: '||to_char(sql%rowcount)||' rows updated.'
+                        );
+
+      commit;
+
+      insert into fact_bagtrace_hist
+         select *
+         from   fact_bagtrace
+         where  xpid = g_ind_linktimeout
+         and    bagrunid is null;
+      delete from fact_bagtrace
+      where  xpid = g_ind_linktimeout
+      and    bagrunid is null;
+      l_total_updates := l_total_updates + sql%rowcount;
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': Moved '||to_char(sql%rowcount)||' to bagtrace_hist (PID timeout).'
+                        );
+      commit;
+      select key
+      bulk collect into l_keys
+      from   fact_bagtrace
+      where  eventts <= l_timeout_pointbte
+      and    bagrunid is null                   
+      and    rownum <= g_max_bag_updates;
+      l_total_updates := l_total_updates + sql%rowcount;
+      forall i in l_keys.first..l_keys.last
+         insert into fact_bagtrace_hist
+            select *
+            from   fact_bagtrace where key = l_keys(i);
+      forall i in l_keys.first..l_keys.last
+         delete from fact_bagtrace where key = l_keys(i);
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': Moved '||to_char(sql%rowcount)||' to bagtrace_hist (retention).'
+                        );
+      commit;
+      l_keys.delete;
+      select key
+      bulk collect into l_keys
+      from   fact_bagtrace
+      where  eventts <= l_timeout_point
+      and    bagrunid is null
+      and    xpid > 0
+      and    xpid in (select xpid from fact_bagtrace_hist)
+      and    rownum <= g_max_bag_updates;
+      l_total_updates := l_total_updates + sql%rowcount;
+
+      forall i in l_keys.first..l_keys.last
+         insert into fact_bagtrace_hist
+            select *
+            from fact_bagtrace where key = l_keys(i);
+      forall i in l_keys.first..l_keys.last
+         delete from fact_bagtrace where key = l_keys(i);
+      bpi_log.debug_info( i_con_proc => l_con_proc
+                        , i_data     => l_con_proc||': Moved '||to_char(sql%rowcount)||' to bagtrace_hist (existing PID in Hist).'
+                        );
+      commit;
+   exception
+      when others then
+         bpi_log.raise_fatal_error( i_con_proc => l_con_proc );
+   end;
+
+   bpi_log.notify( i_con_proc  => l_con_proc
+                 , i_data      => l_con_proc||': A total of '||to_char(l_total_updates)
+                                            ||' FACT_BAGTRACE rows were updated. Duration in seconds: '
+                                            ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                 );
+
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure link_bag_messages
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.Link_bag_messages';
+
+   l_startts timestamp := sys_extract_utc(systimestamp);
+begin
+   bpi_trace.enter_module( i_module => l_con_proc );
+
+   begin
+      bpi_log.notify( i_con_proc  => l_con_proc
+                    , i_data      => l_con_proc||' STARTED '||to_char(l_startts)
+                    );
+
+      bpi_util.get_parameter_value( i_name    => 'LinkTimeout'
+                                  , i_default => 30
+                                  , i_unit    => 'MINUTE'
+                                  , o_value   => g_linktimeout
+                                  );
+      bpi_util.get_parameter_value( i_name    => 'LinkTimeoutPackageData'
+                                  , i_default => null
+                                  , i_unit    => 'MINUTE'
+                                  , o_value   => g_linktimeoutpd
+                                  );
+      if g_linktimeoutpd is null
+      then
+         g_linktimeoutpd  := g_linktimeout;
+      end if;
+      bpi_util.get_parameter_value( i_name    => 'IND_LinkTimeout'
+                                  , i_default => -2
+                                  , o_value   => g_ind_linktimeout
+                                  );
+      bpi_util.get_parameter_value( i_name    => 'ResumedTrackingTimeout'
+                                  , i_default => 15
+                                  , i_unit    => 'MINUTE'
+                                  , o_value   => g_resumedtrackingtimeout
+                                  );
+      bpi_util.get_parameter_value( i_name    => 'AllowedTimeDrift'
+                                  , i_default => 1
+                                  , i_unit    => 'SECOND'
+                                  , o_value   => g_allowedtimedrift
+                                  );
+      bpi_util.get_parameter_value( i_name    => 'Allowed_PI_Delay'
+                                  , i_default => 60
+                                  , i_unit    => 'SECOND'
+                                  , o_value   => g_allowed_pi_delay
+                                  );
+      bpi_util.get_parameter_value( i_name    => 'MaxBagLinkUpdates'
+                                  , i_default => 10000
+                                  , o_value   => g_max_bag_updates
+                                  );
+
+      begin
+         select numtodsinterval( del_retention
+                               , decode( del_retention_unit
+                                       , 'D', 'DAY'
+                                       , 'H', 'HOUR'
+                                       , 'M', 'MINUTE'
+                                       )
+                               )
+         into   g_bagtrace_retention
+         from   bpi_housekeep_parameters
+         where  table_name = 'FACT_BAGTRACE';
+      exception
+         when others
+            then
+               g_bagtrace_retention := numtodsinterval(7, 'DAY');
+      end;
+      process_registers_oripkgevt;
+      link_xbid_xpid;
+      link_xlpc_xpid;
+      link_xlpc_xbid;
+      process_deregisters;
+      process_timeouts;
+
+      bpi_log.notify( i_con_proc  => l_con_proc
+                    , i_data      => l_con_proc||' ENDED '||to_char(sys_extract_utc(systimestamp))
+                                               ||'. Duration in seconds: '
+                                               ||bpi_util.vc2( sys_extract_utc(systimestamp) - l_startts )
+                    );
+   exception
+      when others then
+         bpi_log.handle_error( i_con_proc => l_con_proc );
+   end;
+
+   
+   
+   
+   commit;
+    
+   bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+end bagtrace;
+/

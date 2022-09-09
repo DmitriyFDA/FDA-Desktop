@@ -1,0 +1,49 @@
+create or replace PACKAGE bpi_trace
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'bpi_trace';
+
+   PROCEDURE enter_module( i_module     IN VARCHAR2
+                         , i_debug_info IN VARCHAR2 := NULL
+                         , i_autonomous IN BOOLEAN  := TRUE
+                         );
+
+   PROCEDURE leave_module( i_module     IN VARCHAR2
+                         , i_debug_info IN VARCHAR2 := NULL
+                         , i_autonomous IN BOOLEAN  := TRUE
+                         );
+
+END bpi_trace;
+/
+
+
+package body bpi_trace
+is
+
+procedure enter_module( i_module     in varchar2
+                      , i_debug_info in varchar2 := null
+                      , i_autonomous in boolean  := true
+                      )
+is
+begin
+   viu_module.enter_module( i_module     => i_module
+                          , i_debug_info => nvl( i_debug_info
+                                               , to_char(sys_extract_utc(systimestamp))
+                                               )
+                          , i_autonomous => i_autonomous
+                          );
+end;
+
+procedure leave_module( i_module     in varchar2
+                      , i_debug_info in varchar2 := null
+                      , i_autonomous in boolean  := true
+                      )
+is
+begin
+   viu_module.leave_module( i_module     => i_module
+                          , i_debug_info => i_debug_info
+                          , i_autonomous => i_autonomous
+                          );
+end;
+
+end bpi_trace;
+/

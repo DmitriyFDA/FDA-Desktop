@@ -1,0 +1,1231 @@
+create or replace PACKAGE lm_cfg_task_topology
+IS
+   g_con_package       CONSTANT lm_constant.st_proc_name := 'LM_CFG_TASK_TOPOLOGY';
+
+   PROCEDURE load_task_definitions;
+   PROCEDURE load_task_groups;
+   PROCEDURE load_default_task_groups;
+   PROCEDURE load_station_groups;
+   PROCEDURE load_station_group_members;
+   PROCEDURE load_task_assignments;
+
+END lm_cfg_task_topology;
+/
+
+
+
+
+package body lm_cfg_task_topology is
+
+
+
+
+
+
+
+   
+   type rt_station_group
+      is record( id                   lm_station_groups.id%type
+               , name                 lm_station_groups.name%type
+               , rank                 lm_station_groups.rank%type
+               , members_id           lm_station_groups.id%type
+               , members_check        integer
+               , nt_subgroups         nt_stn_subgroups
+               , lb_groupwise         lm_station_groups.ind_loadbalance_groupwise%type
+               , switch_to_secondary  lm_station_groups.switch_to_secondary%type
+               , description          lm_station_groups.description%type
+               , nt_alternatives      nt_id_coll
+               , nt_secondaries       nt_id_coll
+               );
+                 
+   type nt_station_groups is table of rt_station_group;
+
+   type nt_snp is table of lm_station_groups%rowtype
+      index by binary_integer;  
+
+   type nt_sgm is table of lm_station_group_members%rowtype;
+
+   type nt_sgr is table of lm_segment_group_members%rowtype;
+   
+
+
+
+
+
+procedure load_task_definitions
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_task_definitions';
+
+   
+   
+   
+   
+   cursor c_tdn
+   is
+      select tdn.id
+      ,      tdn.type                                             task_type
+      ,      nvl(tdn.description, tdn.type)                       description
+      ,      tdn.backup_task
+      ,      to_number(null)                                      backup_task_id
+      ,      lm_config.translate_truefalse(tdn.ind_contr_routing) ind_contr_routing
+      ,      substr(tdn.storage_type, 1, 1)                       storage_method
+      ,      cast( multiset( select station_type
+                             from   xmltable( 'TaskExecution/StationType'
+                                              passing tdn.station_types_xml
+                                              columns xmlrownum    for ordinality
+                                              ,       station_type varchar2(100) path '/text()'
+                                            )
+                             order by xmlrownum
+                           ) as nt_vc2_coll
+                 ) nt_station_types
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/Tasks/TaskDefinition'
+                       passing cfg.data
+                       columns id for ordinality
+                       ,       type              varchar2(20)  path 'Type/text()'
+                       ,       description       varchar2(240) path 'Description/text()'
+                       ,       backup_task       varchar2(20)  path 'BackupTask/text()'
+                       ,       ind_contr_routing varchar2(5)   path 'IndControlledRouting/text()'
+                       ,       storage_type      varchar2(100) path 'StorageType/text()'
+                       ,       station_types_xml xmltype       path 'TaskExecution'
+                     ) tdn
+      order by case when tdn.backup_task is null then 1 else 2 end 
+      ,        tdn.id;
+      
+   
+   cursor c_thg( b_ste_id lm_station_types.id%type
+               , b_tdn_id lm_task_definitions.id%type
+               )
+   is
+      select stn.id
+      ,      b_tdn_id   
+      from   lm_stations stn
+      where  stn.ste_id = b_ste_id
+      ;
+
+   type nt_tasks is table of c_tdn%rowtype;
+   type nt_thg   is table of lm_task_handling%rowtype;
+
+   l_nt_tasks                          nt_tasks;
+   l_nt_thg                            nt_thg := nt_thg();
+   l_nt_thg_helper                     nt_thg;
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   
+   l_backup_found                      boolean;
+   l_ste_id                            lm_station_types.id%type;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_tdn;
+   fetch c_tdn bulk collect into l_nt_tasks;
+   close c_tdn;
+   
+   for idx_tdn in 1..l_nt_tasks.count
+   loop
+
+      if l_nt_tasks(idx_tdn).backup_task is not null
+      then
+         
+         l_backup_found := false;
+         for i in 1 .. l_nt_tasks.count
+         loop
+            if l_nt_tasks(idx_tdn).backup_task = l_nt_tasks(i).task_type
+            then
+               l_backup_found := true;
+               l_nt_tasks(idx_tdn).backup_task_id := l_nt_tasks(i).id;
+               exit; 
+            end if;
+         end loop;
+         if not l_backup_found
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'Task Definition '|| l_nt_tasks(idx_tdn).backup_task
+                                     || ', as backup task for ' ||l_nt_tasks(idx_tdn).task_type
+                                     || ', does not exist'
+               );
+         end if;
+      end if;
+      
+      
+      for idx_ste in 1 .. l_nt_tasks(idx_tdn).nt_station_types.count
+      loop
+         l_ste_id := lm_config.check_station_type(i_ste_name => l_nt_tasks(idx_tdn).nt_station_types(idx_ste)).id;
+         if l_ste_id is not null
+         then
+            
+            
+            
+
+            
+            open c_thg( b_ste_id => l_ste_id
+                      , b_tdn_id => l_nt_tasks(idx_tdn).id  
+                      );
+            fetch c_thg bulk collect into l_nt_thg_helper;
+            close c_thg;
+            
+            
+            l_nt_thg := l_nt_thg multiset union l_nt_thg_helper;
+         end if;
+      end loop;    
+   end loop;       
+   
+   
+   forall idx in 1 .. l_nt_tasks.count
+      insert
+      into   lm_task_definitions
+      (      id
+      ,      task_instruction_type
+      ,      description
+      ,      ind_calculate_eta
+      ,      ind_controlled_routing
+      ,      tdn_id_backup
+      ,      storage_method
+      ) values
+      (      l_nt_tasks(idx).id
+      ,      l_nt_tasks(idx).task_type
+      ,      l_nt_tasks(idx).description
+      ,      lm_constant.g_con_yesno_yes
+      ,      l_nt_tasks(idx).ind_contr_routing
+      ,      l_nt_tasks(idx).backup_task_id
+      ,      l_nt_tasks(idx).storage_method
+      );
+
+   
+   forall idx in 1 .. l_nt_thg.count
+      insert
+      into   lm_task_handling
+      (      tdn_id
+      ,      stn_id
+      ) values
+      (      l_nt_thg(idx).tdn_id
+      ,      l_nt_thg(idx).stn_id
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'TaskDefinitions'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_tasks.count||' lm_task_definitions'
+                                                    ||' and '||l_nt_thg.count||' lm_task_handling'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_tdn%isopen
+      then
+         close c_tdn;
+      end if;
+      if c_thg%isopen
+      then
+         close c_thg;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_task_definitions;
+
+
+
+
+
+
+procedure load_task_groups
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_task_groups';
+
+   
+   
+   cursor c_tgr
+   is
+      select tgr.id
+      ,      tgr.name
+      ,      tgr.description
+      ,      cast( multiset( select segment_id
+                             from   xmltable( 'StatusSegments/StatusSegmentID'
+                                              passing tgr.segments_xml
+                                              columns segment_id integer path '/text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_segments
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/TaskGroups/TaskGroup'
+                       passing cfg.data
+                       columns id               integer       path 'ID/text()'
+                       ,       name             varchar2(100) path 'Name/text()'
+                       ,       description      varchar2(240) path 'Description/text()'
+                       ,       segments_xml     xmltype       path 'StatusSegments'
+                     ) tgr
+      ;
+
+   type nt_segment_groups is table of c_tgr%rowtype;
+
+   l_nt_task_groups                    nt_segment_groups;
+   l_nt_sgr                            nt_sgr := nt_sgr();
+   l_nt_lst                            nt_id_coll := nt_id_coll();
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_sgr_id_last                       lm_segment_group_members.id%type;
+   l_idx_sgr                           binary_integer;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   select nvl(max(id), 0)
+   into   l_sgr_id_last
+   from   lm_segment_group_members;
+    
+   open c_tgr;
+   fetch c_tgr bulk collect into l_nt_task_groups;
+   close c_tgr;
+
+   
+   for idx_tgr in 1 .. l_nt_task_groups.count
+   loop
+
+      l_idx_sgr := l_nt_sgr.count;
+
+      l_nt_sgr.extend(l_nt_task_groups(idx_tgr).nt_segments.count);
+      for idx in 1 .. l_nt_task_groups(idx_tgr).nt_segments.count
+      loop
+         
+         l_nt_sgr(l_idx_sgr + idx).id := l_sgr_id_last 
+                                       + l_idx_sgr     
+                                       + idx;
+         l_nt_sgr(l_idx_sgr + idx).tgr_id   := l_nt_task_groups(idx_tgr).id;
+         l_nt_sgr(l_idx_sgr + idx).lst_id   := l_nt_task_groups(idx_tgr).nt_segments(idx);
+      end loop;
+   end loop;
+   
+   
+   l_nt_lst.extend(l_nt_sgr.count);
+   for idx in 1 .. l_nt_sgr.count
+   loop
+      
+      l_nt_lst(idx) := l_nt_sgr(idx).lst_id;
+   end loop;
+   
+   for rec_lst in (select distinct column_value
+                   from   table(l_nt_lst)
+                  )
+   loop
+      lm_config.check_logical_segment(i_lst_id => rec_lst.column_value);
+   end loop;
+
+   
+   forall idx in 1 .. l_nt_task_groups.count
+      insert
+      into   lm_task_groups
+      (      id
+      ,      name
+      ,      description
+      ) values
+      (      l_nt_task_groups(idx).id
+      ,      l_nt_task_groups(idx).name
+      ,      l_nt_task_groups(idx).description
+      );
+
+   forall idx in 1 .. l_nt_sgr.count
+      insert
+      into   lm_segment_group_members
+      (      id
+      ,      lst_id
+      ,      tgr_id
+      ) values
+      (      l_nt_sgr(idx).id
+      ,      l_nt_sgr(idx).lst_id
+      ,      l_nt_sgr(idx).tgr_id
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'TaskGroups'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_task_groups.count||' lm_task_groups'
+                                                    ||' and '||l_nt_sgr.count||' lm_segment_group_members'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_tgr%isopen
+      then
+         close c_tgr;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_task_groups;
+
+
+
+
+
+
+procedure load_default_task_groups
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_default_task_groups';
+
+   
+   
+   cursor c_dtp
+   is
+      select dtp.id
+      ,      dtp.name
+      ,      dtp.description
+      ,      dtp.task_type
+      ,      to_number(null) task_type_id
+      ,      cast( multiset( select segment_id
+                             from   xmltable( 'StatusSegments/StatusSegmentID'
+                                              passing dtp.segments_xml
+                                              columns segment_id integer path '/text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_segments
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/DefaultTasks/DefaultTask'
+                       passing cfg.data
+                       columns id for ordinality
+                       ,       name             varchar2(100) path 'Name/text()'
+                       ,       description      varchar2(240) path 'Description/text()'
+                       ,       task_type        varchar2(20)  path 'Task/text()'
+                       ,       segments_xml     xmltype       path 'StatusSegments'
+                     ) dtp
+      ;
+
+   type nt_default_task_groups is table of c_dtp%rowtype;
+
+   l_nt_default_task_groups            nt_default_task_groups;
+   l_nt_sgr                            nt_sgr := nt_sgr();
+   l_nt_lst                            nt_id_coll := nt_id_coll();
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_sgr_id_last                       lm_segment_group_members.id%type;
+   l_idx_sgr                           binary_integer;
+   
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   select nvl(max(id), 0)
+   into   l_sgr_id_last
+   from   lm_segment_group_members;
+    
+   open c_dtp;
+   fetch c_dtp bulk collect into l_nt_default_task_groups;
+   close c_dtp;
+
+   
+   for idx_dtp in 1 .. l_nt_default_task_groups.count
+   loop
+
+      l_idx_sgr := l_nt_sgr.count;
+      
+      
+      l_nt_default_task_groups(idx_dtp).task_type_id
+          := lm_config.check_task_definition(i_tdn_type => l_nt_default_task_groups(idx_dtp).task_type);
+
+      l_nt_sgr.extend(l_nt_default_task_groups(idx_dtp).nt_segments.count);
+      for idx in 1 .. l_nt_default_task_groups(idx_dtp).nt_segments.count
+      loop
+         
+         l_nt_sgr(l_idx_sgr + idx).id := l_sgr_id_last 
+                                       + l_idx_sgr     
+                                       + idx;
+         l_nt_sgr(l_idx_sgr + idx).dtp_id   := l_nt_default_task_groups(idx_dtp).id;
+         l_nt_sgr(l_idx_sgr + idx).lst_id   := l_nt_default_task_groups(idx_dtp).nt_segments(idx);
+      end loop;
+   end loop;
+   
+   
+   l_nt_lst.extend(l_nt_sgr.count);
+   for idx in 1 .. l_nt_sgr.count
+   loop
+      
+      l_nt_lst(idx) := l_nt_sgr(idx).lst_id;
+   end loop;
+   
+   for rec_lst in (select distinct column_value
+                   from   table(l_nt_lst)
+                  )
+   loop
+      lm_config.check_logical_segment(i_lst_id => rec_lst.column_value);
+   end loop;
+
+   
+   forall idx in 1 .. l_nt_default_task_groups.count
+      insert
+      into   lm_default_task_groups
+      (      id
+      ,      name
+      ,      description
+      ,      tdn_id
+      ) values
+      (      l_nt_default_task_groups(idx).id
+      ,      l_nt_default_task_groups(idx).name
+      ,      l_nt_default_task_groups(idx).description
+      ,      l_nt_default_task_groups(idx).task_type_id
+      );
+
+   forall idx in 1 .. l_nt_sgr.count
+      insert
+      into   lm_segment_group_members
+      (      id
+      ,      lst_id
+      ,      dtp_id
+      ) values
+      (      l_nt_sgr(idx).id
+      ,      l_nt_sgr(idx).lst_id
+      ,      l_nt_sgr(idx).dtp_id
+      );
+
+   lm_config.log_processing_time( i_message_name    => 'DefaultTaskGroups'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_default_task_groups.count||' lm_default_task_groups'
+                                                    ||' and '||l_nt_sgr.count||' lm_segment_group_members'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_dtp%isopen
+      then
+         close c_dtp;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_default_task_groups;
+
+
+
+
+
+
+procedure process_alternatives( i_nt_station_groups    in     nt_station_groups
+                              , i_idx_snp              in     binary_integer
+                              , io_nt_snp_alternatives in out nt_snp
+                              )
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.process_alternatives';
+                                         
+   l_rt_snp_primary                    rt_station_group;
+   l_snp_found                         boolean;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   l_rt_snp_primary := i_nt_station_groups(i_idx_snp);
+   for idx_alt in 1 .. l_rt_snp_primary.nt_alternatives.count
+   loop
+      
+      
+      
+      
+      if io_nt_snp_alternatives.exists(l_rt_snp_primary.nt_alternatives(idx_alt))
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'StationGroup '|| l_rt_snp_primary.nt_alternatives(idx_alt)
+                                  || ' is alternative for more than 1 group '
+            );
+      end if;
+      io_nt_snp_alternatives(l_rt_snp_primary.nt_alternatives(idx_alt)).id := l_rt_snp_primary.nt_alternatives(idx_alt);
+      io_nt_snp_alternatives(l_rt_snp_primary.nt_alternatives(idx_alt)).snp_id_alternative := l_rt_snp_primary.id;
+
+      
+      
+      
+      l_snp_found := false;
+      for idx in 1 .. i_nt_station_groups.count
+      loop
+         if i_nt_station_groups(idx).id = l_rt_snp_primary.nt_alternatives(idx_alt)
+         then
+            l_snp_found := true;
+            
+            io_nt_snp_alternatives(l_rt_snp_primary.nt_alternatives(idx_alt)).rank := i_nt_station_groups(idx).rank;
+            exit; 
+         end if;
+      end loop; 
+
+      if not l_snp_found
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'StationGroup '|| l_rt_snp_primary.nt_alternatives(idx_alt)
+                                  || ' is listed as alternative for StationGroup '||l_rt_snp_primary.id
+                                  || ' but does not exist.'
+            );
+      end if;
+   end loop;    
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end process_alternatives;
+
+
+
+
+
+
+procedure process_secondaries( i_nt_station_groups   in     nt_station_groups
+                             , i_idx_snp             in     binary_integer
+                             , io_nt_snp_secondaries in out nt_snp
+                              )
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.process_secondaries';
+                                         
+   l_rt_snp_primary                    rt_station_group;
+   l_snp_found                         boolean;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   l_rt_snp_primary := i_nt_station_groups(i_idx_snp);
+   for idx_sec in 1 .. l_rt_snp_primary.nt_secondaries.count
+   loop
+      
+      
+      
+      
+      if io_nt_snp_secondaries.exists(l_rt_snp_primary.nt_secondaries(idx_sec))
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'StationGroup '|| l_rt_snp_primary.nt_secondaries(idx_sec)
+                                  || ' is secondary for more than 1 group '
+            );
+      end if;
+      io_nt_snp_secondaries(l_rt_snp_primary.nt_secondaries(idx_sec)).id := l_rt_snp_primary.nt_secondaries(idx_sec);
+      io_nt_snp_secondaries(l_rt_snp_primary.nt_secondaries(idx_sec)).snp_id_secondary := l_rt_snp_primary.id;
+
+      
+      
+      l_snp_found := false;
+      for idx in 1 .. i_nt_station_groups.count
+      loop
+         if i_nt_station_groups(idx).id = l_rt_snp_primary.nt_secondaries(idx_sec)
+         then
+            l_snp_found := true;
+            exit; 
+         end if;
+      end loop; 
+
+      if not l_snp_found
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'StationGroup '|| l_rt_snp_primary.nt_secondaries(idx_sec)
+                                  || ' is listed as secondary for StationGroup '||l_rt_snp_primary.id
+                                  || ' but does not exist.'
+            );
+      end if;
+   end loop;    
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end process_secondaries;
+
+
+
+
+
+
+procedure process_subgroups( i_nt_station_groups in     nt_station_groups
+                           , i_idx_snp           in     binary_integer
+                           , io_nt_snp_subgroups in out nt_sgm
+                              )
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.process_subgroups';
+                                         
+   l_rt_snp_primary                    rt_station_group;
+   l_snp_found                         boolean;
+   
+   l_idx_sgm                           binary_integer;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   l_idx_sgm := io_nt_snp_subgroups.count;
+   
+   l_rt_snp_primary := i_nt_station_groups(i_idx_snp);
+
+   
+   io_nt_snp_subgroups.extend(l_rt_snp_primary.nt_subgroups.count);
+
+   
+   for idx_sub in 1 .. l_rt_snp_primary.nt_subgroups.count
+   loop
+      
+      
+      
+      l_snp_found := false;
+      for idx in 1 .. i_nt_station_groups.count
+      loop
+         if i_nt_station_groups(idx).id = l_rt_snp_primary.nt_subgroups(idx_sub).stn_group_id
+         then
+            l_snp_found := true;
+            exit; 
+         end if;
+      end loop; 
+
+      if not l_snp_found
+      then
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'StationGroup '|| l_rt_snp_primary.nt_subgroups(idx_sub).stn_group_id
+                                  || ' is listed as sub group for StationGroup '||l_rt_snp_primary.id
+                                  || ' but does not exist.'
+            );
+      end if;
+      
+      if l_rt_snp_primary.nt_subgroups(idx_sub).headingto_snp is not null
+      then
+         
+         
+         
+         l_snp_found := false;
+         for idx in 1 .. i_nt_station_groups.count
+         loop
+            if i_nt_station_groups(idx).id = l_rt_snp_primary.nt_subgroups(idx_sub).headingto_snp
+            then
+               l_snp_found := true;
+               exit; 
+            end if;
+         end loop; 
+
+         if not l_snp_found
+         then
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'StationGroup '|| l_rt_snp_primary.nt_subgroups(idx_sub).headingto_snp
+                                     || ' is listed as heading to group for StationGroup '||l_rt_snp_primary.id
+                                     || ' but does not exist.'
+               );
+         end if;
+      end if;
+
+      
+      
+      io_nt_snp_subgroups(l_idx_sgm + idx_sub).id                  := l_idx_sgm     
+                                                                    + idx_sub;
+      io_nt_snp_subgroups(l_idx_sgm + idx_sub).snp_id_define       := l_rt_snp_primary.id;
+      io_nt_snp_subgroups(l_idx_sgm + idx_sub).snp_id_member_group := l_rt_snp_primary.nt_subgroups(idx_sub).stn_group_id;
+      io_nt_snp_subgroups(l_idx_sgm + idx_sub).snp_id_heading_to   := l_rt_snp_primary.nt_subgroups(idx_sub).headingto_snp;
+   end loop;    
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end process_subgroups;
+
+
+
+
+
+
+procedure load_station_groups
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_station_groups';
+
+   
+   
+   cursor c_snp
+   is
+      select snp.id
+      ,      snp.name
+      ,      snp.rank
+      ,      snp.members_id
+      ,      ( select count(*)
+               from   cmn_v_sysconfig_data cfg
+               ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/StationGroupMembers/StationGroupMember'
+                                passing cfg.data
+                                 columns id                integer      path 'ID/text()'
+                              ) sgm
+               where sgm.id = snp.members_id
+             )  members_check
+      ,      cast( multiset( select snp_id_define
+                             ,      snp_id_headingto
+                             from   xmltable( 'SubGroup'
+                                              passing snp.subgroups_xml
+                                              columns snp_id_define    integer path 'StationGroupID/text()'
+                                              ,       snp_id_headingto integer path 'HeadingToStationGroup/text()'
+                                            )
+                             order by snp_id_define   
+                             ,      snp_id_headingto  
+                           ) as nt_stn_subgroups
+                 ) nt_subgroups
+      ,      snp.lb_groupwise
+      ,      snp.switch_to_secondary
+      ,      snp.description
+      ,      cast( multiset( select alternative
+                             from   xmltable( 'Alternative'
+                                              passing snp.alternatives_xml
+                                              columns alternative integer path '/text()'
+                                            )
+                             order by alternative 
+                                                  
+                           ) as nt_id_coll
+                 ) nt_alternatives
+      ,      cast( multiset( select secondary
+                             from   xmltable( 'Secondary'
+                                              passing snp.secondaries_xml
+                                              columns secondary integer path '/text()'
+                                            )
+                             order by secondary  
+                                                 
+                           ) as nt_id_coll
+                 ) nt_secondaries
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/StationGroups/StationGroup'
+                       passing cfg.data
+                       columns id                  integer       path 'ID/text()'
+                       ,       name                varchar2(100) path 'Name/text()'
+                       ,       rank                integer       path 'Rank/text()'
+                       ,       members_id          integer       path 'StationGroupMember/text()'
+                       ,       lb_groupwise        varchar2(1)   path 'LoadBalanceGroupWise/text()'
+                       ,       switch_to_secondary integer       path 'SwitchToSecondary/text()'
+                       ,       description         varchar2(240) path 'Description/text()'
+                       ,       subgroups_xml       xmltype       path 'SubGroup'
+                       ,       alternatives_xml    xmltype       path 'Alternative'
+                       ,       secondaries_xml     xmltype       path 'Secondary'
+                     ) snp
+      ;
+
+   l_nt_station_groups                 nt_station_groups;
+   l_nt_snp_alt                        nt_snp;
+   l_nt_snp_sec                        nt_snp;
+   l_nt_sgm_sub                        nt_sgm := nt_sgm();
+   
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_snp;
+   fetch c_snp bulk collect into l_nt_station_groups;
+   close c_snp;
+
+   
+   
+   
+   for idx_snp in 1 .. l_nt_station_groups.count
+   loop
+      if l_nt_station_groups(idx_snp).members_id is not null
+         and
+         l_nt_station_groups(idx_snp).members_check = 0
+      then
+         
+         viu_info.raise_info
+            ( i_ifo_nr            => viu_constant.c_ifo_configuration
+            , i_calling_procedure => l_con_proc_name
+            , i_severity          => viu_info.c_severity_error
+            , i_additional_data   => 'StationGroup '|| l_nt_station_groups(idx_snp).id
+                                  || ' refers to undefined station collection (StationGroupMembers id='||l_nt_station_groups(idx_snp).members_id
+                                  || ').'
+            );
+      end if;
+      
+      
+      process_alternatives( i_nt_station_groups    => l_nt_station_groups
+                          , i_idx_snp              => idx_snp
+                          , io_nt_snp_alternatives => l_nt_snp_alt
+                          );
+
+      
+      process_secondaries( i_nt_station_groups   => l_nt_station_groups
+                         , i_idx_snp             => idx_snp
+                         , io_nt_snp_secondaries => l_nt_snp_sec
+                         );
+
+      
+      process_subgroups( i_nt_station_groups => l_nt_station_groups
+                       , i_idx_snp           => idx_snp
+                       , io_nt_snp_subgroups => l_nt_sgm_sub
+                       );
+
+   end loop;       
+   
+   
+   forall idx in 1 .. l_nt_station_groups.count
+      insert
+      into   lm_station_groups
+      (      id
+      ,      name
+      ,      description
+      ,      ind_loadbalance_groupwise
+      ,      switch_to_secondary
+      ,      rank
+      ) values
+      (      l_nt_station_groups(idx).id
+      ,      l_nt_station_groups(idx).name
+      ,      l_nt_station_groups(idx).description
+      ,      l_nt_station_groups(idx).lb_groupwise
+      ,      l_nt_station_groups(idx).switch_to_secondary
+      ,      null 
+      );
+      
+   
+   forall idx in indices of l_nt_snp_alt
+      update lm_station_groups
+      set    rank               = l_nt_snp_alt(idx).rank
+      ,      snp_id_alternative = l_nt_snp_alt(idx).snp_id_alternative
+      where  id = l_nt_snp_alt(idx).id;
+
+   
+   forall idx in indices of l_nt_snp_sec
+      update lm_station_groups
+      set    snp_id_secondary = l_nt_snp_sec(idx).snp_id_secondary
+      where  id = l_nt_snp_sec(idx).id;
+   
+   
+   forall idx in 1 .. l_nt_sgm_sub.count
+      insert
+      into   lm_station_group_members
+      (      id
+      ,      snp_id_define
+      ,      snp_id_member_group
+      ,      snp_id_heading_to
+      ) values
+      (      l_nt_sgm_sub(idx).id
+      ,      l_nt_sgm_sub(idx).snp_id_define
+      ,      l_nt_sgm_sub(idx).snp_id_member_group
+      ,      l_nt_sgm_sub(idx).snp_id_heading_to
+      );
+  
+   lm_config.log_processing_time( i_message_name    => 'StationGroups'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_station_groups.count||' lm_station_groups'
+                                                    || ', set '||l_nt_snp_alt.count|| ' alternative groups'
+                                                    || ', set '||l_nt_snp_sec.count|| ' secondary groups'
+                                                    || ' and created '||l_nt_sgm_sub.count||' station group members (sub groups)'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_snp%isopen
+      then
+         close c_snp;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_station_groups;
+
+
+
+
+
+
+procedure load_station_group_members
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_station_group_members';
+
+   
+   
+   
+   cursor c_sgm
+   is
+      select sgm.id sgm_id
+      ,      cast( multiset( select stn.stn_id
+                             ,      mom.id
+                             from   xmltable( 'Station'
+                                              passing sgm.stn_xml
+                                              columns stn_id            integer       path 'StationID/text()'
+                                              ,       mode_of_operation varchar2(20)  path 'Mode/text()'
+                                            ) stn
+                             ,      lm_mode_of_operation_dom mom
+                             where  mom.mom_mode (+) = stn.mode_of_operation
+                             order by stn.stn_id 
+                                                 
+                           ) as nt_stn_group_members
+                 ) nt_stations
+      ,      cast( multiset( select snp.id
+                             from   cmn_v_sysconfig_data cfg
+                             ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/StationGroups/StationGroup'
+                                              passing cfg.data
+                                              columns id                  integer       path 'ID/text()'
+                                              ,       members_id          integer       path 'StationGroupMember/text()'
+                                            ) snp
+                             where  snp.members_id = sgm.id
+                             order by snp.id 
+                                             
+                           ) as nt_id_coll
+                 ) nt_station_groups
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/StationGroupMembers/StationGroupMember'
+                      passing cfg.data
+                      columns id                integer      path 'ID/text()'
+                      ,       stn_xml           xmltype      path 'Station'
+                    ) sgm
+      ;
+
+   type nt_station_group_members is table of c_sgm%rowtype;
+   
+   l_nt_station_group_members          nt_station_group_members;
+   l_nt_sgm                            nt_sgm := nt_sgm();
+   
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_idx_sgm                           binary_integer;
+   l_sgm_id_last                       lm_segment_group_members.id%type;
+   
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   select nvl(max(id), 0)
+   into   l_sgm_id_last
+   from   lm_station_group_members;
+    
+   open c_sgm;
+   fetch c_sgm bulk collect into l_nt_station_group_members;
+   close c_sgm;
+
+   
+   
+   for idx_sgm in 1 .. l_nt_station_group_members.count
+   loop
+      
+      for idx_stn in 1 .. l_nt_station_group_members(idx_sgm).nt_stations.count
+      loop
+         lm_config.check_station( i_stn_id => l_nt_station_group_members(idx_sgm).nt_stations(idx_stn).stn_id);
+      end loop;
+
+      
+      for idx_snp in 1 .. l_nt_station_group_members(idx_sgm).nt_station_groups.count
+      loop
+         
+         
+
+         
+         l_idx_sgm := l_nt_sgm.count;
+         l_nt_sgm.extend(l_nt_station_group_members(idx_sgm).nt_stations.count);
+         
+         for idx_stn in 1 .. l_nt_station_group_members(idx_sgm).nt_stations.count
+         loop
+            
+            
+            l_nt_sgm(l_idx_sgm + idx_stn).id := l_sgm_id_last 
+                                              + l_idx_sgm     
+                                              + idx_stn;
+         
+            l_nt_sgm(l_idx_sgm + idx_stn).snp_id_define
+                   := l_nt_station_group_members(idx_sgm).nt_station_groups(idx_snp);
+                   
+            l_nt_sgm(l_idx_sgm + idx_stn).stn_id_member_station
+                   := l_nt_station_group_members(idx_sgm).nt_stations(idx_stn).stn_id;
+            l_nt_sgm(l_idx_sgm + idx_stn).mom_id
+                   := l_nt_station_group_members(idx_sgm).nt_stations(idx_stn).mom_id;
+         end loop; 
+         
+      end loop;    
+
+   end loop;       
+   
+
+   forall idx in 1 .. l_nt_sgm.count
+      insert
+      into   lm_station_group_members
+      (      id
+      ,      snp_id_define
+      ,      stn_id_member_station
+      ,      mom_id
+      ) values
+      (      l_nt_sgm(idx).id
+      ,      l_nt_sgm(idx).snp_id_define
+      ,      l_nt_sgm(idx).stn_id_member_station
+      ,      l_nt_sgm(idx).mom_id
+      );
+   
+   lm_config.log_processing_time( i_message_name    => 'StationGroupMembers'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_station_group_members.count||' station group members (stations)'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_sgm%isopen
+      then
+         close c_sgm;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_station_group_members;
+
+
+
+
+
+
+procedure load_task_assignments
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_task_assignments';
+
+   
+   cursor c_tat
+   is
+      select tat.id
+      ,      tat.task_group_id
+      ,      tat.task_type
+      ,      tat.primary_station_group
+      ,      tat.heading_to_station_group
+      ,      nvl(mom.id, lm_constant.g_con_mom_mom_mode_normal)  mom_id
+      ,      tat.isc_id_cust_full
+      ,      lm_config.translate_truefalse(tat.consider_segr_lb) ind_consider_segr_lb
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/TaskTopology/TaskAssignments/TaskAssignment'
+                       passing cfg.data
+                       columns id for ordinality
+                       ,       task_group_id            integer       path 'TaskGroupID/text()'
+                       ,       task_type                varchar2(20)  path 'Task/text()'
+                       ,       primary_station_group    integer       path 'PrimaryStationGroup/text()'
+                       ,       heading_to_station_group integer       path 'HeadingToStationGroup/text()'
+                       ,       mode_of_operation        varchar2(20)  path 'ModeOfOperation/text()'
+                       ,       isc_id_cust_full         varchar2(30)  path 'SystemComponent/text()'
+                       ,       consider_segr_lb         varchar2(5)   path 'ConsiderSegregationForLoadBalancing/text()'
+                     ) tat
+      ,      lm_mode_of_operation_dom mom
+      where  mom.mom_mode (+) = tat.mode_of_operation
+      ;
+
+   type nt_task_assignments is table of c_tat%rowtype;
+   type nt_tat              is table of lm_task_assignments%rowtype;
+
+   l_nt_task_assignments               nt_task_assignments;
+   l_nt_tat                            nt_tat := nt_tat();
+   
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   open c_tat;
+   fetch c_tat bulk collect into l_nt_task_assignments;
+   close c_tat;
+
+   
+   l_nt_tat.extend(l_nt_task_assignments.count);
+   for idx_tat in 1 .. l_nt_task_assignments.count
+   loop
+      lm_config.check_task_group( i_tgr_id => l_nt_task_assignments(idx_tat).task_group_id);
+      lm_config.check_station_group( i_snp_id => l_nt_task_assignments(idx_tat).primary_station_group);
+      if l_nt_task_assignments(idx_tat).heading_to_station_group is not null
+      then
+         lm_config.check_station_group( i_snp_id => l_nt_task_assignments(idx_tat).heading_to_station_group);
+      end if;
+      
+      l_nt_tat(idx_tat).id                             := l_nt_task_assignments(idx_tat).id;
+      l_nt_tat(idx_tat).tdn_id                         := lm_config.check_task_definition
+                                                                   ( i_tdn_type => l_nt_task_assignments(idx_tat).task_type);
+      l_nt_tat(idx_tat).tgr_id                         := l_nt_task_assignments(idx_tat).task_group_id;
+      l_nt_tat(idx_tat).snp_id                         := l_nt_task_assignments(idx_tat).primary_station_group;
+      l_nt_tat(idx_tat).mom_id                         := l_nt_task_assignments(idx_tat).mom_id;
+      if l_nt_task_assignments(idx_tat).isc_id_cust_full is not null
+      then
+         l_nt_tat(idx_tat).sct_id                      := lm_config.check_system_component( i_sct_id_cust_full => l_nt_task_assignments(idx_tat).isc_id_cust_full);
+      end if;
+      l_nt_tat(idx_tat).snp_id_heading_to              := l_nt_task_assignments(idx_tat).heading_to_station_group;
+      l_nt_tat(idx_tat).ind_use_segr_for_loadbalancing := l_nt_task_assignments(idx_tat).ind_consider_segr_lb;
+
+   end loop;
+   
+   
+   forall idx in 1 .. l_nt_task_assignments.count
+      insert
+      into   lm_task_assignments
+      (      id
+      ,      tdn_id
+      ,      tgr_id
+      ,      snp_id
+      ,      mom_id
+      ,      sct_id
+      ,      snp_id_heading_to
+      ,      ind_use_segr_for_loadbalancing
+      ) values
+      (      l_nt_tat(idx).id
+      ,      l_nt_tat(idx).tdn_id
+      ,      l_nt_tat(idx).tgr_id
+      ,      l_nt_tat(idx).snp_id
+      ,      l_nt_tat(idx).mom_id
+      ,      l_nt_tat(idx).sct_id
+      ,      l_nt_tat(idx).snp_id_heading_to
+      ,      l_nt_tat(idx).ind_use_segr_for_loadbalancing
+      );
+      
+   lm_config.log_processing_time( i_message_name    => 'TaskAssignments'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_task_assignments.count||' lm_task_assignments'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_tat%isopen
+      then
+         close c_tat;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_task_assignments;
+
+end lm_cfg_task_topology;
+/

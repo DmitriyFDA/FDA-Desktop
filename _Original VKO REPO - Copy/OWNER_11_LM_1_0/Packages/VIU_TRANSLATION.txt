@@ -1,0 +1,400 @@
+create or replace PACKAGE VIU_TRANSLATION IS
+
+/* Assembles the text of the info */
+FUNCTION COMPLETE_TEXT_OF_INFO
+ (I_OBJECT_TYPE IN VIU_TRANSLATIONS.OBJECT_TYPE%TYPE := 'IFO'
+ ,I_INFO_NR IN VIU_INFOS.NR%TYPE
+ ,I_INFO_ARGUMENTS IN VIU_INFO_LOGS.INFO_ARGUMENTS%TYPE
+ ,I_LANGUAGE IN VIU_LANGUAGES.ID%TYPE := NULL
+ )
+ RETURN VARCHAR2;
+/* translate item into a given language */
+FUNCTION CONVERSION
+ (I_OBJECT_TYPE IN VIU_TRANSLATIONS.OBJECT_TYPE%TYPE
+ ,I_OBJECT_ID IN VIU_TRANSLATIONS.OBJECT_ID%TYPE
+ ,I_LANGUAGE IN VIU_LANGUAGES.ID%TYPE := NULL
+ )
+ RETURN VARCHAR2;
+END VIU_TRANSLATION;
+/
+
+
+
+
+package body viu_translation is
+
+
+function info_text
+ (i_info_text in viu_translations.meaning%type
+ ,i_info_arguments in viu_info_logs.info_arguments%type
+ )
+ return varchar2;
+
+procedure split_up_text
+ (i_text in varchar2
+ ,o_list_split_text out viu_configuration.text_tt
+ );
+
+
+
+function complete_text_of_info
+ (i_object_type in viu_translations.object_type%type := 'IFO'
+ ,i_info_nr in viu_infos.nr%type
+ ,i_info_arguments in viu_info_logs.info_arguments%type
+ ,i_language in viu_languages.id%type := null
+ )
+ return varchar2
+ is
+
+c_proc_name constant varchar2(61) := 'Viu_Translation.Complete_Text_Of_Info';
+
+v_handle integer;
+v_user varchar2(30);
+v_info_text varchar2(4000);
+begin
+if i_info_nr is null
+	then
+		v_info_text := null;
+	else
+           
+           v_info_text := viu_translation.conversion
+		  	             ( i_object_type => i_object_type
+					 , i_object_id   => i_info_nr
+                               , i_language    => i_language
+					 );
+
+        if viu_info.v_translatemethod = 0 then
+          
+          
+		  v_info_text := viu_translation.info_text
+							(i_info_text		=> v_info_text
+							,i_info_arguments	=> i_info_arguments
+							);
+        else
+          
+          if viu_info.v_translatemethod = 1 then
+            
+            v_info_text := v_info_text||'##'||i_info_arguments;
+          else
+            
+            v_info_text := v_info_text||'##'||i_info_arguments;
+          end if;
+        end if;
+	end if;
+
+	return v_info_text;
+exception
+	when others
+	then
+		raise;
+end complete_text_of_info;
+
+function info_text
+ (i_info_text in viu_translations.meaning%type
+ ,i_info_arguments in viu_info_logs.info_arguments%type
+ )
+ return varchar2
+ is
+
+v_return_text varchar2(4000);
+t_info_text viu_configuration.text_tt;
+t_info_arguments viu_configuration.text_tt;
+
+begin
+v_return_text := null;
+
+	
+	viu_translation.split_up_text
+		(i_text				=> i_info_text
+		,o_list_split_text	=> t_info_text
+		);
+
+	
+	viu_translation.split_up_text
+		(i_text				=> i_info_arguments
+		,o_list_split_text	=> t_info_arguments
+		);
+
+	
+	for i in 1..t_info_text.count loop
+
+		
+		v_return_text := v_return_text || t_info_text(i);
+
+		begin
+			
+			v_return_text := v_return_text || t_info_arguments(i);
+		exception
+			when no_data_found
+			then
+				null;
+		end;
+	end loop;
+
+	return v_return_text;
+exception
+	when others
+	then
+		raise;
+end info_text;
+
+procedure split_up_text
+ (i_text in varchar2
+ ,o_list_split_text out viu_configuration.text_tt
+ )
+ is
+
+v_remaining_text varchar2(4000);
+v_position1 integer;
+v_position2 integer;
+v_index integer;
+v_object_type varchar2(5);
+v_object_id integer;
+v_info_argument_text varchar2(4000);
+v_split_text varchar2(4000);
+
+begin
+v_remaining_text := i_text;
+
+  
+  v_position1 := instr(v_remaining_text,'#');
+
+  
+  while v_position1 <> 0 loop
+
+    v_index := o_list_split_text.count;
+
+    
+    o_list_split_text(v_index + 1) := substr(v_remaining_text,1,v_position1 - 1);
+            
+    
+    v_split_text := o_list_split_text(v_index + 1);
+    v_position2 := instr(v_split_text, '$');
+
+    if v_position2 <> 0 then
+      begin
+        
+        
+        v_object_type := substr(v_split_text, 1, v_position2 - 1);
+      exception
+        when others then
+          v_object_type := null;
+      end;
+
+      begin
+        
+        
+        v_object_id := to_number(substr(v_split_text, v_position2 + 1));
+      exception
+        when others then
+          v_object_type := null;
+      end;
+
+      
+      v_info_argument_text := viu_translation.conversion( i_object_type => v_object_type
+                                                        , i_object_id   => v_object_id
+                                                        );
+
+      if v_info_argument_text is not null then
+        o_list_split_text(v_index + 1) := v_info_argument_text;
+      else
+        o_list_split_text(v_index + 1) := v_split_text;
+      end if;
+
+    end if;
+
+    
+    v_remaining_text := substr(v_remaining_text,v_position1 + 2);
+
+    
+    v_position1 := instr(v_remaining_text,'#');
+
+  end loop;
+
+  
+  if v_remaining_text is not null then
+    v_index := o_list_split_text.count;
+    o_list_split_text(v_index + 1) := v_remaining_text;
+
+    
+    v_split_text := o_list_split_text(v_index + 1);
+    v_position2 := instr(v_split_text, '$');
+
+    if v_position2 <> 0 then
+      begin
+        
+        
+        v_object_type := substr(v_split_text, 1, v_position2 - 1);
+      exception
+        when others then
+          v_object_type := null;
+      end;
+
+      begin
+        
+        
+        v_object_id := to_number(substr(v_split_text, v_position2 + 1));
+      exception
+        when others then
+          v_object_type := null;
+      end;
+
+      
+      v_info_argument_text := viu_translation.conversion( i_object_type => v_object_type
+                                                        , i_object_id   => v_object_id
+                                                        );
+
+      if v_info_argument_text is not null then
+        o_list_split_text(v_index + 1) := v_info_argument_text;
+      else
+        o_list_split_text(v_index + 1) := v_split_text;
+      end if;
+
+    end if;
+  end if;
+
+exception
+  when others then
+    raise;
+end split_up_text;
+
+function conversion
+ (i_object_type in viu_translations.object_type%type
+ ,i_object_id in viu_translations.object_id%type
+ ,i_language in viu_languages.id%type := null
+ )
+ return varchar2
+ is
+
+c_break_char constant char := '<';
+
+c_proc_name constant varchar2(100) := 'Viu_Translation.Conversion';
+
+v_meaning viu_translations.meaning%type;
+v_oracle_name viu_users.oracle_name%type;
+
+cursor c_translation
+ (i_object_id in viu_translations.object_id%type
+ ,i_object_type in viu_translations.object_type%type
+ ,i_user in varchar2
+ )
+ is
+select ttn.meaning
+  from   viu_translations  ttn
+  ,      viu_languages     lge
+  ,      viu_users         usr
+  where  lge.id = usr.lge_id
+  and    usr.oracle_name = upper(i_user)
+  and    ttn.object_type = i_object_type
+  and    ttn.object_id   = i_object_id
+  and    ttn.lge_id      = lge.id;
+begin
+declare
+  cursor c_ttn (b_type viu_translations.object_type%type,
+                b_id   viu_translations.object_id%type,
+                b_lge  viu_translations.lge_id%type) is
+    select ttn.meaning
+    from   viu_translations ttn
+    where  ttn.object_type = b_type
+    and    ttn.object_id   = b_id
+    and    ttn.lge_id      = b_lge;
+
+begin
+   
+   
+   
+   
+   
+   
+   
+   viu_trace.enter(c_proc_name);
+
+   if viu_info.v_translatemethod = 0 then
+     
+     
+
+     if i_language is null then
+       
+       v_oracle_name := user;
+      
+       open c_translation
+          ( i_object_type   	=> i_object_type
+  	       ,i_object_id		=> i_object_id
+  	       ,i_user                => v_oracle_name
+   	      );
+       fetch c_translation into v_meaning;
+       close c_translation;
+     else
+       
+       open c_ttn(i_object_type, i_object_id, i_language);
+       fetch c_ttn into v_meaning;
+       close c_ttn;
+     end if;
+
+     if v_meaning is null
+     then
+      
+      
+      if i_language is null or i_language != viu_configuration.v_default_language then
+        open c_ttn(i_object_type, i_object_id, viu_configuration.v_default_language);
+        fetch c_ttn into v_meaning;
+        close c_ttn;
+      end if;
+
+      
+      
+      if v_meaning is null
+         and i_object_id != viu_constant.c_ifo_nottranslatedtext
+      then
+        viu_info.operator_info
+           ( i_ifo_nr            => viu_constant.c_ifo_nottranslatedtext
+	      ,i_calling_procedure => c_proc_name
+	      ,i_severity          => viu_info.c_severity_warning
+	      ,i_info_arguments    => to_char(i_object_id)||'##'||i_object_type
+            ,i_additional_data   => 'User = '||v_oracle_name
+           );
+      end if;
+     end if;
+     
+    else
+      
+      
+      
+      if i_object_type is not null and i_object_id is not null then
+        if viu_info.v_translatemethod = 1 then
+          
+          v_meaning := 'Data:#Table.'||i_object_type||'.'||i_object_id;
+        else
+          
+          v_meaning := i_object_type||'$'||i_object_id;
+        end if;
+      else
+        
+        v_meaning := null;
+      end if;
+    end if;
+      
+     
+    
+    
+    
+    
+    
+    viu_trace.leave;
+
+    
+    return replace(v_meaning,c_break_char,chr(10));
+
+exception
+   when others then
+      if c_translation%isopen
+      then
+	   close c_translation;
+	end if;
+
+      viu_trace.leave;
+end;
+end conversion;
+
+end viu_translation;
+/

@@ -1,0 +1,5490 @@
+create or replace PACKAGE lm_lbs_administration IS
+ 
+   g_con_package CONSTANT lm_constant.st_proc_name := 'lm_lbs_administration';
+   SUBTYPE g_interval_type IS INTERVAL DAY(9) TO SECOND(3);
+
+-- public functions
+/* LAN_001 : Handle lane status report */
+PROCEDURE hdl_lane_status_report;
+
+/* LAN_002 : Determine Lane */
+PROCEDURE determine_lane
+ (i_rt_lbs_bag         IN RT_LBS_BAG
+ ,i_nt_reachable_lanes IN NT_STN_ID
+ ,o_stn_id            OUT lm_stations.id%TYPE
+ );
+
+/* LAN_003 : LBS monitor */
+PROCEDURE lbs_monitor;
+
+/* LAN_025: Send periodic reports for lane based EBS without tracking */
+PROCEDURE handle_suspended_dereg
+( io_rt_pae IN OUT lm_packages%ROWTYPE
+);
+
+-- private functions, public due to the Unit Tests 
+/* LAN_004 : reevaluate destination of baggage in lane */
+PROCEDURE reevaluate_destination_of_bags(i_lne_stn_id IN lm_ebs_lanes.stn_id%TYPE
+                                        ,i_nt_lbs_bag IN NT_LBS_BAG);
+                 
+/* LAN_024 : reevaluate destination of baggage en route to lane */
+PROCEDURE reevaluate_bags_to_lane
+( i_lne_stn_id       IN lm_ebs_lanes.stn_id%TYPE
+, i_ind_exclude_lane IN BOOLEAN
+);
+
+/* LAN_027 : End the suspended deregistration of bags in a lane */
+PROCEDURE end_suspended_deregs
+( i_lne_stn_id       IN lm_ebs_lanes.stn_id%TYPE
+);
+
+/* LAN_005 : check release lane required */
+PROCEDURE check_release_lane_required
+( i_lne_stn_id             IN     lm_ebs_lanes.stn_id%TYPE
+, i_nt_lbs_bag             IN     nt_lbs_bag
+, i_nt_bags_to_lane        IN     nt_id_coll
+, o_release_lane_required     OUT BOOLEAN
+, o_ind_priority              OUT lm_ebs_empty_lane_requests.ind_priority%TYPE
+, o_reason                    OUT lm_ebs_empty_lane_requests.reason%TYPE
+);
+
+/* LAN_006 : process lane group */
+PROCEDURE process_lane_group
+ (i_time_limit         IN TIMESTAMP
+ ,i_segregation        IN lm_segregation_groups.id%TYPE
+ ,i_nt_reachable_lanes IN NT_STN_ID
+ ,i_lap_id             IN lm_ebs_lane_groups.id%TYPE
+ ,i_storage_method     IN lm_task_definitions.storage_method%TYPE
+ ,o_lne_stn_id        OUT lm_ebs_lanes.stn_id%TYPE
+ );
+
+/* LAN_007 : determine lane from segment/area */
+PROCEDURE determine_lane_tst
+ (i_area_id_cust IN lm_system_components.id_cust%TYPE
+ ,i_lst_id_cust  IN lm_logical_segments.id_cust%TYPE
+ ,o_lne_stn_id  OUT lm_ebs_lanes.stn_id%TYPE
+ );
+
+/* LAN_008 : create new timeslots */
+PROCEDURE create_new_timeslots;
+
+/* LAN_009 : determine lane (segregation based) */
+PROCEDURE determine_lane_sgn
+ (i_segregation        IN lm_segregation_groups.id%TYPE
+ ,i_nt_reachable_lanes IN NT_STN_ID
+ ,i_lap_id             IN lm_ebs_lane_groups.id%TYPE
+ ,o_lne_stn_id        OUT lm_ebs_lanes.stn_id%TYPE
+ );
+
+/* LAN_010 : determine lane (time base) */
+PROCEDURE determine_lane_tsl
+ (i_time_limit         IN TIMESTAMP
+ ,i_nt_reachable_lanes IN NT_STN_ID
+ ,i_lap_id             IN lm_ebs_lane_groups.id%TYPE
+ ,o_lne_stn_id        OUT lm_ebs_lanes.stn_id%TYPE
+ );
+
+/* LAN_011 : check group lane allocation */
+PROCEDURE check_group_lane_allocation
+ (i_lap_id              IN lm_ebs_lane_groups.id%TYPE
+ ,o_allocation_allowed OUT BOOLEAN
+ ,o_lap_name           OUT lm_ebs_lane_groups.name%TYPE
+ );
+
+/* LAN_012 : check segregation lane allocation */
+PROCEDURE check_sgn_lane_allocation
+ (o_allocation_allowed OUT BOOLEAN
+ );
+
+/* LAN_013 : determine logical segment by lane */
+PROCEDURE determine_lst_by_lane
+ (i_lne_stn_id  IN lm_ebs_lanes.stn_id%TYPE
+ ,o_lst_id     OUT lm_logical_segments.id%TYPE
+ );
+
+/* LAN_014 : update expired timeslots */
+PROCEDURE update_expired_timeslots;
+
+/* LAN_015 : maintain timeslots */
+PROCEDURE maintain_timeslots;
+
+/* LAN_032 : create release request  */
+PROCEDURE create_release_request
+( i_lne_stn_id   IN     lm_ebs_empty_lane_requests.lne_stn_id%TYPE
+, i_request_type IN     lm_ebs_empty_lane_requests.elt_type%TYPE
+, i_ind_priority IN     lm_ebs_empty_lane_requests.ind_priority%TYPE
+, i_reason       IN     lm_ebs_empty_lane_requests.reason%TYPE
+);
+
+/* LAN_016 : check release lanes */
+PROCEDURE check_release_lanes;
+
+/* LAN_031 : handle 1 release lane request */
+PROCEDURE handle_release_request( i_elt_id IN lm_ebs_empty_lane_requests.id%TYPE);
+
+/* LAN_030 : handle release lane requests */
+PROCEDURE handle_release_requests;
+
+/* LAN_017 : repeat empty lane instructions */
+PROCEDURE repeat_empty_lane_instructions;
+
+/* LAN_026: send periodic reports (untracked EBS) */
+PROCEDURE send_periodic_reports;
+
+/* LAN_033: get EBS LANE details (GUI) */
+FUNCTION get_lane_details RETURN nt_ebs_lane_details;
+
+/* LAN_034: Handle external release requests */
+PROCEDURE handle_external_requests
+( i_operator_id   IN VARCHAR2
+, i_ip_address    IN VARCHAR2
+, i_nt_lne_stn_id IN nt_stn_id
+);
+
+/* LAN_018 : handle timeout */
+PROCEDURE handle_timeout(i_action IN NUMBER);
+
+/* LAN_019 : calculate timeout */
+PROCEDURE calculate_timeout(o_timeout OUT g_interval_type
+                           ,o_next_action OUT NUMBER);
+
+/* LAN_020 : send instruction to empty lane */
+PROCEDURE send_instruction_to_empty_lane
+( i_elt_id     IN lm_ebs_empty_lane_requests.id%TYPE
+, i_lne_stn_id IN lm_ebs_lanes.stn_id%TYPE);
+
+/* LAN_021 : determine AZS by lane */
+PROCEDURE determine_azs_by_lane(i_lne_stn_id       IN lm_ebs_lanes.stn_id%TYPE
+                               ,o_area_id         OUT lm_system_components.id%TYPE
+                               ,o_area_id_cust    OUT lm_system_components.id_cust%TYPE
+                               ,o_zone_id_cust    OUT lm_system_components.id_cust%TYPE
+                               ,o_section_id_cust OUT lm_system_components.id_cust%TYPE);
+                               
+/* LAN_022 : get bags in lane */
+PROCEDURE get_bags_in_lane
+( i_lne_stn_id  IN     lm_ebs_lanes.stn_id%TYPE
+, o_nt_lbs_bag     OUT NT_LBS_BAG);
+
+/* LAN_023 : get bags to lane */
+PROCEDURE get_bags_to_lane
+( i_lne_stn_id       IN     lm_ebs_lanes.stn_id%TYPE
+, i_ind_exclude_lane IN     BOOLEAN
+, o_nt_pid              OUT nt_id_coll);
+
+-- private functions, as a part of one or more business functions,public owing to the Unit Tests
+/* LAN_101 : set monitored timestamp */
+PROCEDURE set_monitored_timestamp(i_timestamp IN TIMESTAMP DEFAULT NULL);
+
+/* LAN_102 : get monitored timestamp */
+FUNCTION get_monitored_timestamp RETURN TIMESTAMP;
+
+/* LAN_103 : set timestamp last check release lanes*/
+PROCEDURE set_last_check_release_lanes(i_timestamp IN TIMESTAMP DEFAULT NULL);
+
+/* LAN_104 : get timestamp last check release lanes */
+FUNCTION get_last_check_release_lanes RETURN TIMESTAMP;
+
+/* LAN_105 : get EBS Lane destination */
+FUNCTION get_lane_destination(i_lne_stn_id IN lm_ebs_lanes.stn_id%TYPE) RETURN lm_physical_destinations.id%TYPE;
+                           
+/* LAN_106 : get message attributes */
+PROCEDURE get_message_attributes_las
+ (i_it_las IN lm_interface.g_it_ima
+ ,o_event_time OUT lm_ebs_lane_statuses.time_activated%TYPE
+ ,o_area_id_cust OUT lm_system_components.id_cust%TYPE
+ ,o_segment_id_cust OUT lm_technical_segments.id_cust%TYPE
+ ,o_status OUT lm_ebs_lane_status_dom.id_cust%TYPE
+ ,o_ims_id OUT lm_ifc_messages.id%TYPE
+ );
+
+/* LAN_107 : Validate incoming data. */
+PROCEDURE validate_incoming_data_las
+( i_lne_stn_id IN lm_ebs_lanes.stn_id%TYPE
+ ,i_event_time IN lm_ebs_lane_statuses.time_activated%TYPE
+ ,i_area_id_cust IN lm_system_components.id_cust%TYPE
+ ,i_segment_id_cust IN lm_technical_segments.id_cust%TYPE
+ ,i_status IN lm_ebs_lane_status_dom.id_cust%TYPE
+ ,i_ims_id IN lm_ifc_messages.id%TYPE
+ ,o_las_id OUT lm_ebs_lane_statuses.id%TYPE
+ ,o_rt_lsm OUT lm_ebs_lane_status_dom%ROWTYPE
+ ,o_msg_obsolete OUT BOOLEAN
+ );
+
+/* LAN_108: set timestamp last check reporting */
+PROCEDURE set_last_periodic_reporting(i_timestamp IN TIMESTAMP DEFAULT NULL);
+
+/* LAN_109: get timestamp last check reporting */
+FUNCTION get_last_periodic_reporting RETURN TIMESTAMP;
+
+/* LAN_110: get type of bagstore */
+FUNCTION get_lbs_type( i_lne_stn_id IN lm_ebs_lanes.stn_id%TYPE)
+RETURN lm_stations.bagstore_type%TYPE;
+
+/* LAN_111: set timestamp last time release requests were handled */
+PROCEDURE set_last_hdl_release_reqs(i_timestamp IN TIMESTAMP DEFAULT NULL);
+
+/* LAN_112: get timestamp last check reporting */
+FUNCTION get_last_hdl_release_reqs RETURN TIMESTAMP;
+
+END lm_lbs_administration;
+/
+
+
+
+
+package body lm_lbs_administration is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   g_monitored_timestamp       timestamp;
+   g_last_check_release_lanes  timestamp;
+   g_last_hdl_release_requests timestamp;
+   g_last_periodic_reporting   timestamp;
+
+
+procedure lock_lane_groups
+ (i_lne_stn_id  in lm_ebs_lanes.stn_id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.lock_lane_groups';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   for rec_lap in (select lap.id
+                   from   lm_ebs_lane_groups        lap
+                   ,      lm_ebs_lane_group_members lgr
+                   where  lgr.lne_stn_id = i_lne_stn_id
+                   and    lgr.lap_id     = lap.id
+                   order by lap.priority, lap.id
+                  )
+   loop
+      lm_lap_tapi_pck.lap_lock_row( i_lap_id => rec_lap.id);
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end lock_lane_groups;
+
+
+procedure hdl_lane_status_report
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.hdl_lane_status_report';
+
+   
+
+   cursor c_last_sent_eln(i_elt_id in lm_ebs_empty_lane_instructions.elt_id%type)
+   is
+   select elnv.id
+   from   (select eln.id
+           ,      rank() over (order by eln.event_time desc) rank
+           from   lm_ebs_empty_lane_instructions eln
+           where  eln.elt_id = i_elt_id
+          ) elnv
+   where  elnv.rank = 1;
+
+   l_found                        boolean;
+   l_msg_obsolete                 boolean;
+   l_sql_rowcount                 number;
+   l_event_time                   lm_ebs_lane_statuses.time_activated%type;
+   l_area_id_cust                 lm_system_components.id_cust%type;
+   l_segment_id_cust              lm_technical_segments.id_cust%type;
+   l_status                       lm_ebs_lane_status_dom.id_cust%type;
+   l_lsm_id_old                   lm_ebs_lane_statuses.lsm_id%type;
+   l_lsm_id_new                   lm_ebs_lane_statuses.lsm_id%type;
+   l_ims_id                       lm_ifc_messages.id%type;
+   l_las_id                       lm_ebs_lane_statuses.id%type;
+   l_rt_lsm                       lm_ebs_lane_status_dom%rowtype;
+   l_rt_lne                       lm_ebs_lanes%rowtype;
+   l_rt_las                       lm_ebs_lane_statuses%rowtype;
+   l_rt_eln                       lm_ebs_empty_lane_instructions%rowtype;
+   l_rt_elt                       lm_ebs_empty_lane_requests%rowtype;
+   l_rt_last_sent_eln             c_last_sent_eln%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   get_message_attributes_las( i_it_las          => lm_interface.g_it_message_content
+                             , o_event_time      => l_event_time
+                             , o_area_id_cust    => l_area_id_cust
+                             , o_segment_id_cust => l_segment_id_cust
+                             , o_status          => l_status
+                             , o_ims_id          => l_ims_id);
+
+   
+   determine_lane_tst(i_area_id_cust => l_area_id_cust
+                     ,i_lst_id_cust  => l_segment_id_cust
+                     ,o_lne_stn_id   => l_rt_lne.stn_id
+                     );
+
+   
+   
+   
+   lock_lane_groups( i_lne_stn_id => l_rt_lne.stn_id);
+   l_found := lm_lne_tapi_pck.lne_select_row_upd(i_lne_stn_id => l_rt_lne.stn_id
+                                                ,o_rt_lne     => l_rt_lne);
+
+   
+   validate_incoming_data_las( i_lne_stn_id      => l_rt_lne.stn_id
+                             , i_event_time      => l_event_time
+                             , i_area_id_cust    => l_area_id_cust
+                             , i_segment_id_cust => l_segment_id_cust
+                             , i_status          => l_status
+                             , i_ims_id          => l_ims_id
+                             , o_las_id          => l_las_id
+                             , o_rt_lsm          => l_rt_lsm
+                             , o_msg_obsolete    => l_msg_obsolete);
+
+   if not l_msg_obsolete
+   then
+      if l_las_id is not null
+      then
+         
+         l_found := lm_las_tapi_pck.las_select_row_upd(i_las_id => l_las_id
+                                                      ,o_rt_las => l_rt_las
+                                                       );
+         l_lsm_id_old := l_rt_las.lsm_id;
+         l_lsm_id_new := l_rt_lsm.id;
+
+         if l_lsm_id_old <> l_lsm_id_new
+            
+            
+         then
+            
+            l_rt_las.time_deactivated := l_event_time;
+            l_sql_rowcount := lm_las_tapi_pck.las_update_row (i_las_id =>  l_rt_las.id
+                                                             ,io_rt_las => l_rt_las);
+         end if;
+      end if;
+
+      if    l_lsm_id_old <> l_lsm_id_new
+         or l_las_id is null
+        
+      then
+         
+         l_rt_las.id               := null;
+         l_rt_las.lsm_id           := l_rt_lsm.id;
+         l_rt_las.lne_stn_id       := l_rt_lne.stn_id;
+         l_rt_las.ims_id           := l_ims_id;
+         l_rt_las.time_activated   := l_event_time;
+         l_rt_las.time_deactivated := null;
+         lm_las_tapi_pck.las_insert_row(io_rt_las => l_rt_las);
+
+         
+         
+         
+         l_rt_lne.ind_available := l_rt_lsm.ind_lane_available_for_storage;
+         
+         l_sql_rowcount := lm_lne_tapi_pck.lne_update_row (i_lne_stn_id => l_rt_lne.stn_id
+                                                          ,io_rt_lne    => l_rt_lne);
+
+         
+         if l_lsm_id_new = lm_constant.g_con_lsm_id_emptying
+         then
+            
+            l_rt_lne.time_empty_lane_instruction := null;
+            
+            l_rt_lne.time_emptied                := l_event_time;
+            
+            l_sql_rowcount := lm_lne_tapi_pck.lne_update_row( i_lne_stn_id => l_rt_lne.stn_id
+                                                            , io_rt_lne    => l_rt_lne
+                                                            );
+
+            
+            for rec_elt in (select elt.id
+                            from   lm_elt_active_v elt
+                            where  elt.lne_stn_id = l_rt_lne.stn_id
+                            and    elt.elt_status = lm_constant.g_con_elt_status_open
+                           )
+            loop
+               open c_last_sent_eln(i_elt_id => rec_elt.id);
+               fetch c_last_sent_eln
+               into l_rt_last_sent_eln;
+               close c_last_sent_eln;
+
+               if lm_eln_tapi_pck.eln_select_row( i_eln_id => l_rt_last_sent_eln.id
+                                                , o_rt_eln => l_rt_eln
+                                                )
+               then
+                  l_rt_eln.event_time_response := l_event_time;
+                  l_sql_rowcount := lm_eln_tapi_pck.eln_update_row( i_eln_id  => l_rt_eln.id
+                                                                  , io_rt_eln => l_rt_eln
+                                                                  );
+               end if;
+            end loop;
+         elsif l_lsm_id_old = lm_constant.g_con_lsm_id_emptying
+         then
+            
+            
+            for rec_elt in (select elt.id
+                            from   lm_elt_active_v elt
+                            where  elt.lne_stn_id = l_rt_lne.stn_id
+                            and    elt.elt_status = lm_constant.g_con_elt_status_open
+                           )
+            loop
+               if lm_elt_tapi_pck.elt_select_row( i_elt_id => rec_elt.id
+                                                , o_rt_elt => l_rt_elt
+                                                )
+               then
+                  l_rt_elt.elt_status     := lm_constant.g_con_elt_status_completed;
+                  l_rt_elt.date_completed := l_event_time;
+                  l_sql_rowcount := lm_elt_tapi_pck.elt_update_row( i_elt_id  => l_rt_elt.id
+                                                                  , io_rt_elt => l_rt_elt
+                                                                  );
+               end if;
+            end loop;
+         end if; 
+      
+         commit; 
+      
+         if l_rt_lne.ind_available = lm_constant.g_con_yesno_no
+         then
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+
+            
+            reevaluate_bags_to_lane( i_lne_stn_id       => l_rt_lne.stn_id
+                                   , i_ind_exclude_lane => l_lsm_id_new != lm_constant.g_con_lsm_id_emptying
+                                                           or
+                                                           get_lbs_type( i_lne_stn_id => l_rt_lne.stn_id)
+                                                            = lm_constant.g_con_store_type_lane_no_trk
+                                   );
+         end if; 
+
+         if     l_lsm_id_new = lm_constant.g_con_lsm_id_emptying
+            and get_lbs_type( i_lne_stn_id => l_rt_lne.stn_id)
+                 = lm_constant.g_con_store_type_lane_no_trk
+         then
+            end_suspended_deregs( i_lne_stn_id => l_rt_lne.stn_id);
+         end if;
+      end if; 
+
+   end if; 
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      if c_last_sent_eln%isopen
+      then
+         close c_last_sent_eln;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_lane_status_report;
+
+
+procedure determine_lane
+ (i_rt_lbs_bag         in rt_lbs_bag
+ ,i_nt_reachable_lanes in nt_stn_id
+ ,o_stn_id            out lm_stations.id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package || '.determine_lane';
+
+   
+   cursor c_tdn(i_task_type in lm_task_definitions.task_instruction_type%type)
+   is
+   select tdn.id
+   ,      tdn.storage_method
+   from   lm_task_definitions tdn
+   where  tdn.task_instruction_type = i_task_type
+   and    tdn.storage_method in (lm_constant.g_con_tdn_storage_method_segr
+                                ,lm_constant.g_con_tdn_storage_method_time);
+
+   
+   
+   cursor c_lap(i_tdn_id   in lm_ebs_lane_groups.tdn_id%type
+               ,i_pcm_name in lm_ebs_lane_groups.pcm_name%type
+               )
+   is
+   select lap.id
+   from   lm_ebs_lane_groups lap
+   where  lap.tdn_id   = i_tdn_id
+   and    (   lap.pcm_name = i_pcm_name
+           or lap.pcm_name is null
+          )
+
+
+
+
+
+
+
+   order by lap.priority
+   ,        lap.id         
+   ;
+
+   l_lne_stn_id lm_ebs_lanes.stn_id%type;
+   r_tdn c_tdn%rowtype;
+   l_nt_lap_id nt_id_coll := nt_id_coll();
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   o_stn_id := null;
+
+   
+   open c_tdn(i_task_type => i_rt_lbs_bag.task_type);
+   fetch c_tdn
+   into r_tdn;
+   if c_tdn%notfound
+   then
+      close c_tdn;
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_lbsunsupportedtasktype
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_rt_lbs_bag.task_type
+                         );
+   end if;
+   close c_tdn;
+
+   open c_lap(i_tdn_id   => r_tdn.id
+             ,i_pcm_name => i_rt_lbs_bag.physical_class
+             );
+   fetch c_lap
+   bulk collect
+   into l_nt_lap_id;
+   close c_lap;
+
+   if l_nt_lap_id is empty
+   then
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_ebslanegroupconferror
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_info_arguments         => i_rt_lbs_bag.task_type||'##'||i_rt_lbs_bag.physical_class
+                            , i_additional_data        => 'This is a configuration error'
+                            );
+   else
+      for idx in l_nt_lap_id.first .. l_nt_lap_id.last
+      loop
+         
+         process_lane_group
+             (i_time_limit         => i_rt_lbs_bag.time_limit
+             ,i_segregation        => i_rt_lbs_bag.segregation
+             ,i_nt_reachable_lanes => i_nt_reachable_lanes
+             ,i_lap_id             => l_nt_lap_id(idx)
+             ,i_storage_method     => r_tdn.storage_method
+             ,o_lne_stn_id         => l_lne_stn_id
+             );
+         if l_lne_stn_id is not null
+         then
+            o_stn_id := l_lne_stn_id;
+            exit;
+         end if;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      if c_tdn%isopen
+      then
+        close c_tdn;
+      end if;
+      if c_lap%isopen
+      then
+        close c_lap;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end determine_lane;
+
+
+procedure lbs_monitor
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.lbs_monitor';
+
+   l_alertstatus   integer;
+   l_alertname     varchar2(30);
+   l_alertname_mon varchar2(30);
+   l_alertname_rr  varchar2(30);
+   l_message       varchar2(40);
+   l_timeout_calc  g_interval_type;
+   l_timeout       g_interval_type;
+   l_action        number;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   l_alertname_mon := lm_common.build_signal(lm_constant.g_con_alert_lbs_monitor) ;
+   l_alertname_rr  := lm_common.build_signal(lm_constant.g_con_alert_lbs_release_req) ;
+
+   
+   dbms_alert.register( l_alertname_mon);
+   dbms_alert.register( l_alertname_rr);
+
+   loop
+      begin
+         
+         calculate_timeout(o_timeout     => l_timeout_calc
+                          ,o_next_action => l_action);
+
+         
+         
+         
+         
+         l_timeout := greatest( numtodsinterval(ceil(lm_common.to_seconds(l_timeout_calc)), 'SECOND')
+                              , interval '0' second
+                              );
+
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_ebsnextaction
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_notification
+                               ,i_info_arguments    => case l_action
+                                                       when lm_constant.g_con_lbs_action_maintain_tsl
+                                                       then 'Timeslot maintenance'
+                                                       when lm_constant.g_con_lbs_action_hdl_rel_reqs
+                                                       then 'Handle release requests'
+                                                       when lm_constant.g_con_lbs_action_check_rel_lne
+                                                       then 'Check release lanes'
+                                                       when lm_constant.g_con_lbs_action_empty_lne_ins
+                                                       then 'Repeat EmptyLaneInstructions'
+                                                       when lm_constant.g_con_lbs_action_periodic_rep
+                                                       then 'Periodic Reporting (untracked EBS)'
+                                                       else 'Undefined action'
+                                                       end
+                                                    || '##'|| l_timeout
+                               ,i_additional_data   => 'Calculated timeout was '||l_timeout_calc
+                               );
+
+         
+
+         dbms_alert.waitany ( name    => l_alertname
+                            , message => l_message
+                            , status  => l_alertstatus
+                            , timeout => lm_common.to_seconds(l_timeout)
+                           );
+
+         if  l_alertstatus =  lm_constant.g_con_alert_waitany_alert
+         then
+            
+            
+            
+            
+            if l_alertname = l_alertname_mon
+            then
+               exit;
+            elsif l_alertname = l_alertname_rr
+            then
+               l_action := lm_constant.g_con_lbs_action_hdl_rel_reqs;
+               viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_ebsnextaction
+                                     ,i_calling_procedure => l_con_proc_name
+                                     ,i_severity          => viu_info.c_severity_notification
+                                     ,i_info_arguments    => 'Handle release requests'
+                                                          || '##'|| interval '0' second
+                                     ,i_additional_data   => 'Alert for release request received, interrupting time-out'
+                                     );
+            end if;
+         end if;
+
+         
+         acl_application_control.register_process;
+
+         
+         
+         set_monitored_timestamp;
+
+         
+         handle_timeout(i_action => l_action);
+
+         
+         acl_application_control.update_aps_stats;
+
+         commit;
+      exception
+         when others
+         then
+            rollback;
+            viu_info.handle_info ();
+
+            dbms_alert.waitany ( name          => l_alertname
+                               , message       => l_message
+                               , status        => l_alertstatus
+                               , timeout       => lm_constant.g_con_job_delay
+                               );
+      end;
+
+   end loop;
+
+   dbms_alert.removeall();
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      rollback;
+      dbms_alert.removeall();
+
+      viu_module.leave_module( i_module      => l_con_proc_name
+                             , i_debug_info  => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure  => l_con_proc_name );
+end lbs_monitor;
+
+
+
+
+
+
+
+procedure handle_suspended_dereg
+( io_rt_pae in out lm_packages%rowtype
+)
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.handle_suspended_dereg';
+ 
+   l_pon_id                   lm_physical_destinations.id%type;
+   l_lne_stn_id               lm_ebs_lanes.stn_id%type;
+   l_time_now                 timestamp;
+   l_rows                     number;
+   l_found                    boolean;
+   l_rt_lne                   lm_ebs_lanes%rowtype;
+   l_tasktype                 lm_task_definitions.task_instruction_type%type;
+   l_conduct_type_dummy       lm_station_types.conduct_type%type;
+   l_area_id_cust             lm_system_components.id_cust%type;
+   l_zone_id_cust             lm_system_components.id_cust%type;
+   l_section_id_cust          lm_system_components.id_cust%type;
+   l_area_id                  lm_system_components.id%type;
+   l_rt_taskreport_result     lm_package_administration.g_rt_taskreport_result;
+   l_rt_stn                   lm_stations%rowtype;
+   
+   function get_lane_by_rst( i_rst_id in lm_route_segments.id%type)
+   return lm_ebs_lanes.stn_id%type
+   is
+      cursor c_lne_by_rst( b_rst_id in lm_route_segments.id%type)
+      is
+      select lne.stn_id
+      from   lm_route_segments      rst
+      ,      lm_technical_segments  tst
+      ,      lm_ebs_lanes           lne
+      where  rst.id     = b_rst_id
+      and    tst.lst_id = rst.lst_id  
+      and    lne.tst_id = tst.id      
+      ;
+      l_lne_stn_id               lm_ebs_lanes.stn_id%type;
+   begin
+      for rec_lne in c_lne_by_rst( b_rst_id => i_rst_id)
+      loop
+         l_lne_stn_id := rec_lne.stn_id;
+         exit;  
+      end loop;
+      return l_lne_stn_id;
+   end;
+   
+begin
+   viu_module.enter_module( i_module => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+
+   
+   l_lne_stn_id := get_lane_by_rst( i_rst_id => io_rt_pae.rst_id);
+
+   if     io_rt_pae.pss_id in ( lm_constant.g_con_pss_name_open
+                              , lm_constant.g_con_pss_name_suspect
+                              )
+      and io_rt_pae.ind_suspended_deregistration = lm_constant.g_con_yesno_yes
+      and get_lbs_type( i_lne_stn_id => l_lne_stn_id) = lm_constant.g_con_store_type_lane_no_trk
+   then
+      l_pon_id := get_lane_destination(i_lne_stn_id => l_lne_stn_id);
+      if    (io_rt_pae.pon_id is null and l_pon_id is not null)
+         or (io_rt_pae.pon_id is not null and l_pon_id is null)
+         or (io_rt_pae.pon_id <> l_pon_id)
+      then
+         
+         io_rt_pae.arrived_at_pon := l_time_now;
+      end if;
+      io_rt_pae.pon_id        := l_pon_id;
+      io_rt_pae.date_modified := l_time_now;
+
+      l_rows := lm_pae_tapi_pck.pae_update_row( i_pae_pid => io_rt_pae.pid
+                                              , io_rt_pae => io_rt_pae
+                                              );
+      
+      l_found := lm_lne_tapi_pck.lne_select_row( i_lne_stn_id => l_lne_stn_id
+                                               , o_rt_lne     => l_rt_lne
+                                               );
+      l_found := lm_stn_tapi_pck.stn_select_row( i_stn_id => l_rt_lne.stn_id_part_of
+                                               , o_rt_stn => l_rt_stn
+                                               );
+      lm_package_report.translate_destinations( i_pid          => io_rt_pae.pid
+                                              , i_stn_id       => l_rt_lne.stn_id_part_of
+                                              , o_tasktype     => l_tasktype
+                                              , o_conduct_type => l_conduct_type_dummy
+                                              );
+
+      
+      determine_azs_by_lane( i_lne_stn_id      => l_lne_stn_id
+                           , o_area_id         => l_area_id
+                           , o_area_id_cust    => l_area_id_cust
+                           , o_zone_id_cust    => l_zone_id_cust
+                           , o_section_id_cust => l_section_id_cust
+                           );
+
+      l_rt_taskreport_result.result_type                  := lm_constant.g_con_prt_store_result;
+      l_rt_taskreport_result.xpos_store                   := l_zone_id_cust;
+      l_rt_taskreport_result.ypos_store                   := 1;
+
+      lm_package_administration.send_task_report( i_event_time        => l_time_now
+                                                , i_pid               => io_rt_pae.pid
+                                                , i_bid               => io_rt_pae.bid
+                                                , i_bid_extension     => io_rt_pae.bid_extension
+                                                , i_area_id_cust      => l_area_id_cust
+                                                , i_zone_id_cust      => l_zone_id_cust
+                                                , i_stn_id_cust       => l_rt_stn.id_cust
+                                                , i_tasktype          => l_tasktype
+                                                , i_register_reason   => null
+                                                , i_deregister_reason => null
+                                                , i_rt_result         => l_rt_taskreport_result
+                                                , i_rt_bir            => null 
+                                                );
+
+      
+      lm_package_report.send_report_of_tracking( i_area_id_cust    => l_area_id_cust
+                                               , i_zone_id_cust    => l_zone_id_cust
+                                               , i_section_id_cust => l_section_id_cust
+                                               , i_event_time      => l_time_now
+                                               , i_rt_pae          => io_rt_pae
+                                               , i_rst_id_reported => io_rt_pae.rst_id
+                                               );
+
+   end if;  
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end handle_suspended_dereg;
+
+
+procedure reevaluate_destination_of_bags(i_lne_stn_id in lm_ebs_lanes.stn_id%type
+                                        ,i_nt_lbs_bag in nt_lbs_bag)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.reevaluate_destination_of_bags';
+
+   cursor c_active_tin_by_pid
+   (i_pid in lm_packages.pid%type
+   )
+   is
+   
+   select tpev.id as tin_id
+   from   lm_tin_active_of_package_v tpev
+   where  tpev.pid = i_pid
+   and    tpev.pss_id in (lm_constant.g_con_pss_name_open, lm_constant.g_con_pss_name_suspect)
+   ;
+
+   l_pon_id                  lm_physical_destinations.id%type;
+   l_new_determined_stations boolean;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   if i_nt_lbs_bag is not empty
+   then
+      
+      l_pon_id := get_lane_destination(i_lne_stn_id => i_lne_stn_id);
+
+      
+      
+      for idx in i_nt_lbs_bag.first .. i_nt_lbs_bag.last
+      loop
+         if     i_nt_lbs_bag(idx).nt_destinations.count = 1
+            and l_pon_id member of i_nt_lbs_bag(idx).nt_destinations
+         then
+            
+            
+            begin
+               
+               
+               
+               
+               
+               
+               
+               lm_topology_administration.evaluate_taskinstruction( i_pid                     => i_nt_lbs_bag(idx).pid
+                                                                  , i_tin_id                  => i_nt_lbs_bag(idx).tin_id
+                                                                  , i_source                  => lm_constant.g_con_src_lbs_admin
+                                                                  , i_nt_exclude_stations     => nt_stn_id()
+                                                                  , o_new_determined_stations => l_new_determined_stations
+                                                                  );
+            exception
+            when others
+               then
+                  if c_active_tin_by_pid%isopen
+                  then
+                     close c_active_tin_by_pid;
+                  end if;
+                  
+                  viu_info.handle_info;
+               end;
+         end if;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end reevaluate_destination_of_bags;
+
+
+procedure reevaluate_bags_to_lane
+( i_lne_stn_id       in lm_ebs_lanes.stn_id%type
+, i_ind_exclude_lane in boolean
+)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.reevaluate_bags_to_lane';
+
+   cursor c_active_tin_by_pid( i_nt_pid in nt_id_coll)
+   is
+   
+   select tpev.pid
+   ,      tpev.id  tin_id
+   from   lm_tin_active_of_package_v tpev
+   ,      table(i_nt_pid)            pae
+   where  tpev.pid = pae.column_value
+   and    tpev.pss_id in (lm_constant.g_con_pss_name_open, lm_constant.g_con_pss_name_suspect)
+   ;
+
+   l_new_dsn_dummy    boolean;
+   l_nt_bags_to_lane  nt_id_coll := nt_id_coll();
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   get_bags_to_lane( i_lne_stn_id       => i_lne_stn_id
+                   , i_ind_exclude_lane => i_ind_exclude_lane
+                   , o_nt_pid           => l_nt_bags_to_lane
+                   );
+   
+   if l_nt_bags_to_lane is not empty
+   then
+      
+      
+      
+      
+      
+      
+      
+      for l_rt_pae in c_active_tin_by_pid(i_nt_pid => l_nt_bags_to_lane)
+      loop
+         begin
+            lm_topology_administration.evaluate_task_instr_for_pck
+                                       ( i_pid                     => l_rt_pae.pid
+                                       , i_tin_id                  => l_rt_pae.tin_id
+                                       , i_source                  => lm_constant.g_con_src_lbs_admin
+                                       , i_nt_exclude_stations     => nt_stn_id()
+                                       , o_new_determined_stations => l_new_dsn_dummy
+                                       );
+         exception
+         when others
+            then
+               
+               viu_info.handle_info;
+         end;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end reevaluate_bags_to_lane;
+
+
+
+
+
+
+
+procedure end_suspended_deregs
+( i_lne_stn_id       in lm_ebs_lanes.stn_id%type
+)
+is
+
+   l_con_proc_name    constant  lm_constant.st_proc_name := g_con_package||'.end_suspended_deregs';
+
+   l_rt_lne                     lm_ebs_lanes%rowtype;
+   l_found                      boolean;
+   l_nt_bags_in_lane            nt_lbs_bag := nt_lbs_bag();
+   l_area_id                    lm_system_components.id%type;
+   l_area_id_cust               lm_system_components.id_cust%type;
+   l_zone_id_cust               lm_system_components.id_cust%type;
+   l_section_id_cust            lm_system_components.id_cust%type;
+   l_rt_pae                     lm_packages%rowtype;
+   l_rows                       number;
+   l_rt_stn                     lm_stations%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   if get_lbs_type( i_lne_stn_id => i_lne_stn_id ) = lm_constant.g_con_store_type_lane_no_trk
+   then
+      get_bags_in_lane( i_lne_stn_id => i_lne_stn_id
+                      , o_nt_lbs_bag => l_nt_bags_in_lane
+                      );
+
+      
+      determine_azs_by_lane( i_lne_stn_id      => i_lne_stn_id
+                           , o_area_id         => l_area_id
+                           , o_area_id_cust    => l_area_id_cust
+                           , o_zone_id_cust    => l_zone_id_cust
+                           , o_section_id_cust => l_section_id_cust
+                           );
+
+      l_found := lm_lne_tapi_pck.lne_select_row( i_lne_stn_id => i_lne_stn_id
+                                               , o_rt_lne     => l_rt_lne
+                                               );
+      l_found := lm_stn_tapi_pck.stn_select_row( i_stn_id => l_rt_lne.stn_id_part_of
+                                               , o_rt_stn => l_rt_stn
+                                               );
+
+      for idx in 1..l_nt_bags_in_lane.count
+      loop
+         
+         
+         if lm_pae_tapi_pck.pae_select_row_upd( i_pae_pid => l_nt_bags_in_lane(idx).pid
+                                              , o_rt_pae  => l_rt_pae
+                                              )
+         then
+            if l_rt_pae.ind_suspended_deregistration = lm_constant.g_con_yesno_yes
+            then
+               
+               l_rt_pae.pss_id                       := lm_constant.g_con_pss_name_closed;
+               l_rt_pae.ind_suspended_deregistration := null;
+               l_rt_pae.date_modified                := get_monitored_timestamp;
+            
+               
+               l_rows := lm_pae_tapi_pck.pae_update_row( i_pae_pid => l_rt_pae.pid
+                                                       , io_rt_pae => l_rt_pae
+                                                       );
+
+               
+               lm_package_administration.send_task_report( i_event_time        => get_monitored_timestamp
+                                                         , i_bid               => l_rt_pae.bid
+                                                         , i_bid_extension     => l_rt_pae.bid_extension
+                                                         , i_pid               => l_rt_pae.pid
+                                                         , i_area_id_cust      => l_area_id_cust
+                                                         , i_zone_id_cust      => l_zone_id_cust
+                                                         , i_stn_id_cust       => l_rt_stn.id_cust
+                                                         , i_tasktype          => lm_constant.g_con_mae_deregistration
+                                                         , i_register_reason   => null
+                                                         , i_deregister_reason => lm_constant.g_con_mae_end_of_tracing
+                                                         , i_rt_result         => null
+                                                         , i_rt_bir            => null
+                                                         );
+
+               
+               lm_exit_of_bag.send_report_of_tracking( i_rt_pae            => l_rt_pae
+                                                     , i_event_time        => get_monitored_timestamp
+                                                     , i_area_id_cust      => l_area_id_cust
+                                                     , i_zone_id_cust      => l_zone_id_cust
+                                                     , i_section_id_cust   => l_section_id_cust
+                                                     , i_deregister_reason => lm_constant.g_con_mae_end_of_tracing
+                                                     );
+            end if;
+         end if;
+      end loop;
+
+   end if;  
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end end_suspended_deregs;
+
+
+procedure check_release_lane_required
+( i_lne_stn_id             in     lm_ebs_lanes.stn_id%type
+, i_nt_lbs_bag             in     nt_lbs_bag
+, i_nt_bags_to_lane        in     nt_id_coll
+, o_release_lane_required     out boolean
+, o_ind_priority              out lm_ebs_empty_lane_requests.ind_priority%type
+, o_reason                    out lm_ebs_empty_lane_requests.reason%type
+)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.check_release_lane_required';
+
+   
+
+
+   cursor c_timeslots(i_lne_stn_id in lm_ebs_lanes.stn_id%type)
+   is
+   select ''
+   from   lm_lan_active_v lan
+   ,      lm_ebs_timeslots tsl
+   where  lan.lne_stn_id  = i_lne_stn_id
+   and    lan.tsl_id = tsl.id
+   and    tsl.ind_expired = lm_constant.g_con_yesno_yes;
+
+   
+
+
+   cursor c_lane_groups(i_lne_stn_id in lm_ebs_lanes.stn_id%type)
+   is
+   select max(ilv.force_release_time_limit) time_limit
+   ,      min(ilv.release_lane_threshold_pct) release_lane_threshold_pct
+   from (select lap.force_release_time_limit
+         ,      lap.release_lane_threshold_pct
+         from   lm_lan_active_v lan
+         ,      lm_tsl_non_expired_v tsl
+         ,      lm_ebs_lane_groups lap
+         where lan.tsl_id = tsl.id
+         and   tsl.lap_id = lap.id
+         and   lan.lne_stn_id = i_lne_stn_id
+         union all
+         select lap.force_release_time_limit
+         ,      lap.release_lane_threshold_pct
+         from   lm_lan_active_v lan
+         ,      lm_ebs_segregations sgn
+         ,      lm_ebs_lane_groups lap
+         where lan.sgn_id = sgn.id
+         and   sgn.lap_id = lap.id
+         and   lan.lne_stn_id = i_lne_stn_id
+        )ilv;
+
+   l_cnt_bags_with_diff_dest number  := 0;
+   l_smallest_time_limit     lm_task_instructions.time_limit%type;
+   l_pon_id                  lm_physical_destinations.id%type;
+   l_rt_timeslots            c_timeslots%rowtype;
+   l_rt_lane_groups          c_lane_groups%rowtype;
+   l_time_now                timestamp;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   o_release_lane_required := false;
+   
+   
+   l_pon_id := get_lane_destination(i_lne_stn_id => i_lne_stn_id);
+
+
+
+
+
+
+
+   
+   
+   
+   
+   if i_nt_lbs_bag is not empty
+   then
+      
+      
+      
+      
+      
+      
+      for idx in i_nt_lbs_bag.first .. i_nt_lbs_bag.last
+      loop
+         
+         
+         if     i_nt_lbs_bag(idx).release_priority = lm_constant.g_con_pae_priority_high
+            and l_pon_id not member of i_nt_lbs_bag(idx).nt_destinations
+         then
+            o_release_lane_required := true;
+            o_ind_priority          := lm_constant.g_con_yesno_yes;
+            o_reason                := 'Immediate release (release priority HIGH)';
+            
+            
+            exit;
+         end if;
+      end loop;
+
+      if not o_release_lane_required
+      then
+         
+
+         
+         l_time_now := get_monitored_timestamp;
+
+         
+         
+         
+         for idx in i_nt_lbs_bag.first .. i_nt_lbs_bag.last
+         loop
+           
+           
+            if  l_pon_id not member of i_nt_lbs_bag(idx).nt_destinations
+            then
+               
+               l_cnt_bags_with_diff_dest := l_cnt_bags_with_diff_dest + 1;
+
+               
+               if      i_nt_lbs_bag(idx).time_limit is not null
+                  and (   l_smallest_time_limit is null
+                       or i_nt_lbs_bag(idx).time_limit < l_smallest_time_limit
+                      )
+               then
+                  l_smallest_time_limit := i_nt_lbs_bag(idx).time_limit;
+               end if;
+            end if;
+
+         end loop;
+
+         if l_cnt_bags_with_diff_dest > 0
+         then
+            
+            
+            open c_lane_groups(i_lne_stn_id => i_lne_stn_id);
+            fetch c_lane_groups
+            into l_rt_lane_groups; 
+            close c_lane_groups;
+
+            
+            if l_time_now > l_smallest_time_limit - l_rt_lane_groups.time_limit
+            then
+               
+               
+               
+               
+               o_release_lane_required :=  true;
+               o_ind_priority          := lm_constant.g_con_yesno_no;
+               o_reason                := 'Forced release (close to baggage timelimit)';
+            elsif l_cnt_bags_with_diff_dest / i_nt_lbs_bag.count  * 100
+                   >= l_rt_lane_groups.release_lane_threshold_pct
+               
+               
+               
+               
+            then
+               o_release_lane_required :=  true;
+               o_ind_priority          := lm_constant.g_con_yesno_no;
+               o_reason                := 'Normal release (threshold release percentage reached)';
+            end if;  
+         end if;     
+      end if;
+   end if; 
+
+   if not o_release_lane_required
+   then
+      
+      
+      
+      
+      open c_timeslots(i_lne_stn_id => i_lne_stn_id);
+      fetch c_timeslots
+      into l_rt_timeslots;
+
+      if c_timeslots%found
+      then
+         o_release_lane_required := true;
+         o_ind_priority          := lm_constant.g_con_yesno_no;
+         o_reason                := 'Delayed release (allocated to expired timeslot)';
+      end if;
+
+      close c_timeslots;
+   end if;
+
+   if i_nt_lbs_bag is empty
+      and
+      i_nt_bags_to_lane is empty
+      and
+      not o_release_lane_required
+   then
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      o_release_lane_required := true;
+      o_ind_priority          := lm_constant.g_con_yesno_no;
+      o_reason                := 'Ghost lane allocation release (allocated but no bags to/in the lane)';
+   end if; 
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_timeslots%isopen
+      then
+         close c_timeslots;
+      end if;
+      if c_lane_groups%isopen
+      then
+         close c_lane_groups;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_release_lane_required;
+
+
+procedure process_lane_group
+ (i_time_limit         in timestamp
+ ,i_segregation        in lm_segregation_groups.id%type
+ ,i_nt_reachable_lanes in nt_stn_id
+ ,i_lap_id             in lm_ebs_lane_groups.id%type
+ ,i_storage_method     in lm_task_definitions.storage_method%type
+ ,o_lne_stn_id        out lm_ebs_lanes.stn_id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.process_lane_group';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+
+
+
+   lm_lap_tapi_pck.lap_lock_row (i_lap_id => i_lap_id);
+
+   case i_storage_method
+      when lm_constant.g_con_tdn_storage_method_segr
+         then
+            
+            determine_lane_sgn(i_segregation        => i_segregation
+                              ,i_nt_reachable_lanes => i_nt_reachable_lanes
+                              ,i_lap_id             => i_lap_id
+                              ,o_lne_stn_id         => o_lne_stn_id
+                              );
+      when lm_constant.g_con_tdn_storage_method_time
+         then
+            
+            determine_lane_tsl(i_time_limit         => i_time_limit
+                              ,i_nt_reachable_lanes => i_nt_reachable_lanes
+                              ,i_lap_id             => i_lap_id
+                              ,o_lne_stn_id         => o_lne_stn_id
+                              );
+      else
+         
+         null;
+   end case;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end process_lane_group;
+
+
+procedure determine_lane_tst
+ (i_area_id_cust in lm_system_components.id_cust%type
+ ,i_lst_id_cust  in lm_logical_segments.id_cust%type
+ ,o_lne_stn_id  out lm_ebs_lanes.stn_id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.determine_lane_tst';
+
+
+   
+
+
+   cursor c_tst(i_area_id_cust in lm_system_components.id_cust%type
+               ,i_lst_id_cust  in lm_logical_segments.id_cust%type
+               )
+   is
+   select tst.id
+   from   lm_technical_segments tst
+   ,      lm_areas_v ara
+   ,      lm_logical_segments lst
+   where  ara.id_cust = i_area_id_cust
+   and    lst.id_cust = i_lst_id_cust
+   and    tst.sct_id  = ara.area_id
+   and    tst.lst_id  = lst.id;
+
+   l_lne_found  boolean;
+   l_rt_lne     lm_ebs_lanes%rowtype;
+   l_rt_tst     c_tst%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   lm_topology_administration.chk_area_zone_section( i_area_id_cust    => i_area_id_cust
+                                                   , i_zone_id_cust    => null
+                                                   , i_section_id_cust => null
+                                                   );
+   
+   open c_tst(i_area_id_cust => i_area_id_cust
+             ,i_lst_id_cust  => i_lst_id_cust);
+   fetch c_tst
+   into  l_rt_tst;
+   if c_tst%notfound
+   then
+      close c_tst;
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_technicalsegmentnotfound
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_area_id_cust||'##'||i_lst_id_cust
+                         );
+   end if;
+   close c_tst;
+
+   
+   l_lne_found := lm_lne_tapi_pck.lne_select_row_uk1(i_lne_tst_id => l_rt_tst.id
+                                                    ,o_rt_lne     => l_rt_lne);
+   if not l_lne_found
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_laneconfigurationerror
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_area_id_cust||'##'||i_lst_id_cust
+                         );
+   end if;
+   o_lne_stn_id := l_rt_lne.stn_id;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_tst%isopen
+      then
+        close c_tst;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end determine_lane_tst;
+
+
+procedure create_new_timeslots
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.create_new_timeslots';
+
+   
+
+   cursor c_ebs_lane_groups
+   is
+   select lap.id
+   ,      lap.time_window
+   ,      lap.number_of_timeslots
+   ,      lap.offset
+   from   lm_ebs_lane_groups lap
+   ,      lm_task_definitions tdn
+   where  lap.tdn_id = tdn.id
+   and    tdn.storage_method = lm_constant.g_con_tdn_storage_method_time;
+
+   
+
+   cursor c_last_timeslot(i_lap_id in lm_ebs_lane_groups.id%type)
+   is
+   select max(tsl.close_time)  max_close_time
+   from   lm_tsl_non_expired_v tsl
+   where  tsl.lap_id = i_lap_id;
+
+   l_time_reference timestamp;
+   l_time_now       timestamp;
+
+   l_num_of_slots_since_time_ref number;
+   l_seconds_since_time_ref      number;
+   l_seconds_in_time_window      number;
+   l_rt_tsl                      lm_ebs_timeslots%rowtype;
+   l_rt_last_timeslot            c_last_timeslot%rowtype;
+   
+   l_open_time_first             lm_ebs_timeslots.open_time%type;
+
+   l_timeslot_created            boolean;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_reference := lm_common.varchar_to_timestamp(i_timestamp => lm_constant.g_con_lbs_reference_date);
+
+   
+   l_time_now := get_monitored_timestamp;
+
+   
+   l_seconds_since_time_ref  := lm_common.to_seconds(i_interval => l_time_now - l_time_reference);
+
+   for rec_lap in c_ebs_lane_groups
+   loop
+      l_timeslot_created := false;
+
+      
+      l_seconds_in_time_window  := lm_common.to_seconds(i_interval => rec_lap.time_window);
+      l_num_of_slots_since_time_ref := floor(l_seconds_since_time_ref / l_seconds_in_time_window);
+
+      
+      l_open_time_first := l_time_reference
+                         + rec_lap.offset
+                         + l_num_of_slots_since_time_ref * rec_lap.time_window;
+
+      
+      open  c_last_timeslot(i_lap_id => rec_lap.id);
+      fetch c_last_timeslot
+      into  l_rt_last_timeslot;
+      close c_last_timeslot;
+
+      
+      
+      
+      
+      for i in 0..rec_lap.number_of_timeslots
+      loop
+         l_rt_tsl.id          := null;
+         l_rt_tsl.lap_id      := rec_lap.id;
+         l_rt_tsl.ind_expired := lm_constant.g_con_yesno_no;
+         l_rt_tsl.open_time   := l_open_time_first + (i*rec_lap.time_window);
+         l_rt_tsl.close_time  := l_rt_tsl.open_time + rec_lap.time_window;
+
+         
+         
+         
+         if l_rt_tsl.open_time >= l_rt_last_timeslot.max_close_time
+            or
+            l_rt_last_timeslot.max_close_time is null
+         then
+            
+            if not l_timeslot_created
+               and
+               l_rt_tsl.open_time > l_rt_last_timeslot.max_close_time
+            then
+               
+               
+               
+               
+               l_rt_tsl.open_time := l_rt_last_timeslot.max_close_time;
+            end if;
+
+            lm_tsl_tapi_pck.tsl_insert_row(io_rt_tsl => l_rt_tsl);
+            l_timeslot_created := true;
+
+         end if; 
+
+      end loop;  
+   end loop; 
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_last_timeslot%isopen
+      then
+         close c_last_timeslot;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end create_new_timeslots;
+
+
+procedure determine_lane_sgn
+ (i_segregation        in lm_segregation_groups.id%type
+ ,i_nt_reachable_lanes in nt_stn_id
+ ,i_lap_id             in lm_ebs_lane_groups.id%type
+ ,o_lne_stn_id        out lm_ebs_lanes.stn_id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.determine_lane_sgn';
+
+   
+   
+   
+   cursor c_lane_allocation(i_segregation        in lm_segregation_groups.id%type
+                           ,i_lap_id             in lm_ebs_lane_groups.id%type
+                           ,i_nt_reachable_lanes in nt_stn_id
+                           )
+   is
+   select /*+ CARDINALITY (stn, 4) */
+          lne.stn_id lne_stn_id
+   ,      lan.id lan_id
+   from   lm_ebs_segregations sgn
+   ,      lm_lan_active_v lan
+   ,      lm_ebs_lanes lne
+   ,      table( i_nt_reachable_lanes )stn
+   where  sgn.sep_id        = i_segregation
+   and    sgn.lap_id        = i_lap_id
+   and    lan.sgn_id        = sgn.id
+   and    lan.lne_stn_id    = lne.stn_id
+   and    lne.ind_available = lm_constant.g_con_yesno_yes
+   and    lne.stn_id        = stn.column_value;
+
+   
+   
+   
+   cursor c_candidate_lanes(i_lap_id             in lm_ebs_lane_groups.id%type
+                           ,i_nt_reachable_lanes in nt_stn_id
+                           )
+   is
+   select /*+ CARDINALITY (stn, 4) */
+          lne.stn_id
+   from   lm_ebs_lanes lne
+   ,      lm_ebs_lane_group_members lgr
+   ,      table( i_nt_reachable_lanes )stn
+   where  lne.ind_available = lm_constant.g_con_yesno_yes
+   and    lgr.lne_stn_id    = lne.stn_id
+   and    lgr.lap_id        = i_lap_id
+   and    lne.stn_id        = stn.column_value
+   and    not exists (select '1' 
+                      from   lm_lan_active_v lan
+                      where  lan.lne_stn_id = lne.stn_id
+                     )
+   
+   
+   
+   order by lne.stn_id;
+
+   
+   
+   cursor c_allocable_lane(i_stn_id in lm_ebs_lanes.stn_id%type)
+   is
+   select '1'
+   from   lm_ebs_lanes lne
+   where  lne.ind_available = lm_constant.g_con_yesno_yes
+   and    lne.stn_id        = i_stn_id
+   and    not exists (select '1' 
+                      from   lm_lan_active_v lan
+                      where  lan.lne_stn_id = lne.stn_id
+                     );
+
+   l_lane_allocation_found boolean;
+   l_lne_found             boolean;
+   l_lan_found             boolean;
+   l_allocable_lane_found  boolean;
+   l_allocation_allowed    boolean;
+   l_continue              boolean := true;
+   l_found                 boolean;
+   l_rt_lane_allocation    c_lane_allocation%rowtype;
+   l_rt_allocable_lane     c_allocable_lane%rowtype;
+   l_nt_candidate_lanes    nt_stn_id;
+   l_rt_lne                lm_ebs_lanes%rowtype;
+   l_rt_lan                lm_ebs_lane_allocations%rowtype;
+   l_rt_sgn                lm_ebs_segregations%rowtype;
+   l_rt_sep                lm_segregation_groups%rowtype;
+   l_lap_name              lm_ebs_lane_groups.name%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   open c_lane_allocation(i_segregation        => i_segregation
+                         ,i_lap_id             => i_lap_id
+                         ,i_nt_reachable_lanes => i_nt_reachable_lanes);
+   fetch c_lane_allocation
+   into l_rt_lane_allocation;
+   l_lane_allocation_found := c_lane_allocation%found;
+   close c_lane_allocation;
+
+
+   if l_lane_allocation_found
+   then
+      
+      
+      
+      
+      
+      
+      lock_lane_groups( i_lne_stn_id => l_rt_lane_allocation.lne_stn_id);
+      l_lne_found := lm_lne_tapi_pck.lne_select_row_upd(i_lne_stn_id => l_rt_lane_allocation.lne_stn_id
+                                                       ,o_rt_lne     => l_rt_lne);
+
+      if l_rt_lne.ind_available = lm_constant.g_con_yesno_yes
+      then
+        
+        l_lan_found := lm_lan_tapi_pck.lan_select_row(i_lan_id => l_rt_lane_allocation.lan_id
+                                                     ,o_rt_lan => l_rt_lan);
+
+        if l_rt_lan.time_deactivated is null
+        then
+           
+           
+           o_lne_stn_id := l_rt_lane_allocation.lne_stn_id;
+           l_continue   := false;
+        end if;
+      end if;
+   end if;
+
+   if l_continue
+      
+      
+   then
+      
+      check_group_lane_allocation(i_lap_id             => i_lap_id
+                                 ,o_allocation_allowed => l_allocation_allowed
+                                 ,o_lap_name           => l_lap_name
+                                 );
+      if not l_allocation_allowed
+      then
+         
+         l_continue := false;
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_maxallocablelanesreached
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_info_arguments         => l_lap_name
+                               );
+      end if;
+   end if;
+
+   if l_continue
+   then
+      
+      check_sgn_lane_allocation(o_allocation_allowed => l_allocation_allowed);
+      if not l_allocation_allowed
+      then
+         l_continue := false;
+         
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_maxnrlanessegregation
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               );
+      end if;
+   end if;
+
+
+   if l_continue
+   then
+      
+      open c_candidate_lanes(i_lap_id             => i_lap_id
+                            ,i_nt_reachable_lanes => i_nt_reachable_lanes
+                            );
+      fetch c_candidate_lanes
+      bulk collect
+      into l_nt_candidate_lanes;
+      close c_candidate_lanes;
+      if l_nt_candidate_lanes is not empty
+      then
+         for idx in l_nt_candidate_lanes.first .. l_nt_candidate_lanes.last
+         loop
+            
+            
+            
+            
+            lock_lane_groups( i_lne_stn_id => l_nt_candidate_lanes(idx));
+            l_lne_found := lm_lne_tapi_pck.lne_select_row_upd(i_lne_stn_id => l_nt_candidate_lanes(idx)
+                                                             ,o_rt_lne     => l_rt_lne);
+
+            open c_allocable_lane(i_stn_id => l_rt_lne.stn_id);
+            fetch c_allocable_lane
+            into l_rt_allocable_lane;
+            l_allocable_lane_found := c_allocable_lane%found;
+            close c_allocable_lane;
+
+            if l_allocable_lane_found
+            then
+               
+               
+               if not lm_sgn_tapi_pck.sgn_select_row_uk1 (i_sgn_lap_id => i_lap_id
+                                                         ,i_sgn_sep_id => i_segregation
+                                                         ,o_rt_sgn     => l_rt_sgn)
+               then
+                  l_rt_sgn.id     := null;
+                  l_rt_sgn.lap_id := i_lap_id;
+                  l_rt_sgn.sep_id := i_segregation;
+                  lm_sgn_tapi_pck.sgn_insert_row (io_rt_sgn => l_rt_sgn);
+               end if;
+
+               
+               l_rt_lan.id               := null;
+               l_rt_lan.tsl_id           := null;
+               l_rt_lan.sgn_id           := l_rt_sgn.id;
+               l_rt_lan.lne_stn_id       := l_rt_lne.stn_id;
+               l_rt_lan.time_activated   := lm_common.default_timestamp;
+               l_rt_lan.time_deactivated := null;
+               lm_lan_tapi_pck.lan_insert_row (io_rt_lan => l_rt_lan);
+               
+               l_continue   := false;
+               o_lne_stn_id := l_rt_lne.stn_id;
+
+               
+               exit;
+            end if;
+         end loop; 
+      end if;
+   end if;
+
+   if l_continue
+   then
+      
+      
+      l_found := lm_sep_tapi_pck.sep_select_row( i_sep_id => i_segregation
+                                               , o_rt_sep => l_rt_sep
+                                               );
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_ebslaneallocationerror
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_info_arguments         => l_lap_name
+                            , i_additional_data        => 'Segregation group '
+                                                       || l_rt_sep.process_plan_name
+                                                       || '/'||l_rt_sep.product_name
+                            );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_lane_allocation%isopen
+      then
+        close c_lane_allocation;
+      end if;
+      if c_candidate_lanes%isopen
+      then
+        close c_candidate_lanes;
+      end if;
+      if c_allocable_lane%isopen
+      then
+        close c_allocable_lane;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end determine_lane_sgn;
+
+
+procedure determine_lane_tsl
+ (i_time_limit         in timestamp
+ ,i_nt_reachable_lanes in nt_stn_id
+ ,i_lap_id             in lm_ebs_lane_groups.id%type
+ ,o_lne_stn_id        out lm_ebs_lanes.stn_id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.determine_lane_tsl';
+
+   
+   
+   cursor c_non_expired_timeslot(i_lap_id     in lm_ebs_lane_groups.id%type
+                                ,i_time_limit in lm_ebs_timeslots.open_time%type)
+   is
+   select tsl.id
+   from   lm_tsl_non_expired_v tsl
+   where  tsl.lap_id    = i_lap_id
+   and    i_time_limit >= tsl.open_time
+   and    i_time_limit  < tsl.close_time;
+
+   
+   
+   
+   cursor c_lane_allocation(i_tsl_id             in lm_ebs_timeslots.id%type
+                           ,i_nt_reachable_lanes in nt_stn_id
+                           )
+   is
+   select /*+ CARDINALITY (stn, 4) */
+          lne.stn_id lne_stn_id
+   ,      lan.id lan_id
+   from   lm_lan_active_v lan
+   ,      lm_ebs_lanes lne
+   ,      table( i_nt_reachable_lanes ) stn
+   where  lan.tsl_id         = i_tsl_id
+   and    lan.lne_stn_id     = lne.stn_id
+   and    lne.ind_available  = lm_constant.g_con_yesno_yes
+   and    lne.stn_id         = stn.column_value;
+
+   
+   
+   
+   
+   
+   cursor c_candidate_lanes(i_lap_id             in lm_ebs_lane_groups.id%type
+                           ,i_nt_reachable_lanes in nt_stn_id
+                           )
+   is
+   select /*+ CARDINALITY (stn, 4) */
+          lne.stn_id
+   from   lm_ebs_lanes lne
+   ,      lm_ebs_lane_group_members lgr
+   ,      table( i_nt_reachable_lanes )stn
+   where  lne.ind_available = lm_constant.g_con_yesno_yes
+   and    lgr.lne_stn_id    = lne.stn_id
+   and    lgr.lap_id        = i_lap_id
+   and    lne.stn_id         = stn.column_value
+   and    not exists (select '1' 
+                      from   lm_lan_active_v lan
+                      where  lan.lne_stn_id = lne.stn_id
+                     )
+   
+   
+   
+   order by lne.stn_id;
+
+   
+   
+   cursor c_allocable_lane(i_stn_id in lm_ebs_lanes.stn_id%type)
+   is
+   select '1'
+   from   lm_ebs_lanes lne
+   where  lne.ind_available = lm_constant.g_con_yesno_yes
+   and    lne.stn_id        = i_stn_id
+   and    not exists (select '1' 
+                      from   lm_lan_active_v lan
+                      where  lan.lne_stn_id = lne.stn_id
+                     );
+
+   
+   
+   
+   
+   
+   
+   cursor c_alt_candidate_lanes(i_lap_id             in lm_ebs_lane_groups.id%type
+                               ,i_nt_reachable_lanes in nt_stn_id
+                               )
+   is
+   select /*+ CARDINALITY (stn, 4) */
+          lan.lne_stn_id
+   ,      lan.tsl_id
+   from   lm_lan_active_v               lan
+   ,      lm_ebs_lanes                  lne
+   ,      lm_ebs_lane_group_members     lgr
+   ,      lm_tsl_non_expired_v          tsl
+   ,      table( i_nt_reachable_lanes ) stn
+   where  lan.lne_stn_id    = lne.stn_id
+   and    lne.ind_available = lm_constant.g_con_yesno_yes
+   and    lgr.lne_stn_id    = lne.stn_id
+   and    lgr.lap_id        = i_lap_id
+   and    lan.tsl_id        = tsl.id
+   and    tsl.lap_id        = i_lap_id
+   and    lne.stn_id        = stn.column_value
+   
+   
+   order by tsl.open_time desc
+   ,        lan.lne_stn_id
+   ;
+   
+   
+   
+   cursor c_alt_allocable_lane(i_stn_id in lm_ebs_lanes.stn_id%type
+                              ,i_tsl_id in lm_ebs_timeslots.id%type)
+   is
+   select '1'
+   from   lm_ebs_lanes lne
+   ,      lm_lan_active_v lan
+   ,      lm_tsl_non_expired_v tsl
+   where  lne.ind_available = lm_constant.g_con_yesno_yes
+   and    lan.lne_stn_id    = lne.stn_id
+   and    lan.tsl_id        = tsl.id
+   and    tsl.id            = i_tsl_id
+   and    lne.stn_id        = i_stn_id;
+
+   l_rt_non_expired_timeslot    c_non_expired_timeslot%rowtype;
+   l_rt_lane_allocation         c_lane_allocation%rowtype;
+   l_rt_allocable_lane          c_allocable_lane%rowtype;
+   l_rt_lne                     lm_ebs_lanes%rowtype;
+   l_rt_lan                     lm_ebs_lane_allocations%rowtype;
+   l_rt_lap                     lm_ebs_lane_groups%rowtype;
+   l_nt_candidate_lanes         nt_stn_id;
+   l_nt_timeslots               nt_id_coll;
+   l_continue                   boolean := true;
+   l_max_nr_lanes_reached       boolean := false;
+   l_non_expired_timeslot_found boolean;
+   l_lane_allocation_found      boolean;
+   l_allocation_allowed         boolean;
+   l_lne_found                  boolean;
+   l_lan_found                  boolean;
+   l_lap_found                  boolean;
+   l_allocable_lane_found       boolean;
+   l_lap_name                   lm_ebs_lane_groups.name%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   open c_non_expired_timeslot(i_lap_id     => i_lap_id
+                              ,i_time_limit => i_time_limit);
+   fetch c_non_expired_timeslot
+   into l_rt_non_expired_timeslot;
+   l_non_expired_timeslot_found := c_non_expired_timeslot%found;
+   close c_non_expired_timeslot;
+
+   if not l_non_expired_timeslot_found
+   then
+      
+      l_lap_found := lm_lap_tapi_pck.lap_select_row( i_lap_id => i_lap_id
+                                                   , o_rt_lap => l_rt_lap
+                                                   );
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_noapplicabletimeslotfnd
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_notification
+                            , i_info_arguments         => l_rt_lap.name
+                                                       || '##'
+                                                       || lm_common.timestamp_to_varchar(i_time_limit)
+                            );
+      l_continue := false;
+   end if;
+
+   if l_continue
+   then
+      
+      
+      
+      open c_lane_allocation(i_tsl_id             => l_rt_non_expired_timeslot.id
+                            ,i_nt_reachable_lanes => i_nt_reachable_lanes);
+      fetch c_lane_allocation
+      into l_rt_lane_allocation;
+      l_lane_allocation_found := c_lane_allocation%found;
+      close c_lane_allocation;
+
+
+      if l_lane_allocation_found
+      then
+         
+         
+         
+         
+         
+         
+         lock_lane_groups( i_lne_stn_id => l_rt_lane_allocation.lne_stn_id);
+         l_lne_found := lm_lne_tapi_pck.lne_select_row_upd(i_lne_stn_id => l_rt_lane_allocation.lne_stn_id
+                                                          ,o_rt_lne     => l_rt_lne);
+
+         if l_rt_lne.ind_available = lm_constant.g_con_yesno_yes
+         then
+           
+           l_lan_found := lm_lan_tapi_pck.lan_select_row(i_lan_id => l_rt_lane_allocation.lan_id
+                                                        ,o_rt_lan => l_rt_lan);
+
+           if l_rt_lan.time_deactivated is null
+           then
+              
+              
+              o_lne_stn_id := l_rt_lane_allocation.lne_stn_id;
+              l_continue   := false;
+           end if;
+         end if;
+      end if;
+   end if;
+
+   if l_continue
+   then
+      
+      
+      
+      check_group_lane_allocation(i_lap_id             => i_lap_id
+                                 ,o_allocation_allowed => l_allocation_allowed
+                                 ,o_lap_name           => l_lap_name
+                                 );
+      if not l_allocation_allowed
+      then
+         
+         
+         l_max_nr_lanes_reached := true;
+      else
+         
+         open c_candidate_lanes(i_lap_id             => i_lap_id
+                               ,i_nt_reachable_lanes => i_nt_reachable_lanes
+                               );
+         fetch c_candidate_lanes
+         bulk collect
+         into l_nt_candidate_lanes;
+         close c_candidate_lanes;
+         if l_nt_candidate_lanes is not empty
+         then
+            for idx in l_nt_candidate_lanes.first .. l_nt_candidate_lanes.last
+            loop
+               
+               
+               
+               
+               lock_lane_groups( i_lne_stn_id => l_nt_candidate_lanes(idx));
+               l_lne_found := lm_lne_tapi_pck.lne_select_row_upd(i_lne_stn_id => l_nt_candidate_lanes(idx)
+                                                                ,o_rt_lne     => l_rt_lne);
+               open c_allocable_lane(i_stn_id => l_rt_lne.stn_id);
+               fetch c_allocable_lane
+               into l_rt_allocable_lane;
+               l_allocable_lane_found := c_allocable_lane%found;
+               close c_allocable_lane;
+
+               if l_allocable_lane_found
+               then
+                  
+                  l_rt_lan.id               := null;
+                  l_rt_lan.tsl_id           := l_rt_non_expired_timeslot.id;
+                  l_rt_lan.sgn_id           := null;
+                  l_rt_lan.lne_stn_id       := l_rt_lne.stn_id;
+                  l_rt_lan.time_activated   := lm_common.default_timestamp;
+                  l_rt_lan.time_deactivated := null;
+                  lm_lan_tapi_pck.lan_insert_row (io_rt_lan => l_rt_lan);
+
+                  
+                  l_continue   := false;
+                  o_lne_stn_id := l_rt_lne.stn_id;
+
+                  
+                  exit;
+               end if;
+            end loop; 
+         end if;
+      end if;         
+   end if;
+
+   if l_continue
+   then
+      
+      
+      
+      open c_alt_candidate_lanes(i_lap_id             => i_lap_id
+                                ,i_nt_reachable_lanes => i_nt_reachable_lanes
+                                );
+      fetch c_alt_candidate_lanes
+      bulk collect
+      into l_nt_candidate_lanes, l_nt_timeslots;
+      close c_alt_candidate_lanes;
+      if l_nt_candidate_lanes is not empty
+      then
+         for idx in l_nt_candidate_lanes.first .. l_nt_candidate_lanes.last
+         loop
+            
+            
+            
+            
+            lock_lane_groups( i_lne_stn_id => l_nt_candidate_lanes(idx));
+            l_lne_found := lm_lne_tapi_pck.lne_select_row_upd(i_lne_stn_id => l_nt_candidate_lanes(idx)
+                                                             ,o_rt_lne     => l_rt_lne);
+            open c_alt_allocable_lane(i_stn_id => l_rt_lne.stn_id
+                                     ,i_tsl_id => l_nt_timeslots(idx));
+            fetch c_alt_allocable_lane
+            into l_rt_allocable_lane;
+            l_allocable_lane_found := c_alt_allocable_lane%found;
+            close c_alt_allocable_lane;
+
+            if l_allocable_lane_found
+            then
+               
+               l_rt_lan.id               := null;
+               l_rt_lan.tsl_id           := l_rt_non_expired_timeslot.id;
+               l_rt_lan.sgn_id           := null;
+               l_rt_lan.lne_stn_id       := l_rt_lne.stn_id;
+               l_rt_lan.time_activated   := lm_common.default_timestamp;
+               l_rt_lan.time_deactivated := null;
+               lm_lan_tapi_pck.lan_insert_row (io_rt_lan => l_rt_lan);
+
+               
+               l_continue   := false;
+               o_lne_stn_id := l_rt_lne.stn_id;
+
+               
+               exit;
+            end if;
+         end loop; 
+      end if;
+   end if;
+
+
+   if l_continue
+   then
+      
+      
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_ebslaneallocationerror
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_info_arguments         => l_lap_name
+                            , i_additional_data        => 'Time limit '
+                                                       || lm_common.timestamp_to_varchar(i_time_limit)
+                            );
+      
+      
+      if l_max_nr_lanes_reached
+      then
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_maxallocablelanesreached
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_info_arguments         => l_lap_name
+                               );
+      end if;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_non_expired_timeslot%isopen
+      then
+         close c_non_expired_timeslot;
+      end if;
+      if c_lane_allocation%isopen
+      then
+         close c_lane_allocation;
+      end if;
+      if c_candidate_lanes%isopen
+      then
+        close c_candidate_lanes;
+      end if;
+      if c_alt_candidate_lanes%isopen
+      then
+        close c_alt_candidate_lanes;
+      end if;
+      if c_allocable_lane%isopen
+      then
+        close c_allocable_lane;
+      end if;
+      if c_alt_allocable_lane%isopen
+      then
+        close c_alt_allocable_lane;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end determine_lane_tsl;
+
+
+procedure check_group_lane_allocation
+ (i_lap_id              in lm_ebs_lane_groups.id%type
+ ,o_allocation_allowed out boolean
+ ,o_lap_name           out lm_ebs_lane_groups.name%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.check_group_lane_allocation';
+
+   
+   cursor c_lap(i_lap_id in lm_ebs_lane_groups.id%type)
+   is
+   select lap.name
+   ,      lap.maximum_allocable_lanes 
+   ,      lan.allocated_lanes         
+   from   lm_ebs_lane_groups lap
+   ,      (select count(distinct lne_stn_id) allocated_lanes
+           from   (select lan.lne_stn_id 
+                   from   lm_ebs_segregations sgn
+                   ,      lm_lan_active_v lan
+                   where  lan.sgn_id = sgn.id
+                   and    sgn.lap_id = i_lap_id
+                   union all
+                   select lan.lne_stn_id 
+                   from   lm_tsl_non_expired_v tsl
+                   ,      lm_lan_active_v lan
+                   where  lan.tsl_id = tsl.id
+                   and    tsl.lap_id = i_lap_id
+                  )
+          ) lan
+   where  lap.id = i_lap_id;
+
+   l_rt_lap c_lap%rowtype;
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   open c_lap(i_lap_id => i_lap_id);
+   fetch c_lap
+   into l_rt_lap;
+   close c_lap;
+
+   
+   o_allocation_allowed := (l_rt_lap.maximum_allocable_lanes > l_rt_lap.allocated_lanes);
+   o_lap_name           := l_rt_lap.name;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      if c_lap%isopen
+      then
+         close c_lap;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_group_lane_allocation;
+
+
+procedure check_sgn_lane_allocation
+ (o_allocation_allowed out boolean
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.check_sgn_lane_allocation';
+
+   
+   cursor c_lan
+   is
+   select count(distinct lan.lne_stn_id) allocated_lanes
+   from   lm_lan_active_v lan
+   where  lan.sgn_id is not null;
+
+   l_rt_lan c_lan%rowtype;
+   l_lbs_max_nr_lanes_segregation number;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_lbs_max_nr_lanes_segregation := to_number(lm_common.get_parameter_value(
+                                                  i_prr_name =>lm_constant.g_con_pve_lbs_max_nr_lanes_sgn)
+                                               );
+   
+   open c_lan;
+   fetch c_lan
+   into l_rt_lan;
+   close c_lan;
+
+   
+   o_allocation_allowed := l_lbs_max_nr_lanes_segregation - l_rt_lan.allocated_lanes > 0;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      if c_lan%isopen
+      then
+         close c_lan;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_sgn_lane_allocation;
+
+
+procedure determine_lst_by_lane
+ (i_lne_stn_id  in lm_ebs_lanes.stn_id%type
+ ,o_lst_id     out lm_logical_segments.id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.determine_lst_by_lane';
+
+   
+   cursor c_lst_by_lane(i_lne_stn_id in lm_ebs_lanes.stn_id%type)
+   is
+   select tst.lst_id
+   from   lm_technical_segments tst
+   ,      lm_ebs_lanes lne
+   where  lne.tst_id = tst.id
+   and    lne.stn_id = i_lne_stn_id;
+
+   r_lst_by_lane c_lst_by_lane%rowtype;
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   open c_lst_by_lane(i_lne_stn_id => i_lne_stn_id);
+   fetch c_lst_by_lane
+   into r_lst_by_lane;
+   close c_lst_by_lane;
+
+   
+   o_lst_id := r_lst_by_lane.lst_id;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      if c_lst_by_lane%isopen
+      then
+         close c_lst_by_lane;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end determine_lst_by_lane;
+
+
+procedure update_expired_timeslots
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.update_expired_timeslots';
+
+   
+
+   cursor c_expired_timeslots(i_time in lm_ebs_timeslots.close_time%type)
+   is
+   select tsl.id
+   from   lm_tsl_non_expired_v tsl
+   ,      lm_ebs_lane_groups lap
+   where  tsl.lap_id = lap.id
+   and    i_time    >= tsl.close_time - lap.offset;
+
+   l_count   number;
+   l_rt_tsl  lm_ebs_timeslots%rowtype;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   for r_rt_expired_timeslot in c_expired_timeslots(i_time => get_monitored_timestamp)
+   loop
+      if lm_tsl_tapi_pck.tsl_select_row( i_tsl_id => r_rt_expired_timeslot.id
+                                       , o_rt_tsl => l_rt_tsl)
+      then
+         l_rt_tsl.ind_expired := lm_constant.g_con_yesno_yes;
+
+         l_count := lm_tsl_tapi_pck.tsl_update_row(i_tsl_id  => r_rt_expired_timeslot.id
+                                                  ,io_rt_tsl => l_rt_tsl);
+      end if;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end update_expired_timeslots;
+
+
+procedure maintain_timeslots
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.maintain_timeslots';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   update_expired_timeslots;
+   
+   create_new_timeslots;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end maintain_timeslots;
+
+
+procedure create_release_request
+( i_lne_stn_id   in     lm_ebs_empty_lane_requests.lne_stn_id%type
+, i_request_type in     lm_ebs_empty_lane_requests.elt_type%type
+, i_ind_priority in     lm_ebs_empty_lane_requests.ind_priority%type
+, i_reason       in     lm_ebs_empty_lane_requests.reason%type
+)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant  lm_constant.st_proc_name := g_con_package||'.create_release_request';
+
+   l_rt_elt         lm_ebs_empty_lane_requests%rowtype;
+   l_ind_priority   lm_ebs_empty_lane_requests.ind_priority%type;
+   l_elt_exists     boolean := false;
+   l_update         number;
+   l_signal_name    varchar2(30);
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_ind_priority  := case i_request_type
+                         when lm_constant.g_con_elt_type_auto
+                         then i_ind_priority
+                         else lm_constant.g_con_yesno_no  
+                      end;
+                      
+   if i_ind_priority <> l_ind_priority
+   then
+      
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_eltpriorityreset
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_info_arguments         => i_lne_stn_id
+                            , i_additional_data        => 'Manual priority request is not allowed'
+                            );
+   end if;
+
+   
+   
+   for rec_elt in (select elt.id
+                   from   lm_elt_active_v elt
+                   where  elt.lne_stn_id = i_lne_stn_id
+                  )
+   loop
+      
+      l_elt_exists := lm_elt_tapi_pck.elt_select_row( i_elt_id => rec_elt.id
+                                                    , o_rt_elt => l_rt_elt
+                                                    );
+      
+      
+      
+      
+      
+      if     l_elt_exists
+         and l_rt_elt.elt_status   = lm_constant.g_con_elt_status_initial
+         and l_rt_elt.ind_priority = lm_constant.g_con_yesno_no
+         and l_ind_priority        = lm_constant.g_con_yesno_yes
+      then
+         
+         
+         
+         l_elt_exists := false;
+         l_rt_elt.elt_status     := lm_constant.g_con_elt_status_completed;
+         l_rt_elt.date_completed := lm_common.default_timestamp;
+         l_update := lm_elt_tapi_pck.elt_update_row( i_elt_id  => l_rt_elt.id
+                                                   , io_rt_elt => l_rt_elt
+                                                   );
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_cancelemptylanerequest
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_notification
+                               , i_info_arguments         => i_lne_stn_id
+                               , i_additional_data        => 'Cancelled request: '||l_rt_elt.id
+                               );
+      end if;
+   end loop;
+   
+   if not l_elt_exists
+   then
+      l_rt_elt := null;
+      l_rt_elt.lne_stn_id    := i_lne_stn_id;
+      l_rt_elt.elt_type      := i_request_type;
+      l_rt_elt.elt_status    := lm_constant.g_con_elt_status_initial;
+      l_rt_elt.ind_priority  := l_ind_priority;
+      l_rt_elt.reason        := i_reason;
+      lm_elt_tapi_pck.elt_insert_row(io_rt_elt => l_rt_elt);
+      
+      
+      l_signal_name := lm_common.build_signal( i_signal_identifier => lm_constant.g_con_alert_lbs_release_req);
+      dbms_alert.signal(l_signal_name, l_signal_name);
+   else
+      
+      
+      
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_emptylanerequestignored
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_notification
+                            , i_info_arguments         => i_lne_stn_id
+                            , i_additional_data        => 'Request '||l_rt_elt.id
+                                                       || ' already in place and sufficient'
+                            );
+   end if;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end create_release_request;
+
+
+procedure check_release_lanes
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.check_release_lanes';
+
+   
+
+
+
+   cursor c_ebs_lanes
+   is
+   with lane_groups_vw
+   as (select lap.id
+       ,      dense_rank() over (order by lap.priority, lap.id) lock_order
+       from   lm_ebs_lane_groups lap
+      )
+   ,   lanes_vw
+   as (select lgr.lne_stn_id, min(lap.lock_order) lock_order
+       from   lm_ebs_lane_group_members lgr
+       ,      lane_groups_vw            lap
+       where  lgr.lap_id = lap.id
+       group by lgr.lne_stn_id
+      )
+   select distinct lan.lne_stn_id
+   ,      lne.lock_order
+   from   lm_lan_active_v lan
+   ,      lanes_vw        lne
+   where  lan.lne_stn_id = lne.lne_stn_id
+   order by lne.lock_order, lan.lne_stn_id;
+   
+   l_found                      boolean;
+   l_sql_rowcount               number;
+   l_release_lane_required      boolean;
+   l_time_now                   timestamp;
+   l_nt_lanes_with_active_alloc nt_stn_id  := nt_stn_id();
+   l_nt_bags_in_lane            nt_lbs_bag := nt_lbs_bag();
+   l_nt_bags_to_lane            nt_id_coll := nt_id_coll();
+   l_nt_order_dummy             nt_id_coll := nt_id_coll();
+   l_ind_priority               lm_ebs_empty_lane_requests.ind_priority%type;
+   l_reason                     lm_ebs_empty_lane_requests.reason%type;
+
+   l_rt_lan                     lm_ebs_lane_allocations%rowtype;
+   l_rt_lne                     lm_ebs_lanes%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+   
+   set_last_check_release_lanes(i_timestamp => l_time_now);
+
+   
+   open c_ebs_lanes;
+   fetch c_ebs_lanes
+   bulk collect
+   into l_nt_lanes_with_active_alloc, l_nt_order_dummy;
+   close c_ebs_lanes;
+
+   if l_nt_lanes_with_active_alloc is not empty
+   then
+      
+      for idx in l_nt_lanes_with_active_alloc.first .. l_nt_lanes_with_active_alloc.last
+      loop
+         
+         
+         
+         lock_lane_groups( i_lne_stn_id => l_nt_lanes_with_active_alloc(idx));
+         lm_lne_tapi_pck.lne_lock_row(i_lne_stn_id =>  l_nt_lanes_with_active_alloc(idx));
+
+         
+         get_bags_in_lane(i_lne_stn_id => l_nt_lanes_with_active_alloc(idx)
+                         ,o_nt_lbs_bag => l_nt_bags_in_lane);
+                         
+         
+         get_bags_to_lane( i_lne_stn_id       => l_nt_lanes_with_active_alloc(idx)
+                         , i_ind_exclude_lane => true
+                         , o_nt_pid           => l_nt_bags_to_lane
+                         );
+
+         
+         
+         
+
+
+
+
+
+
+
+
+
+
+
+
+
+         
+         check_release_lane_required( i_lne_stn_id            => l_nt_lanes_with_active_alloc(idx)
+                                    , i_nt_lbs_bag            => l_nt_bags_in_lane
+                                    , i_nt_bags_to_lane       => l_nt_bags_to_lane
+                                    , o_release_lane_required => l_release_lane_required
+                                    , o_ind_priority          => l_ind_priority
+                                    , o_reason                => l_reason
+                                    );
+         if l_release_lane_required
+         then
+            
+            
+            create_release_request( i_lne_stn_id   => l_nt_lanes_with_active_alloc(idx)
+                                  , i_request_type => lm_constant.g_con_elt_type_auto
+                                  , i_ind_priority => l_ind_priority
+                                  , i_reason       => l_reason
+                                  );
+         end if;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_ebs_lanes%isopen
+      then
+         close c_ebs_lanes;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end check_release_lanes;
+
+
+procedure handle_release_request( i_elt_id in lm_ebs_empty_lane_requests.id%type)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name    constant lm_constant.st_proc_name := g_con_package||'.handle_release_request';
+
+   l_time_now                  timestamp;
+   l_sql_rowcount              number;
+   l_rt_elt                    lm_ebs_empty_lane_requests%rowtype;
+   l_rt_lan                    lm_ebs_lane_allocations%rowtype;
+   
+   pragma autonomous_transaction;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+
+   if lm_elt_tapi_pck.elt_select_row( i_elt_id => i_elt_id
+                                    , o_rt_elt => l_rt_elt
+                                    )
+   then
+      
+      
+      
+      
+     lock_lane_groups( i_lne_stn_id => l_rt_elt.lne_stn_id);
+     lm_lne_tapi_pck.lne_lock_row(i_lne_stn_id => l_rt_elt.lne_stn_id);
+     
+     
+     if     lm_elt_tapi_pck.elt_select_row( i_elt_id => i_elt_id
+                                          , o_rt_elt => l_rt_elt
+                                          )
+        and
+            l_rt_elt.elt_status = lm_constant.g_con_elt_status_initial
+      then
+         
+         
+         for rec_lan in (select lan.id
+                         from   lm_lan_active_v lan
+                         where  lan.lne_stn_id = l_rt_elt.lne_stn_id
+                        )
+         loop
+            if lm_lan_tapi_pck.lan_select_row( i_lan_id => rec_lan.id
+                                             , o_rt_lan => l_rt_lan)
+            then
+               l_rt_lan.time_deactivated := l_time_now;
+               l_sql_rowcount := lm_lan_tapi_pck.lan_update_row( i_lan_id  => l_rt_lan.id
+                                                               , io_rt_lan => l_rt_lan
+                                                               );
+            end if;
+         end loop;
+         
+         l_rt_elt.elt_status := lm_constant.g_con_elt_status_open;
+         l_sql_rowcount := lm_elt_tapi_pck.elt_update_row( i_elt_id  => l_rt_elt.id
+                                                         , io_rt_elt => l_rt_elt
+                                                         );
+         
+         send_instruction_to_empty_lane( i_elt_id     => l_rt_elt.id
+                                       , i_lne_stn_id => l_rt_elt.lne_stn_id
+                                       );
+      end if;  
+   end if;
+   
+   commit; 
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      rollback; 
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end handle_release_request;
+
+
+procedure handle_release_requests
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name    constant       lm_constant.st_proc_name := g_con_package||'.handle_release_requests';
+   c_dflt_simul_flush constant integer := 1;
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   cursor c_empty_lane_requests( b_nr_simul_flush integer)
+   is
+   with elt_high_initial
+       
+   as (select elt.id
+       ,      elt.lne_stn_id
+       ,      elt.ind_priority
+       ,      elt.elt_status
+       from   lm_elt_active_v elt
+       ,      lm_ebs_lanes    lne
+       where  elt.lne_stn_id   = lne.stn_id
+       and    elt.ind_priority =  lm_constant.g_con_yesno_yes
+       and    elt.elt_status   = lm_constant.g_con_elt_status_initial
+      )
+   , elt_high_initial_aggr
+       
+   as (select lne.stn_id_part_of ebs_stn_id
+       ,      count(elth.id) nr_high_prio
+       from   elt_high_initial elth
+       ,      lm_ebs_lanes     lne
+       where  elth.lne_stn_id (+) = lne.stn_id
+       group by lne.stn_id_part_of
+      )
+   , ebs_allowed_instr_non_prio
+       
+       
+       
+       
+   as (select eltha.ebs_stn_id
+       ,      greatest
+              ( 0
+              , ( b_nr_simul_flush
+                 -
+                 count(elt.id)
+                 -
+                 nvl(eltha.nr_high_prio, 0) 
+                )
+              ) as allowed_nr_reqs
+       from   lm_ebs_lanes          lne
+       ,      lm_elt_active_v       elt
+       ,      elt_high_initial_aggr eltha
+       where  lne.stn_id_part_of = eltha.ebs_stn_id
+       and    elt.lne_stn_id (+) = lne.stn_id
+       and    elt.elt_status (+) = lm_constant.g_con_elt_status_open
+       group by eltha.ebs_stn_id
+       ,        eltha.nr_high_prio
+      )
+   , elt_low_initial
+       
+       
+       
+   as (select elt.id
+       ,      elt.lne_stn_id
+       ,      elt.ind_priority
+       ,      rank() over (partition by lne.stn_id_part_of order by elt.id) handle_order
+       ,      eln.allowed_nr_reqs
+       from   lm_elt_active_v            elt
+       ,      lm_ebs_lanes               lne
+       ,      ebs_allowed_instr_non_prio eln
+       where  elt.ind_priority   = lm_constant.g_con_yesno_no
+       and    elt.lne_stn_id     = lne.stn_id
+       and    elt.elt_status     = lm_constant.g_con_elt_status_initial
+       and    lne.stn_id_part_of = eln.ebs_stn_id
+      )
+   
+   
+   
+   select *
+   from   (select elth.id
+           ,      elth.ind_priority
+           from   elt_high_initial elth
+           union all
+           select eltn.id
+           ,      eltn.ind_priority
+           from   elt_low_initial eltn
+           where  eltn.handle_order <= eltn.allowed_nr_reqs
+          )
+   order by decode(ind_priority, lm_constant.g_con_yesno_yes, 1, 2), id;
+   
+   
+   l_time_now                   timestamp;
+   l_nr_simul_flush             integer;
+
+   l_rt_elt                     lm_ebs_empty_lane_requests%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+   
+   set_last_hdl_release_reqs(i_timestamp => l_time_now);
+   
+   begin
+      l_nr_simul_flush := to_number
+                          ( lm_common.get_parameter_value
+                            ( i_prr_name => lm_constant.g_con_pve_lbs_max_simul_flush)
+                          );
+      if l_nr_simul_flush is null
+      then
+         raise no_data_found;
+      end if;
+   exception
+      when others
+      then
+         
+         l_nr_simul_flush := c_dflt_simul_flush;
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_noparameterentry
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_warning
+                               ,i_info_arguments    => lm_constant.g_con_pve_lbs_max_simul_flush
+                               ,i_additional_data   => 'Fallback to default value of '||c_dflt_simul_flush
+                               );
+   end;
+
+   for rec_elt in c_empty_lane_requests( b_nr_simul_flush => l_nr_simul_flush)
+   loop
+      
+      
+      
+      
+      handle_release_request( i_elt_id => rec_elt.id);
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end handle_release_requests;
+
+
+procedure repeat_empty_lane_instructions
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.repeat_empty_lane_instructions';
+
+   l_interval_emptylane g_interval_type;
+
+   
+
+
+
+
+   cursor c_empty_lanes(i_interval_empty_lane in g_interval_type
+                       ,i_timestamp           in timestamp)
+   is
+   with lane_groups_vw
+   as (select lap.id
+       ,      dense_rank() over (order by lap.priority, lap.id) lock_order
+       from   lm_ebs_lane_groups lap
+      )
+   ,   lanes_vw
+   as (select lgr.lne_stn_id, min(lap.lock_order) lock_order
+       from   lm_ebs_lane_group_members lgr
+       ,      lane_groups_vw            lap
+       where  lgr.lap_id = lap.id
+       group by lgr.lne_stn_id
+      )
+   select elt.id
+   ,      elt.lne_stn_id
+   from   lm_elt_active_v elt
+   ,      lm_ebs_lanes    lne
+   ,      lanes_vw        ln2
+   where  elt.lne_stn_id = lne.stn_id
+   and    lne.stn_id = ln2.lne_stn_id
+   and    lne.time_empty_lane_instruction < i_timestamp - i_interval_empty_lane
+   order by ln2.lock_order, lne.stn_id;   
+
+   
+
+   cursor c_check_empty_lane(i_interval_empty_lane in g_interval_type
+                            ,i_timestamp           in timestamp
+                            ,i_stn_id              in lm_ebs_lanes.stn_id%type)
+   is
+   select lne.*
+   from   lm_ebs_lanes lne
+   where  lne.stn_id                      = i_stn_id
+   and    lne.time_empty_lane_instruction < i_timestamp - i_interval_empty_lane;
+
+   l_found        boolean;
+   l_sql_rowcount number;
+   l_rt_lne       lm_ebs_lanes%rowtype;
+   l_time_now     timestamp;
+   l_nt_stn_id    nt_stn_id := nt_stn_id();
+   l_nt_elt_id    nt_id_coll := nt_id_coll();
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+
+   
+   l_interval_emptylane := lm_common.varchar_to_interval( lm_common.get_parameter_value( i_prr_name => lm_constant.g_con_pve_lbs_int_empty_lane ));
+
+   
+   open c_empty_lanes(i_interval_empty_lane => l_interval_emptylane
+                     ,i_timestamp           => l_time_now );
+   fetch c_empty_lanes
+   bulk collect
+   into l_nt_elt_id, l_nt_stn_id;
+   close c_empty_lanes;
+
+   if l_nt_stn_id is not empty
+   then
+      for idx in l_nt_stn_id.first .. l_nt_stn_id.last
+      loop
+         
+         
+         
+         
+         
+         lock_lane_groups( i_lne_stn_id => l_nt_stn_id(idx));
+         lm_lne_tapi_pck.lne_lock_row(i_lne_stn_id => l_nt_stn_id(idx));
+
+         
+         
+         
+         open c_check_empty_lane(i_interval_empty_lane => l_interval_emptylane
+                                ,i_timestamp           => l_time_now
+                                ,i_stn_id              => l_nt_stn_id(idx));
+         fetch c_check_empty_lane
+         into l_rt_lne;
+         l_found := c_check_empty_lane%found;
+         close c_check_empty_lane;
+
+         if l_found
+         then
+            
+            send_instruction_to_empty_lane( i_elt_id     => l_nt_elt_id(idx)
+                                          , i_lne_stn_id => l_nt_stn_id(idx)
+                                          );
+         end if;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_empty_lanes%isopen
+      then
+         close c_empty_lanes;
+      end if;
+      if c_check_empty_lane%isopen
+      then
+         close c_check_empty_lane;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end repeat_empty_lane_instructions;
+
+
+
+
+
+
+procedure send_periodic_reports
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.send_periodic_reports';
+
+   c_default_report_interval    constant varchar2(20) := 'd00h00m30s00f000';
+   c_default_report_txs         constant number       := 10;
+   l_time_now                   timestamp;
+   l_nt_bags_in_lane            nt_lbs_bag := nt_lbs_bag();
+   l_nt_bags_in_ebs             nt_lbs_bag := nt_lbs_bag();
+   l_report_threshold           timestamp;
+   l_report_interval            g_interval_type;
+   l_report_txs                 integer;
+   l_rt_pae                     lm_packages%rowtype;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+   
+   set_last_periodic_reporting( i_timestamp => l_time_now);
+
+   
+   begin
+      l_report_interval := lm_common.varchar_to_interval
+                           ( lm_common.get_parameter_value
+                             ( i_prr_name => lm_constant.g_con_pve_periodic_report_int)
+                           );
+      if l_report_interval is null
+      then
+         raise no_data_found;
+      end if;
+   exception
+      when others
+      then
+         
+         l_report_interval := lm_common.varchar_to_interval( c_default_report_interval);
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_noparameterentry
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_warning
+                               ,i_info_arguments    => lm_constant.g_con_pve_periodic_report_int
+                               ,i_additional_data   => 'Fallback to default value of '||c_default_report_interval
+                               );
+   end;
+   
+   begin
+      l_report_txs := to_number( lm_common.get_parameter_value
+                                 ( i_prr_name => lm_constant.g_con_pve_periodic_report_txs)
+                               );
+      if l_report_txs is null
+      then
+         raise no_data_found;
+      end if;
+   exception
+      when others
+      then
+         
+         l_report_txs := c_default_report_txs;
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_noparameterentry
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_warning
+                               ,i_info_arguments    => lm_constant.g_con_pve_periodic_report_txs
+                               ,i_additional_data   => 'Fallback to default value of '||c_default_report_txs
+                               );
+   end;
+
+   l_report_threshold := l_time_now - l_report_interval;
+
+   for rec_lne in (select lne.stn_id
+                   ,      lne.stn_id_part_of
+                   from   lm_ebs_lanes           lne
+                   ,      lm_stations            stn
+                   where  lne.stn_id_part_of = stn.id
+                   and    stn.bagstore_type  = lm_constant.g_con_store_type_lane_no_trk
+                  )
+   loop
+      
+      
+      
+      
+      
+      
+      
+      get_bags_in_lane( i_lne_stn_id => rec_lne.stn_id
+                      , o_nt_lbs_bag => l_nt_bags_in_lane
+                      );
+      
+      l_nt_bags_in_ebs := l_nt_bags_in_ebs multiset union all l_nt_bags_in_lane;
+   end loop;
+   
+   
+   for rec_pae in (select pae.pid
+                   from   table( l_nt_bags_in_ebs) pae
+                   where  pae.date_modified < l_report_threshold
+                   and    pae.pss_id in ( lm_constant.g_con_pss_name_open
+                                        , lm_constant.g_con_pss_name_suspect
+                                        )
+                   and    pae.ind_suspended_deregistration = lm_constant.g_con_yesno_yes
+                   order  by pae.date_modified
+                   fetch first l_report_txs rows only
+                  )
+   loop
+      
+      
+      if lm_pae_tapi_pck.pae_select_row_upd( i_pae_pid => rec_pae.pid
+                                           , o_rt_pae  => l_rt_pae
+                                           )
+      then
+         handle_suspended_dereg( io_rt_pae => l_rt_pae);
+      end if;
+
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_periodic_reports;
+
+
+
+
+
+
+function get_lane_details return nt_ebs_lane_details
+is
+   l_con_proc_name        constant lm_constant.st_proc_name := g_con_package||'.get_lane_details';
+
+   l_nt_ebs_lane_details           nt_ebs_lane_details := nt_ebs_lane_details();
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   select rt_ebs_lane_detail
+          ( lne_stn_id
+   ,      ebs_stn_description
+   ,      lne_stn_description
+   ,      lsm_id_cust
+   ,      lap_name
+   ,      tsl_open_time
+   ,      tsl_close_time
+   ,      sep_process_product
+   ,      lne_last_time_emptied
+   ,      request_type)
+   bulk collect
+   into   l_nt_ebs_lane_details
+   from   lm_ebs_lane_details_gui_v;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return l_nt_ebs_lane_details;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_lane_details;
+
+
+
+
+
+
+
+procedure handle_external_requests
+( i_operator_id   in varchar2
+, i_ip_address    in varchar2
+, i_nt_lne_stn_id in nt_stn_id
+)
+is
+   l_con_proc_name    constant lm_constant.st_proc_name := g_con_package||'.handle_external_requests';
+
+   l_lane_list                 varchar2(2000);
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   for idx in i_nt_lne_stn_id.first .. i_nt_lne_stn_id.last
+   loop
+      lm_lbs_administration.create_release_request( i_lne_stn_id   => i_nt_lne_stn_id(idx)
+                                                  , i_request_type => lm_constant.g_con_elt_type_manual
+                                                  , i_ind_priority => lm_constant.g_con_yesno_no
+                                                  , i_reason       => 'External user request by '
+                                                                   || i_operator_id
+                                                  );
+   end loop;
+   
+   select listagg(column_value, '; ') within group(order by rownum)
+   into   l_lane_list
+   from   table(i_nt_lne_stn_id);
+   lm_report_diagnostic_data.send_audit_log_message( i_operator_id => i_operator_id
+                                                   , i_event_time  => lm_common.default_timestamp
+                                                   , i_ip_address  => i_ip_address
+                                                   , i_event       => 'User request to flush lane(s)'
+                                                   , i_description => 'Lane(s) requested to be flushed: '
+                                                                   || l_lane_list
+                                                   );
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end handle_external_requests;
+
+
+procedure handle_timeout(i_action in number)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.handle_timeout';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   case i_action
+      when lm_constant.g_con_lbs_action_maintain_tsl
+         then
+            
+            maintain_timeslots;
+      when lm_constant.g_con_lbs_action_check_rel_lne
+         then
+            
+            check_release_lanes;
+      when lm_constant.g_con_lbs_action_hdl_rel_reqs
+         then
+            
+            handle_release_requests;
+      when lm_constant.g_con_lbs_action_empty_lne_ins
+         then
+            
+            repeat_empty_lane_instructions;
+      when lm_constant.g_con_lbs_action_periodic_rep
+         then
+            
+            send_periodic_reports;
+      else
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_unsupportedlbsaction
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               );
+   end case;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end handle_timeout;
+
+
+procedure calculate_timeout(o_timeout out g_interval_type
+                           ,o_next_action out number)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.calculate_timeout';
+
+   
+
+   cursor c_last_empty_lane_instruction
+   is
+   select min(time_empty_lane_instruction) as time
+   from   lm_ebs_lanes;
+
+   
+   cursor c_time_based_groups
+   is
+   select '1'
+   from   lm_ebs_lane_groups  lap
+   ,      lm_task_definitions tdn
+   where  lap.tdn_id = tdn.id
+   and    tdn.storage_method = lm_constant.g_con_tdn_storage_method_time
+   ;
+   
+   
+
+
+
+
+   cursor c_timeslot_maintenance
+   is
+   select min(least( tslv.tsl_create_time
+                   , tslv.tsl_expire_time)
+             ) as maintenance_time
+   from  (select min( tsl.close_time
+                    - lap.offset
+                    )                    as tsl_expire_time
+          ,      max( tsl.close_time
+                    - lap.offset
+                    - lap.number_of_timeslots
+                      * lap.time_window
+                    )                    as tsl_create_time
+          from   lm_tsl_non_expired_v tsl
+          ,      lm_ebs_lane_groups   lap
+          ,      lm_task_definitions  tdn
+          where  tsl.lap_id (+)     = lap.id
+          and    lap.tdn_id         = tdn.id
+          and    tdn.storage_method = lm_constant.g_con_tdn_storage_method_time
+          group by lap.id
+         ) tslv
+   ;
+   
+   cursor c_untracked_ebs
+   is
+   select 1
+   from   lm_stations stn
+          
+   where  case when stn.bagstore_type is not null then stn.id end is not null
+   and    stn.bagstore_type = lm_constant.g_con_store_type_lane_no_trk
+   ;
+   
+   cursor c_initial_empty_lane_requests
+   is
+   select '1'
+   from   lm_elt_active_v
+   where  elt_status = lm_constant.g_con_elt_status_initial;
+   
+   c_dflt_timeout                 constant varchar2(20) := 'd00h00m30s00f000';
+   c_dflt_int_emptylane_instr     constant varchar2(20) := 'd00h00m00s30f000';
+   c_dflt_int_check_release_lanes constant varchar2(20) := 'd00h00m01s00f000';
+   c_dflt_int_reporting           constant varchar2(20) := 'd00h00m01s00f000';
+   c_dflt_int_hdl_release_reqs    constant varchar2(20) := 'd00h00m00s05f000';
+
+   l_time_now                     timestamp;
+   l_time_last_check_release_lane timestamp;
+   l_time_last_periodic_reporting timestamp;
+   l_time_last_hdl_release_reqs   timestamp;
+   l_last_empty_lane_instruction  lm_ebs_lanes.time_empty_lane_instruction%type;
+   l_tsl_maintenance_time         timestamp;
+   l_dummy                        varchar2(1);
+   l_timebased_groups_exist       boolean;
+   l_empty_lane_req_exist         boolean;
+
+   l_time_passed                  g_interval_type;
+   l_timeout_repeat_instr         g_interval_type;
+   l_timeout_check_release_lanes  g_interval_type;
+   l_timeout_timeslot             g_interval_type;
+   l_timeout_reporting            g_interval_type;
+   l_timeout_hdl_release_reqs     g_interval_type;
+   l_interval_emptylane           g_interval_type;
+   l_interval_check_release_lanes g_interval_type;
+   l_interval_reporting           g_interval_type;
+   l_interval_hdl_release_reqs    g_interval_type;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+
+   
+   begin
+      l_interval_emptylane := lm_common.varchar_to_interval
+                              (lm_common.get_parameter_value
+                              (i_prr_name => lm_constant.g_con_pve_lbs_int_empty_lane)
+                              );
+      if l_interval_emptylane is null
+      then
+         raise no_data_found;
+      end if;
+   exception
+      when others
+      then
+         
+         l_interval_emptylane := lm_common.varchar_to_interval(c_dflt_int_emptylane_instr);
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_noparameterentry
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_warning
+                               ,i_info_arguments    => lm_constant.g_con_pve_lbs_int_empty_lane
+                               ,i_additional_data   => 'Fallback to default value of '||c_dflt_int_emptylane_instr
+                               );
+   end;
+
+   open c_last_empty_lane_instruction;
+   fetch c_last_empty_lane_instruction
+   into l_last_empty_lane_instruction;
+   close c_last_empty_lane_instruction;
+
+   
+   
+   
+   
+   if l_last_empty_lane_instruction is null
+   then
+      l_timeout_repeat_instr := lm_common.varchar_to_interval(c_dflt_timeout);
+   else
+      l_time_passed          := l_time_now - l_last_empty_lane_instruction;
+      l_timeout_repeat_instr := l_interval_emptylane - l_time_passed;
+   end if;
+
+   
+   
+   
+   begin
+      l_interval_check_release_lanes := lm_common.varchar_to_interval
+                                        ( lm_common.get_parameter_value
+                                          ( i_prr_name => lm_constant.g_con_pve_lbs_int_chk_release)
+                                        );
+      if l_interval_check_release_lanes is null
+      then
+         raise no_data_found;
+      end if;
+   exception
+      when others
+      then
+         
+         l_interval_check_release_lanes := lm_common.varchar_to_interval(c_dflt_int_check_release_lanes);
+         viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_noparameterentry
+                               ,i_calling_procedure => l_con_proc_name
+                               ,i_severity          => viu_info.c_severity_warning
+                               ,i_info_arguments    => lm_constant.g_con_pve_lbs_int_chk_release
+                               ,i_additional_data   => 'Fallback to default value of '||c_dflt_int_check_release_lanes
+                               );
+   end;
+
+   
+   l_time_last_check_release_lane := get_last_check_release_lanes;
+
+   if l_time_last_check_release_lane is null
+   then
+      l_timeout_check_release_lanes := interval '0' second;
+   else
+      l_time_passed                 := l_time_now - l_time_last_check_release_lane;
+      l_timeout_check_release_lanes := l_interval_check_release_lanes - l_time_passed;
+   end if;
+
+   
+   open c_time_based_groups;
+   fetch c_time_based_groups
+   into l_dummy;
+   l_timebased_groups_exist := c_time_based_groups%found;
+   close c_time_based_groups;
+   
+   if not l_timebased_groups_exist
+   then
+      
+      
+      
+      l_timeout_timeslot := lm_common.varchar_to_interval(c_dflt_timeout);
+   else
+      
+      
+      
+      
+      open c_timeslot_maintenance;
+      fetch c_timeslot_maintenance
+      into l_tsl_maintenance_time;
+      close c_timeslot_maintenance;
+   
+      if l_tsl_maintenance_time is null
+      then
+         
+         
+         
+         
+         
+         l_timeout_timeslot := interval '0' second;
+      else
+         l_timeout_timeslot := l_tsl_maintenance_time - l_time_now;
+      end if;
+   end if;
+
+   
+   
+   
+   l_timeout_reporting := lm_common.varchar_to_interval(c_dflt_timeout);
+   for rec_untracked_ebs in c_untracked_ebs
+   loop
+      begin
+         l_interval_reporting := lm_common.varchar_to_interval
+                                 ( lm_common.get_parameter_value
+                                   ( i_prr_name => lm_constant.g_con_pve_lbs_interval_reports)
+                                 );
+         if l_interval_reporting is null
+         then
+            raise no_data_found;
+         end if;
+      exception
+         when others
+         then
+            
+            l_interval_reporting := lm_common.varchar_to_interval(c_dflt_int_reporting);
+            viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_noparameterentry
+                                  ,i_calling_procedure => l_con_proc_name
+                                  ,i_severity          => viu_info.c_severity_warning
+                                  ,i_info_arguments    => lm_constant.g_con_pve_lbs_interval_reports
+                                  ,i_additional_data   => 'Fallback to default value of '||c_dflt_int_reporting
+                                  );
+      end;
+
+      
+      l_time_last_periodic_reporting := get_last_periodic_reporting;
+
+      if l_time_last_periodic_reporting is null
+      then
+         l_timeout_reporting := interval '0' second;
+      else
+         l_time_passed       := l_time_now - l_time_last_periodic_reporting;
+         l_timeout_reporting := l_interval_reporting - l_time_passed;
+      end if;
+   end loop;
+   
+   
+   
+   
+   
+   
+   open c_initial_empty_lane_requests;
+   fetch c_initial_empty_lane_requests
+   into l_dummy;
+   l_empty_lane_req_exist := c_initial_empty_lane_requests%found;
+   close c_initial_empty_lane_requests;
+   if not l_empty_lane_req_exist
+   then
+      l_timeout_hdl_release_reqs := lm_common.varchar_to_interval(c_dflt_timeout);
+   else
+      
+      begin
+         l_interval_hdl_release_reqs := lm_common.varchar_to_interval
+                                        ( lm_common.get_parameter_value
+                                          ( i_prr_name => lm_constant.g_con_pve_lbs_int_hdl_rel_req)
+                                        );
+         if l_interval_hdl_release_reqs is null
+         then
+            raise no_data_found;
+         end if;
+      exception
+         when others
+         then
+            
+            l_interval_hdl_release_reqs := lm_common.varchar_to_interval(c_dflt_int_hdl_release_reqs);
+            viu_info.operator_info(i_ifo_nr            => viu_constant.c_ifo_noparameterentry
+                                  ,i_calling_procedure => l_con_proc_name
+                                  ,i_severity          => viu_info.c_severity_warning
+                                  ,i_info_arguments    => lm_constant.g_con_pve_lbs_int_hdl_rel_req
+                                  ,i_additional_data   => 'Fallback to default value of '||c_dflt_int_hdl_release_reqs
+                                  );
+      end;
+
+      
+      l_time_last_hdl_release_reqs := get_last_hdl_release_reqs;
+
+      if l_time_last_hdl_release_reqs is null
+      then
+         l_timeout_hdl_release_reqs := interval '0' second;
+      else
+         l_time_passed              := l_time_now - l_time_last_hdl_release_reqs;
+         l_timeout_hdl_release_reqs := l_interval_hdl_release_reqs - l_time_passed;
+      end if;
+   end if;
+
+   
+   
+   
+   
+   
+   
+   
+   o_timeout := least( l_timeout_repeat_instr
+                     , l_timeout_check_release_lanes
+                     , l_timeout_timeslot
+                     , l_timeout_reporting
+                     , l_timeout_hdl_release_reqs
+                     );
+   case o_timeout
+      when l_timeout_timeslot
+      then o_next_action := lm_constant.g_con_lbs_action_maintain_tsl;
+      when l_timeout_hdl_release_reqs
+      then o_next_action := lm_constant.g_con_lbs_action_hdl_rel_reqs;
+      when l_timeout_check_release_lanes
+      then o_next_action := lm_constant.g_con_lbs_action_check_rel_lne;
+      when l_timeout_repeat_instr
+      then o_next_action := lm_constant.g_con_lbs_action_empty_lne_ins;
+      else o_next_action := lm_constant.g_con_lbs_action_periodic_rep;
+   end case;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_last_empty_lane_instruction%isopen
+      then
+         close c_last_empty_lane_instruction;
+      end if;
+      if c_timeslot_maintenance%isopen
+      then
+         close c_timeslot_maintenance;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end calculate_timeout;
+
+
+procedure send_instruction_to_empty_lane
+( i_elt_id     in lm_ebs_empty_lane_requests.id%type
+, i_lne_stn_id in lm_ebs_lanes.stn_id%type)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.send_instruction_to_empty_lane';
+
+   l_ims_id          lm_ifc_messages.id%type;
+   l_message         xmltype;
+   l_sql_rowcount    number;
+   l_lne_found       boolean;
+   l_time_now        timestamp;
+   l_area_id_cust    lm_system_components.id_cust%type;
+   l_zone_id_cust    lm_system_components.id_cust%type;
+   l_section_id_cust lm_system_components.id_cust%type;
+   l_area_id         lm_system_components.id%type;
+   l_rt_eln          lm_ebs_empty_lane_instructions%rowtype;
+   l_rt_lne          lm_ebs_lanes%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_time_now := get_monitored_timestamp;
+
+   
+   determine_azs_by_lane(i_lne_stn_id      => i_lne_stn_id
+                        ,o_area_id         => l_area_id
+                        ,o_area_id_cust    => l_area_id_cust
+                        ,o_zone_id_cust    => l_zone_id_cust
+                        ,o_section_id_cust => l_section_id_cust);
+
+   
+   select xmlconcat
+             (xmlelement( "PhysicalLocation"
+                      , xmlelement ( "AreaID",     l_area_id_cust )
+                      , xmlelement ( "ZoneID",     l_zone_id_cust )
+                      , xmlelement ( "EquipmentID",l_section_id_cust )
+                               )
+             )
+   into   l_message
+   from   dual;
+
+   
+   l_rt_eln.id                  := null;
+   l_rt_eln.event_time_response := null;
+   l_rt_eln.elt_id              := i_elt_id;
+   l_rt_eln.lne_stn_id          := i_lne_stn_id;
+   l_rt_eln.ims_id              := null;
+   l_rt_eln.event_time          := l_time_now;
+   lm_eln_tapi_pck.eln_insert_row(io_rt_eln => l_rt_eln);
+
+   
+   l_rt_lne.stn_id := i_lne_stn_id;
+   l_lne_found := lm_lne_tapi_pck.lne_select_row_upd(i_lne_stn_id => l_rt_lne.stn_id
+                                                    ,o_rt_lne     => l_rt_lne);
+   l_rt_lne.time_empty_lane_instruction := l_time_now;
+   l_sql_rowcount  := lm_lne_tapi_pck.lne_update_row(i_lne_stn_id => l_rt_lne.stn_id
+                                                    ,io_rt_lne    => l_rt_lne);
+
+
+   
+   l_ims_id := lm_interface.prepare_and_send_message
+              ( i_imd_name        => 'EmptyLaneInstruction'
+              , i_message         => l_message
+              , i_event_time      => l_time_now
+              , i_pty_id_cust     => null
+              , i_pty_instance_id => null
+              , i_sct_id_cust     => l_area_id_cust
+                );
+
+   
+   l_rt_eln.ims_id := l_ims_id;
+   l_sql_rowcount  := lm_eln_tapi_pck.eln_update_row(i_eln_id  => l_rt_eln.id
+                                                    ,io_rt_eln => l_rt_eln);
+
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_instruction_to_empty_lane;
+
+
+procedure determine_azs_by_lane(i_lne_stn_id       in lm_ebs_lanes.stn_id%type
+                               ,o_area_id         out lm_system_components.id%type
+                               ,o_area_id_cust    out lm_system_components.id_cust%type
+                               ,o_zone_id_cust    out lm_system_components.id_cust%type
+                               ,o_section_id_cust out lm_system_components.id_cust%type
+                               )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.determine_azs_by_lane';
+
+   
+
+   cursor c_azs(i_pon_id in lm_physical_destinations.id%type)
+   is
+   select ara.id      area_id
+   ,      sen.id_cust section_id_cust
+   ,      zne.id_cust zone_id_cust
+   ,      ara.id_cust area_id_cust
+   from   lm_physical_destinations pon
+   ,      lm_system_components sen
+   ,      lm_system_components zne
+   ,      lm_system_components ara
+   where  pon.sct_id              = sen.id
+   and    sen.sct_id_section_zone = zne.id
+   and    zne.sct_id_zone_area    = ara.id
+   and    pon.id = i_pon_id;
+
+   l_found          boolean;
+   l_pon_id         lm_physical_destinations.id%type;
+   l_rt_azs         c_azs%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   l_pon_id := get_lane_destination(i_lne_stn_id => i_lne_stn_id);
+
+   
+   open c_azs(i_pon_id => l_pon_id);
+   fetch c_azs
+   into l_rt_azs;
+   l_found := c_azs%found;
+   close c_azs;
+
+   if l_found
+   then
+      o_area_id         := l_rt_azs.area_id;
+      o_area_id_cust    := l_rt_azs.area_id_cust;
+      o_zone_id_cust    := l_rt_azs.zone_id_cust;
+      o_section_id_cust := l_rt_azs.section_id_cust;
+   else
+      
+      
+      
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_ebsstationconfigerror
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => l_pon_id
+                         );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_azs%isopen
+      then
+         close c_azs;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end determine_azs_by_lane;
+
+
+
+procedure get_bags_in_lane(i_lne_stn_id  in lm_ebs_lanes.stn_id%type
+                          ,o_nt_lbs_bag out nt_lbs_bag)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_bags_in_lane';
+
+
+   
+
+
+   cursor c_packages(i_lst_id in lm_logical_segments.id%type)
+   is
+   select rt_lbs_bag( pae.pid
+                    , pae.pss_id
+                    , pae.date_modified
+                    , tpev.id
+                    , tpev.release_priority
+                    , tdn.task_instruction_type
+                    , pae.pcm_name
+                    , tpev.time_limit
+                    , tpev.sep_id
+                    , pae.ind_suspended_deregistration
+                    , cast( multiset (select pdn.pon_id
+                                      from   lm_package_destinations pdn
+                                      where  pdn.pin_id = piev.id
+                                      )
+                            as nt_pon_id
+                           )
+                    )
+   from   lm_packages                pae
+   ,      lm_route_segments          rst
+   ,      lm_task_definitions        tdn
+   ,      lm_tin_active_of_package_v tpev
+   ,      lm_pin_active_of_package_v piev
+   where  pae.rst_id  = rst.id
+   and    pae.pid     = tpev.pid
+   and    pae.pid     = piev.pid
+   and    tpev.tdn_id = tdn.id
+   and    tpev.pss_id in ( lm_constant.g_con_pss_name_open
+                         , lm_constant.g_con_pss_name_suspect
+                         )
+   and    rst.lst_id = i_lst_id
+   
+   
+   order by pae.pid;
+
+   l_lst_id         lm_logical_segments.id%type;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   determine_lst_by_lane(i_lne_stn_id => i_lne_stn_id
+                        ,o_lst_id     => l_lst_id);
+
+
+   o_nt_lbs_bag := nt_lbs_bag();
+   
+   open c_packages(i_lst_id => l_lst_id);
+   fetch c_packages
+   bulk collect
+   into o_nt_lbs_bag;
+   close c_packages;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_packages%isopen
+      then
+         close c_packages;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_bags_in_lane;
+
+
+procedure get_bags_to_lane
+( i_lne_stn_id       in     lm_ebs_lanes.stn_id%type
+, i_ind_exclude_lane in     boolean
+, o_nt_pid              out nt_id_coll
+)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_bags_to_lane';
+
+
+   
+
+
+
+   cursor c_pae_en_route
+   (i_pon_id_assigned in lm_physical_destinations.id%type
+   ,i_lst_id_exclude  in lm_logical_segments.id%type
+   )
+   is
+   select /*+ ORDERED */  
+          pck.pid
+   from   lm_pin_active_of_package_v piev
+   ,      lm_package_destinations    pdn
+   ,      lm_packages                pck
+   ,      lm_route_segments          rst
+   where  pck.rst_id  = rst.id
+   and    pck.pid     = piev.pid
+   and    piev.pss_id in (lm_constant.g_con_pss_name_open
+                         ,lm_constant.g_con_pss_name_suspect)
+   and    pdn.pin_id  = piev.id
+   and    pdn.pon_id  = i_pon_id_assigned
+   and   (rst.lst_id != i_lst_id_exclude
+          or
+          i_lst_id_exclude is null
+         )
+   
+   
+   order by pck.pid;
+
+   l_lst_id         lm_logical_segments.id%type;
+   l_pon_id         lm_physical_destinations.id%type;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   determine_lst_by_lane(i_lne_stn_id => i_lne_stn_id
+                        ,o_lst_id     => l_lst_id);
+
+   
+   l_pon_id := get_lane_destination(i_lne_stn_id => i_lne_stn_id);
+
+   o_nt_pid := nt_id_coll();
+
+   
+   
+   
+   
+   open c_pae_en_route( i_pon_id_assigned => l_pon_id
+                      , i_lst_id_exclude  => case
+                                              when i_ind_exclude_lane
+                                              then l_lst_id
+                                              else null
+                                             end
+                      );
+   fetch c_pae_en_route
+   bulk collect
+   into o_nt_pid;
+   close c_pae_en_route;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_pae_en_route%isopen
+      then
+         close c_pae_en_route;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_bags_to_lane;
+
+
+procedure set_monitored_timestamp(i_timestamp in timestamp default null)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.set_monitored_timestamp';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   g_monitored_timestamp := case when i_timestamp is null
+                                    then lm_common.default_timestamp
+                                 else i_timestamp
+                            end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end set_monitored_timestamp;
+
+
+function get_monitored_timestamp return timestamp
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_monitored_timestamp';
+
+begin
+  viu_module.enter_module( i_module      => l_con_proc_name );
+  viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return case when g_monitored_timestamp is null
+                  then lm_common.default_timestamp
+               else g_monitored_timestamp
+          end;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_monitored_timestamp ;
+
+
+procedure set_last_check_release_lanes(i_timestamp in timestamp default null)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.set_last_check_release_lanes';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   g_last_check_release_lanes := case
+                                    when i_timestamp is null
+                                    then get_monitored_timestamp
+                                    else i_timestamp
+                                 end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end set_last_check_release_lanes;
+
+
+function get_last_check_release_lanes return timestamp
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_last_check_release_lanes';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return g_last_check_release_lanes;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_last_check_release_lanes ;
+
+
+function get_lane_destination(i_lne_stn_id in lm_ebs_lanes.stn_id%type) return lm_physical_destinations.id%type
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_lane_destination';
+
+   l_it_pon_id      lm_topology_administration.g_it_dst;
+   l_rt_haa         lm_handling_areas%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   lm_topology_administration.determine_destinations
+                              ( i_nt_stn_id                   => nt_stn_id(i_lne_stn_id)
+                              , i_ind_for_package_instruction => false
+                              , o_it_pon_id                   => l_it_pon_id
+                              , o_rt_haa                      => l_rt_haa
+                              );
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return l_it_pon_id(1); 
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_lane_destination;
+
+
+procedure get_message_attributes_las
+ (i_it_las in lm_interface.g_it_ima
+ ,o_event_time out lm_ebs_lane_statuses.time_activated%type
+ ,o_area_id_cust out lm_system_components.id_cust%type
+ ,o_segment_id_cust out lm_technical_segments.id_cust%type
+ ,o_status out lm_ebs_lane_status_dom.id_cust%type
+ ,o_ims_id out lm_ifc_messages.id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant       lm_constant.st_proc_name := g_con_package||'.get_message_attributes_las';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   for i in i_it_las.first .. i_it_las.last
+   loop
+      case i_it_las(i).attribute
+         when 'EventTime'
+         then
+            o_event_time := lm_common.varchar_to_timestamp(i_timestamp => i_it_las(i).value);
+         when 'AreaID'
+         then
+            o_area_id_cust := i_it_las(i).value;
+         when 'SegmentID'
+         then
+            o_segment_id_cust := i_it_las(i).value;
+         when 'Status'
+         then
+            o_status := i_it_las(i).value;
+         when  lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id := i_it_las(i).value;
+         else
+            
+            if i_it_las(i).attribute not in ( 'Header/MessageTime'
+                                            , 'Header/Source/ProcessID'
+                                            , 'Header/Source/InstanceID'
+                                            , 'Header/Target/ProcessID'
+                                            , 'Header/Target/InstanceID'
+                                            , 'Header/OperatorID'
+                                            )
+            then
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: EBSLaneStatusReport; Attribute: '''
+                                                                   || i_it_las(i).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_las(i).value
+                                                                   || ''''
+
+                                     );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes_las;
+
+
+procedure validate_incoming_data_las
+( i_lne_stn_id in lm_ebs_lanes.stn_id%type
+ ,i_event_time in lm_ebs_lane_statuses.time_activated%type
+ ,i_area_id_cust in lm_system_components.id_cust%type
+ ,i_segment_id_cust in lm_technical_segments.id_cust%type
+ ,i_status in lm_ebs_lane_status_dom.id_cust%type
+ ,i_ims_id in lm_ifc_messages.id%type
+ ,o_las_id out lm_ebs_lane_statuses.id%type
+ ,o_rt_lsm out lm_ebs_lane_status_dom%rowtype
+ ,o_msg_obsolete out boolean
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.validate_incoming_data_las';
+
+   
+
+   cursor c_las(i_lne_stn_id in lm_ebs_lane_statuses.lne_stn_id%type)
+   is
+   select las.lne_stn_id
+   ,      las.las_id
+   ,      las.time_activated
+   from   lm_las_active_v las
+   where  las.lne_stn_id = i_lne_stn_id;
+
+   l_las_found     boolean;
+   l_rt_las        c_las%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   o_msg_obsolete := false;
+
+   
+   if not lm_lsm_tapi_pck.lsm_select_row_uk1( i_lsm_id_cust => i_status
+                                            , o_rt_lsm      => o_rt_lsm)
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_invalidlanestatus
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => i_status
+                         , i_additional_data        => 'Message id:' || i_ims_id
+                         );
+   end if;
+
+   
+   
+   open c_las(i_lne_stn_id => i_lne_stn_id);
+   fetch c_las
+   into  l_rt_las;
+   l_las_found := c_las%found;
+   close c_las;
+
+   if l_las_found
+   then
+      o_las_id := l_rt_las.las_id;
+      if l_rt_las.time_activated > i_event_time
+      then
+         
+         o_msg_obsolete := true;
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_obsoleteebslanestatusrep
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_info_arguments         => l_rt_las.lne_stn_id
+                               , i_additional_data        => 'message id: ' || i_ims_id
+                               );
+      end if;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      if c_las%isopen
+      then
+         close c_las;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end validate_incoming_data_las;
+
+
+
+
+
+
+procedure set_last_periodic_reporting(i_timestamp in timestamp default null)
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.set_last_periodic_reporting';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   g_last_periodic_reporting := case
+                                   when i_timestamp is null
+                                   then get_monitored_timestamp
+                                   else i_timestamp
+                                end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end set_last_periodic_reporting;
+
+
+
+
+
+
+function get_last_periodic_reporting return timestamp
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_last_periodic_reporting';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return g_last_periodic_reporting;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_last_periodic_reporting;
+
+
+
+
+
+
+function get_lbs_type( i_lne_stn_id in lm_ebs_lanes.stn_id%type)
+return lm_stations.bagstore_type%type
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_lbs_type';
+
+   cursor c_lbs_type( b_lne_stn_id in lm_ebs_lanes.stn_id%type)
+   is
+   select stn.bagstore_type
+   from   lm_ebs_lanes lne
+   ,      lm_stations  stn
+   where  lne.stn_id         = b_lne_stn_id
+   and    lne.stn_id_part_of = stn.id
+   ;
+   l_lbs_type lm_stations.bagstore_type%type;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   for rec_stn in c_lbs_type( b_lne_stn_id => i_lne_stn_id)
+   loop
+      l_lbs_type := rec_stn.bagstore_type;
+      exit;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_lbs_type;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_lbs_type;
+
+
+
+
+
+
+procedure set_last_hdl_release_reqs(i_timestamp in timestamp default null)
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.set_last_hdl_release_reqs';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   g_last_hdl_release_requests := case
+                                     when i_timestamp is null
+                                     then get_monitored_timestamp
+                                     else i_timestamp
+                                  end;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end set_last_hdl_release_reqs;
+
+
+
+
+
+
+function get_last_hdl_release_reqs return timestamp
+is
+   l_con_proc_name  constant       lm_constant.st_proc_name := g_con_package||'.get_last_hdl_release_reqs';
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+   return g_last_hdl_release_requests;
+
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_last_hdl_release_reqs;
+
+end lm_lbs_administration;
+/

@@ -1,0 +1,64 @@
+procedure rep_awr is
+type array_str is table of varchar2(2000) index by pls_integer;
+a_js array_str;
+v_msg varchar2(32767);
+cursor c_snaps is
+select to_char(snap_id) as snap_id,
+to_char(snap_id,'99999999')||' - '||to_char(begin_interval_time, 'YYYY-MM-DD HH24:MI:SS') as snap_desc
+from ( select s.snap_id, s.begin_interval_time
+      from dba_hist_snapshot s, v$database d, v$instance i
+      where s.dbid = d.dbid
+      and s.instance_number = i.instance_number
+      order by begin_interval_time desc )
+where rownum < 50;
+skip1 boolean := true;
+begin
+  a_js( 1) := 'function exec_rep1() { var h1=trimAll(p_sn1.value)+"-"+trimAll(p_sn2.value);';
+  a_js( 2) := '                      var s1="ShowAWR?p_snaps="+h1';
+  a_js( 3) := '                      confirm_long_jump("Create AWR Report",s1);';
+  a_js( 4) := '                    }';
+  a_js( 5) := 'function force_snapshot() { confirm_long_jump("Create a new snapshot",''force_snapshot'');  }';
+
+  htp.print(gui.head('AWR Report', 'AWR Report'));
+  htp.print('<div class="operate"><br>');
+
+  htp.print('<SCRIPT>');
+  for i in 1..a_js.count loop
+    htp.print(replace(a_js(i), '@', chr(38)));
+  end loop;
+  htp.print('</SCRIPT>');
+
+  htp.print('<TABLE><td>');
+
+  htp.print('Snapshot 1 : <SELECT NAME="p_sn1" SIZE="1">');
+  for c_rec in c_snaps loop
+    if skip1 then
+      skip1 := false;
+    else
+      htp.print('<OPTION value="'||c_rec.snap_id||'">'||c_rec.snap_desc);
+    end if;
+  end loop;
+  htp.print('</SELECT>');
+
+  htp.print('<br><br>');
+  htp.print('Snapshot 2 : <SELECT NAME="p_sn2" SIZE="1">');
+  for c_rec in c_snaps loop
+    htp.print('<OPTION value="'||c_rec.snap_id||'">'||c_rec.snap_desc);
+  end loop;
+  htp.print('</SELECT>');
+
+  htp.print('</td><td> </td><td> </td> <td>');
+
+  htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="Force new snapshot" onClick=force_snapshot()>');
+
+  htp.print(gui.table_input_tail('-'));
+
+  htp.print('<INPUT TYPE="Button" class="bigbut" VALUE="AWR Report" onClick=exec_rep1()>');
+  htp.print('<br><br>');
+
+  htp.print(gui.tail);
+exception when others then
+  v_msg := sqlerrm||'<br>'||replace(dbms_utility.format_error_backtrace, chr(10), '<br>');
+  htp.print(v_msg||'<br><br>');
+end;
+/

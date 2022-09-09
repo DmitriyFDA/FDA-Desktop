@@ -1,0 +1,596 @@
+create or replace PACKAGE lm_cfg_external_functions
+IS
+   g_con_package       CONSTANT lm_constant.st_proc_name := 'LM_CFG_CONGESTION_CONTROL';
+
+   PROCEDURE load_bags_in_segment;
+   PROCEDURE load_release_groups;
+   PROCEDURE load_instruction_recovery;
+
+END lm_cfg_external_functions;
+/
+
+
+
+package body lm_cfg_external_functions is
+
+
+
+
+
+
+
+   
+   type nt_brn is table of lm_brp_compositions%rowtype;
+
+
+
+
+
+
+procedure create_brn( i_type_of_count    in     lm_brp_compositions.type_of_count%type
+                    , i_pty_id           in     lm_brp_compositions.pty_id%type
+                    , i_brp_id           in     lm_brp_compositions.brp_id%type
+                    , i_pon_id           in     lm_brp_compositions.pon_id%type
+                    , i_haa_id_cust      in     lm_handling_areas.id_cust%type
+                    , i_has_haa_id_cust  in     lm_handling_areas.id_cust%type
+                    , i_has_lnk_id_cust  in     lm_links.id_cust%type
+                    , i_min_travel_time  in     lm_brp_compositions.minimum_travel_time%type
+                    , i_max_travel_time  in     lm_brp_compositions.maximum_travel_time%type
+                    , io_nt_brn          in out nocopy  nt_brn
+                    )
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.create_brn';
+   l_rt_haa                            lm_handling_areas%rowtype;
+   l_rt_has                            lm_handling_area_accesses%rowtype;
+   l_rt_brn                            lm_brp_compositions%rowtype;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+   
+   if i_pon_id is not null
+   then
+      lm_config.check_destination(i_pon_id => i_pon_id);
+   end if;
+   
+   if i_haa_id_cust is not null
+   then
+      l_rt_haa := lm_config.check_handling_area(i_haa_id_cust => i_haa_id_cust);
+   end if;
+
+   if  i_has_haa_id_cust is not null
+   and i_has_lnk_id_cust is not null
+   then
+      l_rt_has := lm_config.check_handling_area_access( i_haa_id_cust => i_has_haa_id_cust
+                                                      , i_lnk_id_cust => i_has_lnk_id_cust
+                                                      );
+   end if;
+
+   l_rt_brn.id                  := io_nt_brn.count + 1;
+
+   l_rt_brn.type_of_count       := i_type_of_count;
+   l_rt_brn.pty_id              := i_pty_id;
+   l_rt_brn.brp_id              := i_brp_id;
+   l_rt_brn.pon_id              := i_pon_id;
+   l_rt_brn.haa_id              := l_rt_haa.id;
+   l_rt_brn.has_id              := l_rt_has.id;
+   l_rt_brn.minimum_travel_time := i_min_travel_time;
+   l_rt_brn.maximum_travel_time := i_max_travel_time;
+   
+   io_nt_brn.extend(1);
+   io_nt_brn(l_rt_brn.id) := l_rt_brn;
+
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end create_brn;
+
+
+
+
+
+
+procedure load_bags_in_segment
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_bags_in_segment';
+
+   
+   cursor c_brp
+   is
+      select brp.group_id
+      ,      brp.name
+      ,      cast( multiset( select lst_id
+                             from   xmltable( 'StatusSegmentID'
+                                              passing brp.status_segments_xml
+                                              columns lst_id integer path 'text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_lst
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/ExternalPartyFunctions/BagsInSegment/BagsAmountReportGroups/ReportGroup'
+                       passing cfg.data
+                       columns group_id            integer       path 'ID/text()'
+                       ,       name                varchar2(100) path 'Name/text()'
+                       ,       status_segments_xml xmltype       path 'StatusSegmentID'
+                     ) brp
+      ;
+      
+   
+   
+   cursor c_brn
+   is
+      select brn.group_id
+      ,      (select brp.group_id
+              from   xmltable( '/LogisticDomainConfig/Body/ExternalPartyFunctions/BagsInSegment/BagsAmountReportGroups/ReportGroup'
+                               passing cfg.data
+                               columns group_id            integer       path 'ID/text()'
+                             ) brp
+              where  brn.group_id = brp.group_id
+             ) brp_group_id_check
+      ,      brn.pty_id_cust
+      ,      brn.type_of_count
+      ,      brn.min_travel_time
+      ,      brn.max_travel_time
+      ,      cast( multiset( select haa_id_cust
+                             from   xmltable( 'HandlingAreaID'
+                                              passing brn.handling_areas_xml
+                                              columns haa_id_cust varchar2(30) path 'text()'
+                                            )
+                           ) as nt_vc2_coll
+                 ) nt_haa_id_cust
+      ,      cast( multiset( select pon_id
+                             from   xmltable( 'DestinationID'
+                                              passing brn.destinations_xml
+                                              columns pon_id      integer      path 'text()'
+                                            )
+                           ) as nt_id_coll
+                 ) nt_pon
+      ,      cast( multiset( select haa_id_cust
+                             from   xmltable( 'HandlingAreaAccess'
+                                              passing brn.handling_area_accesses_xml
+                                              columns haa_id_cust varchar2(30) path 'HandlingAreaID/text()'
+                                            )
+                           ) as nt_vc2_coll
+                 ) nt_has_haa_id_cust
+      ,      cast( multiset( select link_id_cust
+                             from   xmltable( 'HandlingAreaAccess'
+                                              passing brn.handling_area_accesses_xml
+                                              columns link_id_cust varchar2(30) path 'LinkID/text()'
+                                            )
+                           ) as nt_vc2_coll
+                 ) nt_has_lnk_id_cust
+      from   cmn_v_sysconfig_data cfg
+      ,      xmltable( '/LogisticDomainConfig/Body/ExternalPartyFunctions/BagsInSegment/BagsAmountCompositions/Composition'
+                       passing cfg.data
+                       columns group_id           integer       path 'ReportGroupID/text()'
+                       ,       pty_id_cust        varchar2(30)  path 'SendTo/text()'
+                       ,       type_of_count      varchar2(3)   path 'CountType/text()'
+                       ,       min_travel_time    integer       path 'MinimumTravelTime/text()'
+                       ,       max_travel_time    integer       path 'MaximumTravelTime/text()'
+                       ,       handling_areas_xml xmltype       path 'HandlingAreaID'
+                       ,       destinations_xml   xmltype       path 'DestinationID'
+                       ,       handling_area_accesses_xml xmltype path 'HandlingAreaAccess'
+                     ) brn
+     ;
+
+   type nt_bagsamount_report_groups is table of c_brp%rowtype;
+   type nt_compositions             is table of c_brn%rowtype;
+   type nt_sgr                      is table of lm_segment_group_members%rowtype;
+
+   l_nt_compositions                   nt_compositions;
+   l_nt_bagsamount_report_groups       nt_bagsamount_report_groups;
+   l_nt_sgr                            nt_sgr := nt_sgr();
+   l_nt_brn                            nt_brn := nt_brn();
+
+   l_start_time                        timestamp := lm_common.default_timestamp;
+
+   l_sgr_id_last                       lm_segment_group_members.id%type;
+   l_idx_sgr                           binary_integer;
+
+   l_rt_pty                            lm_parties%rowtype;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   select nvl(max(id), 0)
+   into   l_sgr_id_last
+   from   lm_segment_group_members;
+    
+   
+   open c_brp;
+   fetch c_brp bulk collect into l_nt_bagsamount_report_groups;
+   close c_brp;
+
+   
+   open c_brn;
+   fetch c_brn bulk collect into l_nt_compositions;
+   close c_brn;
+
+   
+   
+   for idx_brp in 1 .. l_nt_bagsamount_report_groups.count
+   loop
+
+      l_idx_sgr := l_nt_sgr.count;
+      l_nt_sgr.extend(l_nt_bagsamount_report_groups(idx_brp).nt_lst.count);
+      for idx_sgr in 1 .. l_nt_bagsamount_report_groups(idx_brp).nt_lst.count
+      loop
+         
+         lm_config.check_logical_segment( i_lst_id => l_nt_bagsamount_report_groups(idx_brp).nt_lst(idx_sgr));
+         
+         l_nt_sgr(l_idx_sgr + idx_sgr).id := l_sgr_id_last 
+                                           + l_idx_sgr     
+                                           + idx_sgr;
+         l_nt_sgr(l_idx_sgr + idx_sgr).brp_id   := l_nt_bagsamount_report_groups(idx_brp).group_id;
+         l_nt_sgr(l_idx_sgr + idx_sgr).lst_id   := l_nt_bagsamount_report_groups(idx_brp).nt_lst(idx_sgr);
+      end loop;
+   end loop;
+   
+   
+   for idx_brn in 1 .. l_nt_compositions.count
+   loop
+      
+      if l_nt_compositions(idx_brn).group_id is not null
+      then
+         
+         if l_nt_compositions(idx_brn).group_id <> l_nt_compositions(idx_brn).brp_group_id_check
+         or l_nt_compositions(idx_brn).brp_group_id_check is null
+         then
+            
+            viu_info.raise_info
+               ( i_ifo_nr            => viu_constant.c_ifo_configuration
+               , i_calling_procedure => l_con_proc_name
+               , i_severity          => viu_info.c_severity_error
+               , i_additional_data   => 'BagsAmountComposition at row '|| idx_brn
+                                     || ' refers to nonexisting ReportGroup with id '||l_nt_compositions(idx_brn).group_id
+               );
+         end if;
+      end if;
+      
+      
+      l_rt_pty := null; 
+      if  l_nt_compositions(idx_brn).pty_id_cust is not null
+      and not lm_pty_tapi_pck.pty_select_row_uk1( i_pty_id_cust     => l_nt_compositions(idx_brn).pty_id_cust
+                                                , i_pty_instance_id => null
+                                                , o_rt_pty          => l_rt_pty
+                                                )
+      then
+         
+         l_rt_pty.id_cust     := l_nt_compositions(idx_brn).pty_id_cust;
+         l_rt_pty.description := l_nt_compositions(idx_brn).pty_id_cust;
+
+         lm_pty_tapi_pck.pty_insert_row( io_rt_pty => l_rt_pty );
+      end if;
+      
+      if  l_nt_compositions(idx_brn).nt_pon.count             = 0
+      and l_nt_compositions(idx_brn).nt_haa_id_cust.count     = 0
+      and l_nt_compositions(idx_brn).nt_has_haa_id_cust.count = 0
+      then
+         
+         
+         
+         create_brn( i_type_of_count   => l_nt_compositions(idx_brn).type_of_count
+                   , i_pty_id          => l_rt_pty.id
+                   , i_brp_id          => l_nt_compositions(idx_brn).group_id
+                   , i_pon_id          => null
+                   , i_haa_id_cust     => null
+                   , i_has_haa_id_cust => null
+                   , i_has_lnk_id_cust => null
+                   , i_min_travel_time => l_nt_compositions(idx_brn).min_travel_time
+                   , i_max_travel_time => l_nt_compositions(idx_brn).max_travel_time
+                   , io_nt_brn         => l_nt_brn
+                   );
+      end if;
+      
+      
+      for idx_pon in 1 .. l_nt_compositions(idx_brn).nt_pon.count
+      loop
+         create_brn( i_type_of_count   => l_nt_compositions(idx_brn).type_of_count
+                   , i_pty_id          => l_rt_pty.id
+                   , i_brp_id          => l_nt_compositions(idx_brn).group_id
+                   , i_pon_id          => l_nt_compositions(idx_brn).nt_pon(idx_pon)
+                   , i_haa_id_cust     => null
+                   , i_has_haa_id_cust => null
+                   , i_has_lnk_id_cust => null
+                   , i_min_travel_time => l_nt_compositions(idx_brn).min_travel_time
+                   , i_max_travel_time => l_nt_compositions(idx_brn).max_travel_time
+                   , io_nt_brn         => l_nt_brn
+                   );
+      end loop;
+      
+      for idx_haa in 1 .. l_nt_compositions(idx_brn).nt_haa_id_cust.count
+      loop
+         create_brn( i_type_of_count   => l_nt_compositions(idx_brn).type_of_count
+                   , i_pty_id          => l_rt_pty.id
+                   , i_brp_id          => l_nt_compositions(idx_brn).group_id
+                   , i_pon_id          => null
+                   , i_haa_id_cust     => l_nt_compositions(idx_brn).nt_haa_id_cust(idx_haa)
+                   , i_has_haa_id_cust => null
+                   , i_has_lnk_id_cust => null
+                   , i_min_travel_time => l_nt_compositions(idx_brn).min_travel_time
+                   , i_max_travel_time => l_nt_compositions(idx_brn).max_travel_time
+                   , io_nt_brn         => l_nt_brn
+                   );
+      end loop;
+      
+      for idx_has in 1 .. l_nt_compositions(idx_brn).nt_has_haa_id_cust.count
+      loop
+         create_brn( i_type_of_count   => l_nt_compositions(idx_brn).type_of_count
+                   , i_pty_id          => l_rt_pty.id
+                   , i_brp_id          => l_nt_compositions(idx_brn).group_id
+                   , i_pon_id          => null
+                   , i_haa_id_cust     => null
+                   , i_has_haa_id_cust => l_nt_compositions(idx_brn).nt_has_haa_id_cust(idx_has)
+                   , i_has_lnk_id_cust => l_nt_compositions(idx_brn).nt_has_lnk_id_cust(idx_has)
+                   , i_min_travel_time => l_nt_compositions(idx_brn).min_travel_time
+                   , i_max_travel_time => l_nt_compositions(idx_brn).max_travel_time
+                   , io_nt_brn         => l_nt_brn
+                   );
+      end loop;
+
+   end loop;  
+   
+   
+   forall idx in 1 .. l_nt_bagsamount_report_groups.count
+      insert
+      into   lm_bagsamount_report_groups
+      (      id
+      ,      name
+      ,      description
+      ) values
+      (      l_nt_bagsamount_report_groups(idx).group_id
+      ,      l_nt_bagsamount_report_groups(idx).name
+      ,      l_nt_bagsamount_report_groups(idx).name
+      );
+
+   forall idx in 1 .. l_nt_sgr.count
+      insert
+      into   lm_segment_group_members
+      (      id
+      ,      lst_id
+      ,      brp_id
+      ) values
+      (      l_nt_sgr(idx).id
+      ,      l_nt_sgr(idx).lst_id
+      ,      l_nt_sgr(idx).brp_id
+      );
+
+   
+   forall idx in 1 .. l_nt_brn.count
+      insert
+      into   lm_brp_compositions
+      (      id
+      ,      type_of_count
+      ,      pty_id
+      ,      brp_id
+      ,      pon_id
+      ,      haa_id
+      ,      has_id
+      ,      minimum_travel_time
+      ,      maximum_travel_time
+      ) values
+      (      l_nt_brn(idx).id
+      ,      l_nt_brn(idx).type_of_count
+      ,      l_nt_brn(idx).pty_id
+      ,      l_nt_brn(idx).brp_id
+      ,      l_nt_brn(idx).pon_id
+      ,      l_nt_brn(idx).haa_id
+      ,      l_nt_brn(idx).has_id
+      ,      l_nt_brn(idx).minimum_travel_time
+      ,      l_nt_brn(idx).maximum_travel_time
+      );
+   
+   lm_config.log_processing_time( i_message_name    => 'BagsInSegment'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Created: '||l_nt_bagsamount_report_groups.count||' lm_bagsamount_report_groups'
+                                                    ||', '||l_nt_sgr.count||' lm_segment_group_members'
+                                                    ||' and '||l_nt_brn.count||' lm_brp_compositions'
+                                );
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_brp%isopen
+      then
+         close c_brp;
+      end if;
+      if c_brn%isopen
+      then
+         close c_brn;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_bags_in_segment;
+
+
+
+
+
+
+function minutes_to_interval(i_#minutes in integer)
+return interval day to second
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.minutes_to_interval';
+   l_interval                          lm_station_types.interval_lrt_normal%type;
+   l_hours                             integer;
+   l_minutes                           integer;
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   
+   l_hours    := floor(i_#minutes/60);
+   l_minutes  := mod(i_#minutes, 60);
+
+   l_interval := to_dsinterval('0 '||l_hours||':'||l_minutes||':0.0');
+      
+   viu_module.leave_module (i_module => l_con_proc_name);
+   return l_interval;
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end minutes_to_interval;
+
+
+
+
+
+
+
+
+procedure load_release_groups
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_release_groups';
+
+   
+   cursor c_ste
+   is
+       select ste.station_type
+       ,      ste.maximum_capacity
+       ,      ste.target_release_rate
+       ,      interval_lrt_normal_mm
+       ,      interval_lrt_priority_mm
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/ExternalPartyFunctions/ReleaseGroups/StationType'
+                        passing cfg.data
+                        columns station_type             varchar2(100) path 'Type/text()'
+                        ,       maximum_capacity         integer       path 'MaxCapacity/text()'
+                        ,       target_release_rate      integer       path 'TargetReleaseRate/text()'
+                        ,       interval_lrt_normal_mm   integer       path 'Interval_LRT_Normal/text()'    
+                        ,       interval_lrt_priority_mm integer       path 'Interval_LRT_Priority/text()'  
+                      ) ste
+       ;
+
+   l_rt_ste                            lm_station_types%rowtype;
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_#ste                              integer := 0;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   
+   for rec_ste in c_ste
+   loop
+      
+      l_rt_ste := lm_config.check_station_type( i_ste_name => rec_ste.station_type);
+      if l_rt_ste.id is not null
+      then
+         
+         
+         
+
+         l_rt_ste.maximum_capacity      := rec_ste.maximum_capacity;
+         l_rt_ste.target_release_rate   := rec_ste.target_release_rate;
+         
+         l_rt_ste.interval_lrt_normal   := minutes_to_interval(i_#minutes => rec_ste.interval_lrt_normal_mm);
+         l_rt_ste.interval_lrt_priority := minutes_to_interval(i_#minutes => rec_ste.interval_lrt_priority_mm);
+         
+         
+         l_#ste := l_#ste + lm_ste_tapi_pck.ste_update_row( i_ste_id  => l_rt_ste.id
+                                                          , io_rt_ste => l_rt_ste
+                                                          );
+      end if;
+   end loop;
+  
+   lm_config.log_processing_time( i_message_name    => 'ReleaseGroups'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Updated: '||l_#ste||' lm_station_types'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_release_groups;
+
+
+
+
+
+
+
+procedure load_instruction_recovery
+is
+   l_con_proc_name            constant lm_constant.st_proc_name
+                                         := g_con_package || '.load_instruction_recovery';
+
+   
+   cursor c_ara
+   is
+       select ara.ara_id_cust
+       from   cmn_v_sysconfig_data cfg
+       ,      xmltable( '/LogisticDomainConfig/Body/ExternalPartyFunctions/PackageInstructionRecovery/AreaID'
+                        passing cfg.data
+                        columns ara_id_cust              integer       path 'text()'
+                      ) ara
+       ;
+
+   l_nt_areas                          nt_vc2_coll;
+   l_nt_ara                            nt_id_coll := nt_id_coll();
+   
+   l_start_time                        timestamp := lm_common.default_timestamp;
+   l_#ara                              integer := 0;
+
+begin
+   viu_module.enter_module (i_module => l_con_proc_name);
+
+   
+   open c_ara;
+   fetch c_ara bulk collect into l_nt_areas;
+   close c_ara;
+
+   
+   l_nt_ara.extend(l_nt_areas.count);
+   for idx_ara in 1 .. l_nt_areas.count
+   loop
+      
+      l_nt_ara(idx_ara) := lm_config.check_area(i_sct_id_cust => l_nt_areas(idx_ara));
+   end loop;
+
+   
+   forall idx in 1 .. l_nt_ara.count
+      update lm_system_components
+      set    ind_sync_bir = lm_constant.g_con_yesno_yes
+      where  id = l_nt_ara(idx)
+      ;
+
+   lm_config.log_processing_time( i_message_name    => 'PackageInstructionRecovery'
+                                , i_start_time      => l_start_time
+                                , i_additional_data => 'Updated: '||l_nt_ara.count||' lm_system_components (areas)'
+                                );
+                                
+   viu_module.leave_module (i_module => l_con_proc_name);
+exception
+   when others
+   then
+      if c_ara%isopen
+      then
+         close c_ara;
+      end if;
+      viu_module.leave_module (i_module          => l_con_proc_name,
+                               i_debug_info      => sqlerrm
+                              );
+      viu_info.raise_info (i_calling_procedure => l_con_proc_name);
+end load_instruction_recovery;
+
+end lm_cfg_external_functions;
+/

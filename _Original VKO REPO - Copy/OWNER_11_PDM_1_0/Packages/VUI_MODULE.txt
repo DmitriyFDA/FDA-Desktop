@@ -1,0 +1,251 @@
+create or replace PACKAGE VIU_MODULE IS
+
+PROCEDURE ENTER_MODULE
+ (I_MODULE IN VARCHAR2
+ ,I_DEBUG_INFO IN VARCHAR2 := NULL
+ ,I_AUTONOMOUS IN BOOLEAN := TRUE
+ );
+PROCEDURE LEAVE_MODULE
+ (I_MODULE IN VARCHAR2
+ ,I_DEBUG_INFO IN VARCHAR2 := NULL
+ ,I_AUTONOMOUS IN BOOLEAN := TRUE
+ );
+/* Interface to v_current_nesting_level */
+FUNCTION CURRENT_NESTING_LEVEL
+ RETURN NUMBER;
+PRAGMA RESTRICT_REFERENCES (CURRENT_NESTING_LEVEL, WNDS, WNPS);
+/* Set the value for v_current_nesting_level */
+PROCEDURE SET_CURRENT_NESTING_LEVEL
+ (I_CURRENT_NESTING_LEVEL IN NUMBER
+ );
+/* Increase v_current_nesting_level by one */
+PROCEDURE INCREASE_NESTING_LEVEL;
+/* Decrease v_current_nesting_level by one */
+PROCEDURE DECREASE_NESTING_LEVEL;
+/* Interface to Viu_Constant.c_ifo_ModuleInfoStart */
+FUNCTION IFO_MODULEINFOSTART
+ RETURN number;
+/* Interface to Viu_Constant.c_ifo_ModuleInfoEnd */
+FUNCTION IFO_MODULEINFOEND
+ RETURN number;
+END VIU_MODULE;
+/
+
+
+
+
+package body viu_module is
+
+c_max_nesting_level constant number := 999;
+
+v_max_severity_logged viu_info_logs.severity%type := 1;
+v_current_nesting_level number(3) := null;
+
+
+procedure enter_module
+ (i_module in varchar2
+ ,i_debug_info in varchar2 := null
+ ,i_autonomous in boolean := true
+ )
+ is
+
+v_local_max_severity_logged viu_info_logs.severity%type;
+begin
+viu_trace.enter(i_module);
+
+   
+   
+   if i_debug_info is not null then
+     v_local_max_severity_logged := viu_info.c_severity_proc_arguments;
+   else
+     v_local_max_severity_logged := viu_info.c_severity_proc_call;
+   end if;
+
+   if v_local_max_severity_logged <= viu_info.current_log_level then
+	begin
+        if i_autonomous then
+         viu_info.insert_info_autonomous
+		(
+			i_ifo_nr => viu_constant.c_ifo_moduleinfostart
+		,	i_username => null
+		,	i_application => 'DBG'
+		,	i_calling_procedure => i_module
+		,	i_called_procedure_chain => null
+		,	i_oracle_text => null
+		,	i_severity => v_local_max_severity_logged
+		,	i_info_arguments => i_module
+		,	i_additional_data => i_debug_info
+		);
+        else
+         viu_info.insert_info
+		(
+			i_ifo_nr => viu_constant.c_ifo_moduleinfostart
+		,	i_username => null
+		,	i_application => 'DBG'
+		,	i_calling_procedure => i_module
+		,	i_called_procedure_chain => null
+		,	i_oracle_text => null
+		,	i_severity => v_local_max_severity_logged
+		,	i_info_arguments => i_module
+		,	i_additional_data => i_debug_info
+		);
+        end if;
+	exception
+	when	others
+         then
+            null;
+      end;
+   end if;
+   
+   
+   
+   
+   increase_nesting_level;
+end enter_module;
+procedure leave_module
+ (i_module in varchar2
+ ,i_debug_info in varchar2 := null
+ ,i_autonomous in boolean := true
+ )
+ is
+
+v_local_max_severity_logged viu_info_logs.severity%type;
+begin
+viu_trace.leave;
+
+   
+   
+   
+   decrease_nesting_level;
+
+   
+   
+   if i_debug_info is not null then
+     v_local_max_severity_logged := viu_info.c_severity_proc_arguments;
+   else
+     v_local_max_severity_logged := viu_info.c_severity_proc_call;
+   end if;
+
+   if v_local_max_severity_logged <= viu_info.current_log_level
+   then
+	begin
+        if i_autonomous then
+         viu_info.insert_info_autonomous
+		(
+			i_ifo_nr => viu_constant.c_ifo_moduleinfoend
+		,	i_username => null
+		,	i_application => 'DBG'
+		,	i_calling_procedure => i_module
+		,	i_called_procedure_chain => null
+		,	i_oracle_text => null
+		,	i_severity => v_local_max_severity_logged
+		,	i_info_arguments => i_module
+		,	i_additional_data => i_debug_info
+		);
+        else
+         viu_info.insert_info
+		(
+			i_ifo_nr => viu_constant.c_ifo_moduleinfoend
+		,	i_username => null
+		,	i_application => 'DBG'
+		,	i_calling_procedure => i_module
+		,	i_called_procedure_chain => null
+		,	i_oracle_text => null
+		,	i_severity => v_local_max_severity_logged
+		,	i_info_arguments => i_module
+		,	i_additional_data => i_debug_info
+		);
+        end if;
+	exception
+	when	others
+         then
+            null;
+      end;
+   end if;
+end leave_module;
+
+function current_nesting_level
+ return number
+ is
+begin
+return v_current_nesting_level;
+end current_nesting_level;
+
+procedure set_current_nesting_level
+ (i_current_nesting_level in number
+ )
+ is
+begin
+v_current_nesting_level := i_current_nesting_level;
+end set_current_nesting_level;
+
+procedure increase_nesting_level
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Module.increase_nesting_level';
+
+
+
+begin
+if v_current_nesting_level is null then
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_nestingnotinit
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_debug);
+                         
+  
+  v_current_nesting_level := 1;
+elsif v_current_nesting_level >= c_max_nesting_level then
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_nestingmaxlevel
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_warning
+                         ,i_info_arguments    => c_max_nesting_level);
+else
+  v_current_nesting_level := v_current_nesting_level + 1;
+end if;
+end increase_nesting_level;
+
+procedure decrease_nesting_level
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Module.decrease_nesting_level';
+
+
+
+begin
+if v_current_nesting_level is null then
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_nestingnotinit
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_debug);
+elsif v_current_nesting_level = 0 then
+  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_nestingminlevel
+                         ,i_calling_procedure => c_proc
+                         ,i_severity          => viu_info.c_severity_warning);
+else
+  v_current_nesting_level := v_current_nesting_level - 1;
+end if;
+end decrease_nesting_level;
+
+function ifo_moduleinfostart
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Module.ifo_moduleinfostart';
+begin
+return viu_constant.c_ifo_moduleinfostart;
+end ifo_moduleinfostart;
+
+function ifo_moduleinfoend
+ return number
+ is
+
+
+c_proc constant varchar2(100) := 'Viu_Module.ifo_moduleinfoend';
+begin
+return viu_constant.c_ifo_moduleinfoend;
+end ifo_moduleinfoend;
+
+end viu_module;
+/

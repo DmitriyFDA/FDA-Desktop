@@ -1,0 +1,16 @@
+procedure rebuild_standard_sequence(seq in varchar2) is
+sqlddl varchar2(255) := 'DROP SEQUENCE '||seq;
+begin
+  begin
+    execute immediate sqlddl;
+  exception when others then
+    
+    if sqlcode != -2289 then
+      raise;
+    end if;
+  end;
+  
+  sqlddl := 'create sequence '||seq||' start with 1 maxvalue 9999999999999999999999 minvalue 1 cycle cache 1000 order';
+  execute immediate sqlddl;
+end;
+/

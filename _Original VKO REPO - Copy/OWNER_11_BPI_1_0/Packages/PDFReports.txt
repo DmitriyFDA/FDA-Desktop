@@ -1,0 +1,5542 @@
+create or replace package PDFReports is
+
+c_max_series_columns constant pls_integer := 12;
+c_max_series_rows constant pls_integer := 1000;
+c_max_grid_rows constant pls_integer := 2000;
+
+type point is record (x number, y number);
+type type_point_table is table of point;
+type type_number_table is table of number;
+type type_string_table is table of varchar2(32767);
+type type_table_rows is table of type_string_table;
+type type_series_values is varray(12) of number;  -- must match c_max_series_columns
+type type_series_record is record (category varchar2(200), series_values type_series_values);
+type type_chart_data is table of type_series_record;
+
+current_fontsize      constant pls_integer := 1;
+current_current_font  constant pls_integer := 2;
+current_x_position    constant pls_integer := 10;
+current_y_position    constant pls_integer := 11;
+current_page_width    constant pls_integer := 20;
+current_page_height   constant pls_integer := 21;
+current_margin_top    constant pls_integer := 22;
+current_margin_right  constant pls_integer := 23;
+current_margin_bottom constant pls_integer := 24;
+current_margin_left   constant pls_integer := 25;
+
+-- procedure print_csv_to_string_table(p_csv varchar2);
+
+procedure set_date_format(p_format varchar2 := 'YYYY-MM-DD HH24:MI:SS');
+procedure set_number_format(p_format varchar2 := 'TM9');
+procedure set_nls_numeric_chars(p_chars varchar2 := '.,'); -- 1st=decimal point, 2nd=thousands separator
+procedure set_axes_color(p_color varchar2 := '000000');
+procedure set_chart_grid_line_color(p_color varchar2 := 'DDDDDD');
+procedure set_cell_border_color(p_color varchar2 := '000000');
+procedure set_threshold_color(p_color varchar2 := 'FF0000');
+procedure set_edge_darkness(p_dark_factor number := 0);
+procedure set_edge_thickness(p_width number := 0.5);
+
+function num2str(p_value number) return varchar2;
+function str2num(p_string varchar2) return number;
+function is_hex(p_hex_string varchar2, p_expected_length number := null) return boolean;
+  
+function get_point_on_circle
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_degree number
+) return point;
+
+procedure draw_circle
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+);
+  
+procedure draw_radius
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_degree number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+) ;
+
+procedure draw_radial_tag
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_degree number
+, p_tag varchar2
+, p_len_arrow number := 10
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+);
+
+procedure draw_quadrant_segment
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_angle number
+, p_rotation number := 0
+, p_color varchar2 := '000000'
+);
+
+procedure draw_segment_at_degree_points
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_from_degree number
+, p_to_degree number
+, p_color varchar2 := '000000'
+);
+
+procedure draw_quadrant_arc
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_angle number
+, p_rotation number := 0
+, p_line_width number := 0.5
+, p_color varchar2 := '000000'
+);
+
+procedure draw_arc_at_degree_points
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_from_degree number
+, p_to_degree number
+, p_line_width number := 0.5
+, p_color varchar2 := '000000'
+);
+
+procedure draw_line
+( p_x1 number
+, p_y1 number
+, p_x2 number
+, p_y2 number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+);
+
+procedure draw_arrow
+( p_from_x number
+, p_from_y number
+, p_to_x number
+, p_to_y number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+);
+
+procedure horizontal_line
+( p_x in number
+, p_y in number
+, p_width in number
+, p_line_width in number := 0.5
+, p_line_color in varchar2 := '000000'
+);
+
+procedure vertical_line
+( p_x in number
+, p_y in number
+, p_height in number
+, p_line_width in number := 0.5
+, p_line_color in varchar2 := '000000'
+);
+
+procedure draw_rectangle_top_left
+( p_x number
+, p_y number
+, p_width number
+, p_height number
+, p_line_color varchar2 := null
+, p_fill_color varchar2 := null
+, p_line_width number := 0.5
+);
+
+procedure draw_rectangle -- old version, based on bottom left x,y coordinate
+( p_x in number
+, p_y in number
+, p_width in number
+, p_height in number
+, p_line_color in varchar2 := null
+, p_fill_color in varchar2 := null
+, p_line_width in number := 0.5
+);
+
+procedure draw_area
+( p_pts type_point_table
+, p_color varchar2
+);
+
+function doc2blob(p_file_name varchar2) return blob;
+
+function conv2uu(p_value number, p_unit varchar2) return number;
+
+procedure set_page_size
+( p_width number
+, p_height number
+, p_unit varchar2 := 'cm'
+);
+
+procedure set_page_format(p_format varchar2 := 'A4');
+
+procedure set_page_orientation(p_orientation varchar2 := 'PORTRAIT');
+
+procedure set_margins
+( p_top number := null
+, p_left number := null
+, p_bottom number := null
+, p_right number := null
+, p_unit varchar2 := 'cm'
+);
+
+procedure set_info
+( p_title varchar2 := null
+, p_author varchar2 := null
+, p_subject varchar2 := null
+, p_keywords varchar2 := null
+);
+
+procedure init;
+
+function return_pdf return blob;
+
+procedure free_pdf;
+
+procedure store_pdf(p_filename varchar2 := 'My PDF Report', p_freeblob boolean := true);
+
+procedure txt2page(p_text varchar2);
+
+procedure text2xy(p_x number, p_y number, p_text varchar2, p_degrees_rotation number := null);
+
+function text_length(p_text varchar2) return number;
+
+procedure print_core_fonts;
+
+procedure set_font
+( p_index pls_integer
+, p_fontsize_pt number
+, p_output_to_doc boolean := true
+);
+
+function set_font
+( p_fontname varchar2
+, p_fontsize_pt number
+, p_output_to_doc boolean := true
+) return pls_integer;
+
+procedure set_font
+( p_fontname varchar2
+, p_fontsize_pt number
+, p_output_to_doc boolean := true
+);
+
+function set_font
+( p_family varchar2
+, p_style varchar2 := 'N'
+, p_fontsize_pt number := null
+, p_output_to_doc boolean := true
+) return pls_integer;
+
+procedure set_font
+( p_family varchar2
+, p_style varchar2 := 'N'
+, p_fontsize_pt number := null
+, p_output_to_doc boolean := true
+);
+
+procedure new_page;
+
+procedure set_color(p_rgb varchar2 := '000000');
+
+procedure set_color
+( p_red number := 0
+, p_green number := 0
+, p_blue number := 0
+);
+
+procedure set_bg_color(p_rgb varchar2 := 'ffffff');
+
+procedure set_bg_color
+( p_red number := 0
+, p_green number := 0
+, p_blue number := 0
+);
+
+function get(p_what in pls_integer) return number;
+
+procedure put_image
+( p_img blob
+, p_x number
+, p_y number
+, p_width number := null
+, p_height number := null
+, p_align varchar2 := 'center'
+, p_valign varchar2 := 'top'
+);
+
+procedure put_image
+( p_file_name varchar2
+, p_x number
+, p_y number
+, p_width number := null
+, p_height number := null
+, p_align varchar2 := 'center'
+, p_valign varchar2 := 'top'
+);
+
+procedure set_page_proc(p_src clob);
+
+procedure pr_goto_page(i_npage number);
+
+procedure pr_goto_current_page;
+
+procedure draw_gauge
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_threshold_plan varchar2
+, p_dial_value number
+, p_dial_color varchar2 := 'FF0000'
+, p_bg_color varchar2 := 'EEEEEE'
+, p_left_to_right boolean := true
+, p_bottom_caption varchar2 := ''
+);
+
+function hextonum(c varchar2) return number;
+
+function random_color return varchar2;
+
+function darker(p_color varchar2, p_dark_factor number) return varchar2;
+
+function resolve_color(p_category varchar2, p_color_plan varchar2) return varchar2;
+
+function query_to_chart_data(p_query varchar2) return type_chart_data;
+
+procedure query_to_rows
+( p_query in varchar2
+, o_rows out type_table_rows
+, o_col_headings out varchar2
+, o_col_aligns out varchar2
+, o_col_totals out type_number_table
+);
+
+function pivot(p_data type_chart_data, p_columns varchar2) return type_chart_data;
+
+procedure draw_pie_chart
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_query varchar2
+, p_color_plan varchar2 := ''
+, p_show_value boolean := true
+, p_show_percentage boolean := false
+, p_slice_plan varchar2 := ''
+--, p_edge_darkness number := 0
+);
+
+procedure draw_pie_chart
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_data type_chart_data
+, p_color_plan varchar2 := ''
+, p_show_value boolean := true
+, p_show_percentage boolean := false
+, p_slice_plan varchar2 := ''
+--, p_edge_darkness number := 0
+);
+
+procedure draw_sshbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_query varchar2
+, p_chart_width number := 0
+, p_line_height number := 0
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+);
+
+procedure draw_sshbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_data type_chart_data
+, p_chart_width number := 0
+, p_line_height number := 0
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+);
+
+procedure draw_ssvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_query varchar2
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+);
+
+procedure draw_ssvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_data type_chart_data
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+);
+
+procedure draw_msvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_query varchar2
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_stack boolean := false
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+, p_show_legend boolean := false
+);
+  
+procedure draw_msvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_data type_chart_data
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_stack boolean := false
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+, p_show_legend boolean := false
+);
+
+procedure draw_msvline_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_query varchar2
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gridlines varchar2 := ''
+, p_threshold_line number := null
+, p_show_legend boolean := false
+, p_line_size number := 1
+, p_dot_size number := 0     -- 0 = no dot at all
+, p_dot_shape varchar := 'C' -- S = Square, C = Circle
+, p_fill_area boolean := false
+);
+
+procedure draw_msvline_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_data type_chart_data
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gridlines varchar2 := ''
+, p_threshold_line number := null
+, p_show_legend boolean := false
+, p_line_size number := 1
+, p_dot_size number := 0     -- 0 = no dot at all
+, p_dot_shape varchar := 'C' -- S = Square, C = Circle
+, p_fill_area boolean := false
+);
+
+procedure draw_cell
+( p_x number
+, p_y number
+, p_width number
+, p_height number
+, p_text varchar2
+, p_line_color varchar2 := '000000'
+, p_fill_color varchar2 := 'FFFFFF'
+, p_line_width number := 0.5
+, p_cell_margin number := 2
+, p_align varchar2 := 'left'
+, p_split_char varchar2 := ''
+);
+
+procedure draw_cell
+( p_x number
+, p_y number
+, p_width number
+, p_height number
+, p_text varchar2
+, p_wrap varchar2 := 'No' -- Y,N,Yes,No
+, p_horizontal_align varchar2 := 'Left' -- L,C,R,Left,Centre,Right
+, p_vertical_align varchar2 := 'Top' -- T,C,B,Top,Centre,Bottom -- n.b. is always T when p_wrap=Y
+, p_horizontal_margin number := 2
+, p_vertical_margin number := 2
+, p_fill_color varchar2 := 'FFFFFF'
+, p_line_width number := 0.5
+, p_top_line_color varchar2 := '000000'
+, p_left_line_color varchar2 := '000000'
+, p_right_line_color varchar2 := '000000'
+, p_bottom_line_color varchar2 := '000000'
+);
+
+procedure draw_chart_data_grid
+( p_x_top_left number
+, p_y_top_left number
+, p_data type_chart_data
+, p_series_columns varchar2 := ''
+, p_column_widths varchar2 := ''
+, p_header_height number := null
+, p_line_height number := null
+, p_line_color varchar2 := '000000'
+, p_header_bg_color varchar2 := 'DDDDDD'
+, p_bg_color varchar2 := 'FFFFFF'
+, p_alt_bg_color varchar2 := ''
+, p_cell_margin number := 2
+, p_total_columns varchar2 := ''
+);
+
+procedure draw_table_grid
+( p_x_top_left number
+, p_y_top_left number
+, p_query varchar2
+, p_column_headings varchar2 := ''
+, p_column_widths varchar2 := ''
+, p_column_alignments varchar2 := ''
+, p_header_height number := null
+, p_line_height number := null
+, p_line_color varchar2 := '000000'
+, p_header_bg_color varchar2 := 'DDDDDD'
+, p_bg_color varchar2 := 'FFFFFF'
+, p_alt_bg_color varchar2 := ''
+, p_cell_margin number := 2
+, p_total_columns varchar2 := ''
+);
+
+procedure draw_table_grid
+( p_x_top_left number
+, p_y_top_left number
+, p_rows type_table_rows
+, p_column_headings varchar2 := ''
+, p_column_widths varchar2 := ''
+, p_column_alignments varchar2 := ''
+, p_col_totals type_number_table := null
+, p_header_height number := null
+, p_line_height number := null
+, p_line_color varchar2 := '000000'
+, p_header_bg_color varchar2 := 'DDDDDD'
+, p_bg_color varchar2 := 'FFFFFF'
+, p_alt_bg_color varchar2 := ''
+, p_cell_margin number := 2
+, p_total_columns varchar2 := ''
+);
+
+procedure write_text
+( p_text varchar2 -- prose: paragraphs separated by line feeds (chr(12)).
+, p_x_top_left number := null
+, p_y_top_left number := null
+, p_width number := null   -- width of the available text box, null = page width
+, p_height number := null  -- height of the available text box, null = infinity
+, p_line_height number := null -- height of text line, null = font size
+, p_align in varchar2 := 'left'
+);
+
+procedure write_text_in_a_box
+( p_text varchar2
+, p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_line_height number := null -- height of text line, null = font size
+, p_align in varchar2 := 'left'
+, p_line_color varchar2 := '000000'
+, p_fill_color varchar2 := 'FFFFFF'
+, p_line_width number := 0.5
+);
+ 
+function qry2htm
+( p_query varchar2
+, p_title varchar2
+, p_add_totals boolean := false
+) return clob;
+
+function qry2csv
+( p_query varchar2
+, p_description varchar2
+, p_add_totals boolean := false
+) return clob;
+
+function qry2xml
+( p_query varchar2
+, p_root_element varchar2
+) return clob;
+ 
+end;
+/
+
+
+
+
+package body pdfreports is
+
+type bezier_points_array is varray(4) of point;
+type tp_pls_tab is table of pls_integer index by pls_integer;
+type tp_objects_tab is table of number(10) index by pls_integer;
+type tp_pages_tab is table of blob index by pls_integer;
+type tp_settings is record
+( page_width number
+, page_height number
+, margin_left number
+, margin_right number
+, margin_top number
+, margin_bottom number
+);
+type tp_font is record
+( standard boolean
+, family varchar2(100)
+, style varchar2(2)  
+, subtype varchar2(15)
+, name varchar2(100)
+, fontname varchar2(100)
+, char_width_tab tp_pls_tab
+, encoding varchar2(100)
+, charset varchar2(1000)
+, compress_font boolean := true
+, fontsize number
+, unit_norm number
+, bb_xmin pls_integer
+, bb_ymin pls_integer
+, bb_xmax pls_integer
+, bb_ymax pls_integer
+, flags pls_integer
+, first_char pls_integer
+, last_char pls_integer
+, italic_angle number
+, ascent pls_integer
+, descent pls_integer
+, capheight pls_integer
+, stemv pls_integer
+, diff varchar2(32767)
+, cid boolean := false
+, fontfile2 blob
+, ttf_offset pls_integer
+, used_chars tp_pls_tab
+, numglyphs pls_integer
+, indextolocformat pls_integer
+, loca tp_pls_tab
+, code2glyph tp_pls_tab
+, hmetrics tp_pls_tab
+);
+type tp_font_tab is table of tp_font index by pls_integer;
+type tp_img is record
+( adler32 varchar2(8)
+, width pls_integer
+, height pls_integer
+, color_res pls_integer
+, color_tab raw(768)
+, greyscale boolean
+, pixels blob
+, type varchar2(5)
+, nr_colors pls_integer
+, transparancy_index pls_integer
+);
+type tp_img_tab is table of tp_img index by pls_integer;
+type tp_info is record
+( title varchar2(1024)
+, author varchar2(1024)
+, subject varchar2(1024)
+, keywords varchar2(32767)
+);
+type tp_page_prcs is table of clob index by pls_integer;
+
+
+g_pdf_doc blob; 
+g_objects tp_objects_tab;
+g_pages tp_pages_tab;
+g_settings tp_settings;
+g_fonts tp_font_tab;
+g_used_fonts tp_pls_tab;
+g_current_font pls_integer;
+g_images tp_img_tab;
+g_x number;  
+g_y number;  
+g_info tp_info;
+g_page_nr pls_integer;
+g_page_prcs tp_page_prcs;
+g_date_format varchar2(50) := 'YYYY-MM-DD HH24:MI:SS';
+g_number_format varchar2(50) := 'TM9';
+g_nls_numeric_chars varchar2(2) := '.,'; 
+g_edge_thickness number := 0.5;
+g_edge_darkness number := 0;
+
+g_cell_border_color varchar2(10) := '000000';
+g_threshold_color varchar2(10) := 'FF0000';
+g_axes_color varchar2(10) := '000000';
+g_chart_grid_line_color varchar2(10) := 'DDDDDD';
+
+
+c_newline constant varchar2(2) := chr(13)||chr(10);
+c_pi constant number := 3.1415926535897932384626433832795;
+
+procedure set_date_format(p_format varchar2 := 'YYYY-MM-DD HH24:MI:SS') is
+l_str_date varchar2(50);
+begin
+  begin
+    l_str_date := to_char(sysdate, p_format);
+    g_date_format := p_format;
+  exception when others then
+    null;
+  end;
+end;
+
+procedure set_number_format(p_format varchar2 := 'TM9') is
+l_str_number varchar2(50);
+begin
+  begin
+    l_str_number := to_char(c_pi * 9999, p_format);
+    g_number_format := p_format;
+  exception when others then
+    null;
+  end;
+end;
+
+procedure set_nls_numeric_chars(p_chars varchar2 := '.,') is 
+l_chars varchar2(2) := substr(p_chars,1,2);
+l_str_number varchar2(50);
+begin
+  begin
+    l_str_number := to_char(c_pi * 9999, 'TM9', 'NLS_NUMERIC_CHARACTERS='||l_chars);
+    g_nls_numeric_chars := l_chars;
+  exception when others then
+    null;
+  end;
+end;
+
+procedure set_axes_color(p_color varchar2 := '000000') is
+begin
+  if is_hex(p_color, 6) then
+    g_axes_color := upper(trim(p_color));
+  end if;
+end;
+
+procedure set_chart_grid_line_color(p_color varchar2 := 'DDDDDD') is
+begin
+  if is_hex(p_color, 6) then
+    g_chart_grid_line_color := upper(trim(p_color));
+  end if;
+end;
+
+procedure set_cell_border_color(p_color varchar2 := '000000') is
+begin
+  if is_hex(p_color, 6) then
+    g_cell_border_color := upper(trim(p_color));
+  end if;
+end;
+
+procedure set_threshold_color(p_color varchar2 := 'FF0000') is
+begin
+  if is_hex(p_color, 6) then
+    g_threshold_color := upper(trim(p_color));
+  end if;
+end;
+
+procedure set_edge_darkness(p_dark_factor number := 0) is
+begin
+  g_edge_darkness := p_dark_factor;
+end;
+
+procedure set_edge_thickness(p_width number := 0.5) is
+begin
+  if p_width > 0 and p_width <=10 then
+    g_edge_thickness := p_width;
+  end if;
+end;
+
+function to_char_round (p_value number, p_precision pls_integer := 2) return varchar2 is
+begin
+  
+  return to_char(round(p_value, p_precision), 'TM9', 'NLS_NUMERIC_CHARACTERS=.,');
+end;
+
+function num2str(p_value number) return varchar2 is
+l_string varchar2(200);
+begin
+  begin
+    l_string := to_char(p_value, g_number_format, 'NLS_NUMERIC_CHARACTERS='||g_nls_numeric_chars);
+  exception when others then
+    l_string := 'Error';
+  end;
+  return l_string;
+end;
+
+
+function str2num(p_string varchar2) return number is
+l_value number := 0;
+l_decimal varchar2(1);
+l_string varchar2(50) := substr(trim(p_string),1,50);
+begin
+  if l_string is not null then
+    
+    select substr(value, 1, 1) into l_decimal from nls_session_parameters
+    where parameter = 'NLS_NUMERIC_CHARACTERS';
+    l_string := replace(l_string, ',', l_decimal);
+    l_string := replace(l_string, '.', l_decimal);
+    begin
+      l_value := to_number(l_string);
+    exception when others then
+      dbms_output.put_line(sqlerrm);
+      l_value := 0;
+    end;
+  end if;
+  return l_value;
+end;
+
+
+function get_element_from_string_table(p_tab type_string_table, p_index integer) return varchar2 is
+l_string varchar2(2000) := '';
+begin
+  if p_tab is not null then
+    if p_index <= p_tab.count then
+      begin
+        l_string := p_tab(p_index);
+      exception when others then
+        l_string := '';
+      end;
+    end if;
+  end if;
+  return l_string;
+end;
+
+function nice_heading(p_colname varchar2) return varchar2 is
+l_colname varchar2(200) := p_colname;
+l_head varchar2(200);
+begin
+  l_colname := replace(l_colname, '_', '#');
+  l_colname := replace(l_colname, ' ', '#');
+  l_head := upper(substr(l_colname, 1, 1));
+  for i in 2..length(l_colname) loop
+    if substr(l_colname, i-1, 1) = '#' then
+	  l_head := l_head||upper(substr(l_colname, i, 1));
+    else
+      l_head := l_head||lower(substr(l_colname, i, 1));
+    end if;
+  end loop;
+  return l_head;
+end;
+
+function csv_to_string_table(p_csv varchar2) return type_string_table is
+l_str varchar2(2000) := '';
+l_csv varchar2(32767);
+l_offset pls_integer := 1;
+l_comma_pos pls_integer := 1;
+l_string_table type_string_table := type_string_table();
+begin
+  l_csv := trim(replace(replace(p_csv, chr(10), ''), chr(13), ''));
+  if l_csv is null or l_csv = '' then
+    l_comma_pos := 0;
+  else
+    if substr(l_csv, length(l_csv), 1) != ',' then
+      l_csv := l_csv||',';
+    end if;
+  end if;
+  while l_comma_pos > 0 loop
+    l_comma_pos := instr(l_csv, ',', l_offset);
+    if l_comma_pos > 0 then
+      l_str := trim(substr(l_csv, l_offset, l_comma_pos - l_offset));
+      l_string_table.extend(1);
+      l_string_table(l_string_table.count) := l_str;
+      l_offset := l_comma_pos + 1;
+    end if;
+  end loop;
+  return l_string_table;
+end;
+
+
+
+
+
+
+
+
+
+
+
+
+function get_point_on_circle
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_degree number
+) return point is
+p point;
+begin
+  
+  p.x := cos((p_degree*c_pi/180));
+  p.y := sin((p_degree*c_pi/180));
+  
+  p.x := p_x_centre + (p_radius * p.x);
+  p.y := p_y_centre + (p_radius * p.y);
+  return p;
+end;
+
+function get_bezier_points
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_angle number
+, p_rotation number := 0
+) return bezier_points_array is
+bp bezier_points_array;
+h number;
+l_rotation number;
+begin
+  bp := bezier_points_array();
+  bp.extend(4);
+  
+  h := p_angle;
+  if h > 90 then h := 90; end if; 
+  
+  l_rotation := mod(p_rotation, 360);
+  if l_rotation < 0 then
+    l_rotation := 360 + l_rotation;
+  end if;
+
+  
+  bp(1).x := cos((h * c_pi/180)/2);
+  bp(1).y := sin((h * c_pi/180)/2);
+  bp(2).x := (4 - bp(1).x)/3;
+  bp(2).y := (1 - bp(1).x)*(3-bp(1).x)/(3*bp(1).y);
+  bp(3).x := bp(2).x;
+  bp(3).y := bp(2).y * -1;
+  bp(4).x := bp(1).x;
+  bp(4).y := bp(1).y * -1;
+  
+  
+  for i in 1..4 loop
+    h := bp(i).x;
+    bp(i).x := (bp(i).x * cos((l_rotation*c_pi/180)))
+	         - (bp(i).y * sin((l_rotation*c_pi/180)));
+	bp(i).y := (h * sin((l_rotation*c_pi/180)))
+	         + (bp(i).y * cos((l_rotation*c_pi/180)));
+  end loop;
+   
+  
+  for i in 1..4 loop
+    bp(i).x := p_x_centre + (p_radius * bp(i).x);
+	bp(i).y := p_y_centre + (p_radius * bp(i).y);
+  end loop;
+  
+  return bp;
+end;
+
+procedure draw_circle
+    (p_x_centre number
+    , p_y_centre number
+	, p_radius number
+    , p_line_width number := 0.5
+    , p_line_color varchar2 := '000000'
+   ) is
+type bezier_points_array is varray(12) of point;
+bp bezier_points_array;
+t_use_color boolean;
+begin
+  bp := bezier_points_array();
+  bp.extend(12);
+  
+  
+  
+  
+  
+  
+  
+  
+  bp(1).x := 0.70710678;
+  bp(1).y := bp(1).x;
+  bp(2).x := 1.09763107;
+  bp(2).y := 0.31658249;
+  bp(3).x := bp(2).x;
+  bp(3).y := bp(2).y * -1;
+  bp(4).x := bp(1).x;
+  bp(4).y := bp(1).y * -1;
+  
+  
+  bp(5).x := bp(2).y;
+  bp(5).y := bp(2).x * -1;
+  bp(6).x := bp(2).y * -1;
+  bp(6).y := bp(2).x * -1;
+  bp(7).x := bp(1).x *-1;
+  bp(7).y := bp(1).x *-1;
+  
+  
+  bp(8).x := bp(2).x * -1;
+  bp(8).y := bp(2).y * -1;
+  bp(9).x := bp(2).x * -1;
+  bp(9).y := bp(2).y;
+  bp(10).x := bp(1).x *-1;
+  bp(10).y := bp(1).x;
+  
+  
+  bp(11).x := bp(2).y * -1;
+  bp(11).y := bp(2).x;
+  bp(12).x := bp(2).y;
+  bp(12).y := bp(2).x;
+   
+  
+  for i in 1..12 loop
+    bp(i).x := p_x_centre + (p_radius * bp(i).x);
+	bp(i).y := p_y_centre + (p_radius * bp(i).y);
+  end loop;
+     
+  txt2page('q '||to_char_round(p_line_width, 5)||' w');
+  t_use_color := substr(p_line_color, -6) != '000000';
+  if t_use_color then
+    set_color(p_line_color);
+    set_bg_color(p_line_color);
+  else
+    txt2page('0 g');
+  end if;
+  txt2page( to_char_round(bp(1).x, 5)||' '|| to_char_round(bp(1).y, 5)||' m '
+        ||to_char_round(bp(2).x, 5)||' '|| to_char_round(bp(2).y, 5)||' '
+        ||to_char_round(bp(3).x, 5)||' '|| to_char_round(bp(3).y, 5)||' '
+        ||to_char_round(bp(4).x, 5)||' '|| to_char_round(bp(4).y, 5)||' c '
+        ||to_char_round(bp(5).x, 5)||' '|| to_char_round(bp(5).y, 5)||' '
+        ||to_char_round(bp(6).x, 5)||' '|| to_char_round(bp(6).y, 5)||' '
+        ||to_char_round(bp(7).x, 5)||' '|| to_char_round(bp(7).y, 5)||' c '
+        ||to_char_round(bp(8).x, 5)||' '|| to_char_round(bp(8).y, 5)||' '
+        ||to_char_round(bp(9).x, 5)||' '|| to_char_round(bp(9).y, 5)||' '
+        ||to_char_round(bp(10).x, 5)||' '|| to_char_round(bp(10).y, 5)||' c '
+        ||to_char_round(bp(11).x, 5)||' '|| to_char_round(bp(11).y, 5)||' '
+        ||to_char_round(bp(12).x, 5)||' '|| to_char_round(bp(12).y, 5)||' '
+        ||to_char_round(bp(1).x, 5)||' '|| to_char_round(bp(1).y, 5)||' c s '
+         );
+    txt2page('Q');
+end;
+
+procedure draw_radius
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_degree number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+) is
+p point;
+begin
+  p := get_point_on_circle(p_x_centre, p_y_centre, p_radius, p_degree);
+  draw_line(p_x_centre, p_y_centre, p.x, p.y, p_line_width, p_line_color);
+end;
+
+procedure draw_radial_tag
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_degree number
+, p_tag varchar2
+, p_len_arrow number := 10
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+) is
+p0 point; p1 point;
+begin
+  p0 := get_point_on_circle(p_x_centre, p_y_centre, p_radius, p_degree);
+  p1 := get_point_on_circle(p_x_centre, p_y_centre, p_radius + p_len_arrow, p_degree);
+  draw_line(p0.x, p0.y, p1.x, p1.y, p_line_width, p_line_color);
+  if p_degree > 90 and p_degree <= 270 then
+    draw_line(p1.x, p1.y, p1.x - p_len_arrow, p1.y, p_line_width, p_line_color);
+    text2xy(p1.x - p_len_arrow - 2 - text_length(p_tag), p1.y-5, p_tag);
+  else
+	draw_line(p1.x, p1.y, p1.x + p_len_arrow, p1.y, p_line_width, p_line_color);
+    text2xy(p1.x + p_len_arrow + 2, p1.y-5, p_tag);
+  end if;
+end;
+ 
+procedure draw_quadrant_segment
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_angle number
+, p_rotation number := 0
+, p_color varchar2 := '000000'
+) is
+bp bezier_points_array;
+l_rotation number;
+l_use_color boolean;
+begin
+  if p_angle = 0 then return; end if;
+  bp := get_bezier_points(p_x_centre, p_y_centre, p_radius, p_angle, p_rotation);
+  txt2page('q 0.1 w');
+  l_use_color := substr(p_color, -6) != '000000';
+  if l_use_color then
+    set_color(p_color);
+    set_bg_color(p_color);
+  else
+    txt2page('0 g');
+  end if;
+  txt2page( to_char_round(bp(1).x, 5)||' '||to_char_round(bp(1).y, 5)||' m '
+          ||to_char_round(bp(2).x, 5)||' '||to_char_round(bp(2).y, 5)||' '
+          ||to_char_round(bp(3).x, 5)||' '||to_char_round(bp(3).y, 5)||' '
+          ||to_char_round(bp(4).x, 5)||' '||to_char_round(bp(4).y, 5)||' c '
+          ||to_char_round(p_x_centre, 5)||' '||to_char_round(p_y_centre, 5)||' l '
+          ||to_char_round(bp(1).x, 5)||' '||to_char_round(bp(1).y, 5)||' l b '
+          );
+  txt2page('Q');
+end;
+
+procedure draw_segment_at_degree_points
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_from_degree number
+, p_to_degree number
+, p_color varchar2 := '000000'
+) is
+angle number;
+rotation number;
+p1 number := p_from_degree;
+p2 number := p_to_degree;
+begin
+  if p1 > p2 then
+    angle := 360 - p1 + p2;
+  else
+    angle := p2 - p1;
+  end if;
+
+  
+  
+  
+
+  
+  if angle > 270 then
+    rotation := p2 - 45;
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,90,rotation,p_color);
+    rotation := p2 - 90 - 45;
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,90,rotation,p_color);
+    rotation := p2 - 180 - 45;
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,90,rotation,p_color);
+    angle := angle - 270;
+    rotation := p2 - 270 - (angle/2);
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,angle,rotation,p_color);
+  elsif angle > 180 then
+    rotation := p2 - 45;
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,90,rotation,p_color);
+    rotation := p2 - 90 - 45;
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,90,rotation,p_color);
+    angle := angle - 180;
+    rotation := p2 - 180 - (angle/2);
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,angle,rotation,p_color);
+  elsif angle > 90 then
+    rotation := p2 - 45;
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,90,rotation,p_color);
+    angle := angle - 90;
+    rotation := p2 - 90 - (angle/2);
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,angle,rotation,p_color);
+  else
+    rotation := p2 - (angle/2);
+    
+    draw_quadrant_segment(p_x_centre,p_y_centre,p_radius,angle,rotation,p_color);
+  end if;
+end;
+
+procedure draw_quadrant_arc
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_angle number
+, p_rotation number := 0
+, p_line_width number := 0.5
+, p_color varchar2 := '000000'
+) is
+bp bezier_points_array;
+l_rotation number;
+l_use_color boolean;
+begin
+  if p_angle = 0 then return; end if;
+  bp := get_bezier_points(p_x_centre, p_y_centre, p_radius, p_angle, p_rotation);
+  txt2page('q '||to_char_round(p_line_width, 5)||' w');
+  l_use_color := substr(p_color, -6) != '000000';
+  if l_use_color then
+    set_color(p_color);
+    set_bg_color(p_color);
+  else
+    txt2page('0 g');
+  end if;
+  txt2page( to_char_round(bp(1).x, 5)||' '||to_char_round(bp(1).y, 5)||' m '
+          ||to_char_round(bp(2).x, 5)||' '||to_char_round(bp(2).y, 5)||' '
+          ||to_char_round(bp(3).x, 5)||' '||to_char_round(bp(3).y, 5)||' '
+          ||to_char_round(bp(4).x, 5)||' '||to_char_round(bp(4).y, 5)||' c '
+	      ||to_char_round(bp(3).x, 5)||' '||to_char_round(bp(3).y, 5)||' '
+          ||to_char_round(bp(2).x, 5)||' '||to_char_round(bp(2).y, 5)||' '
+          ||to_char_round(bp(1).x, 5)||' '||to_char_round(bp(1).y, 5)||' c s '
+          );
+  txt2page('Q');
+end;
+
+procedure draw_arc_at_degree_points
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_from_degree number
+, p_to_degree number
+, p_line_width number := 0.5
+, p_color varchar2 := '000000'
+) is
+angle number;
+rotation number;
+p1 number := p_from_degree;
+p2 number := p_to_degree;
+begin
+  if p1 > p2 then
+    angle := 360 - p1 + p2;
+  else
+    angle := p2 - p1;
+  end if;
+  if angle > 270 then
+    rotation := p2 - 45;
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,90,rotation,p_line_width,p_color);
+    rotation := p2 - 90 - 45;
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,90,rotation,p_line_width,p_color);
+    rotation := p2 - 180 - 45;
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,90,rotation,p_line_width,p_color);
+    angle := angle - 270;
+    rotation := p2 - 270 - (angle/2);
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,angle,rotation,p_line_width,p_color);
+  elsif angle > 180 then
+    rotation := p2 - 45;
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,90,rotation,p_line_width,p_color);
+    rotation := p2 - 90 - 45;
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,90,rotation,p_line_width,p_color);
+    angle := angle - 180;
+    rotation := p2 - 180 - (angle/2);
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,angle,rotation,p_line_width,p_color);
+  elsif angle > 90 then
+    rotation := p2 - 45;
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,90,rotation,p_line_width,p_color);
+    angle := angle - 90;
+    rotation := p2 - 90 - (angle/2);
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,angle,rotation,p_line_width,p_color);
+  else
+    rotation := p2 - (angle/2);
+    draw_quadrant_arc(p_x_centre,p_y_centre,p_radius,angle,rotation,p_line_width,p_color);
+  end if;
+end;
+
+procedure draw_line
+( p_x1 number
+, p_y1 number
+, p_x2 number
+, p_y2 number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+) is
+l_use_color boolean;
+begin
+  txt2page('q '||to_char_round(p_line_width, 5)||' w');
+  l_use_color := substr(p_line_color, -6) != '000000';
+  if l_use_color then
+    set_color(p_line_color);
+    set_bg_color(p_line_color);
+  else
+    txt2page('0 g');
+  end if;
+  txt2page(to_char_round(p_x1, 5)||' '||to_char_round(p_y1, 5)||' m '
+	       ||to_char_round(p_x2, 5)||' '||to_char_round(p_y2, 5)||' l b'
+	      );
+  txt2page('Q');
+end;
+
+procedure draw_arrow
+( p_from_x number
+, p_from_y number
+, p_to_x number
+, p_to_y number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+) is
+l_use_color boolean;
+p1 pdfreports.point;
+p2 pdfreports.point;
+p3 pdfreports.point;
+delta_x number;
+delta_y number;
+angle number;
+begin
+  delta_x := p_to_x - p_from_x;
+  delta_y := p_to_y - p_from_y;
+  angle := round(atan2(delta_y, delta_x) * 180 / c_pi, 6);
+  if angle < 0 then
+    angle := 360 + angle;
+  end if;
+  p1 := pdfreports.get_point_on_circle(p_to_x, p_to_y, 10, 165 + angle);
+  p2 := pdfreports.get_point_on_circle(p_to_x, p_to_y,  8, 180 + angle);
+  p3 := pdfreports.get_point_on_circle(p_to_x, p_to_y, 10, 195 + angle);
+  txt2page('q 0.5 w');
+  l_use_color := substr(p_line_color, -6) != '000000';
+  if l_use_color then
+    set_color(p_line_color);
+    set_bg_color(p_line_color);
+  else
+    txt2page('0 g');
+  end if;
+  txt2page(to_char_round(p_to_x, 5)||' '||to_char_round(p_to_y, 5)||' m '
+	       ||to_char_round(p1.x, 5)||' '||to_char_round(p1.y, 5)||' l '
+	       ||to_char_round(p2.x, 5)||' '||to_char_round(p2.y, 5)||' l '
+	       ||to_char_round(p3.x, 5)||' '||to_char_round(p3.y, 5)||' l '
+	       ||to_char_round(p_to_x, 5)||' '||to_char_round(p_to_y, 5)||' l b'
+	      );
+  txt2page('Q');
+  draw_line(p_from_x, p_from_y, p2.x, p2.y, p_line_width, p_line_color);
+end;
+
+procedure horizontal_line
+( p_x number
+, p_y number
+, p_width number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+) is
+begin
+  draw_line(p_x, p_y, p_x + p_width, p_y, p_line_width, p_line_color);
+end;
+
+procedure vertical_line
+(p_x number
+, p_y number
+, p_height number
+, p_line_width number := 0.5
+, p_line_color varchar2 := '000000'
+) is
+begin
+  draw_line(p_x, p_y, p_x, p_y + p_height, p_line_width, p_line_color);
+end;
+
+procedure draw_rectangle_top_left
+( p_x number
+, p_y number
+, p_width number
+, p_height number
+, p_line_color varchar2 := null
+, p_fill_color varchar2 := null
+, p_line_width number := 0.5
+) is
+begin
+  draw_rectangle(p_x, p_y - p_height, p_width, p_height, p_line_color, p_fill_color, p_line_width);
+end;
+
+procedure draw_rectangle 
+( p_x number
+, p_y number
+, p_width number
+, p_height number
+, p_line_color varchar2 := null
+, p_fill_color varchar2 := null
+, p_line_width number := 0.5
+) is
+begin
+  txt2page('q');
+  if substr(p_line_color, -6) != substr(p_fill_color, -6) then
+    txt2page(to_char_round(p_line_width, 5)||' w');
+  end if;
+  if substr(p_line_color, -6) != '000000' then
+    set_bg_color(p_line_color);
+  else
+    txt2page('0 g');
+  end if;
+  if p_fill_color is not null then
+    set_color(p_fill_color);
+  end if;
+  
+	
+  txt2page(to_char_round(p_x, 5)||' '||to_char_round(p_y, 5)||' '
+	   ||to_char_round(p_width, 5)||' '||to_char_round(p_height, 5)||' re '
+	   ||case
+			 when p_fill_color is null
+			 then 'S'
+			 else case when p_line_color is null then 'f' else 'b' end
+		   end
+	   );
+ txt2page('Q');
+end;
+
+procedure draw_area
+( p_pts type_point_table
+, p_color varchar2
+) is
+begin
+  if p_pts.count > 1 then
+    txt2page('q 0.5 w');
+    if p_color is not null then
+      set_color(p_color);
+      set_bg_color(p_color);
+    else
+      txt2page('0 g');
+    end if;
+    txt2page(to_char_round(p_pts(1).x, 5)||' '||to_char_round(p_pts(1).y, 5)||' m ');
+    for i in 2..p_pts.count loop
+      txt2page(to_char_round(p_pts(i).x, 5)||' '||to_char_round(p_pts(i).y, 5)||' l ');
+    end loop;
+    txt2page('b Q');
+  end if;
+end;
+
+
+function num2raw(p_value number) return raw is
+begin
+  return hextoraw(to_char(p_value, 'FM0XXXXXXX'));
+end;
+ 
+function raw2num(p_value raw) return number is
+begin
+  return to_number(rawtohex(p_value), 'XXXXXXXX');
+end;
+
+function raw2num(p_value raw, p_pos pls_integer, p_len pls_integer) return pls_integer is
+begin
+  return to_number(rawtohex(utl_raw.substr(p_value, p_pos, p_len)), 'XXXXXXXX');
+end;
+
+function to_short(p_val raw, p_factor number := 1) return number is
+t_rv number;
+begin
+  t_rv := to_number(rawtohex(p_val), 'XXXXXXXXXX');
+  if t_rv > 32767 then
+    t_rv := t_rv - 65536;
+  end if;
+  return t_rv * p_factor;
+end;
+
+function blob2num(p_blob blob, p_len integer, p_pos integer) return number is
+begin
+  return to_number(rawtohex(dbms_lob.substr(p_blob, p_len, p_pos)), 'xxxxxxxx');
+end;
+
+function doc2blob(p_file_name varchar2) return blob is
+t_blob blob;
+begin
+  begin
+    select blob_content into t_blob from documents where upper(name) = upper(p_file_name);
+  exception when others then
+    null;
+  end;
+  return t_blob;
+end;
+ 
+procedure init_core_fonts is
+  function uncompress_widths(p_compressed_tab varchar2) return tp_pls_tab is
+  t_rv tp_pls_tab;
+  t_tmp raw(32767);
+  begin
+    if p_compressed_tab is not null then
+      t_tmp := utl_compress.lz_uncompress(utl_encode.base64_decode(utl_raw.cast_to_raw(p_compressed_tab)));
+      for i in 0 .. 255 loop
+        t_rv(i) := to_number(utl_raw.substr(t_tmp, i * 4 + 1, 4), '0xxxxxxx');
+      end loop;
+    end if;
+    return t_rv;
+  end;
+
+  procedure init_core_font
+  ( p_ind pls_integer
+  , p_family varchar2
+  , p_style varchar2
+  , p_name varchar2
+  , p_compressed_tab varchar2
+  ) is
+  begin
+    g_fonts(p_ind).family := p_family;
+    g_fonts(p_ind).style := p_style;
+    g_fonts(p_ind).name := p_name;
+    g_fonts(p_ind).fontname := p_name;
+    g_fonts(p_ind).standard := true;
+    g_fonts(p_ind).encoding := 'WE8MSWIN1252';
+    g_fonts(p_ind).charset := sys_context('userenv', 'LANGUAGE');
+    g_fonts(p_ind).charset := substr(g_fonts(p_ind).charset
+                                      , 1
+                                      , instr(g_fonts(p_ind).charset, '.')
+                                     )||g_fonts(p_ind).encoding;
+    g_fonts(p_ind).char_width_tab := uncompress_widths(p_compressed_tab);
+  end;
+begin
+  init_core_font(1, 'helvetica', 'N', 'Helvetica'
+    ,  'H4sIAAAAAAAAC81Tuw3CMBC94FQMgMQOLAGVGzNCGtc0dAxAT+8lsgE7RKJFomOA'
+   ||'SLT4frHjBEFJ8XSX87372C8A1Qr+Ax5gsWGYU7QBAK4x7gTnGLOS6xJPOd8w5NsM'
+   ||'2OvFvQidAP04j1nyN3F7iSNny3E6DylPeeqbNqvti31vMpfLZuzH86oPdwaeo6X+'
+   ||'5X6Oz5VHtTqJKfYRNVu6y0ZyG66rdcxzXJe+Q/KJ59kql+bTt5K6lKucXvxWeHKf'
+   ||'+p6Tfersfh7RHuXMZjHsdUkxBeWtM60gDjLTLoHeKsyDdu6m8VK3qhnUQAmca9BG'
+   ||'Dq3nP+sV/4FcD6WOf9K/ne+hdav+DTuNLeYABAAA');
+ 
+  init_core_font(2, 'helvetica', 'I', 'Helvetica-Oblique'
+    ,  'H4sIAAAAAAAAC81Tuw3CMBC94FQMgMQOLAGVGzNCGtc0dAxAT+8lsgE7RKJFomOA'
+   ||'SLT4frHjBEFJ8XSX87372C8A1Qr+Ax5gsWGYU7QBAK4x7gTnGLOS6xJPOd8w5NsM'
+   ||'2OvFvQidAP04j1nyN3F7iSNny3E6DylPeeqbNqvti31vMpfLZuzH86oPdwaeo6X+'
+   ||'5X6Oz5VHtTqJKfYRNVu6y0ZyG66rdcxzXJe+Q/KJ59kql+bTt5K6lKucXvxWeHKf'
+   ||'+p6Tfersfh7RHuXMZjHsdUkxBeWtM60gDjLTLoHeKsyDdu6m8VK3qhnUQAmca9BG'
+   ||'Dq3nP+sV/4FcD6WOf9K/ne+hdav+DTuNLeYABAAA');
+ 
+  init_core_font(3, 'helvetica', 'B', 'Helvetica-Bold'
+    ,  'H4sIAAAAAAAAC8VSsRHCMAx0SJcBcgyRJaBKkxXSqKahYwB6+iyRTbhLSUdHRZUB'
+   ||'sOWXLF8SKCn+ZL/0kizZuaJ2/0fn8XBu10SUF28n59wbvoCr51oTD61ofkHyhBwK'
+   ||'8rXusVaGAb4q3rXOBP4Qz+wfUpzo5FyO4MBr39IH+uLclFvmCTrz1mB5PpSD52N1'
+   ||'DfqS988xptibWfbw9Sa/jytf+dz4PqQz6wi63uxxBpCXY7uUj88jNDNy1mYGdl97'
+   ||'856nt2f4WsOFed4SpzumNCvlT+jpmKC7WgH3PJn9DaZfA42vlgh96d+wkHy0/V95'
+   ||'xyv8oj59QbvBN2I/iAuqEAAEAAA=');
+ 
+  init_core_font(4, 'helvetica', 'BI', 'Helvetica-BoldOblique'
+    ,  'H4sIAAAAAAAAC8VSsRHCMAx0SJcBcgyRJaBKkxXSqKahYwB6+iyRTbhLSUdHRZUB'
+   ||'sOWXLF8SKCn+ZL/0kizZuaJ2/0fn8XBu10SUF28n59wbvoCr51oTD61ofkHyhBwK'
+   ||'8rXusVaGAb4q3rXOBP4Qz+wfUpzo5FyO4MBr39IH+uLclFvmCTrz1mB5PpSD52N1'
+   ||'DfqS988xptibWfbw9Sa/jytf+dz4PqQz6wi63uxxBpCXY7uUj88jNDNy1mYGdl97'
+   ||'856nt2f4WsOFed4SpzumNCvlT+jpmKC7WgH3PJn9DaZfA42vlgh96d+wkHy0/V95'
+   ||'xyv8oj59QbvBN2I/iAuqEAAEAAA=');
+ 
+  init_core_font(5, 'times', 'N', 'Times-Roman'
+    ,  'H4sIAAAAAAAAC8WSKxLCQAyG+3Bopo4bVHbwHGCvUNNT9AB4JEwvgUBimUF3wCNR'
+   ||'qAoGRZL9twlQikR8kzTvZBtF0SP6O7Ej1kTnSRfEhHw7+Jy3J4XGi8w05yeZh2sE'
+   ||'4j312ZDeEg1gvSJy6C36L9WX1urr4xrolfrSrYmrUCeDPGMu5+cQ3Ur3OXvQ+TYf'
+   ||'+2FGexOZvTM1L3S3o5fJjGQJX2n68U2ur3X5m3cTvfbxsk9pcsMee60rdTjnhNkc'
+   ||'Zip9HOv9+7/tI3Oif3InOdV/oLdx3gq2HIRaB1Ob7XPk35QwwxDyxg3e09Dv6nSf'
+   ||'rxQjvty8ywDce9CXvdF9R+4y4o+7J1P/I9sABAAA');
+ 
+  init_core_font(6, 'times', 'I', 'Times-Italic'
+    ,  'H4sIAAAAAAAAC8WSPQ6CQBCFF+i01NB5g63tPcBegYZTeAB6SxNLjLUH4BTEeAYr'
+   ||'Kwpj5ezsW2YgoKXFl2Hnb9+wY4x5m7+TOOJMdIFsRywodkfMBX9aSz7bXGp+gj6+'
+   ||'R4TvOtJ3CU5Eq85tgGsbxG3QN8iFZY1WzpxXwkckFTR7e1G6osZGWT1bDuBnTeP5'
+   ||'KtW/E71c0yB2IFbBphuyBXIL9Y/9fPvhf8se6vsa8nmeQtU6NSf6ch9fc8P9DpqK'
+   ||'cPa5/I7VxDwruTN9kV3LDvQ+h1m8z4I4x9LIbnn/Fv6nwOdyGq+d33jk7/cxztyq'
+   ||'XRhTz/it7Mscg7fT5CO+9ahnYk20Hww5IrwABAAA');
+ 
+  init_core_font(7, 'times', 'B', 'Times-Bold'
+    , 'H4sIAAAAAAAAC8VSuw3CQAy9XBqUAVKxAZkgHQUNEiukySxpqOjTMQEDZIrUDICE'
+   ||'RHUVVfy9c0IQJcWTfbafv+ece7u/Izs553cgAyN/APagl+wjgN3XKZ5kmTg/IXkw'
+   ||'h4JqXUEfAb1I1VvwFYysk9iCffmN4+gtccSr5nlwDpuTepCZ/MH0FZibDUnO7MoR'
+   ||'HXdDuvgjpzNxgevG+dF/hr3dWfoNyEZ8Taqn+7d7ozmqpGM8zdMYruFrXopVjvY2'
+   ||'in9gXe+5vBf1KfX9E6TOVBsb8i5iqwQyv9+a3Gg/Cv+VoDtaQ7xdPwfNYRDji09g'
+   ||'X/FvLNGmO62B9jSsoFwgfM+jf1z/SPwrkTMBOkCTBQAEAAA=');
+ 
+  init_core_font(8, 'times', 'BI', 'Times-BoldItalic'
+    ,  'H4sIAAAAAAAAC8WSuw2DMBCGHegYwEuECajIAGwQ0TBFBnCfPktkAKagzgCRIqWi'
+   ||'oso9fr+Qo5RB+nT2ve+wMWYzf+fgjKmOJFelPhENnS0xANJXHfwHSBtjfoI8nMMj'
+   ||'tXo63xKW/Cx9ONRn3US6C/wWvYeYNr+LH2IY6cHGPkJfvsc5kX7mFjF+Vqs9iT6d'
+   ||'zwEL26y1Qz62nWlvD5VSf4R9zPuon/ne+C45+XxXf5lnTGLTOZCXPx8v9Qfdjdid'
+   ||'5vD/f/+/pE/Ur14kG+xjTHRc84pZWsC2Hjk2+Hgbx78j4Z8W4DlL+rBnEN5Bie6L'
+   ||'fsL+1u/InuYCdsdaeAs+RxftKfGdfQDlDF/kAAQAAA==');
+ 
+  init_core_font(9, 'courier', 'N', 'Courier', null);
+  for i in 0 .. 255 loop
+    g_fonts(9).char_width_tab(i) := 600;
+  end loop;
+ 
+  init_core_font(10, 'courier', 'I', 'Courier-Oblique', null);
+  g_fonts(10).char_width_tab := g_fonts(9).char_width_tab;
+ 
+  init_core_font(11, 'courier', 'B', 'Courier-Bold', null);
+  g_fonts(11).char_width_tab := g_fonts(9).char_width_tab;
+ 
+  init_core_font(12, 'courier', 'BI', 'Courier-BoldOblique', null);
+  g_fonts(12).char_width_tab := g_fonts(9).char_width_tab;
+ 
+  init_core_font(13, 'symbol', 'N', 'Symbol'
+    ,  'H4sIAAAAAAAAC82SIU8DQRCFZ28xIE+cqcbha4tENKk/gQCJJ6AweIK9H1CHqKnp'
+   ||'D2gTFBaDIcFwCQkJSTG83fem7SU0qYNLvry5nZ25t7NnZkv7c8LQrFhAP6GHZvEY'
+   ||'HOB9ylxGubTfNVRc34mKpFonzBQ/gUZ6Ds7AN6i5lv1dKv8Ab1eKQYSV4hUcgZFq'
+   ||'J/Sec7fQHtdTn3iqfvdrb7m3e2pZW+xDG3oIJ/Li3gfMr949rlU74DyT1/AuTX1f'
+   ||'YGhOzTP8B0/RggsEX/I03vgXPrrslZjfM8/pGu40t2ZjHgud97F7337mXP/GO4h9'
+   ||'3WmPPaOJ/jrOs9yC52MlrtUzfWupfTX51X/L+13Vl/J/s4W2S3pSfSh5DmeXerMf'
+   ||'+LXhWQAEAAA=');
+ 
+  init_core_font(14, 'zapfdingbats', 'N', 'ZapfDingbats'
+    ,  'H4sIAAAAAAAAC83ROy9EQRjG8TkzjdJl163SSHR0EpdsVkSi2UahFhUljUKUIgoq'
+   ||'CrvJCtFQyG6EbSSERGxhC0ofQAQFxbIi8T/7PoUPIOEkvzxzzsycdy7O/fUTtToX'
+   ||'bnCuvHPOV8gk4r423ovkGQ5od5OTWMeesmBz/RuZIWv4wCAY4z/xjipeqflC9qAD'
+   ||'aRwxrxkJievSFzrRh36tZ1zttL6nkGX+A27xrLnttE/IBji9x7UvcIl9nPJ9AL36'
+   ||'d1L9hyihoDW10L62cwhNyhntryZVExYl3kMj+zym+CrJv6M8VozPmfr5L8uwJORL'
+   ||'tox7NFHG/Obj79FlwhqZ1X292xn6CbAXP/fjjv6rJYyBtUdl1vxEO6fcRB7bMmJ3'
+   ||'GYZsTN0GdrDL/Ao5j1GZNr5kwqydX5z1syoiYEq5gCtlSrXi+mVbi3PfVAuhoQAE'
+   ||'AAA=');
+end;
+
+procedure print_core_fonts is
+l_y number := 833;
+l_font_size number;
+begin
+  for i in g_fonts.first..g_fonts.last loop
+    for j in 1..8 loop
+      l_font_size := j*2 + 6;
+      l_y := l_y - l_font_size - 8;
+      if l_y < 35 then
+        new_page;
+        l_y := 833;
+      end if;
+      set_font('helvetica', 'N', 10);
+      text2xy(50, l_y, to_char(i)||', '||g_fonts(i).family||', '||g_fonts(i).style||', '||to_char(l_font_size));
+      set_font(i, l_font_size);
+      text2xy(170, l_y, 'The quick brown fox jumps over the lazy dog.');
+    end loop;
+    l_y := l_y -20;
+    if l_y < 35 then
+      new_page;
+      l_y := 833;
+    end if;
+  end loop;
+end;
+ 
+procedure raw2pdfdoc(p_raw blob) is
+begin
+  dbms_lob.append(g_pdf_doc, p_raw);
+end;
+ 
+procedure txt2pdfdoc(p_text varchar2) is
+begin
+  raw2pdfdoc(utl_raw.cast_to_raw(p_text||c_newline));
+end;
+ 
+function add_object(p_text varchar2 := null) return number is
+t_self number(10);
+begin
+  t_self := g_objects.count();
+  g_objects(t_self) := dbms_lob.getlength(g_pdf_doc);
+  if p_text is null then
+    txt2pdfdoc(t_self||' 0 obj');
+  else
+    txt2pdfdoc(t_self||' 0 obj'||c_newline||'<<'||p_text||'>>'||c_newline||'endobj');
+  end if;
+  return t_self;
+end;
+ 
+procedure add_object(p_text varchar2 := null) is
+t_dummy number(10) := add_object(p_text);
+begin
+  null;
+end;
+ 
+function adler32(p_src in blob) return varchar2 is
+s1 pls_integer := 1;
+s2 pls_integer := 0;
+n  pls_integer;
+step_size number;
+tmp varchar2(32766);
+c65521 constant pls_integer := 65521;
+begin
+  step_size := trunc(16383 / dbms_lob.getchunksize(p_src)) * dbms_lob.getchunksize(p_src);
+  for j in 0 .. trunc((dbms_lob.getlength(p_src) - 1) / step_size) loop
+    tmp := rawtohex(dbms_lob.substr(p_src, step_size, j * step_size + 1));
+    for i in 1 .. length(tmp) / 2 loop
+      n := to_number(substr(tmp, i * 2 - 1, 2), 'xx');
+      s1 := s1 + n;
+      if s1 >= c65521 then
+        s1 := s1 - c65521;
+      end if;
+      s2 := s2 + s1;
+      if s2 >= c65521 then
+        s2 := s2 - c65521;
+      end if;
+    end loop;
+  end loop;
+  return to_char(s2, 'fm0XXX')||to_char(s1, 'fm0XXX');
+end;
+ 
+function flate_encode(p_val blob) return blob is
+t_blob blob;
+begin
+  t_blob := hextoraw('789C');
+  dbms_lob.copy(t_blob
+               , utl_compress.lz_compress(p_val)
+               , dbms_lob.lobmaxsize
+               , 3
+               , 11
+              );
+  dbms_lob.trim(t_blob, dbms_lob.getlength(t_blob) - 8);
+  dbms_lob.append(t_blob, hextoraw(adler32(p_val)));
+  return t_blob;
+end;
+ 
+procedure put_stream
+(p_stream blob
+, p_compress boolean := true
+, p_extra varchar2 := ''
+, p_tag boolean := true
+) is
+t_blob blob;
+t_compress boolean := false;
+begin
+  if p_compress and nvl(dbms_lob.getlength(p_stream), 0) > 0 then
+    t_compress := true;
+    t_blob := flate_encode(p_stream);
+  else
+    t_blob := p_stream;
+  end if;
+  txt2pdfdoc(case when p_tag then '<<' end
+             ||case when t_compress then '/Filter /FlateDecode ' end
+             ||'/Length '||nvl(length(t_blob), 0)
+             ||p_extra
+             ||'>>');
+  txt2pdfdoc('stream');
+  raw2pdfdoc(t_blob);
+  txt2pdfdoc('endstream');
+  if dbms_lob.istemporary(t_blob) = 1 then
+    dbms_lob.freetemporary(t_blob);
+  end if;
+end;
+ 
+function add_stream
+( p_stream blob
+, p_extra varchar2 := ''
+, p_compress boolean := true
+) return number is
+t_self number(10);
+begin
+  t_self := add_object;
+  put_stream(p_stream, p_compress, p_extra);
+  txt2pdfdoc('endobj');
+  return t_self;
+end;
+ 
+function subset_font(p_index pls_integer) return blob is
+t_tmp blob;
+t_header blob;
+t_tables blob;
+t_len pls_integer;
+t_code pls_integer;
+t_glyph pls_integer;
+t_offset pls_integer;
+t_factor pls_integer;
+t_unicode pls_integer;
+t_used_glyphs tp_pls_tab;
+t_fmt varchar2(10);
+t_utf16_charset varchar2(1000);
+t_raw raw(32767);
+t_v varchar2(32767);
+t_table_records raw(32767);
+begin
+  if g_fonts(p_index).cid then
+    t_used_glyphs := g_fonts(p_index).used_chars;
+    t_used_glyphs(0) := 0;
+  else
+    t_utf16_charset := substr(g_fonts(p_index).charset, 1, instr(g_fonts(p_index).charset, '.'))||'AL16UTF16';
+    t_used_glyphs(0) := 0;
+    t_code := g_fonts(p_index).used_chars.first;
+    while t_code is not null loop
+      t_unicode := to_number(rawtohex(utl_raw.convert(hextoraw(to_char(t_code, 'fm0x'))
+                                                                  , t_utf16_charset
+                                                                  , g_fonts(p_index).charset  
+                                                                 )
+                                     ), 'XXXXXXXX');
+      if g_fonts(p_index).flags = 4 then
+        
+        
+        t_used_glyphs(g_fonts(p_index).code2glyph(g_fonts(p_index).code2glyph.first + t_unicode - 32)) := 0;
+      else
+        t_used_glyphs(g_fonts(p_index).code2glyph(t_unicode)) := 0;
+      end if;
+      t_code := g_fonts(p_index).used_chars.next(t_code);
+    end loop;
+  end if;
+ 
+  dbms_lob.createtemporary(t_tables, true);
+  t_header := utl_raw.concat(hextoraw('00010000')
+                            , dbms_lob.substr(g_fonts(p_index).fontfile2, 8, g_fonts(p_index).ttf_offset + 4)
+                           );
+  t_offset := 12 + blob2num(g_fonts(p_index).fontfile2, 2, g_fonts(p_index).ttf_offset + 4) * 16;
+  t_table_records := dbms_lob.substr(g_fonts(p_index).fontfile2
+                                    , blob2num(g_fonts(p_index).fontfile2, 2, g_fonts(p_index).ttf_offset + 4) * 16
+                                    , g_fonts(p_index).ttf_offset + 12
+                                   );
+  for i in 1 .. blob2num(g_fonts(p_index).fontfile2, 2, g_fonts(p_index).ttf_offset + 4) loop
+    case utl_raw.cast_to_varchar2(utl_raw.substr(t_table_records, i * 16 - 15, 4))
+      when 'post' then
+        dbms_lob.append(t_header
+                       , utl_raw.concat(utl_raw.substr(t_table_records, i * 16 - 15, 4) 
+                                       , hextoraw('00000000') 
+                                       , num2raw(t_offset + dbms_lob.getlength(t_tables)) 
+                                       , num2raw(32) 
+                                      )
+                      );
+        dbms_lob.append(t_tables
+                       , utl_raw.concat(hextoraw('00030000')
+                                       , dbms_lob.substr(g_fonts(p_index).fontfile2
+                                                        , 28
+                                                        , raw2num(t_table_records, i * 16 - 7, 4) + 5
+                                                       )
+                                      )
+                      );
+      when 'loca' then
+        if g_fonts(p_index).indextolocformat = 0 then
+          t_fmt := 'fm0XXX';
+        else
+          t_fmt := 'fm0XXXXXXX';
+        end if;
+        t_raw := null;
+        dbms_lob.createtemporary(t_tmp, true);
+        t_len := 0;
+        for g in 0 .. g_fonts(p_index).numglyphs - 1 loop
+          t_raw := utl_raw.concat(t_raw, hextoraw(to_char(t_len, t_fmt)));
+          if utl_raw.length(t_raw) > 32770 then
+            dbms_lob.append(t_tmp, t_raw);
+            t_raw := null;
+          end if;
+          if t_used_glyphs.exists(g) then
+            t_len := t_len + g_fonts(p_index).loca(g + 1) - g_fonts(p_index).loca(g);
+          end if;
+        end loop;
+        t_raw := utl_raw.concat(t_raw, hextoraw(to_char(t_len, t_fmt)));
+        dbms_lob.append(t_tmp, t_raw);
+        dbms_lob.append(t_header
+                       , utl_raw.concat(utl_raw.substr(t_table_records, i * 16 - 15, 4) 
+                                       , hextoraw('00000000') 
+                                       , num2raw(t_offset + dbms_lob.getlength(t_tables)) 
+                                       , num2raw(dbms_lob.getlength(t_tmp)) 
+                                      )
+                      );
+        dbms_lob.append(t_tables, t_tmp);
+        dbms_lob.freetemporary(t_tmp);
+      when 'glyf' then
+        if g_fonts(p_index).indextolocformat = 0 then
+          t_factor := 2;
+        else
+          t_factor := 1;
+        end if;
+        t_raw := null;
+        dbms_lob.createtemporary(t_tmp, true);
+        for g in 0 .. g_fonts(p_index).numglyphs - 1 loop
+          if (t_used_glyphs.exists(g) and g_fonts(p_index).loca(g + 1) > g_fonts(p_index).loca(g)) then
+            t_raw := utl_raw.concat(t_raw
+                                   , dbms_lob.substr(g_fonts(p_index).fontfile2
+                                                    , (g_fonts(p_index).loca(g + 1) - g_fonts(p_index).loca(g)) * t_factor
+                                                    , g_fonts(p_index).loca(g) * t_factor + raw2num(t_table_records, i * 16 - 7, 4) + 1
+                                                   )
+                                  );
+            if utl_raw.length(t_raw) > 32778 then
+              dbms_lob.append(t_tmp, t_raw);
+              t_raw := null;
+            end if;
+          end if;
+        end loop;
+        if utl_raw.length(t_raw) > 0 then
+          dbms_lob.append(t_tmp, t_raw);
+        end if;
+        dbms_lob.append(t_header
+                       , utl_raw.concat(utl_raw.substr(t_table_records, i * 16 - 15, 4) 
+                                       , hextoraw('00000000') 
+                                       , num2raw(t_offset + dbms_lob.getlength(t_tables)) 
+                                       , num2raw(dbms_lob.getlength(t_tmp)) 
+                                      )
+                      );
+        dbms_lob.append(t_tables, t_tmp);
+        dbms_lob.freetemporary(t_tmp);
+      else
+        dbms_lob.append(t_header
+                       , utl_raw.concat(utl_raw.substr(t_table_records, i * 16 - 15, 4)    
+                                       , utl_raw.substr(t_table_records, i * 16 - 11, 4)    
+                                       , num2raw(t_offset + dbms_lob.getlength(t_tables)) 
+                                       , utl_raw.substr(t_table_records, i * 16 - 3, 4)     
+                                      )
+                      );
+        dbms_lob.copy(t_tables
+                     , g_fonts(p_index).fontfile2
+                     , raw2num(t_table_records, i * 16 - 3, 4)
+                     , dbms_lob.getlength(t_tables) + 1
+                     , raw2num(t_table_records, i * 16 - 7, 4) + 1
+                    );
+    end case;
+  end loop;
+  dbms_lob.append(t_header, t_tables);
+  dbms_lob.freetemporary(t_tables);
+  return t_header;
+end;
+ 
+function add_font(p_index pls_integer) return number is
+t_self number(10);
+t_fontfile number(10);
+t_font_subset blob;
+t_used pls_integer;
+t_used_glyphs tp_pls_tab;
+t_w varchar2(32767);
+t_unicode pls_integer;
+t_utf16_charset varchar2(1000);
+t_width number;
+begin
+  if g_fonts(p_index).standard then
+    return add_object('/Type/Font'
+                    ||'/Subtype/Type1'
+                    ||'/BaseFont/'||g_fonts(p_index).name
+                    ||'/Encoding/WinAnsiEncoding' 
+                    );
+  end if;
+
+  if g_fonts(p_index).cid then
+    t_self := add_object;
+    txt2pdfdoc('<</Type/Font/Subtype/Type0/Encoding/Identity-H'
+             ||'/BaseFont/'||g_fonts(p_index).name
+             ||'/DescendantFonts '||to_char(t_self + 1)||' 0 R'
+             ||'/ToUnicode '||to_char(t_self + 8)||' 0 R'
+             ||'>>');
+    txt2pdfdoc('endobj');
+    add_object;
+    txt2pdfdoc('['||to_char(t_self + 2)||' 0 R]');
+    txt2pdfdoc('endobj');
+    add_object('/Type/Font/Subtype/CIDFontType2/CIDToGIDMap/Identity/DW 1000'
+             ||'/BaseFont/'||g_fonts(p_index).name
+             ||'/CIDSystemInfo '||to_char(t_self + 3)||' 0 R'
+             ||'/W '||to_char(t_self + 4)||' 0 R'
+             ||'/FontDescriptor '||to_char(t_self + 5)||' 0 R');
+    add_object('/Ordering(Identity) /Registry(Adobe) /Supplement 0');
+
+    t_utf16_charset := substr(g_fonts(p_index).charset, 1, instr(g_fonts(p_index).charset, '.'))||'AL16UTF16';
+    t_used_glyphs := g_fonts(p_index).used_chars;
+    t_used_glyphs(0) := 0;
+    t_used := t_used_glyphs.first();
+    while t_used is not null loop
+      if g_fonts(p_index).hmetrics.exists(t_used) then
+        t_width := g_fonts(p_index).hmetrics(t_used);
+      else
+        t_width := g_fonts(p_index).hmetrics(g_fonts(p_index).hmetrics.last());
+      end if;
+      t_width := trunc(t_width * g_fonts(p_index).unit_norm);
+      if t_used_glyphs.prior(t_used) = t_used - 1 then
+        t_w := t_w||' '||t_width;
+      else
+        t_w := t_w||'] '||t_used||' ['||t_width;
+      end if;
+      t_used := t_used_glyphs.next(t_used);
+    end loop;
+    t_w := '['||ltrim(t_w, '] ')||']]';
+    add_object;
+    txt2pdfdoc(t_w);
+    txt2pdfdoc('endobj');
+    add_object
+      (   '/Type/FontDescriptor'
+       ||'/FontName/'||g_fonts(p_index).name
+       ||'/Flags '||g_fonts(p_index).flags
+       ||'/FontBBox ['||g_fonts(p_index).bb_xmin
+       ||' '||g_fonts(p_index).bb_ymin
+       ||' '||g_fonts(p_index).bb_xmax
+       ||' '||g_fonts(p_index).bb_ymax
+       ||']'
+       ||'/ItalicAngle '||to_char_round(g_fonts(p_index).italic_angle)
+       ||'/Ascent '||g_fonts(p_index).ascent
+       ||'/Descent '||g_fonts(p_index).descent
+       ||'/CapHeight '||g_fonts(p_index).capheight
+       ||'/StemV '||g_fonts(p_index).stemv
+       ||'/FontFile2 '||to_char(t_self + 6)||' 0 R');
+    t_fontfile := add_stream(g_fonts(p_index).fontfile2
+                            , '/Length1 '||dbms_lob.getlength(g_fonts(p_index).fontfile2)
+                            , g_fonts(p_index).compress_font
+                           );
+    t_font_subset := subset_font(p_index);
+    t_fontfile := add_stream(t_font_subset
+                            , '/Length1 '||dbms_lob.getlength(t_font_subset)
+                            , g_fonts(p_index).compress_font
+                           );
+    declare
+      t_g2c tp_pls_tab;
+      t_code     pls_integer;
+      t_c_start  pls_integer;
+      t_map varchar2(32767);
+      t_cmap varchar2(32767);
+      t_cor pls_integer;
+      t_cnt pls_integer;
+    begin
+      t_code := g_fonts(p_index).code2glyph.first;
+      if g_fonts(p_index).flags = 4 then
+      
+      
+        t_cor := t_code - 32;
+      else
+        t_cor := 0;
+      end if;
+      while t_code is not null loop
+        t_g2c(g_fonts(p_index).code2glyph(t_code)) := t_code - t_cor;
+        t_code := g_fonts(p_index).code2glyph.next(t_code);
+      end loop;
+      t_cnt := 0;
+      t_used_glyphs := g_fonts(p_index).used_chars;
+      t_used := t_used_glyphs.first();
+      while t_used is not null loop
+        t_map := t_map||'<'||to_char(t_used, 'FM0XXX')
+              ||'> <'||to_char(t_g2c(t_used), 'FM0XXX')
+              ||'>'||chr(10);
+        if t_cnt = 99 then
+          t_cnt := 0;
+          t_cmap := t_cmap||chr(10)||'100 beginbfchar'||chr(10)||t_map||'endbfchar';
+          t_map := '';
+        else
+          t_cnt := t_cnt + 1;
+        end if;
+        t_used := t_used_glyphs.next(t_used);
+      end loop;
+      if t_cnt > 0 then
+        t_cmap := t_cnt||' beginbfchar'||chr(10)||t_map||'endbfchar';
+      end if;
+      t_fontfile := add_stream(utl_raw.cast_to_raw(
+'/CIDInit /ProcSet findresource begin 12 dict begin
+begincmap
+/CIDSystemInfo
+<< /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Adobe-Identity-UCS def /CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+'||t_cmap||'
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end'));
+    end;
+    return t_self;
+  end if;
+
+  g_fonts(p_index).first_char := g_fonts(p_index).used_chars.first();
+  g_fonts(p_index).last_char := g_fonts(p_index).used_chars.last();
+  t_self := add_object;
+  txt2pdfdoc('<</Type /Font '
+           ||'/Subtype /'||g_fonts(p_index).subtype
+           ||' /BaseFont /'||g_fonts(p_index).name
+           ||' /FirstChar '||g_fonts(p_index).first_char
+           ||' /LastChar '||g_fonts(p_index).last_char
+           ||' /Widths '||to_char(t_self + 1)||' 0 R'
+           ||' /FontDescriptor '||to_char(t_self + 2)||' 0 R'
+           ||' /Encoding '||to_char(t_self + 3)||' 0 R'
+           ||' >>');
+  txt2pdfdoc('endobj');
+  add_object;
+  txt2pdfdoc('[');
+  begin
+    for i in g_fonts(p_index).first_char .. g_fonts(p_index).last_char loop
+      txt2pdfdoc(g_fonts(p_index).char_width_tab(i));
+    end loop;
+  exception
+    when others then
+      dbms_output.put_line('**** '||g_fonts(p_index).name);
+  end;
+  txt2pdfdoc(']');
+  txt2pdfdoc('endobj');
+  add_object
+    (   '/Type /FontDescriptor'
+     ||' /FontName /'||g_fonts(p_index).name
+     ||' /Flags '||g_fonts(p_index).flags
+     ||' /FontBBox ['||g_fonts(p_index).bb_xmin
+     ||' '||g_fonts(p_index).bb_ymin
+     ||' '||g_fonts(p_index).bb_xmax
+     ||' '||g_fonts(p_index).bb_ymax
+     ||']'
+     ||' /ItalicAngle '||to_char_round(g_fonts(p_index).italic_angle)
+     ||' /Ascent '||g_fonts(p_index).ascent
+     ||' /Descent '||g_fonts(p_index).descent
+     ||' /CapHeight '||g_fonts(p_index).capheight
+     ||' /StemV '||g_fonts(p_index).stemv
+     ||case
+           when g_fonts(p_index).fontfile2 is not null
+             then ' /FontFile2 '||to_char(t_self + 4)||' 0 R'
+         end);
+    add_object(   '/Type /Encoding /BaseEncoding /WinAnsiEncoding '
+                      ||g_fonts(p_index).diff
+                      ||' ');
+    if g_fonts(p_index).fontfile2 is not null then
+      t_font_subset := subset_font(p_index);
+      t_fontfile :=
+        add_stream(t_font_subset
+                  , '/Length1 '||dbms_lob.getlength(t_font_subset)
+                  , g_fonts(p_index).compress_font
+                 );
+  end if;
+  return t_self;
+end;
+ 
+procedure add_image(p_img tp_img) is
+t_pallet number(10);
+begin
+  if p_img.color_tab is not null then
+    t_pallet := add_stream(p_img.color_tab);
+  else
+    t_pallet := add_object;  
+    txt2pdfdoc('endobj');
+  end if;
+  add_object;
+  txt2pdfdoc('<</Type /XObject /Subtype /Image'
+           || ' /Width '||to_char(p_img.width)
+           ||' /Height '||to_char(p_img.height)
+           ||' /BitsPerComponent '||to_char(p_img.color_res)
+           );
+
+  if p_img.transparancy_index is not null then
+    txt2pdfdoc('/Mask ['||p_img.transparancy_index||' '||p_img.transparancy_index||']');
+  end if;
+  if p_img.color_tab is null then
+    if p_img.greyscale then
+      txt2pdfdoc('/ColorSpace /DeviceGray');
+    else
+      txt2pdfdoc('/ColorSpace /DeviceRGB');
+    end if;
+  else
+    txt2pdfdoc(   '/ColorSpace [/Indexed /DeviceRGB '
+             ||to_char(utl_raw.length(p_img.color_tab) / 3 - 1)
+             ||' '||to_char(t_pallet)||' 0 R]'
+             );
+  end if;
+
+  if p_img.type = 'jpg' then
+    put_stream(p_img.pixels, false, '/Filter /DCTDecode', false);
+  elsif p_img.type = 'png' then
+    put_stream(p_img.pixels, false
+              ,  ' /Filter /FlateDecode /DecodeParms <</Predictor 15 '
+             ||'/Colors '||p_img.nr_colors
+             ||'/BitsPerComponent '||p_img.color_res
+             ||' /Columns '||p_img.width
+             ||' >> '
+              , false);
+  else
+    put_stream(p_img.pixels, p_tag => false);
+  end if;
+  txt2pdfdoc('endobj');
+end;
+ 
+function add_resources return number is
+t_ind pls_integer;
+t_self number(10);
+t_fonts tp_objects_tab;
+begin
+  t_ind := g_used_fonts.first;
+  while t_ind is not null loop
+    t_fonts(t_ind) := add_font(t_ind);
+    t_ind := g_used_fonts.next(t_ind);
+  end loop;
+
+  t_self := add_object;
+  txt2pdfdoc('<</ProcSet [/PDF /Text]');
+
+  if g_used_fonts.count() > 0 then
+    txt2pdfdoc('/Font <<');
+    t_ind := g_used_fonts.first;
+    while t_ind is not null loop
+      txt2pdfdoc('/F'|| to_char(t_ind)||' '
+               ||to_char(t_fonts(t_ind))||' 0 R'
+               );
+      t_ind := g_used_fonts.next(t_ind);
+    end loop;
+    txt2pdfdoc('>>');
+  end if;
+
+  if g_images.count() > 0  then
+    txt2pdfdoc('/XObject <<');
+    for i in g_images.first .. g_images.last loop
+      txt2pdfdoc('/I'||to_char(i)||' '||to_char(t_self + 2 * i)||' 0 R');
+    end loop;
+    txt2pdfdoc('>>');
+  end if;
+
+  txt2pdfdoc('>>');
+  txt2pdfdoc('endobj');
+
+  if g_images.count() > 0 then
+    for i in g_images.first .. g_images.last loop
+      add_image(g_images(i));
+    end loop;
+  end if;
+  return t_self;
+end;
+ 
+procedure add_page
+( p_page_ind pls_integer
+, p_parent number
+, p_resources number
+) is
+t_content number(10);
+begin
+  t_content := add_stream(g_pages(p_page_ind));
+  add_object;
+  txt2pdfdoc('<< /Type /Page');
+  txt2pdfdoc('/Parent '||to_char(p_parent)||' 0 R');
+  txt2pdfdoc('/Contents '||to_char(t_content)||' 0 R');
+  txt2pdfdoc('/Resources '||to_char(p_resources)||' 0 R');
+  txt2pdfdoc('>>');
+  txt2pdfdoc('endobj');
+end;
+ 
+function add_pages return number is
+t_self number(10);
+t_resources number(10);
+begin
+  t_resources := add_resources;
+  t_self := add_object;
+  txt2pdfdoc('<</Type/Pages/Kids [');
+
+  for i in g_pages.first .. g_pages.last  loop
+    txt2pdfdoc(to_char(t_self + i * 2 + 2)||' 0 R');
+  end loop;
+
+  txt2pdfdoc(']');
+  txt2pdfdoc('/Count '||g_pages.count());
+  txt2pdfdoc(   '/MediaBox [0 0 '
+             ||to_char_round(g_settings.page_width
+                              , 0
+                             )
+             ||' '
+             ||to_char_round(g_settings.page_height
+                              , 0
+                             )
+             ||']');
+  txt2pdfdoc('>>');
+  txt2pdfdoc('endobj');
+
+  if g_pages.count() > 0 then
+    for i in g_pages.first .. g_pages.last loop
+      add_page(i, t_self, t_resources);
+    end loop;
+  end if;
+
+  return t_self;
+end;
+ 
+function add_catalogue return number is
+begin
+  return add_object('/Type/Catalog'
+                  ||'/Pages '||to_char(add_pages)||' 0 R'
+                  ||'/OpenAction [0 /XYZ null null 0.77]'
+                  );
+end;
+ 
+function add_info return number is
+t_banner varchar2(1000);
+begin
+  begin
+    select    'running on '
+          ||replace(replace(replace(substr(banner
+                                               , 1
+                                               , 950
+                                              )
+                                       , chr(92) 
+                                       , '\\'
+                                      )
+                              , '('
+                              , '\('
+                             )
+                     , ')'
+                     , '\)'
+                    )
+    into t_banner
+    from v$version
+    where instr(upper(banner)
+               , 'DATABASE'
+              ) > 0;
+    t_banner := '/Producer ('||t_banner||')';
+  exception when others then
+    null;
+  end;
+
+  return add_object(to_char(sysdate, '"/CreationDate (D:"YYYYMMDDhh24miss")"')
+                  ||'/Creator (PDFReports 1.00 by John de Wit)'
+                  ||t_banner
+                  ||'/Title <FEFF'||utl_i18n.string_to_raw(g_info.title, 'AL16UTF16')||'>'
+                  ||'/Author <FEFF'||utl_i18n.string_to_raw(g_info.author, 'AL16UTF16')||'>'
+                  ||'/Subject <FEFF'||utl_i18n.string_to_raw(g_info.subject, 'AL16UTF16')||'>'
+                  ||'/Keywords <FEFF'||utl_i18n.string_to_raw(g_info.keywords, 'AL16UTF16')||'>'
+                  );
+end;
+ 
+procedure finish_pdf is
+t_xref number;
+t_info number(10);
+t_catalogue number(10);
+begin
+  if g_pages.count = 0  then
+    new_page;
+  end if;
+  if g_page_prcs.count > 0 then
+    for i in g_pages.first .. g_pages.last loop
+      g_page_nr := i;
+      for p in g_page_prcs.first .. g_page_prcs.last loop
+        begin
+          execute immediate replace(replace(g_page_prcs(p), '#PAGE_NR#', i + 1), '"PAGE_COUNT#', g_pages.count);
+        exception
+          when others then null;
+        end;
+      end loop;
+    end loop;
+  end if;
+  dbms_lob.createtemporary(g_pdf_doc, true);
+  txt2pdfdoc('%PDF-1.3');
+  raw2pdfdoc(hextoraw('25E2E3CFD30D0A'));          
+  t_info := add_info;
+  t_catalogue := add_catalogue;
+  t_xref := dbms_lob.getlength(g_pdf_doc);
+  txt2pdfdoc('xref');
+  txt2pdfdoc('0 '||to_char(g_objects.count()));
+  txt2pdfdoc('0000000000 65535 f ');
+  for i in 1 .. g_objects.count() - 1 loop
+    txt2pdfdoc(to_char(g_objects(i), 'fm0000000000')||' 00000 n');
+                      
+  end loop;
+  txt2pdfdoc('trailer');
+  txt2pdfdoc('<< /Root '||to_char(t_catalogue)||' 0 R');
+  txt2pdfdoc('/Info '||to_char(t_info)||' 0 R');
+  txt2pdfdoc('/Size '||to_char(g_objects.count()));
+  txt2pdfdoc('>>');
+  txt2pdfdoc('startxref');
+  txt2pdfdoc(to_char(t_xref));
+  txt2pdfdoc('%%EOF');
+
+  g_objects.delete;
+  for i in g_pages.first .. g_pages.last loop
+    dbms_lob.freetemporary(g_pages(i));
+  end loop;
+  g_objects.delete;
+  g_pages.delete;
+  g_fonts.delete;
+  g_used_fonts.delete;
+  g_page_prcs.delete;
+  if g_images.count() > 0 then
+    for i in g_images.first .. g_images.last loop
+      if dbms_lob.istemporary(g_images(i).pixels) = 1 then
+        dbms_lob.freetemporary(g_images(i).pixels);
+      end if;
+    end loop;
+    g_images.delete;
+  end if;
+end;
+
+function conv2uu(p_value number, p_unit varchar2) return number is
+c_inch constant number := 25.40025;
+begin
+  return round(case lower(p_unit)
+                  when 'mm' then p_value * 72 / c_inch
+                  when 'cm' then p_value * 720 / c_inch
+                  when 'pt' then p_value          
+                  when 'point' then p_value
+                  when 'inch'  then p_value * 72
+                  when 'in'    then p_value * 72  
+                  when 'pica'  then p_value * 12
+                  when 'p'     then p_value * 12  
+                  when 'pc'    then p_value * 12  
+                  when 'em'    then p_value * 12  
+                  when 'px'    then p_value       
+                  when 'px'    then p_value * 0.8 
+                  else null
+                end
+              , 3
+             );
+end;
+ 
+procedure set_page_size
+(p_width number
+, p_height number
+, p_unit varchar2 := 'cm'
+) is
+begin
+  g_settings.page_width := conv2uu(p_width, p_unit);
+  g_settings.page_height := conv2uu(p_height, p_unit);
+end;
+ 
+procedure set_page_format(p_format varchar2 := 'A4') is
+begin
+  case upper(p_format)
+    when 'A3' then
+      set_page_size(420, 297, 'mm');
+    when 'A4' then
+      set_page_size(297, 210, 'mm');
+    when 'A5' then
+      set_page_size(210, 148, 'mm');
+    when 'A6' then
+      set_page_size(148, 105, 'mm');
+    when 'LEGAL' then
+      set_page_size(14, 8.5, 'in');
+    when 'LETTER' then
+      set_page_size(11, 8.5, 'in');
+    when 'QUARTO' then
+      set_page_size(11, 9, 'in');
+    when 'EXECUTIVE' then
+      set_page_size(10.5, 7.25, 'in');
+    else
+      null;
+  end case;
+end;
+ 
+procedure set_page_orientation(p_orientation varchar2 := 'PORTRAIT') is
+t_tmp number;
+begin
+  if ( (  upper(p_orientation) in ('L', 'LANDSCAPE')
+        and g_settings.page_height > g_settings.page_width
+       )
+     or (upper(p_orientation) in('P', 'PORTRAIT')
+        and g_settings.page_height < g_settings.page_width
+       )
+    )
+  then
+    t_tmp := g_settings.page_width;
+    g_settings.page_width := g_settings.page_height;
+    g_settings.page_height := t_tmp;
+  end if;
+end;
+ 
+procedure set_margins
+( p_top number := null
+, p_left number := null
+, p_bottom number := null
+, p_right number := null
+, p_unit varchar2 := 'cm'
+) is
+t_tmp number;
+begin
+  t_tmp := nvl(conv2uu(p_top, p_unit), -1);
+  if t_tmp < 0 or t_tmp > g_settings.page_height then
+    t_tmp := conv2uu(3, 'cm');
+  end if;
+  g_settings.margin_top := t_tmp;
+  t_tmp := nvl(conv2uu(p_bottom, p_unit), -1);
+  if t_tmp < 0 or t_tmp > g_settings.page_height then
+    t_tmp := conv2uu(4, 'cm');
+  end if;
+  g_settings.margin_bottom := t_tmp;
+  t_tmp := nvl(conv2uu(p_left, p_unit), -1);
+  if t_tmp < 0 or t_tmp > g_settings.page_width then
+    t_tmp := conv2uu(1, 'cm');
+  end if;
+  g_settings.margin_left := t_tmp;
+  t_tmp := nvl(conv2uu(p_right, p_unit), -1);
+  if t_tmp < 0 or t_tmp > g_settings.page_width then
+    t_tmp := conv2uu(1, 'cm');
+  end if;
+  g_settings.margin_right := t_tmp;
+ 
+  if g_settings.margin_top + g_settings.margin_bottom + conv2uu(1, 'cm')> g_settings.page_height then
+    g_settings.margin_top := 0;
+    g_settings.margin_bottom := 0;
+  end if;
+  if g_settings.margin_left + g_settings.margin_right + conv2uu(1, 'cm')> g_settings.page_width then
+    g_settings.margin_left := 0;
+    g_settings.margin_right := 0;
+  end if;
+end;
+
+procedure set_info
+( p_title varchar2 := null
+, p_author varchar2 := null
+, p_subject varchar2 := null
+, p_keywords varchar2 := null
+) is
+begin
+  g_info.title := substr(p_title, 1, 1024);
+  g_info.author := substr(p_author, 1, 1024);
+  g_info.subject := substr(p_subject, 1, 1024);
+  g_info.keywords := substr(p_keywords, 1, 16383);
+end;
+ 
+procedure init is
+begin
+  g_objects.delete;
+  g_pages.delete;
+  g_fonts.delete;
+  g_used_fonts.delete;
+  g_page_prcs.delete;
+  g_images.delete;
+  g_settings := null;
+  g_current_font := null;
+  g_x := null;
+  g_y := null;
+  g_info := null;
+  g_page_nr := null;
+  g_objects(0) := 0;
+  init_core_fonts;
+  set_page_format; 
+  set_page_orientation; 
+  set_margins; 
+  set_date_format; 
+  set_number_format; 
+  set_nls_numeric_chars; 
+  set_axes_color; 
+  set_chart_grid_line_color; 
+  set_cell_border_color; 
+  set_threshold_color; 
+  set_edge_darkness; 
+  set_edge_thickness; 
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+end;
+ 
+function return_pdf return blob is
+begin
+  finish_pdf;
+  return g_pdf_doc;
+end;
+
+procedure free_pdf is
+begin
+  begin
+    dbms_lob.freetemporary(g_pdf_doc);
+  exception when others then
+    null;
+  end;
+end;
+
+procedure store_pdf(p_filename varchar2 := 'My PDF Report', p_freeblob boolean := true) is
+begin
+  finish_pdf;
+  insert into pdfstore (id, reportname, created, reportsize, pdfreport)
+  values (pdfstore_seq.nextval, p_filename, sysdate, dbms_lob.getlength(g_pdf_doc), g_pdf_doc);
+  commit;
+
+  if p_freeblob  then
+    free_pdf;
+  end if;
+end;
+ 
+procedure raw2page(p_text blob) is
+begin
+  if g_pages.count() = 0 then
+    new_page;
+  end if;
+  dbms_lob.append( g_pages(coalesce(g_page_nr, g_pages.count() - 1))
+                 , utl_raw.concat(p_text, hextoraw('0D0A'))
+                 );
+end;
+ 
+procedure txt2page(p_text varchar2) is
+begin
+  raw2page(utl_raw.cast_to_raw(p_text));
+end;
+ 
+procedure output_font_to_doc(p_output_to_doc boolean) is
+begin
+  if p_output_to_doc then
+    txt2page('BT /F'||g_current_font||' '
+           ||to_char_round(g_fonts(g_current_font).fontsize)||' Tf ET'
+           );
+  end if;
+end;
+ 
+procedure set_font
+( p_index pls_integer
+, p_fontsize_pt number
+, p_output_to_doc boolean := true
+) is
+begin
+  if p_index is not null then
+    g_used_fonts(p_index) := 0;
+    g_current_font := p_index;
+    g_fonts(p_index).fontsize := p_fontsize_pt;
+    output_font_to_doc(p_output_to_doc);
+  end if;
+end;
+ 
+function set_font
+( p_fontname varchar2
+, p_fontsize_pt number
+, p_output_to_doc boolean := true
+) return pls_integer is
+t_fontname varchar2(100);
+begin
+  if p_fontname is null then
+    if (g_current_font is not null and p_fontsize_pt != g_fonts(g_current_font).fontsize) then
+      g_fonts(g_current_font).fontsize := p_fontsize_pt;
+      output_font_to_doc(p_output_to_doc);
+    end if;
+    return g_current_font;
+  end if;
+  t_fontname := lower(p_fontname);
+  for i in g_fonts.first .. g_fonts.last  loop
+    if lower(g_fonts(i).fontname) = t_fontname  then
+      exit when g_current_font = i and g_fonts(i).fontsize = p_fontsize_pt and g_page_nr is null;
+      g_fonts(i).fontsize := coalesce( p_fontsize_pt
+                                       , g_fonts(nvl(g_current_font, i)).fontsize
+                                       , 12
+                                      );
+      g_current_font := i;
+      g_used_fonts(i) := 0;
+      output_font_to_doc(p_output_to_doc);
+      return g_current_font;
+    end if;
+  end loop;
+  return null;
+end;
+
+procedure set_font
+( p_fontname varchar2
+, p_fontsize_pt number
+, p_output_to_doc boolean := true
+) is
+t_dummy pls_integer;
+begin
+  t_dummy := set_font(p_fontname, p_fontsize_pt, p_output_to_doc);
+end;
+
+function set_font
+( p_family varchar2
+, p_style varchar2 := 'N'
+, p_fontsize_pt number := null
+, p_output_to_doc boolean := true
+) return pls_integer is
+t_family varchar2(100);
+t_style varchar2(100);
+begin
+  if p_family is null and g_current_font is null
+  then
+    return null;
+  end if;
+  if p_family is null and  p_style is null and p_fontsize_pt is null
+  then
+    return null;
+  end if;
+  t_family := coalesce(lower(p_family)
+                      , g_fonts(g_current_font).family
+                     );
+  t_style := upper(p_style);
+  t_style := case t_style
+               when 'NORMAL' then 'N'
+               when 'REGULAR' then 'N'
+               when 'BOLD' then 'B'
+               when 'ITALIC' then 'I'
+               when 'OBLIQUE' then 'I'
+               else t_style
+             end;
+  t_style := coalesce( t_style
+                     , case when g_current_font is null then 'N' else g_fonts(g_current_font).style end
+                    );
+  for i in g_fonts.first..g_fonts.last loop
+    if (g_fonts(i).family = t_family and g_fonts(i).style = t_style) then
+      return set_font(g_fonts(i).fontname, p_fontsize_pt, p_output_to_doc);
+    end if;
+  end loop;
+  return null;
+end;
+ 
+procedure set_font
+( p_family varchar2
+, p_style varchar2 := 'N'
+, p_fontsize_pt number := null
+, p_output_to_doc boolean := true
+) is
+t_dummy pls_integer;
+begin
+  t_dummy := set_font(p_family, p_style, p_fontsize_pt, p_output_to_doc);
+end;
+ 
+procedure new_page is
+begin
+  g_pages(g_pages.count()) := null;
+  dbms_lob.createtemporary(g_pages(g_pages.count() - 1), true);
+  if g_current_font is not null and g_pages.count() > 0
+  then
+    txt2page('BT /F'||g_current_font||' '
+           ||to_char_round(g_fonts(g_current_font).fontsize)
+           ||' Tf ET'
+           );
+  end if;
+  g_x := null;
+  g_y := null;
+end;
+ 
+function pdf_string(p_text in blob) return blob is
+t_rv blob;
+t_ind integer;
+type tp_tab_raw is table of raw(1);
+tab_raw tp_tab_raw
+  := tp_tab_raw( utl_raw.cast_to_raw(chr(92))  
+               , utl_raw.cast_to_raw('(')
+               , utl_raw.cast_to_raw(')')
+               );
+begin
+  t_rv := p_text;
+  for i in tab_raw.first .. tab_raw.last loop
+    t_ind := -1;
+    loop
+      t_ind := dbms_lob.instr(t_rv
+                             , tab_raw(i)
+                             , t_ind + 2
+                            );
+      exit when t_ind <= 0;
+      dbms_lob.copy(t_rv
+                   , t_rv
+                   , dbms_lob.lobmaxsize
+                   , t_ind + 1
+                   , t_ind
+                  );
+      dbms_lob.copy(t_rv
+                   , utl_raw.cast_to_raw(chr(92))  
+                   , 1
+                   , t_ind
+                   , 1
+                  );
+    end loop;
+  end loop;
+  return t_rv;
+end;
+ 
+function txt2raw(p_text varchar2) return raw is
+t_rv raw(32767);
+t_unicode pls_integer;
+begin
+  if g_current_font is null then
+    set_font('helvetica');
+  end if;
+  if g_fonts(g_current_font).cid then
+    for i in 1 .. length(p_text) loop
+      t_unicode := utl_raw.cast_to_binary_integer(utl_raw.convert(utl_raw.cast_to_raw(substr(p_text, i, 1))
+                                                                  , 'AMERICAN_AMERICA.AL16UTF16'
+                                                                  , sys_context('userenv', 'LANGUAGE')  
+                                                                 )
+                                              );
+      if g_fonts(g_current_font).flags = 4 
+      then
+
+        t_unicode := g_fonts(g_current_font).code2glyph.first + t_unicode - 32;
+      end if;
+      if g_fonts(g_current_font).code2glyph.exists(t_unicode)
+      then
+        g_fonts(g_current_font).used_chars(g_fonts(g_current_font).code2glyph(t_unicode)) := 0;
+        t_rv := utl_raw.concat(t_rv
+                              , utl_raw.cast_to_raw(to_char(g_fonts(g_current_font).code2glyph(t_unicode), 'FM0XXX'))
+                             );
+      else
+        t_rv := utl_raw.concat(t_rv, utl_raw.cast_to_raw('0000'));
+      end if;
+    end loop;
+    t_rv := utl_raw.concat(utl_raw.cast_to_raw('<')
+                          , t_rv
+                          , utl_raw.cast_to_raw('>')
+                         );
+  else
+    t_rv := utl_raw.convert(utl_raw.cast_to_raw(p_text)
+                           , g_fonts(g_current_font).charset
+                           , sys_context('userenv', 'LANGUAGE')
+                          );
+    for i in 1 .. utl_raw.length(t_rv)
+    loop
+      g_fonts(g_current_font).used_chars(raw2num(t_rv, i, 1)) := 0;
+    end loop;
+    t_rv := utl_raw.concat(utl_raw.cast_to_raw('(')
+                          , pdf_string(t_rv)
+                          , utl_raw.cast_to_raw(')')
+                         );
+  end if;
+  return t_rv;
+end;
+ 
+procedure put_raw(p_x number, p_y number, p_text raw, p_degrees_rotation number := null) is
+t_tmp varchar2(32767);
+t_sin number;
+t_cos number;
+begin
+  t_tmp := to_char_round(p_x)||' '||to_char_round(p_y);
+  if p_degrees_rotation is null
+  then
+    t_tmp := t_tmp||' Td ';
+  else
+    t_sin := sin(p_degrees_rotation / 180 * c_pi);
+    t_cos := cos(p_degrees_rotation / 180 * c_pi);
+    t_tmp := to_char_round(t_cos, 5)||' '||t_tmp;
+    t_tmp := to_char_round(- t_sin, 5)||' '||t_tmp;
+    t_tmp := to_char_round(t_sin, 5)||' '||t_tmp;
+    t_tmp := to_char_round(t_cos, 5)||' '||t_tmp;
+    t_tmp := t_tmp||' Tm ';
+  end if;
+  raw2page(utl_raw.concat(utl_raw.cast_to_raw('BT '||t_tmp)
+                          , p_text
+                          , utl_raw.cast_to_raw(' Tj ET')
+                         )
+           );
+end;
+ 
+procedure text2xy(p_x number, p_y number, p_text varchar2, p_degrees_rotation number := null) is
+begin
+  if p_text is not null then
+    put_raw(p_x, p_y, txt2raw(p_text), p_degrees_rotation);
+  end if;
+end;
+ 
+function text_length(p_text in varchar2) return number is
+t_width number;
+t_char pls_integer;
+t_rtxt raw(32767);
+t_tmp number;
+t_font tp_font;
+begin
+  if p_text is null then
+    return 0;
+  end if;
+  
+  if g_current_font is null then
+    set_font('helvetica', 12);
+  end if;
+ 
+  t_width := 0;
+  t_font := g_fonts(g_current_font);
+  
+  if t_font.cid then
+    t_rtxt := utl_raw.convert( utl_raw.cast_to_raw(p_text)
+                             , 'AMERICAN_AMERICA.AL16UTF16' 
+                             , sys_context('userenv', 'LANGUAGE')  
+                             );
+    for i in 1..utl_raw.length(t_rtxt)/2     loop
+      t_char := to_number(utl_raw.substr(t_rtxt, i * 2 - 1, 2), 'xxxx');
+      if t_font.flags = 4 then
+        
+        t_char := t_font.code2glyph.first + t_char - 32;
+      end if;
+      if (t_font.code2glyph.exists(t_char) and t_font.hmetrics.exists(t_font.code2glyph(t_char))) then
+        t_tmp := t_font.hmetrics(t_font.code2glyph(t_char));
+      else
+        t_tmp := t_font.hmetrics(t_font.hmetrics.last());
+      end if;
+      t_width := t_width + t_tmp;
+    end loop;
+    t_width := t_width * t_font.unit_norm;
+    t_width := t_width * t_font.fontsize / 1000;
+  else
+    t_rtxt := utl_raw.convert( utl_raw.cast_to_raw(p_text)
+                             , t_font.charset  
+                             , sys_context('userenv', 'LANGUAGE')
+                             );
+    for i in 1..utl_raw.length(t_rtxt) loop
+      t_char := to_number(utl_raw.substr(t_rtxt, i, 1), 'xx');
+      t_width := t_width + t_font.char_width_tab(t_char);
+    end loop;
+    t_width := t_width * t_font.fontsize / 1000;
+  end if;
+  return t_width;
+end;
+
+function rgb(p_hex_rgb varchar2) return varchar2 is
+begin
+  return to_char_round(nvl(to_number(substr(ltrim(p_hex_rgb, '#')
+                                              , 1, 2)
+                                      , 'xx') / 255
+                            , 0)
+                       , 5)||' '
+     ||to_char_round(nvl(  to_number(substr(ltrim(p_hex_rgb, '#')
+                                              , 3, 2)
+                                      , 'xx') / 255
+                            , 0)
+                       , 5)||' '
+     ||to_char_round(nvl(  to_number(substr(ltrim(p_hex_rgb, '#')
+                                              , 5, 2)
+                                      , 'xx') / 255
+                            , 0)
+                       , 5)||' ';
+end;
+
+procedure set_color(p_rgb varchar2 := '000000', p_backgr boolean) is
+begin
+  txt2page(rgb(p_rgb)||case when p_backgr then 'RG' else 'rg' end);
+end;
+
+procedure set_color(p_rgb varchar2 := '000000') is
+begin
+  set_color(p_rgb, false);
+end;
+
+procedure set_color
+  (p_red number := 0
+  , p_green number := 0
+  , p_blue number := 0
+ ) is
+begin
+  if (    p_red between 0 and 255
+     and p_blue  between 0 and 255
+     and p_green between 0 and 255
+    )
+  then
+    set_color( to_char(p_red, 'fm0x')
+            ||to_char(p_green, 'fm0x')
+            ||to_char(p_blue, 'fm0x')
+             , false
+            );
+  end if;
+end;
+
+procedure set_bg_color(p_rgb varchar2 := 'ffffff') is
+begin
+  set_color(p_rgb, true);
+end;
+
+procedure set_bg_color (p_red number := 0, p_green number := 0, p_blue number := 0) is
+begin
+  if (    p_red between 0 and 255
+     and p_blue  between 0 and 255
+     and p_green between 0 and 255
+    )
+  then
+    set_color( to_char(p_red, 'fm0x')
+            ||to_char(p_green, 'fm0x')
+            ||to_char(p_blue, 'fm0x')
+             , true
+            );
+  end if;
+end;
+ 
+function get(p_what pls_integer) return number is
+begin
+  return case p_what
+           when current_page_width    then g_settings.page_width
+           when current_page_height   then g_settings.page_height
+           when current_margin_top    then g_settings.margin_top
+           when current_margin_right  then g_settings.margin_right
+           when current_margin_bottom then g_settings.margin_bottom
+           when current_margin_left   then g_settings.margin_left
+           when current_x_position    then g_x
+           when current_y_position    then g_y
+           when current_fontsize      then g_fonts(g_current_font).fontsize
+           when current_current_font  then g_current_font
+         end;
+end;
+ 
+function parse_jpg(p_img_blob blob)
+return tp_img is
+buf raw(4);
+t_img tp_img;
+t_ind integer;
+begin
+  if ( dbms_lob.substr(p_img_blob, 2, 1) != hextoraw('FFD8')                                      
+     or dbms_lob.substr(p_img_blob, 2, dbms_lob.getlength(p_img_blob) - 1) != hextoraw('FFD9')   
+    )
+  then  
+    return null;
+  end if;
+
+  t_img.pixels := p_img_blob;
+  t_img.type := 'jpg';
+  if dbms_lob.substr(t_img.pixels, 2, 3) in (hextoraw('FFE0')  
+                                              , hextoraw('FFE1')  
+                                             )
+  then
+    t_img.color_res := 8;
+    t_img.height := 1;
+    t_img.width := 1;
+
+    t_ind := 3;
+    t_ind := t_ind + 2 + blob2num(t_img.pixels, 2, t_ind + 2);
+    loop
+      buf := dbms_lob.substr(t_img.pixels, 2, t_ind);
+      exit when buf = hextoraw('FFDA');  
+      exit when buf = hextoraw('FFD9');  
+      exit when substr(rawtohex(buf), 1, 2) != 'FF';
+      if rawtohex(buf) in ('FFD0'                                                          
+                            , 'FFD1', 'FFD2', 'FFD3', 'FFD4', 'FFD5', 'FFD6', 'FFD7', 'FF01'  
+                           )
+      then
+        t_ind := t_ind + 2;
+      else
+        if buf = hextoraw('FFC0')       
+        then
+          t_img.color_res := blob2num(t_img.pixels, 1, t_ind + 4);
+          t_img.height    := blob2num(t_img.pixels, 2, t_ind + 5);
+          t_img.width     := blob2num(t_img.pixels, 2, t_ind + 7);
+        end if;
+        t_ind := t_ind + 2 + blob2num(t_img.pixels, 2, t_ind + 2);
+      end if;
+    end loop;
+  end if;
+  return t_img;
+end;
+ 
+function parse_png(p_img_blob blob) return tp_img is
+t_img tp_img;
+buf raw(32767);
+len integer;
+ind integer;
+color_type pls_integer;
+begin
+  if rawtohex(dbms_lob.substr(p_img_blob, 8, 1)) != '89504E470D0A1A0A'  
+  then
+    return null;
+  end if;
+  dbms_lob.createtemporary(t_img.pixels, true);
+  ind := 9;
+  loop
+    len := blob2num(p_img_blob, 4, ind);  
+    exit when len is null or ind > dbms_lob.getlength(p_img_blob);
+    case utl_raw.cast_to_varchar2(dbms_lob.substr(p_img_blob, 4, ind + 4))  
+      when 'IHDR' then
+        t_img.width     := blob2num(p_img_blob, 4, ind + 8);
+        t_img.height    := blob2num(p_img_blob, 4, ind + 12);
+        t_img.color_res := blob2num(p_img_blob, 1, ind + 16);
+        color_type      := blob2num(p_img_blob, 1, ind + 17);
+        t_img.greyscale := color_type in (0, 4);
+      when 'PLTE' then
+        t_img.color_tab := dbms_lob.substr(p_img_blob, len, ind + 8);
+      when 'IDAT' then
+        dbms_lob.copy(t_img.pixels, p_img_blob, len, dbms_lob.getlength(t_img.pixels) + 1, ind + 8);
+      when 'IEND' then
+        exit;
+      else
+        null;
+    end case;
+    ind := ind + 4 + 4 + len + 4;  
+  end loop;
+  t_img.type := 'png';
+  t_img.nr_colors := case color_type
+                       when 0 then 1
+                       when 2 then 3
+                       when 3 then 1
+                       when 4 then 2
+                       else 4
+                     end;
+  return t_img;
+end;
+
+function lzw_decompress (p_blob blob, p_bits pls_integer) return blob is
+  powers tp_pls_tab;
+
+  g_lzw_ind pls_integer;
+  g_lzw_bits pls_integer;
+  g_lzw_buffer pls_integer;
+  g_lzw_bits_used pls_integer;
+
+  type tp_lzw_dict is table of raw(1000) index by pls_integer;
+  t_lzw_dict tp_lzw_dict;
+  t_clr_code pls_integer;
+  t_nxt_code pls_integer;
+  t_new_code pls_integer;
+  t_old_code pls_integer;
+  t_blob blob;
+
+  function get_lzw_code
+  return pls_integer
+  is
+    t_rv pls_integer;
+  begin
+    while g_lzw_bits_used < g_lzw_bits
+    loop
+      g_lzw_ind := g_lzw_ind + 1;
+      g_lzw_buffer := blob2num(p_blob, 1, g_lzw_ind) * powers(g_lzw_bits_used) + g_lzw_buffer;
+      g_lzw_bits_used := g_lzw_bits_used + 8;
+    end loop;
+    t_rv := bitand(g_lzw_buffer, powers(g_lzw_bits) - 1);
+    g_lzw_bits_used := g_lzw_bits_used - g_lzw_bits;
+    g_lzw_buffer := trunc(g_lzw_buffer / powers(g_lzw_bits));
+    return t_rv;
+  end;
+
+begin
+  for i in 0 .. 30
+  loop
+    powers(i) := power(2, i);
+  end loop;
+
+  t_clr_code := powers(p_bits - 1);
+  t_nxt_code := t_clr_code + 2;
+  for i in 0 .. least(t_clr_code - 1, 255)
+  loop
+    t_lzw_dict(i) := hextoraw(to_char(i, 'fm0X'));
+  end loop;
+  dbms_lob.createtemporary(t_blob, true);
+  g_lzw_ind := 0;
+  g_lzw_bits := p_bits;
+  g_lzw_buffer := 0;
+  g_lzw_bits_used := 0;
+
+  t_old_code := null;
+  t_new_code := get_lzw_code();
+  loop
+    case nvl(t_new_code, t_clr_code + 1)
+      when t_clr_code + 1
+      then
+        exit;
+      when t_clr_code
+      then
+        t_new_code := null;
+        g_lzw_bits := p_bits;
+        t_nxt_code := t_clr_code + 2;
+      else
+        if t_new_code = t_nxt_code
+        then
+          t_lzw_dict(t_nxt_code) :=
+            utl_raw.concat(t_lzw_dict(t_old_code)
+                          , utl_raw.substr(t_lzw_dict(t_old_code), 1, 1)
+                         );
+          dbms_lob.append(t_blob, t_lzw_dict(t_nxt_code));
+          t_nxt_code := t_nxt_code + 1;
+        elsif t_new_code > t_nxt_code
+        then
+          exit;
+        else
+          dbms_lob.append(t_blob, t_lzw_dict(t_new_code));
+          if t_old_code is not null
+          then
+            t_lzw_dict(t_nxt_code) := utl_raw.concat(t_lzw_dict(t_old_code)
+                                                      , utl_raw.substr(t_lzw_dict(t_new_code), 1, 1)
+                                                     );
+            t_nxt_code := t_nxt_code + 1;
+          end if;
+        end if;
+        if     bitand(t_nxt_code, powers(g_lzw_bits) - 1) = 0
+           and g_lzw_bits < 12
+        then
+          g_lzw_bits := g_lzw_bits + 1;
+        end if;
+    end case;
+    t_old_code := t_new_code;
+    t_new_code := get_lzw_code();
+  end loop;
+  t_lzw_dict.delete;
+
+  return t_blob;
+end;
+ 
+function parse_gif(p_img_blob blob) return tp_img is
+img tp_img;
+buf raw(4000);
+ind integer;
+t_len pls_integer;
+begin
+  if dbms_lob.substr(p_img_blob, 3, 1) != utl_raw.cast_to_raw('GIF')
+  then
+    return null;
+  end if;
+  ind := 7;
+  buf := dbms_lob.substr(p_img_blob, 7, 7);  
+  ind := ind + 7;
+  img.color_res := raw2num(utl_raw.bit_and(utl_raw.substr(buf, 5, 1), hextoraw('70'))) / 16 + 1;
+  img.color_res := 8;
+  if raw2num(buf, 5, 1) > 127
+  then
+    t_len := 3 * power(2, raw2num(utl_raw.bit_and(utl_raw.substr(buf, 5, 1), hextoraw('07'))) + 1);
+    img.color_tab := dbms_lob.substr(p_img_blob, t_len, ind ); 
+    ind := ind + t_len;
+  end if;
+
+  loop
+    case dbms_lob.substr(p_img_blob, 1, ind)
+      when hextoraw('3B') 
+      then
+        exit;
+      when hextoraw('21') 
+      then
+        if dbms_lob.substr(p_img_blob, 1, ind + 1) = hextoraw('F9')
+        then 
+          if utl_raw.bit_and(dbms_lob.substr(p_img_blob, 1, ind + 3), hextoraw('01')) = hextoraw('01')
+          then 
+            img.transparancy_index := blob2num(p_img_blob, 1, ind + 6);
+          end if;
+        end if;
+        ind := ind + 2; 
+        loop
+          t_len := blob2num(p_img_blob, 1, ind); 
+          exit when t_len = 0;
+          ind := ind + 1 + t_len; 
+        end loop;
+        ind := ind + 1;           
+      when hextoraw('2C')       
+      then
+        declare
+          img_blob blob;
+          min_code_size pls_integer;
+          code_size pls_integer;
+          flags raw(1);
+        begin
+          img.width := utl_raw.cast_to_binary_integer(dbms_lob.substr(p_img_blob, 2, ind + 5)
+                                                     , utl_raw.little_endian
+                                                    );
+          img.height := utl_raw.cast_to_binary_integer(dbms_lob.substr(p_img_blob, 2, ind + 7)
+                                                      , utl_raw.little_endian
+                                                     );
+          img.greyscale := false;
+          ind := ind + 1 + 8;                   
+          flags := dbms_lob.substr(p_img_blob, 1, ind);
+          if utl_raw.bit_and(flags, hextoraw('80')) = hextoraw('80')
+          then
+            t_len := 3 * power(2, raw2num(utl_raw.bit_and(flags, hextoraw('07'))) + 1);
+            img.color_tab := dbms_lob.substr(p_img_blob, t_len, ind + 1);          
+          end if;
+          ind := ind + 1;                                
+          min_code_size := blob2num(p_img_blob, 1, ind);
+          ind := ind + 1;                      
+          dbms_lob.createtemporary(img_blob, true);
+          loop
+            t_len := blob2num(p_img_blob, 1, ind); 
+            exit when t_len = 0;
+            dbms_lob.append(img_blob, dbms_lob.substr(p_img_blob, t_len, ind + 1)); 
+            ind := ind + 1 + t_len;      
+          end loop;
+          ind := ind + 1;                            
+          img.pixels := lzw_decompress(img_blob, min_code_size + 1);
+
+          if utl_raw.bit_and(flags, hextoraw('40')) = hextoraw('40')
+          then                                        
+            declare
+              pass pls_integer;
+              pass_ind tp_pls_tab;
+            begin
+              dbms_lob.createtemporary(img_blob, true);
+              pass_ind(1) := 1;
+              pass_ind(2) := trunc((img.height - 1) / 8) + 1;
+              pass_ind(3) := pass_ind(2) + trunc((img.height + 3) / 8);
+              pass_ind(4) := pass_ind(3) + trunc((img.height + 1) / 4);
+              pass_ind(2) := pass_ind(2) * img.width + 1;
+              pass_ind(3) := pass_ind(3) * img.width + 1;
+              pass_ind(4) := pass_ind(4) * img.width + 1;
+              for i in 0 .. img.height - 1
+              loop
+                pass := case mod(i, 8)
+                          when 0 then 1
+                          when 4 then 2
+                          when 2 then 3
+                          when 6 then 3
+                          else 4
+                        end;
+                dbms_lob.append(img_blob, dbms_lob.substr(img.pixels, img.width, pass_ind(pass)));
+                pass_ind(pass) := pass_ind(pass) + img.width;
+              end loop;
+              img.pixels := img_blob;
+            end;
+          end if;
+
+          dbms_lob.freetemporary(img_blob);
+        end;
+      else
+        exit;
+    end case;
+  end loop;
+
+  img.type := 'gif';
+  return img;
+end;
+ 
+function parse_img
+(p_blob in blob
+, p_adler32 in varchar2 := null
+, p_type in varchar2 := null
+) return tp_img is
+t_img tp_img;
+begin
+  t_img.type := p_type;
+  if t_img.type is null then
+    if rawtohex(dbms_lob.substr(p_blob, 8, 1)) = '89504E470D0A1A0A' then
+      t_img.type := 'png';
+    elsif dbms_lob.substr(p_blob , 3, 1) = utl_raw.cast_to_raw('GIF') then
+      t_img.type := 'gif';
+    else
+      t_img.type := 'jpg';
+    end if;
+  end if;
+  t_img := case lower(t_img.type)
+             when 'gif' then parse_gif(p_blob)
+             when 'png' then parse_png(p_blob)
+             
+             else null
+           end;
+  if t_img.type is not null then
+    t_img.adler32 := coalesce(p_adler32, adler32(p_blob));
+  end if;
+  return t_img;
+end;
+ 
+procedure put_image
+( p_img blob
+, p_x number
+, p_y number
+, p_width number := null
+, p_height number := null
+, p_align varchar2 := 'center'
+, p_valign varchar2 := 'top'
+) is
+t_x number;
+t_y number;
+t_img tp_img;
+t_ind pls_integer;
+t_adler32 varchar2(8);
+begin
+  if p_img is null then
+    return;
+  end if;
+  t_adler32 := adler32(p_img);
+  t_ind := g_images.first;
+  while t_ind is not null loop
+    exit when g_images(t_ind).adler32 = t_adler32;
+    t_ind := g_images.next(t_ind);
+  end loop;
+
+  if t_ind is null then
+    t_img := parse_img(p_img, t_adler32);
+    if t_img.adler32 is null then
+      return;
+    end if;
+    t_ind := g_images.count() + 1;
+    g_images(t_ind) := t_img;
+  end if;
+
+  t_x := case substr(upper(p_align), 1, 1)
+           when 'L' then p_x 
+           when 'S' then p_x 
+           when 'R' then p_x + nvl(p_width, 0) - g_images(t_ind).width 
+           when 'E' then p_x + nvl(p_width, 0) - g_images(t_ind).width 
+           else (p_x + nvl(p_width, 0) - g_images(t_ind).width) / 2       
+         end;
+  t_y := case substr(upper(p_valign), 1, 1)
+           when 'C' then (p_y - nvl(p_height, 0) + g_images(t_ind).height) / 2  
+           when 'B' then p_y - nvl(p_height, 0) + g_images(t_ind).height 
+           else p_y                                          
+         end;
+ 
+  txt2page('q '||to_char_round(least(nvl(p_width, g_images(t_ind).width), g_images(t_ind).width))
+         ||' 0 0 '||to_char_round(least(nvl(p_height, g_images(t_ind).height), g_images(t_ind).height))
+         ||' '||to_char_round(t_x)||' '||to_char_round(t_y)
+         ||' cm /I'||to_char(t_ind)||' Do Q'
+         );
+end;
+ 
+procedure put_image
+  ( p_file_name varchar2
+  , p_x number
+  , p_y number
+  , p_width number := null
+  , p_height number := null
+  , p_align varchar2 := 'center'
+  , p_valign varchar2 := 'top'
+) is
+t_blob blob;
+begin
+  t_blob := doc2blob(p_file_name);
+  put_image( t_blob
+           , p_x
+           , p_y
+           , p_width
+           , p_height
+           , p_align
+           , p_valign
+          );
+  begin
+    dbms_lob.freetemporary(t_blob);
+  exception when others then
+    null;
+  end;
+end;
+ 
+procedure set_page_proc(p_src clob) is
+begin
+  g_page_prcs(g_page_prcs.count) := p_src;
+end;
+ 
+procedure pr_goto_page(i_npage number) is
+begin
+  if i_npage <= g_pages.count then
+    g_page_nr := i_npage - 1;
+  end if;
+end;
+
+procedure pr_goto_current_page is
+begin
+  g_page_nr := null;
+end;
+
+procedure draw_gauge
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_threshold_plan varchar2
+, p_dial_value number
+, p_dial_color varchar2 := 'FF0000'
+, p_bg_color varchar2 := 'EEEEEE'
+, p_left_to_right boolean := true
+, p_bottom_caption varchar2 := ''
+) is
+l_string_table type_string_table := csv_to_string_table(p_threshold_plan);
+l_colors type_string_table := type_string_table();
+l_lows type_number_table := type_number_table();
+l_highs type_number_table := type_number_table();
+l_string varchar2(200);
+l_pos number;
+l_eq_pos number;
+min_value number := 999999999;
+max_value number := -999999999;
+p1 number;
+p2 number;
+begin
+
+
+
+
+
+
+
+
+
+
+
+  for i in 1..l_string_table.count loop
+    l_lows.extend(1);
+    l_highs.extend(1);
+    l_colors.extend(1);
+    l_string := upper(trim(replace(l_string_table(i), ' ', '')));
+    l_pos := instr(l_string, '-');
+    l_eq_pos := instr(l_string, '=');
+    if l_pos > 0 and l_eq_pos > 0 then
+      l_lows(i) := str2num(substr(l_string, 1, l_pos-1));
+      l_highs(i) := str2num(substr(l_string, l_pos+1, l_eq_pos-l_pos-1));
+      l_colors(i) := substr(l_string, l_eq_pos+1);
+      if l_lows(i) > l_highs(i) then
+        p1 := l_lows(i); l_lows(i) := l_highs(i); l_highs(i) := p1;
+      end if;
+      min_value := least(min_value, l_lows(i));
+      max_value := greatest(max_value, l_highs(i));
+    end if;
+  end loop;
+  
+  draw_segment_at_degree_points(p_x_centre,p_y_centre,p_radius,315,225,p_bg_color);
+  draw_arc_at_degree_points(p_x_centre,p_y_centre,p_radius,315,225);
+  
+  for i in 1..l_colors.count loop
+    if p_left_to_right then
+      p2 :=  250 - ((l_lows(i) - min_value)/(max_value - min_value)*250) - 35;
+      p1 :=  250 - ((l_highs(i) - min_value)/(max_value - min_value)*250) - 35;
+      draw_segment_at_degree_points(p_x_centre,p_y_centre,p_radius*0.9,p1,p2,l_colors(i));
+      draw_radial_tag(p_x_centre,p_y_centre,p_radius,p2,to_char_round(l_lows(i)));
+      draw_radial_tag(p_x_centre,p_y_centre,p_radius,p1,to_char_round(l_highs(i)));
+    else
+      p1 := ((l_lows(i) - min_value)/(max_value - min_value)*250) - 35;
+      p2 := ((l_highs(i) - min_value)/(max_value - min_value)*250) - 35;
+      draw_segment_at_degree_points(p_x_centre,p_y_centre,p_radius*0.9,p1,p2,l_colors(i));
+      draw_radial_tag(p_x_centre,p_y_centre,p_radius,p1,to_char_round(l_lows(i)));
+      draw_radial_tag(p_x_centre,p_y_centre,p_radius,p2,to_char_round(l_highs(i)));
+    end if;
+  end loop;
+  
+  draw_segment_at_degree_points(p_x_centre,p_y_centre,p_radius*0.5,315,225,p_bg_color);
+  
+  draw_radius(p_x_centre,p_y_centre,p_radius,225);
+  draw_radius(p_x_centre,p_y_centre,p_radius,315);
+   
+  if p_left_to_right then
+    p1 :=  250 - ((p_dial_value - min_value)/(max_value - min_value)*250) - 35;
+  else
+    p1 := ((p_dial_value - min_value)/(max_value - min_value)*250) - 35;
+  end if;
+  
+  draw_radius(p_x_centre,p_y_centre,p_radius*0.85,p1,4);
+  draw_radius(p_x_centre,p_y_centre,p_radius*0.85-1,p1,2, p_dial_color);
+  
+  draw_segment_at_degree_points(p_x_centre,p_y_centre,p_radius*0.2,0,360,p_bg_color);
+  draw_circle(p_x_centre,p_y_centre,p_radius*0.2);
+    
+  p1 := p_x_centre - text_length(p_bottom_caption)/2;
+  text2xy(p1, p_y_centre - p_radius, p_bottom_caption);
+  
+  g_x := g_settings.margin_left;
+  g_y := p_y_centre - p_radius - get(current_fontsize)*2;
+end;
+ 
+function random_color return varchar2 is
+type hex_varray is varray(6) of varchar2(2);
+v_color varchar2(6) := null;
+v_hex_vals hex_varray := hex_varray('00','33','66','99','CC','FF');
+begin
+  v_color := v_hex_vals(dbms_random.value(1,6))||v_hex_vals(dbms_random.value(1,6))||v_hex_vals(dbms_random.value(1,6));
+  return v_color;
+end;
+
+function hextonum(c varchar2) return number is
+n number := 0;
+begin
+  if ((c >= 'A') and(c <= 'F')) then
+    n := ascii(c) - ascii('A') + 10;
+  else
+    if ((c >= '0') and(c <= '9')) then
+      n := ascii(c) - ascii('0');
+    end if;
+  end if;
+  return n;
+end;
+
+function darker(p_color varchar2, p_dark_factor number) return varchar2 is
+l_color varchar2(6) := upper(p_color);
+l_red number;
+l_green number;
+l_blue number;
+begin
+  l_red := (hextonum(substr(l_color, 1, 1)) * 16) + hextonum(substr(l_color, 2, 1)) - p_dark_factor;
+  l_red := least(255, greatest(0, l_red));
+  
+  l_green := (hextonum(substr(l_color, 3, 1)) * 16) + hextonum(substr(l_color, 4, 1)) - p_dark_factor;
+  l_green := least(255, greatest(0, l_green));
+  
+  l_blue := (hextonum(substr(l_color, 5, 1)) * 16) + hextonum(substr(l_color, 6, 1)) - p_dark_factor;
+  l_blue := least(255, greatest(0, l_blue));
+  
+  l_color := upper(to_char(l_red, 'fm0x'))
+           ||upper(to_char(l_green, 'fm0x'))
+           ||upper(to_char(l_blue, 'fm0x'));
+  
+  return l_color;
+end;
+
+function is_hex(p_hex_string varchar2, p_expected_length number := null) return boolean is
+l_ok boolean := true;
+l_hex_string varchar2(100) := upper(trim(p_hex_string));
+begin
+  if p_expected_length is not null then
+    if length(l_hex_string) <> p_expected_length then
+      return false;
+    end if;
+  end if;
+  for i in 1..length(l_hex_string) loop
+    if substr(l_hex_string, i, 1) not in ('0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F') then
+      l_ok := false;
+    end if;
+  end loop;
+  return l_ok;
+end;
+
+function resolve_color(p_category varchar2, p_color_plan varchar2) return varchar2 is
+l_color varchar2(6) := random_color;
+l_category varchar2(200) := p_category;
+l_string varchar2(200);
+l_eq_pos number;
+l_string_table type_string_table := csv_to_string_table(p_color_plan);
+begin
+  l_category := upper(trim(replace(l_category, ' ', '')));
+  
+  for i in 1..l_string_table.count loop
+    l_string := upper(trim(replace(l_string_table(i), ' ', '')));
+    l_eq_pos := length(l_category)+1;
+    
+    if l_category||'=' = substr(l_string, 1, l_eq_pos) then
+      l_color := substr(l_string, l_eq_pos + 1, 6);
+      if not is_hex(l_color, 6) then
+        l_color := 'FFFFFF';
+      end if;
+    end if;
+  end loop;
+  return l_color;
+end;
+
+function resolve_slice(p_category varchar2, p_slice_plan varchar2) return number is
+l_category varchar2(200) := p_category;
+l_string varchar2(200);
+l_eq_pos number;
+l_string_table type_string_table := csv_to_string_table(p_slice_plan);
+l_slice_offset number := 0;
+begin
+  l_category := upper(trim(replace(l_category, ' ', '')));
+  
+  for i in 1..l_string_table.count loop
+    l_string := upper(trim(replace(l_string_table(i), ' ', '')));
+    l_eq_pos := length(l_category)+1;
+    
+    if l_category||'=' = substr(l_string, 1, l_eq_pos) then
+      l_slice_offset := str2num(substr(l_string, l_eq_pos + 1));
+    end if;
+  end loop;
+  return l_slice_offset;
+end;
+
+function query_to_chart_data(p_query varchar2) return type_chart_data is
+l_cursor integer;
+l_rows integer;
+l_data type_chart_data;
+l_col_cnt integer;
+l_desc_tab dbms_sql.desc_tab2;
+type tp_integer_tab is table of integer;
+t_chars tp_integer_tab := tp_integer_tab(1, 8, 9, 96, 112);
+t_dates tp_integer_tab := tp_integer_tab(12, 178, 179, 180, 181 , 231);
+t_numerics tp_integer_tab := tp_integer_tab(2, 100, 101);
+l_bulk_size pls_integer := 200; 
+l_date_tab dbms_sql.date_table;
+l_number_tab dbms_sql.number_table;
+l_string_tab dbms_sql.varchar2_table;
+l_string varchar2(2000);
+l_number number;
+begin
+  l_data := type_chart_data();
+  
+  l_cursor := dbms_sql.open_cursor;
+  begin
+    dbms_sql.parse(l_cursor, p_query, dbms_sql.native);
+  exception when others then
+    
+    l_data.extend(1);
+    l_data(l_data.count).category := 'Bad Query';
+    l_data(l_data.count).series_values := type_series_values();
+    l_data(l_data.count).series_values.extend(1);
+    l_data(l_data.count).series_values(1) := 999;
+    dbms_sql.close_cursor(l_cursor);
+    return l_data;
+  end;
+  l_rows := dbms_sql.execute(l_cursor);
+  dbms_sql.describe_columns2(l_cursor, l_col_cnt, l_desc_tab);
+  
+  for c in 1..l_col_cnt loop
+    case
+      when l_desc_tab(c).col_type member of t_numerics then
+        dbms_sql.define_array(l_cursor, c, l_number_tab, l_bulk_size, 1);
+      when l_desc_tab(c).col_type member of t_dates then
+        dbms_sql.define_array(l_cursor, c, l_date_tab, l_bulk_size, 1);
+      when l_desc_tab(c).col_type member of t_chars then
+        dbms_sql.define_array(l_cursor, c, l_string_tab, l_bulk_size, 1);
+      else
+        null;
+    end case;
+  end loop;
+  
+  loop
+    l_rows := dbms_sql.fetch_rows(l_cursor);
+    
+    
+    if l_rows > 0 then
+      for i in 0 .. l_rows - 1 loop
+        for c in 1 .. l_col_cnt loop
+          case
+            when l_desc_tab(c).col_type member of t_numerics then
+              l_number_tab.delete;
+              dbms_sql.column_value(l_cursor, c, l_number_tab);
+              if c = 1 then
+                l_number_tab.delete;
+                dbms_sql.column_value(l_cursor, 1, l_number_tab);
+                l_data.extend(1);
+                l_data(l_data.count).category := to_char(l_number_tab(i + l_number_tab.first));
+                l_data(l_data.count).series_values := type_series_values();
+              else
+                l_data(l_data.count).series_values.extend(1);
+                l_data(l_data.count).series_values(c - 1) := l_number_tab(i + l_number_tab.first);
+              end if;
+              
+            when l_desc_tab(c).col_type member of t_dates then
+              l_date_tab.delete;
+              dbms_sql.column_value(l_cursor, c, l_date_tab);
+              if c = 1 then
+                l_date_tab.delete;
+                dbms_sql.column_value(l_cursor, 1, l_date_tab);
+                l_data.extend(1);
+                l_data(l_data.count).category := to_char(l_date_tab(i + l_date_tab.first));
+                l_data(l_data.count).series_values := type_series_values();
+              else
+                l_data(l_data.count).series_values.extend(1);
+                l_data(l_data.count).series_values(c - 1) := -1;
+              end if;
+           
+            when l_desc_tab(c).col_type member of t_chars then
+              l_string_tab.delete;
+              dbms_sql.column_value(l_cursor, c, l_string_tab);
+              if c = 1 then
+                l_string_tab.delete;
+                dbms_sql.column_value(l_cursor, 1, l_string_tab);
+                l_data.extend(1);
+                l_data(l_data.count).category := l_string_tab(i + l_string_tab.first);
+                l_data(l_data.count).series_values := type_series_values();
+              else
+                l_data(l_data.count).series_values.extend(1);
+                l_data(l_data.count).series_values(c - 1) := -2;
+              end if;
+          
+            else
+              null;
+          end case;
+        end loop;
+        
+      end loop;
+    end if;
+    exit when l_rows != l_bulk_size or l_rows >= c_max_series_rows;
+  end loop;
+   
+  dbms_sql.close_cursor(l_cursor);
+  return l_data;
+end;
+
+procedure query_to_rows
+( p_query in varchar2
+, o_rows out type_table_rows
+, o_col_headings out varchar2
+, o_col_aligns out varchar2
+, o_col_totals out type_number_table
+) is
+l_cursor integer;
+l_row_cnt integer;
+l_data type_chart_data;
+l_col_cnt integer;
+l_desc_tab dbms_sql.desc_tab2;
+type tp_integer_tab is table of integer;
+t_chars tp_integer_tab := tp_integer_tab(1, 8, 9, 96, 112);
+t_dates tp_integer_tab := tp_integer_tab(12, 178, 179, 180, 181 , 231);
+t_numerics tp_integer_tab := tp_integer_tab(2, 100, 101);
+l_bulk_size pls_integer := 200; 
+l_date_tab dbms_sql.date_table;
+l_number_tab dbms_sql.number_table;
+l_string_tab dbms_sql.varchar2_table;
+l_string varchar2(8000);
+l_number number;
+begin
+  o_rows := type_table_rows();
+  l_cursor := dbms_sql.open_cursor;
+  begin
+    dbms_sql.parse(l_cursor, p_query, dbms_sql.native);
+  exception when others then
+    
+    o_col_headings := 'Error: '||sqlerrm;
+       
+    
+    l_number := instr(p_query, chr(10));
+    l_string := p_query;
+    while l_number > 0 loop
+      o_rows.extend(1);
+      o_rows(o_rows.count) := type_string_table();
+      o_rows(o_rows.count).extend(1);
+      o_rows(o_rows.count)(1) := substr(l_string, 1, l_number-1);
+      l_string := substr(l_string, l_number + 1);
+      l_number := instr(l_string, chr(10));
+    end loop;
+    o_rows.extend(1);
+    o_rows(o_rows.count) := type_string_table();
+    o_rows(o_rows.count).extend(1);
+    o_rows(o_rows.count)(1) := substr(l_string, 1, l_number-1);
+    
+    dbms_sql.close_cursor(l_cursor);
+    return;
+  end;
+  l_row_cnt := dbms_sql.execute(l_cursor);
+  dbms_sql.describe_columns2(l_cursor, l_col_cnt, l_desc_tab);
+  
+  o_col_aligns := '';
+  o_col_headings := '';
+  o_col_totals := type_number_table();
+  o_col_totals.extend(l_col_cnt);
+  for c in 1..l_col_cnt loop
+    l_string := replace(l_desc_tab(c).col_name,',',';'); 
+    l_string := nice_heading(l_string); 
+    o_col_headings := o_col_headings||','||l_string;
+    case
+      when l_desc_tab(c).col_type member of t_numerics then
+        dbms_sql.define_array(l_cursor, c, l_number_tab, l_bulk_size, 1);
+        o_col_aligns := o_col_aligns||',R';
+        o_col_totals(c) := 0;
+      when l_desc_tab(c).col_type member of t_dates then
+        dbms_sql.define_array(l_cursor, c, l_date_tab, l_bulk_size, 1);
+        o_col_aligns := o_col_aligns||',L';
+      when l_desc_tab(c).col_type member of t_chars then
+        dbms_sql.define_array(l_cursor, c, l_string_tab, l_bulk_size, 1);
+        o_col_aligns := o_col_aligns||',L';
+      else
+        null;
+    end case;
+  end loop;
+  o_col_aligns := substr(o_col_aligns, 2); 
+  o_col_headings := substr(o_col_headings, 2);
+  
+  loop
+    l_row_cnt := dbms_sql.fetch_rows(l_cursor);
+    
+    
+    if l_row_cnt > 0 then
+      for i in 0 .. l_row_cnt - 1 loop
+        o_rows.extend(1);
+        o_rows(o_rows.count) := type_string_table();
+        o_rows(o_rows.count).extend(l_col_cnt);
+        for c in 1 .. l_col_cnt loop
+          case
+            when l_desc_tab(c).col_type member of t_numerics then
+              l_number_tab.delete;
+              dbms_sql.column_value(l_cursor, c, l_number_tab);
+              o_rows(o_rows.count)(c) := num2str(l_number_tab(i + l_number_tab.first));
+              o_col_totals(c) := o_col_totals(c) + l_number_tab(i + l_number_tab.first);
+                           
+            when l_desc_tab(c).col_type member of t_dates then
+              l_date_tab.delete;
+              dbms_sql.column_value(l_cursor, c, l_date_tab);
+              o_rows(o_rows.count)(c) := to_char(l_date_tab(i + l_date_tab.first), g_date_format);
+              
+           
+            when l_desc_tab(c).col_type member of t_chars then
+              l_string_tab.delete;
+              dbms_sql.column_value(l_cursor, c, l_string_tab);
+              o_rows(o_rows.count)(c) := l_string_tab(i + l_string_tab.first);
+              
+          
+            else
+              null;
+          end case;
+        end loop;
+        
+      end loop;
+    end if;
+    exit when l_row_cnt != l_bulk_size or l_row_cnt >= c_max_grid_rows;
+  end loop;
+   
+  dbms_sql.close_cursor(l_cursor);
+  return;
+end;
+
+
+function pivot(p_data type_chart_data, p_columns varchar2) return type_chart_data is
+l_data type_chart_data := type_chart_data();
+l_new_col_count number;
+l_columns type_string_table := csv_to_string_table(p_columns);
+begin
+  l_new_col_count := least(p_data.count, c_max_series_columns);
+  if l_new_col_count < 1 or l_columns.count < 1 then
+    l_data.extend(1);
+    l_data(l_data.count).category := 'Bad Pivot Data';
+    l_data(l_data.count).series_values := type_series_values();
+    l_data(l_data.count).series_values.extend(1);
+    l_data(l_data.count).series_values(1) := 999;
+  else
+    for i in 1..l_columns.count loop
+      l_data.extend(1);
+      l_data(l_data.count).category := l_columns(i);
+      l_data(l_data.count).series_values := type_series_values();
+      l_data(l_data.count).series_values.extend(l_new_col_count);
+      for j in 1..l_new_col_count loop
+        l_data(l_data.count).series_values(j) := p_data(j).series_values(i);
+      end loop;
+    end loop;
+  end if;
+  return l_data;
+end;
+
+procedure draw_pie_chart
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_query varchar2
+, p_color_plan varchar2 := ''
+, p_show_value boolean := true
+, p_show_percentage boolean := false
+, p_slice_plan varchar2 := ''
+) is
+l_data type_chart_data;
+begin
+  l_data := query_to_chart_data(p_query);
+  draw_pie_chart
+  ( p_x_centre => p_x_centre
+  , p_y_centre => p_y_centre
+  , p_radius => p_radius
+  , p_data => l_data
+  , p_color_plan => p_color_plan
+  , p_show_value => p_show_value
+  , p_show_percentage => p_show_percentage
+  , p_slice_plan => p_slice_plan
+  );
+end;
+
+procedure draw_pie_chart
+( p_x_centre number
+, p_y_centre number
+, p_radius number
+, p_data type_chart_data
+, p_color_plan varchar2 := ''
+, p_show_value boolean := true
+, p_show_percentage boolean := false
+, p_slice_plan varchar2 := ''
+) is
+l_total number := 0;
+l_angle number := 0;
+l_position number := 0;
+l_color varchar2(6) := '000000';
+l_1st_col varchar2(6) := '000000';
+l_tag varchar2(200);
+l_slice number := 0;
+l_thickness_offset number;
+p1 point;
+p2 point;
+begin
+  if p_data is null or p_data.count = 0 then
+    draw_rectangle(p_x_centre - p_radius, p_y_centre - p_radius, p_radius*2, p_radius*2, '222222', 'FFFFFF', 1);
+    pdfreports.text2xy(p_x_centre - p_radius + 5,  p_y_centre - p_radius, 'No data.');
+    g_x := g_settings.margin_left;
+    g_y := p_y_centre - p_radius - get(current_fontsize)*2;
+    return;
+  end if;
+  
+  for i in 1..p_data.count loop
+    l_total := l_total + p_data(i).series_values(1);
+  end loop;
+ 
+  for i in 1..p_data.count loop
+    l_angle := p_data(i).series_values(1)/l_total * 360;
+    l_position := l_position + l_angle;
+    l_color := resolve_color(p_data(i).category, p_color_plan);
+    
+    
+    
+    l_slice := resolve_slice(p_data(i).category, p_slice_plan);
+    l_tag := p_data(i).category;
+    if p_show_value then
+      l_tag := l_tag||', '||num2str(p_data(i).series_values(1));
+    end if;
+    if p_show_percentage then
+      l_tag := l_tag||' ('||num2str(round(p_data(i).series_values(1)*100/l_total,2))||'%)';
+    end if;
+    
+    if l_slice > 0 then
+      
+      p1 := get_point_on_circle(p_x_centre, p_y_centre, l_slice, l_position-l_angle/2);
+    else
+      
+      p1.x := p_x_centre;
+      p1.y := p_y_centre;
+    end if;
+    
+
+
+
+
+
+
+
+
+
+
+
+      
+      if g_edge_darkness != 0 then
+        if g_edge_darkness >= 255 then
+          
+          draw_segment_at_degree_points(p1.x, p1.y, p_radius, l_position-l_angle, l_position, l_color);
+          draw_arc_at_degree_points(p1.x, p1.y, p_radius - g_edge_thickness/2, l_position-l_angle, l_position, g_edge_thickness, '000000');
+          draw_radius(p1.x, p1.y, p_radius, l_position-l_angle, g_edge_thickness, '000000');
+          draw_radius(p1.x, p1.y, p_radius, l_position, g_edge_thickness, '000000');
+        elsif g_edge_darkness <= -255 then
+          
+          draw_segment_at_degree_points(p1.x, p1.y, p_radius, l_position-l_angle, l_position, l_color);
+          
+          draw_radius(p1.x, p1.y, p_radius, l_position-l_angle, g_edge_thickness,  'FFFFFF');
+          draw_radius(p1.x, p1.y, p_radius, l_position, g_edge_thickness,  'FFFFFF');
+        else
+          
+          draw_segment_at_degree_points(p1.x, p1.y, p_radius, l_position-l_angle, l_position, darker(l_color, g_edge_darkness));
+          if l_angle > 90 then
+            l_thickness_offset := greatest(1, g_edge_thickness);
+          else
+            l_thickness_offset := least((g_edge_thickness+1)/abs(sin(l_angle*c_pi/180)), p_radius/2 );
+          end if;
+          
+          p2 := get_point_on_circle(p1.x, p1.y, l_thickness_offset, l_position-l_angle/2);
+          draw_segment_at_degree_points(p2.x, p2.y, p_radius - l_thickness_offset, l_position-l_angle, l_position, l_color);
+          draw_arc_at_degree_points(p1.x, p1.y, p_radius - g_edge_thickness/2, l_position-l_angle, l_position, g_edge_thickness, darker(l_color, g_edge_darkness));
+        end if;
+      else
+        draw_segment_at_degree_points(p1.x, p1.y, p_radius, l_position-l_angle, l_position, l_color);
+      end if;
+      draw_radial_tag(p1.x, p1.y, p_radius, l_position-l_angle/2, l_tag);
+        
+       
+      
+      
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+      
+      
+    
+  end loop;
+  g_x := g_settings.margin_left;
+  g_y := p_y_centre - p_radius - get(current_fontsize)*2;
+end;
+
+procedure draw_sshbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_query varchar2
+, p_chart_width number := 0
+, p_line_height number := 0
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+) is
+l_data type_chart_data;
+begin
+  l_data := query_to_chart_data(p_query);
+  draw_sshbar_chart
+  ( p_x_top_left => p_x_top_left
+  , p_y_top_left => p_y_top_left
+  , p_data => l_data
+  , p_chart_width => p_chart_width
+  , p_line_height => p_line_height
+  , p_color_plan => p_color_plan
+  , p_gap => p_gap
+  , p_threshold_line => p_threshold_line
+  , p_show_value => p_show_value
+  , p_show_axes => p_show_axes
+  );
+end;
+
+procedure draw_sshbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_data type_chart_data
+, p_chart_width number := 0
+, p_line_height number := 0
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+) is
+l_txt_offset number := 2;
+l_chart_width number := p_chart_width;
+l_line_height number := p_line_height;
+l_max_value number := -99999999999999;
+
+l_max_tag_size number := 0;
+l_max_value_size number := 0;
+l_x number := p_x_top_left;
+l_y number := p_y_top_left;
+l_color varchar2(6) := '000000';
+l_tag varchar2(200);
+l_bar_len number;
+l_y_page_start number := p_y_top_left;
+begin
+  if l_chart_width = 0 then
+    l_chart_width := g_settings.page_width;
+  end if;
+  if l_line_height = 0 then
+    l_line_height := get(current_fontsize) + p_gap;
+  end if;
+    
+  if p_data is null or p_data.count = 0 then
+    draw_rectangle(l_x, l_y - l_line_height*2, l_chart_width, l_line_height*2, 'dd0000', 'FFFFFF', 1);
+    pdfreports.text2xy(l_x + p_gap,  l_y - l_line_height, 'No data.');
+    g_x := g_settings.margin_left;
+    g_y := l_y - l_line_height*3;
+    return;
+  end if;
+  
+  l_txt_offset := (l_line_height - get(current_fontsize))/2;
+  
+  for i in 1..p_data.count loop
+    
+    l_max_value := greatest(l_max_value, p_data(i).series_values(1));
+    l_max_tag_size := greatest(l_max_tag_size, text_length(p_data(i).category));
+    l_max_value_size := greatest(l_max_value_size, text_length(num2str(p_data(i).series_values(1))));
+  end loop;
+   
+  l_x := l_x + l_max_tag_size + p_gap;
+  
+  for i in 1..p_data.count loop
+    l_y := l_y - l_line_height;
+    if l_y < g_settings.margin_bottom then
+      if p_threshold_line is not null then
+        l_bar_len := p_threshold_line/l_max_value * (l_chart_width - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+        vertical_line(l_x + p_gap + l_bar_len, g_settings.margin_bottom, l_y_page_start - g_settings.margin_bottom, 1, 'FF0000');
+      end if;
+      if p_show_axes then
+        vertical_line(l_x, g_settings.margin_bottom, l_y_page_start - g_settings.margin_bottom, 1);
+      end if;
+      
+      new_page;
+      l_y := g_settings.page_height - g_settings.margin_bottom - l_line_height;
+      l_y_page_start := l_y + l_line_height;
+    end if;
+    text2xy(l_x - text_length(p_data(i).category) - p_gap, l_y + l_txt_offset, p_data(i).category);
+    l_bar_len := p_data(i).series_values(1)/l_max_value * (l_chart_width - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+    l_color := resolve_color(p_data(i).category, p_color_plan);
+    
+    if g_edge_darkness != 0 then
+      draw_rectangle(l_x, l_y, l_bar_len, l_line_height - p_gap, darker(l_color, g_edge_darkness), l_color, g_edge_thickness);
+    else
+      draw_rectangle(l_x, l_y, l_bar_len, l_line_height - p_gap, l_color, l_color, g_edge_thickness);
+    end if;
+    
+    if p_show_value then
+      text2xy(l_x + l_bar_len + p_gap, l_y + l_txt_offset, num2str(p_data(i).series_values(1)));
+    end if;
+  end loop;
+  
+  if p_threshold_line is not null then
+    l_bar_len := p_threshold_line/l_max_value * (l_chart_width - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+    vertical_line(l_x + p_gap + l_bar_len, l_y, l_y_page_start - l_y, 1, 'FF0000');
+    l_tag := num2str(p_threshold_line);
+    set_color('FF0000');
+    text2xy(l_x + l_bar_len + p_gap - text_length(l_tag)/2, l_y - get(current_fontsize), l_tag);
+    set_color('000000');
+  end if;
+  
+  if p_show_axes then
+    horizontal_line(l_x, l_y, l_chart_width - l_max_tag_size, 1);
+    vertical_line(l_x, l_y, l_y_page_start - l_y, 1);
+    text2xy(l_x - text_length('0')/2, l_y - get(current_fontsize), '0');
+  end if;
+  
+  l_y := l_y - get(current_fontsize) - p_gap;
+  if p_threshold_line is not null or p_show_axes then
+    l_y := l_y - get(current_fontsize);
+  end if;
+  g_x := g_settings.margin_left;
+  g_y := l_y;
+end;
+
+procedure draw_ssvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_query varchar2
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+) is
+l_data type_chart_data;
+begin
+  l_data := query_to_chart_data(p_query);
+  draw_ssvbar_chart
+  ( p_x_top_left => p_x_top_left
+  , p_y_top_left => p_y_top_left
+  , p_width => p_width
+  , p_height => p_height
+  , p_data => l_data
+  , p_color_plan => p_color_plan
+  , p_gap => p_gap
+  , p_threshold_line => p_threshold_line
+  , p_show_value => p_show_value
+  , p_show_axes => p_show_axes
+  );
+end;
+
+procedure draw_ssvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_data type_chart_data
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+) is
+l_txt_offset number := 2;
+l_bar_width number := 20;
+l_bar_height number;
+l_max_value number := -99999999999999;
+
+l_max_tag_size number := 0;
+l_max_value_size number := 0;
+l_x_position number := p_x_top_left;
+l_y_position number := p_y_top_left;
+l_color varchar2(6) := '000000';
+l_tag varchar2(200);
+begin
+  if p_data is null or p_data.count = 0 then
+    draw_rectangle(p_x_top_left, p_y_top_left - p_height, p_width, p_height, '222222', 'FFFFFF', 1);
+    pdfreports.text2xy(p_x_top_left + 5,  p_y_top_left - p_height/2, 'No data.');
+    g_x := g_settings.margin_left;
+    g_y := p_y_top_left - p_height - get(current_fontsize)*2;
+    return;
+  end if;
+  
+  l_bar_width := (p_width)/p_data.count;
+  l_txt_offset := (l_bar_width - get(current_fontsize))/2;
+  
+  for i in 1..p_data.count loop
+    
+    l_max_value := greatest(l_max_value, p_data(i).series_values(1));
+    l_max_tag_size := greatest(l_max_tag_size, text_length(p_data(i).category));
+    l_max_value_size := greatest(l_max_value_size, text_length(num2str(p_data(i).series_values(1))));
+  end loop;
+  
+  l_y_position := p_y_top_left - p_height + l_max_tag_size; 
+    
+  if p_threshold_line is not null then
+    l_bar_height := p_threshold_line/l_max_value * (p_height - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+    horizontal_line(p_x_top_left, l_y_position + l_bar_height, p_width, 1, 'FF0000');
+    l_tag := num2str(p_threshold_line);
+    set_color('FF0000');
+    text2xy(p_x_top_left - p_gap - text_length(l_tag), l_y_position + l_bar_height - get(current_fontsize)/2, l_tag);
+    set_color('000000');
+  end if;
+  
+  for i in 1..p_data.count loop
+    l_x_position := p_x_top_left + (l_bar_width * (i-1));
+    text2xy(l_x_position +  l_txt_offset + p_gap, l_y_position - text_length(p_data(i).category) - p_gap, p_data(i).category, 90);
+    l_bar_height := p_data(i).series_values(1)/l_max_value * (p_height - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+    l_color := resolve_color(p_data(i).category, p_color_plan);
+    
+    if g_edge_darkness != 0 then
+      draw_rectangle(l_x_position, l_y_position, l_bar_width - p_gap, l_bar_height, darker(l_color, g_edge_darkness), l_color, g_edge_thickness);
+    else
+      draw_rectangle(l_x_position, l_y_position, l_bar_width - p_gap, l_bar_height, l_color, l_color, g_edge_thickness);
+    end if;
+    
+    if p_show_value then
+      text2xy(l_x_position +  l_txt_offset + p_gap, l_y_position + l_bar_height + p_gap, num2str(p_data(i).series_values(1)), 90);
+    end if;
+  end loop;
+    
+  if p_show_axes then
+    horizontal_line(p_x_top_left, l_y_position, p_width, 1);
+    vertical_line(p_x_top_left, l_y_position, p_height - l_max_tag_size, 1);
+    text2xy(p_x_top_left - p_gap - text_length('0')
+    , l_y_position - get(current_fontsize)/2, '0');
+  end if;
+  
+  g_x := g_settings.margin_left;
+  g_y := p_y_top_left - p_height - get(current_fontsize)*2;
+end;
+
+procedure draw_msvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_query varchar2
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_stack boolean := false
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+, p_show_legend boolean := false
+) is
+l_data type_chart_data;
+begin
+  l_data := query_to_chart_data(p_query);
+  draw_msvbar_chart
+  ( p_x_top_left => p_x_top_left
+  , p_y_top_left => p_y_top_left
+  , p_width => p_width
+  , p_height => p_height
+  , p_data => l_data
+  , p_series_columns => p_series_columns
+  , p_color_plan => p_color_plan
+  , p_gap => p_gap
+  , p_stack => p_stack
+  , p_threshold_line => p_threshold_line
+  , p_show_value => p_show_value
+  , p_show_axes => p_show_axes
+  , p_show_legend => p_show_legend
+  );
+end;
+  
+procedure draw_msvbar_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_data type_chart_data
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gap number := 4
+, p_stack boolean := false
+, p_threshold_line number := null
+, p_show_value boolean := true
+, p_show_axes boolean := false
+, p_show_legend boolean := false
+) is
+l_txt_offset number := 2;
+l_bar_width number := 20;
+l_bar_height number;
+l_max_value number := -99999999999999;
+
+l_max_tag_size number := 0;
+l_max_value_size number := 0;
+l_x_position number := p_x_top_left;
+l_y_position number := p_y_top_left;
+l_tag varchar2(200);
+l_sum_value number := 0;
+l_series_count number;
+l_offset number;
+l_series_tags type_string_table := csv_to_string_table(p_series_columns);
+l_series_colors type_string_table := type_string_table();
+l_color varchar2(6);
+begin
+  if p_data is null or p_data.count = 0 then
+    draw_rectangle(p_x_top_left, p_y_top_left - p_height, p_width, p_height, '222222', 'FFFFFF', 1);
+    pdfreports.text2xy(p_x_top_left + 5,  p_y_top_left - p_height/2, 'No data.');
+    g_x := g_settings.margin_left;
+    g_y := p_y_top_left - p_height - get(current_fontsize)*2;
+    return;
+  end if;
+
+  for i in l_series_tags.count+1..c_max_series_columns loop
+    l_series_tags.extend(1);
+    l_series_tags(l_series_tags.count) := 'Column'||to_char(i);
+  end loop;
+  l_series_colors.extend(c_max_series_columns);
+  for i in 1..c_max_series_columns loop
+    l_series_colors(i) := resolve_color(l_series_tags(i), p_color_plan);
+    
+  end loop;
+ 
+  l_bar_width := p_width/p_data.count;
+  l_txt_offset := (l_bar_width - get(current_fontsize))/2;
+  if p_data.count > 0 then
+    l_series_count := p_data(1).series_values.count;
+  end if;
+  
+  for i in 1..p_data.count loop
+    if p_stack then
+      l_sum_value := 0;
+      for j in 1..l_series_count loop
+        l_sum_value :=  l_sum_value + p_data(i).series_values(j);
+        l_max_value_size := greatest(l_max_value_size, text_length(num2str(p_data(i).series_values(j))));
+      end loop;
+      
+      l_max_value := greatest(l_max_value, l_sum_value);
+    else
+      for j in 1..l_series_count loop
+        
+        l_max_value := greatest(l_max_value, p_data(i).series_values(j));
+        l_max_value_size := greatest(l_max_value_size, text_length(num2str(p_data(i).series_values(j))));
+      end loop;
+    end if;
+    l_max_tag_size := greatest(l_max_tag_size, text_length(p_data(i).category));
+  end loop;
+  l_y_position := p_y_top_left - p_height + l_max_tag_size; 
+  
+  if p_threshold_line is not null then
+    l_bar_height := p_threshold_line/l_max_value * (p_height - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+    horizontal_line(p_x_top_left, l_y_position + l_bar_height, p_width, 1, 'FF0000');
+    l_tag := num2str(p_threshold_line);
+    set_color('FF0000');
+    text2xy(p_x_top_left - p_gap - text_length(l_tag), l_y_position + l_bar_height - get(current_fontsize)/2, l_tag);
+    set_color('000000');
+  end if;
+  
+  for i in 1..p_data.count loop
+    l_x_position := p_x_top_left + (l_bar_width * (i-1));
+    text2xy(l_x_position + l_txt_offset + p_gap, l_y_position - text_length(p_data(i).category) - p_gap, p_data(i).category, 90);
+    if p_stack then
+      
+      l_offset := 0;
+      for j in 1..l_series_count loop
+        l_color := l_series_colors(j);
+        l_bar_height := p_data(i).series_values(j)/l_max_value * (p_height - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+        if l_bar_height > 0 then
+          draw_rectangle(l_x_position, l_y_position + l_offset, l_bar_width - p_gap, l_bar_height, darker(l_color,36), l_color, 1);
+          l_offset := l_offset + l_bar_height;
+        end if;
+        if p_show_value then
+          if l_bar_height > get(current_fontsize) then
+            text2xy(l_x_position + l_bar_width - p_gap - text_length(num2str(p_data(i).series_values(j))) - 2
+            , l_y_position + l_offset - get(current_fontsize), num2str(p_data(i).series_values(j)));
+          end if;
+        end if;
+      end loop;
+    else
+      
+      for j in 1..l_series_count loop
+        l_color := l_series_colors(j);
+        l_bar_height := p_data(i).series_values(j)/l_max_value * (p_height - p_gap - l_max_tag_size - p_gap - l_max_value_size);
+        if l_bar_height > 0 then
+          if g_edge_darkness != 0 then
+            draw_rectangle(l_x_position + (l_bar_width - p_gap)/l_series_count*(j-1), l_y_position, (l_bar_width- p_gap)/l_series_count, l_bar_height, darker(l_color, g_edge_darkness), l_color, g_edge_thickness);
+          else
+            draw_rectangle(l_x_position + (l_bar_width - p_gap)/l_series_count*(j-1), l_y_position, (l_bar_width- p_gap)/l_series_count, l_bar_height, l_color, l_color, g_edge_thickness);
+          end if;
+        end if;
+        if p_show_value then
+          text2xy(l_x_position + (l_bar_width - p_gap)/l_series_count*(j-1) + l_txt_offset/l_series_count + 2
+          , l_y_position + l_bar_height + p_gap, num2str(p_data(i).series_values(j)), 90);
+        end if;
+      end loop;
+    end if;
+  end loop;
+   
+  if p_show_axes then
+    horizontal_line(p_x_top_left, l_y_position, p_width, 1);
+    vertical_line(p_x_top_left, l_y_position, p_height - l_max_tag_size, 1);
+    text2xy(p_x_top_left - p_gap - text_length('0')
+    , l_y_position - get(current_fontsize)/2, '0');
+  end if;
+  
+  if p_show_legend then
+    l_offset := 0;
+    for j in 1..l_series_count loop
+      l_color := l_series_colors(j);
+      l_y_position := p_y_top_left - p_height - get(current_fontsize)- p_gap;
+      if g_edge_darkness != 0 then
+        draw_rectangle(p_x_top_left + l_offset, l_y_position, 10, 10, darker(l_color, g_edge_darkness), l_color, g_edge_thickness);
+      else
+        draw_rectangle(p_x_top_left + l_offset, l_y_position, 10, 10, l_color, l_color, g_edge_thickness);
+      end if;
+      text2xy(p_x_top_left + l_offset + 10 + 2, l_y_position, l_series_tags(j));
+      l_offset := l_offset + text_length(l_series_tags(j)) + 30;
+     end loop;
+  end if;
+  g_x := g_settings.margin_left;
+  g_y := p_y_top_left - p_height - get(current_fontsize)*3;
+end;
+
+procedure draw_msvline_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_query varchar2
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gridlines varchar2 := ''
+, p_threshold_line number := null
+, p_show_legend boolean := false
+, p_line_size number := 1
+, p_dot_size number := 0     
+, p_dot_shape varchar := 'C' 
+, p_fill_area boolean := false
+) is
+l_data type_chart_data;
+begin
+  l_data := query_to_chart_data(p_query);
+  draw_msvline_chart
+  ( p_x_top_left => p_x_top_left
+  , p_y_top_left => p_y_top_left
+  , p_width => p_width
+  , p_height => p_height
+  , p_data => l_data
+  , p_series_columns => p_series_columns
+  , p_color_plan => p_color_plan
+  , p_gridlines => p_gridlines
+  , p_threshold_line => p_threshold_line
+  , p_show_legend => p_show_legend
+  , p_line_size => p_line_size
+  , p_dot_size => p_dot_size
+  , p_dot_shape => p_dot_shape
+  , p_fill_area => p_fill_area
+  );
+end;
+
+procedure draw_msvline_chart
+( p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_data type_chart_data
+, p_series_columns varchar2 := ''
+, p_color_plan varchar2 := ''
+, p_gridlines varchar2 := ''
+, p_threshold_line number := null
+, p_show_legend boolean := false
+, p_line_size number := 1
+, p_dot_size number := 0     
+, p_dot_shape varchar := 'C' 
+, p_fill_area boolean := false
+) is
+l_pt type_point_table := type_point_table();
+type type_point_series is table of type_point_table;
+l_ps type_point_series := type_point_series();
+l_txt_offset number := 2;
+l_bar_width number := 20;
+l_bar_height number;
+l_max_value number := -99999999999999;
+
+l_max_tag_size number := 0;
+
+l_max_grid_tag_size number := 0;
+l_x_position number := p_x_top_left;
+l_y_position number := p_y_top_left;
+l_string varchar2(2000);
+l_value number := 0;
+l_series_count number;
+l_offset number;
+l_series_tags type_string_table := csv_to_string_table(p_series_columns);
+l_series_colors type_string_table := type_string_table();
+l_grid_tags type_string_table := csv_to_string_table(p_gridlines);
+l_grid_tag_values type_number_table := type_number_table();
+l_color varchar2(6);
+l_tag varchar2(200);
+l_point point;
+l_point_size number := p_line_size;
+begin
+  if p_data is null or p_data.count = 0 then
+    draw_rectangle(p_x_top_left, p_y_top_left - p_height, p_width, p_height, '222222', 'FFFFFF', 1);
+    text2xy(p_x_top_left + 5,  p_y_top_left - p_height/2, 'No data.');
+    g_x := g_settings.margin_left;
+    g_y := p_y_top_left - p_height - get(current_fontsize)*2;
+    return;
+  end if;
+
+  for i in l_series_tags.count+1..c_max_series_columns loop
+    l_series_tags.extend(1);
+    l_series_tags(l_series_tags.count) := 'Column'||to_char(i);
+  end loop;
+  l_series_colors.extend(c_max_series_columns);
+  for i in 1..c_max_series_columns loop
+    l_series_colors(i) := resolve_color(l_series_tags(i), p_color_plan);
+    
+  end loop;
+ 
+  l_bar_width := p_width/p_data.count;
+  l_txt_offset := (l_bar_width - get(current_fontsize))/2;
+  if p_data.count > 0 then
+    l_series_count := p_data(1).series_values.count;
+  end if;
+  
+  for i in 1..p_data.count loop
+    for j in 1..l_series_count loop
+      
+      l_max_value := greatest(l_max_value, p_data(i).series_values(j));
+      
+    end loop;
+    l_max_tag_size := greatest(l_max_tag_size, text_length(p_data(i).category));
+  end loop;
+  l_y_position := p_y_top_left - p_height + l_max_tag_size; 
+  
+  
+  for i in 1..l_grid_tags.count loop
+    
+    l_value := str2num(l_grid_tags(i));
+    l_max_grid_tag_size := greatest(l_max_grid_tag_size, text_length(l_grid_tags(i))+2);
+    l_grid_tag_values.extend(1);
+    l_grid_tag_values(l_grid_tag_values.count) := l_value;
+    l_max_value := greatest(l_max_value, l_value);
+  end loop;
+       
+  
+  for j in 1..l_series_count loop
+    l_pt.delete;
+    for i in 1..p_data.count loop
+      l_x_position := p_x_top_left + l_max_grid_tag_size + (l_bar_width * (i-1)) + l_point_size/2 + l_bar_width/2;
+      l_bar_height := p_data(i).series_values(j)/l_max_value * (p_height - l_max_tag_size);
+      l_point.x := l_x_position;
+      l_point.y := l_y_position + l_bar_height;
+      l_pt.extend(1);
+      l_pt(l_pt.count) := l_point;
+    end loop;
+    l_ps.extend(1);
+    l_ps(l_ps.count) := l_pt;
+  end loop;
+  
+  
+  if p_fill_area then
+    for j in 1..l_series_count loop
+      l_color := l_series_colors(j);
+      l_pt.delete;
+      l_pt := l_ps(j);
+      l_point.x := l_pt(l_pt.count).x;
+      l_point.y := l_y_position;
+      l_pt.extend(1);
+      l_pt(l_pt.count) := l_point;
+      l_point.x := l_pt(1).x;
+      l_point.y := l_y_position;
+      l_pt.extend(1);
+      l_pt(l_pt.count) := l_point;
+      l_pt.extend(1);
+      l_pt(l_pt.count) := l_pt(1);
+      draw_area(l_pt, darker(l_color, -156));
+    end loop;
+  end if;
+   
+  
+  for i in 1..l_grid_tag_values.count loop
+    
+    if l_grid_tag_values(i) > 0 then
+      l_bar_height := l_grid_tag_values(i)/l_max_value * (p_height - l_max_tag_size);
+      horizontal_line(p_x_top_left + l_max_grid_tag_size, l_y_position + l_bar_height, p_width, 1, g_chart_grid_line_color);
+      text2xy(p_x_top_left + l_max_grid_tag_size - 4 - text_length(l_grid_tags(i))
+      , l_y_position + l_bar_height - get(current_fontsize)/2, l_grid_tags(i));
+    end if;
+  end loop;
+
+  
+  l_string := '?????';
+  for i in 1..p_data.count loop
+    
+    if l_string != p_data(i).category then
+      l_x_position := p_x_top_left + l_max_grid_tag_size + (l_bar_width * (i-1)) + l_bar_width/2;
+      text2xy(l_x_position + get(current_fontsize)/2, l_y_position - text_length(p_data(i).category) - 4, p_data(i).category, 90);
+      vertical_line(l_x_position, p_y_top_left - p_height + l_max_tag_size, p_height - l_max_tag_size, 1, g_chart_grid_line_color);
+    end if;
+    l_string := p_data(i).category;
+  end loop;
+   
+  
+  if p_threshold_line is not null then
+    l_bar_height := p_threshold_line/l_max_value * (p_height - l_max_tag_size);
+    horizontal_line(p_x_top_left + l_max_grid_tag_size, l_y_position + l_bar_height, p_width, 1, 'FF0000');
+    l_tag := num2str(p_threshold_line);
+    text2xy(p_x_top_left + l_max_grid_tag_size - 4 - text_length(l_tag), l_y_position + l_bar_height - get(current_fontsize)/2, l_tag);
+  end if;
+  
+  
+  for j in 1..l_series_count loop
+    l_color := l_series_colors(j);
+    
+    for i in 1..l_ps(j).count loop
+      if i > 1 then
+        
+        draw_line(l_ps(j)(i-1).x, l_ps(j)(i-1).y, l_ps(j)(i).x, l_ps(j)(i).y, l_point_size, l_color);
+      end if;
+      if p_dot_size > 0 then
+        if p_dot_shape = 'S' then
+          if g_edge_darkness != 0 then
+            draw_rectangle( l_ps(j)(i).x - p_dot_size/2, l_ps(j)(i).y - p_dot_size/2, p_dot_size, p_dot_size, darker(l_color, g_edge_darkness), l_color, g_edge_thickness);
+          else
+            draw_rectangle( l_ps(j)(i).x - p_dot_size/2, l_ps(j)(i).y - p_dot_size/2, p_dot_size, p_dot_size, l_color, l_color, g_edge_thickness);
+          end if;
+        else
+          draw_segment_at_degree_points(l_ps(j)(i).x, l_ps(j)(i).y, p_dot_size, 0, 360, l_color);
+          if g_edge_thickness > 0 then
+            draw_circle(l_ps(j)(i).x, l_ps(j)(i).y, p_dot_size, g_edge_thickness, darker(l_color, g_edge_darkness));
+          end if;
+        end if;
+      end if;
+    end loop;
+    l_ps.extend(1);
+    l_ps(l_ps.count) := l_pt;
+  end loop;
+   
+  
+  horizontal_line(p_x_top_left + l_max_grid_tag_size, l_y_position, p_width, 1, g_axes_color);
+  vertical_line(p_x_top_left + l_max_grid_tag_size, l_y_position, p_height - l_max_tag_size, 1, g_axes_color);
+  vertical_line(p_x_top_left + l_max_grid_tag_size + p_width, l_y_position, p_height - l_max_tag_size, 1, g_axes_color);
+  text2xy(p_x_top_left + l_max_grid_tag_size - 4 - text_length('0')
+  , l_y_position - get(current_fontsize)/2, '0');
+   
+  
+  if p_show_legend then
+    l_offset := l_max_grid_tag_size;
+    for j in 1..l_series_count loop
+      l_color := l_series_colors(j);
+      l_y_position := p_y_top_left - p_height - get(current_fontsize)*2;
+      horizontal_line(p_x_top_left + l_offset, l_y_position + get(current_fontsize)/2, 15, 2, l_color);
+      text2xy(p_x_top_left + l_offset + 15 + 2, l_y_position + 2, l_series_tags(j));
+      l_offset := l_offset + text_length(l_series_tags(j)) + 35;
+    end loop;
+  end if;
+  
+  g_x := g_settings.margin_left;
+  g_y := p_y_top_left - p_height - get(current_fontsize)*3;
+end;
+
+
+procedure draw_cell
+( p_x number
+, p_y number
+, p_width number
+, p_height number
+, p_text varchar2
+, p_line_color varchar2 := '000000'
+, p_fill_color varchar2 := 'FFFFFF'
+, p_line_width number := 0.5
+, p_cell_margin number := 2
+, p_align varchar2 := 'left'
+, p_split_char varchar2 := ''
+) is
+l_x number;
+l_y number;
+l_line_height number;
+l_content_length number;
+l_line_color varchar2(10) := p_line_color;
+l_fill_color varchar2(10) := p_fill_color;
+l_lines type_string_table;
+l_str varchar2(2000);
+begin
+
+
+
+
+
+  if not is_hex(l_line_color,6) then
+    l_line_color := '000000';
+  end if;
+  if not is_hex(l_fill_color,6) then
+    l_fill_color := 'FFFFFF';
+  end if;
+  
+  
+  draw_rectangle
+  ( p_x => p_x - p_line_width
+  , p_y => p_y - p_line_width
+  , p_width => p_width + p_line_width
+  , p_height => p_height + p_line_width
+  , p_line_color => l_line_color
+  , p_fill_color => l_fill_color
+  , p_line_width => p_line_width
+  );
+  
+  
+  
+  
+  if p_split_char is not null then
+    l_str := replace(p_text, p_split_char||p_split_char, '~~');
+    l_str := replace(l_str, p_split_char, ',');
+    l_str := replace(l_str, '~~', p_split_char);
+    l_lines := csv_to_string_table(l_str);
+  else
+    l_lines := type_string_table(); l_lines.extend(1); l_lines(1) := p_text;
+    
+  end if;
+  
+  l_line_height := p_cell_margin + get(current_fontsize)*0.85;
+  l_y := p_y + p_height - l_line_height;
+  for i in 1..l_lines.count loop
+    
+    if upper(substr(p_align,1,1)) = 'R' then 
+      l_content_length := text_length(l_lines(i));
+      if l_content_length > p_width then 
+        l_x := p_x; 
+      else
+        l_x := p_x + p_width - p_cell_margin - l_content_length;
+      end if;
+    elsif upper(substr(p_align,1,1)) = 'C' then 
+      l_content_length := text_length(l_lines(i));
+      if l_content_length > p_width then 
+        l_x := p_x; 
+      else
+        l_x := p_x + (p_width - l_content_length)/2;
+      end if;
+    else 
+      l_x := p_x + p_cell_margin;
+    end if;
+    text2xy(p_x => l_x, p_y => l_y, p_text => l_lines(i));
+    l_y := l_y - l_line_height;
+  end loop;
+end;
+
+procedure draw_cell
+( p_x number
+, p_y number
+, p_width number
+, p_height number
+, p_text varchar2
+, p_wrap varchar2 := 'No' 
+, p_horizontal_align varchar2 := 'Left' 
+, p_vertical_align varchar2 := 'Top' 
+, p_horizontal_margin number := 2
+, p_vertical_margin number := 2
+, p_fill_color varchar2 := 'FFFFFF'
+, p_line_width number := 0.5
+, p_top_line_color varchar2 := '000000'
+, p_left_line_color varchar2 := '000000'
+, p_right_line_color varchar2 := '000000'
+, p_bottom_line_color varchar2 := '000000'
+) is
+l_wrap_char varchar2(1) := upper(substr(p_wrap,1,1));
+l_align_char varchar2(1) := upper(substr(p_horizontal_align,1,1));
+l_v_align_char varchar2(1) := upper(substr(p_vertical_align,1,1));
+l_text_length number;
+l_string_length number;
+l_x number;
+l_y number;
+l_line_height number;
+begin
+
+  draw_rectangle_top_left
+  ( p_x => p_x
+  , p_y => p_y
+  , p_width => p_width
+  , p_height => p_height
+  , p_line_color => null
+  , p_fill_color => p_fill_color
+  , p_line_width => null
+  );
+  
+  if p_line_width > 0 then
+    draw_line(p_x, p_y, p_x + p_width, p_y, p_line_width, p_top_line_color);
+    draw_line(p_x, p_y, p_x, p_y - p_height, p_line_width, p_left_line_color);
+    draw_line(p_x + p_width, p_y, p_x + p_width, p_y - p_height, p_line_width, p_right_line_color);
+    draw_line(p_x, p_y - p_height, p_x + p_width, p_y - p_height, p_line_width, p_bottom_line_color);
+  end if;
+  
+  if l_wrap_char = 'Y' then
+    
+    write_text
+    ( p_text => p_text
+    , p_x_top_left => p_x + p_horizontal_margin
+    , p_y_top_left => p_y - p_vertical_margin
+    , p_width => p_width  - p_horizontal_margin*2
+    , p_height => p_height - p_vertical_margin*2
+    , p_align => p_horizontal_align
+    );
+  else
+    l_line_height := p_vertical_margin + get(current_fontsize)*0.85;
+    if l_v_align_char = 'C' then
+      l_y := p_y - (p_height/2) - (l_line_height/2);
+    elsif l_v_align_char = 'B' then
+      l_y := p_y - p_height + p_vertical_margin*2;
+    else 
+      l_y := p_y - l_line_height;
+    end if;
+    
+    l_text_length := text_length(p_text);
+    l_string_length := length(p_text);
+    if l_text_length > p_width then
+      l_string_length := trunc(p_width/l_text_length * l_string_length);
+      l_x := p_x;
+    else
+      if l_align_char = 'R' then 
+        l_x := p_x + p_width - p_horizontal_margin - l_text_length;
+      elsif l_align_char = 'C' then 
+        l_x := p_x + (p_width - l_text_length)/2;
+      else 
+        l_x := p_x + p_horizontal_margin;
+      end if;
+    end if;
+    text2xy(p_x => l_x, p_y => l_y, p_text => substr(p_text, 1, l_string_length));
+  end if;
+end;
+
+
+
+procedure draw_chart_data_grid
+( p_x_top_left number
+, p_y_top_left number
+, p_data type_chart_data
+, p_series_columns varchar2 := ''
+, p_column_widths varchar2 := ''
+, p_header_height number := null
+, p_line_height number := null
+, p_line_color varchar2 := '000000'
+, p_header_bg_color varchar2 := 'DDDDDD'
+, p_bg_color varchar2 := 'FFFFFF'
+, p_alt_bg_color varchar2 := ''
+, p_cell_margin number := 2
+, p_total_columns varchar2 := ''
+) is
+l_rows type_table_rows;
+l_column_alignments varchar2(2000) := 'L';
+l_col_totals type_number_table;
+begin
+  l_rows := type_table_rows();
+  l_rows.extend(p_data.count);
+  l_col_totals := type_number_table();
+  l_col_totals.extend(p_data(1).series_values.count + 1);
+  l_col_totals(1) := null;
+  for c in 2..p_data(1).series_values.count + 1 loop
+    l_column_alignments := l_column_alignments||',R';
+    l_col_totals(c) := 0;
+  end loop;
+  
+  for r in 1..p_data.count loop
+    l_rows(r) := type_string_table();
+    l_rows(r).extend(p_data(r).series_values.count + 1);
+    l_rows(r)(1) := p_data(r).category;
+    for c in 2..p_data(r).series_values.count + 1 loop
+      l_rows(r)(c) := num2str(p_data(r).series_values(c - 1));
+      l_col_totals(c) := l_col_totals(c) + p_data(r).series_values(c - 1);
+    end loop;
+  end loop;
+  
+  draw_table_grid
+  ( p_x_top_left => p_x_top_left
+  , p_y_top_left => p_y_top_left
+  , p_rows => l_rows
+  , p_column_headings => p_series_columns
+  , p_column_widths => p_column_widths
+  , p_column_alignments => l_column_alignments
+  , p_col_totals => l_col_totals
+  , p_header_height => p_header_height
+  , p_line_height => p_line_height
+  , p_line_color => p_line_color
+  , p_header_bg_color => p_header_bg_color
+  , p_bg_color => p_bg_color
+  , p_alt_bg_color => p_alt_bg_color
+  , p_cell_margin => p_cell_margin
+  , p_total_columns => p_total_columns
+  );
+end;
+
+procedure draw_table_grid
+( p_x_top_left number
+, p_y_top_left number
+, p_query varchar2
+, p_column_headings varchar2 := ''
+, p_column_widths varchar2 := ''
+, p_column_alignments varchar2 := ''
+, p_header_height number := null
+, p_line_height number := null
+, p_line_color varchar2 := '000000'
+, p_header_bg_color varchar2 := 'DDDDDD'
+, p_bg_color varchar2 := 'FFFFFF'
+, p_alt_bg_color varchar2 := ''
+, p_cell_margin number := 2
+, p_total_columns varchar2 := ''
+) is
+l_rows type_table_rows;
+l_col_headings varchar2(2000) := '';
+l_col_aligns varchar2(2000) := '';
+l_col_totals type_number_table;
+l_heads1 type_string_table := csv_to_string_table(p_column_headings);
+l_align1 type_string_table := csv_to_string_table(p_column_alignments);
+l_heads2 type_string_table;
+l_align2 type_string_table;
+begin
+  query_to_rows(p_query, l_rows, l_col_headings, l_col_aligns, l_col_totals);
+  
+  if l_rows is null or l_rows.count = 0 or l_rows(1).count = 0  or l_col_aligns is null then
+    if substr(l_col_headings,1,6) = 'Error:' then
+      write_text
+      ( p_text => l_col_headings
+      , p_x_top_left => p_x_top_left
+      , p_y_top_left => p_y_top_left
+      );
+    else
+      write_text
+      ( p_text => 'No data found.'
+      , p_x_top_left => p_x_top_left
+      , p_y_top_left => p_y_top_left
+      );
+    end if;
+    write_text
+    ( p_text => p_query
+    , p_x_top_left => p_x_top_left
+    , p_y_top_left => p_y_top_left - 30
+    );
+    return;
+  end if;
+  l_heads2 := csv_to_string_table(l_col_headings);
+  l_align2 := csv_to_string_table(l_col_aligns);
+  
+  for i in 1..l_heads2.count loop
+    if i <= l_heads1.count then
+      if trim(l_heads1(i)) is not null then
+        l_heads2(i) := l_heads1(i);
+      end if;
+    end if;
+    if i <= l_align1.count then
+      if trim(l_align1(i)) is not null then
+        l_align2(i) := l_align1(i);
+      end if;
+    end if;
+  end loop;
+  
+  
+  l_col_headings := '';
+  l_col_aligns := '';
+  for i in 1..l_heads2.count loop
+    l_col_headings := l_col_headings||l_heads2(i)||',';
+    l_col_aligns := l_col_aligns||l_align2(i)||',';
+  end loop;
+    
+  draw_table_grid
+  ( p_x_top_left => p_x_top_left
+  , p_y_top_left => p_y_top_left
+  , p_rows => l_rows
+  , p_column_headings => l_col_headings
+  , p_column_widths => p_column_widths
+  , p_column_alignments => l_col_aligns
+  , p_col_totals => l_col_totals
+  , p_header_height => p_header_height
+  , p_line_height => p_line_height
+  , p_line_color => p_line_color
+  , p_header_bg_color => p_header_bg_color
+  , p_bg_color => p_bg_color
+  , p_alt_bg_color => p_alt_bg_color
+  , p_cell_margin => p_cell_margin
+  , p_total_columns => p_total_columns
+  );
+end;
+
+procedure draw_table_grid
+( p_x_top_left number
+, p_y_top_left number
+, p_rows type_table_rows
+, p_column_headings varchar2 := ''
+, p_column_widths varchar2 := ''
+, p_column_alignments varchar2 := ''
+, p_col_totals type_number_table := null
+, p_header_height number := null
+, p_line_height number := null
+, p_line_color varchar2 := '000000'
+, p_header_bg_color varchar2 := 'DDDDDD'
+, p_bg_color varchar2 := 'FFFFFF'
+, p_alt_bg_color varchar2 := ''
+, p_cell_margin number := 2
+, p_total_columns varchar2 := ''
+) is
+l_column_headings type_string_table := csv_to_string_table(p_column_headings);
+l_column_widths type_string_table := csv_to_string_table(p_column_widths);
+l_column_alignments type_string_table := csv_to_string_table(p_column_alignments);
+l_head_strings type_string_table := type_string_table();
+l_head_widths type_number_table := type_number_table();
+l_col_widths type_number_table := type_number_table();
+l_col_aligns type_string_table := type_string_table();
+l_max_tag_size number := 0;
+l_head_line_count number;
+l_offset number;
+l_x number := p_x_top_left;
+l_y number := p_y_top_left;
+l_header_height number := nvl(p_header_height, 0);
+l_line_height number := nvl(p_line_height, 0);
+l_color varchar2(10) := '';
+l_str varchar2(4000) := '';
+l_num number := 0;
+l_heading_lines type_string_table;
+l_total_columns varchar2(2000) := trim(replace(p_total_columns,' ',''));
+l_w number := 0.5; 
+begin
+  if p_rows is null or p_rows.count = 0 or p_rows(1).count = 0 or l_col_aligns is null then
+    text2xy(l_x, l_y - g_fonts(g_current_font).fontsize, 'draw_table_grid -> no rows or columns');
+    g_x := g_settings.margin_left;
+    g_y := l_y - g_fonts(g_current_font).fontsize*2;
+    return;
+  end if;
+    
+  
+  l_head_strings.extend(p_rows(1).count);
+  l_head_widths.extend(p_rows(1).count);
+  l_col_widths.extend(p_rows(1).count);
+  l_col_aligns.extend(p_rows(1).count);
+  for i in 1..p_rows(1).count loop
+    l_head_strings(i) := get_element_from_string_table(l_column_headings, i);
+    l_head_widths(i) := str2num(get_element_from_string_table(l_column_widths, i));
+    l_col_widths(i) := str2num(get_element_from_string_table(l_column_widths, i));
+    l_col_aligns(i) := get_element_from_string_table(l_column_alignments, i);
+  end loop;
+     
+  
+  if l_line_height = 0 then
+    l_line_height := get(current_fontsize) + p_cell_margin*2;
+  end if;
+  
+  
+  if l_header_height = 0 then
+    l_header_height := get(current_fontsize) + p_cell_margin;
+    l_head_line_count := 1; 
+    for i in 1..l_head_strings.count loop
+      
+      l_str := replace(l_head_strings(i), '##', '~~');
+      l_str := replace(l_str, '#', ',');
+      l_str := replace(l_str, '~~', '#');
+      l_heading_lines := csv_to_string_table(l_str);
+      l_head_line_count := greatest(l_head_line_count, l_heading_lines.count);
+      
+      for j in 1..l_heading_lines.count loop
+        l_head_widths(i) := greatest(l_head_widths(i), text_length(l_heading_lines(j)));
+      end loop;
+    end loop;
+    l_header_height := (l_header_height * l_head_line_count) + p_cell_margin;
+  end if;
+  
+  
+  
+  
+  
+  for c in 1..l_col_widths.count loop
+    
+    if l_col_widths(c) = 0 then
+      
+      l_num := l_head_widths(c);
+      
+      if p_col_totals is not null and p_col_totals(c) > 0 then
+        l_str := trim(num2str(p_col_totals(c)));
+        l_num := greatest(l_num, text_length(l_str));
+      else
+        
+        for r in 1..least(p_rows.count,50) loop
+          l_num := greatest(l_num, text_length(p_rows(r)(c)));
+        end loop;
+      end if;
+      l_col_widths(c) := l_num + p_cell_margin*2;
+    end if;
+  end loop;
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  for r in 1..p_rows.count loop
+    
+    if (r = 1) or (l_y < get(current_margin_bottom)) then
+      if r > 1 then
+        new_page;
+        l_y := get(current_page_height) - get(current_margin_top);
+      end if;
+      
+      
+      l_offset := 0;
+      for c in 1..l_head_strings.count loop
+        draw_cell
+        ( p_x => l_x + l_offset
+        , p_y => l_y - l_header_height
+        , p_width => l_col_widths(c)
+        , p_height => l_header_height
+        , p_text => l_head_strings(c)
+        , p_line_color => p_line_color
+        , p_fill_color => p_header_bg_color
+        , p_line_width => l_w
+        , p_cell_margin => p_cell_margin
+        , p_align => 'C'
+        , p_split_char => '#'
+        );
+        l_offset := l_offset + l_col_widths(c);
+      end loop;
+      l_y := l_y - l_header_height;
+    end if;
+  
+    
+    if p_alt_bg_color is null then
+      l_color := p_bg_color;
+    else
+      if mod(r,2) = 0 then
+        l_color := p_alt_bg_color;
+      else
+        l_color := p_bg_color;
+      end if;
+    end if;
+    
+    
+    
+    l_offset := 0;
+    for c in 1..p_rows(r).count loop
+      draw_cell
+      ( p_x => l_x + l_offset
+      , p_y => l_y - l_line_height
+      , p_width => l_col_widths(c)
+      , p_height => l_line_height
+      , p_text => p_rows(r)(c)
+      , p_line_color => p_line_color
+      , p_fill_color => l_color
+      , p_line_width => l_w
+      , p_cell_margin => p_cell_margin
+      , p_align => l_col_aligns(c)
+      );
+      l_offset := l_offset + l_col_widths(c);
+      
+    end loop;
+    l_y := l_y - l_line_height;
+    
+  end loop;
+  
+  
+  if l_total_columns is not null and p_col_totals is not null then
+    l_total_columns := ','||l_total_columns||','; 
+    if p_alt_bg_color is null then
+      l_color := p_bg_color;
+    else
+      if mod(p_rows.count+1,2) = 0 then
+        l_color := p_alt_bg_color;
+      else
+        l_color := p_bg_color;
+      end if;
+    end if;
+    l_offset := 0;
+    for c in 1..p_col_totals.count loop
+      if instr(l_total_columns, ','||trim(to_char(c))||',') > 0 then
+        l_str := trim(num2str(p_col_totals(c)));
+      else
+        l_str := '';
+      end if;
+      draw_cell
+      ( p_x => l_x + l_offset
+      , p_y => l_y - l_line_height - (l_w * 4)
+      , p_width => l_col_widths(c)
+      , p_height => l_line_height + (l_w * 4)
+      , p_text => l_str
+      , p_line_color => p_line_color
+      , p_fill_color => l_color
+      , p_line_width => l_w
+      , p_cell_margin => p_cell_margin
+      , p_align => 'R'
+      );
+      if l_str is not null then
+        
+        horizontal_line
+        ( p_x => l_x + l_offset
+        , p_y => l_y
+        , p_width => l_col_widths(c)
+        , p_line_width => l_w * 3
+        , p_line_color => p_line_color
+        );
+      end if;
+      l_offset := l_offset + l_col_widths(c);
+    end loop;
+    l_y := l_y - l_header_height;
+  end if;
+  
+  g_x := g_settings.margin_left;
+  g_y := l_y;
+end;
+
+
+procedure write_text
+( p_text varchar2 
+, p_x_top_left number := null
+, p_y_top_left number := null
+, p_width number := null   
+, p_height number := null  
+, p_line_height number := null 
+, p_align in varchar2 := 'left'
+) is
+l_paragraphs type_string_table := type_string_table();
+l_lines type_string_table := type_string_table();
+l_words type_string_table;
+l_text varchar2(32767) := p_text;
+l_line_height number;
+l_x_top_left number;
+l_y_top_left number;
+l_x number;
+l_y number;
+l_width number;
+l_height number := p_height;
+l_position pls_integer;
+l_string varchar2(32767);
+l_line_length number;
+l_word_length number;
+l_space_length number := text_length(' ');
+  procedure add_to_string_table(io_tab in out type_string_table, p_string varchar2, allow_breaks boolean := false) is
+  l_string varchar2(32767) := trim(p_string);
+  begin
+    
+    l_string := regexp_replace(l_string,'( ){2,}', ' ');
+    if allow_breaks then
+      l_string := nvl(l_string, ' '); 
+    end if;
+    if l_string is not null then
+      io_tab.extend(1);
+      io_tab(io_tab.count) := l_string;
+    end if;
+  end;
+begin
+  if l_text is null then
+    return;
+  end if;
+
+  if g_current_font is null then
+    set_font('helvetica', 12);
+  end if;
+
+  l_line_height := nvl(p_line_height, g_fonts(g_current_font).fontsize);
+  l_line_height := greatest(l_line_height, g_fonts(g_current_font).fontsize);
+  
+  l_width := nvl(p_width, g_settings.page_width - g_settings.margin_right - g_settings.margin_left);
+  l_width := least(l_width, g_settings.page_width - g_settings.margin_right - g_settings.margin_left);
+  l_width := greatest(l_width, text_length('abcd'));
+  
+  l_x_top_left := coalesce(p_x_top_left, g_x, g_settings.margin_left);
+  l_x_top_left := greatest(l_x_top_left, g_settings.margin_left);
+  l_x := l_x_top_left;
+  l_y_top_left := coalesce(p_y_top_left - l_line_height, g_y, g_settings.page_height - g_settings.margin_top - l_line_height);
+  l_y_top_left := least(l_y_top_left, g_settings.page_height - g_settings.margin_top);
+  l_y := l_y_top_left;
+  
+  
+  l_position := instr(l_text, chr(10));
+  while l_position > 0 loop
+    add_to_string_table(l_paragraphs, substr(l_text, 1, l_position-1), true);
+    l_text := substr(l_text, l_position + 1);
+    l_position := instr(l_text, chr(10));
+  end loop;
+  add_to_string_table(l_paragraphs, l_text, true);
+  
+  
+  for i in 1..l_paragraphs.count loop
+    l_text := l_paragraphs(i);
+    if l_text = ' ' then
+      add_to_string_table(l_lines, l_text, true);
+    else
+      if text_length(l_text) > l_width then
+        l_text := replace(l_text, ',', chr(128)); 
+        l_text := replace(l_text, ' ', ',');      
+        l_words := csv_to_string_table(l_text);
+        l_string := '';
+        l_line_length := 0;
+        for j in 1..l_words.count loop
+          l_word_length := text_length(l_words(j));
+          if l_line_length + l_space_length + l_word_length < l_width then
+            l_string := l_string||' '||replace(l_words(j), chr(128), ',');
+            l_line_length := l_line_length + l_space_length + l_word_length;
+          else
+            add_to_string_table(l_lines, l_string);
+            l_string := replace(l_words(j), chr(128), ',');
+            l_line_length := l_word_length;
+          end if;
+        end loop;
+        add_to_string_table(l_lines, l_string);
+      else
+        add_to_string_table(l_lines, l_text);
+      end if;
+    end if;
+  end loop;
+  
+
+
+
+
+
+
+
+
+
+
+  for i in l_lines.first..l_lines.last loop
+    if p_height is not null then
+      if l_y < l_y_top_left - p_height + l_line_height then
+        g_x := g_settings.margin_left;
+        g_y := l_y_top_left - p_height - l_line_height;
+        return;
+      end if;
+    else
+      if l_y < g_settings.margin_bottom then
+        new_page;
+        l_y := g_settings.page_height - g_settings.margin_bottom - l_line_height;
+      end if;
+    end if;
+    
+    if upper(substr(p_align,1,1)) = 'R' then 
+      l_x := l_x + l_width - text_length(l_lines(i));
+    elsif upper(substr(p_align,1,1)) = 'C' then 
+      l_x := l_x + (l_width - text_length(l_lines(i)))/2;
+    end if;
+    
+    text2xy(l_x, l_y, l_lines(i));
+    l_x := l_x_top_left;
+    l_y := l_y - l_line_height;
+  end loop;
+  g_x := g_settings.margin_left;
+  g_y := l_y;
+end;
+
+procedure write_text_in_a_box
+( p_text varchar2
+, p_x_top_left number
+, p_y_top_left number
+, p_width number
+, p_height number
+, p_line_height number := null 
+, p_align in varchar2 := 'left'
+, p_line_color varchar2 := '000000'
+, p_fill_color varchar2 := 'FFFFFF'
+, p_line_width number := 0.5
+) is
+l_gap number;
+begin
+  if g_current_font is null then
+    set_font('helvetica', 12);
+  end if;
+  
+  if p_line_height is null then
+    l_gap := 2; 
+  else
+    l_gap := greatest(2, p_line_height - g_fonts(g_current_font).fontsize);
+  end if;
+  
+  draw_rectangle_top_left
+  ( p_x => p_x_top_left
+  , p_y => p_y_top_left
+  , p_width => p_width
+  , p_height => p_height
+  , p_line_color => p_line_color
+  , p_fill_color => p_fill_color
+  , p_line_width => p_line_width
+  );
+  
+  write_text
+  ( p_text => p_text
+  , p_x_top_left => p_x_top_left + l_gap
+  , p_y_top_left => p_y_top_left - l_gap
+  , p_width => p_width  - l_gap*2
+  , p_height => p_height - l_gap*2
+  , p_line_height => p_line_height
+  , p_align => p_align
+  );
+
+end;
+
+
+function qry2htm
+( p_query varchar2
+, p_title varchar2
+, p_add_totals boolean := false
+) return clob is
+l_clob clob;
+l_rows type_table_rows;
+l_col_headings varchar2(2000) := '';
+l_col_aligns varchar2(2000) := '';
+l_col_totals type_number_table;
+l_column_headings type_string_table;
+l_column_alignments type_string_table;
+l_row varchar2(32767) := '';
+begin
+  query_to_rows(p_query, l_rows, l_col_headings, l_col_aligns, l_col_totals);
+  if l_rows is null or l_rows.count = 0 or l_rows(1).count = 0 or l_col_headings is null or l_col_aligns is null then
+    l_clob := '<HTML><HEAD><TITLE>'||p_title
+    ||'</TITLE></HEAD>'||chr(10)||'<BODY><h3>'||p_title||'</h3><br>'||chr(10)
+    ||'<p>'||p_query||'</p><br><p>Error: no rows or columns</p>'||chr(10)
+    ||'<br><p>Created '||to_char(sysdate,'YYYY-MM-DD HH24:MI:SS')||'.</p></BODY></HTML>';
+    return l_clob;
+  end if;
+  l_column_headings := csv_to_string_table(l_col_headings);
+  l_column_alignments := csv_to_string_table(l_col_aligns);
+  l_row := '';
+  for j in 1..l_column_headings.count loop
+    l_row := l_row||'<th bgcolor=#DDDDDD>'||replace(l_column_headings(j),'#','<br>')||'</th>';
+  end loop;
+  l_clob := '<table cellpadding="3">'||chr(10)||'<tr style="background-color:#EEEEEE;">'||l_row||'</tr>'||chr(10);
+  for r in 1..l_rows.count loop
+    l_row := '';
+    for c in 1..l_rows(r).count loop
+      if l_column_alignments(c) = 'R' then
+        l_row := l_row||'<td align="right">'||l_rows(r)(c)||'</td>';
+      else
+        l_row := l_row||'<td>'||l_rows(r)(c)||'</td>';
+      end if;
+    end loop;
+    l_clob := l_clob||'<tr style="background-color:#EEEEEE;">'||l_row||'</tr>'||chr(10);
+  end loop;
+  if p_add_totals then
+    l_row := '';
+    for j in 1..l_col_totals.count loop
+      l_row := l_row||'<td align="right">'||num2str(l_col_totals(j))||'</td>';
+    end loop;
+	  l_clob := l_clob||'<tr style="background-color:#DDDDDD;">'||l_row||'</tr>'||chr(10);
+	end if;
+	l_clob := l_clob||'</table>';
+  l_clob := '<HTML><HEAD><TITLE>'||p_title
+  ||'</TITLE></HEAD>'||chr(10)||'<BODY><h3>'||p_title||'</h3><br>'||chr(10)
+  ||l_clob
+  ||'<br><p>Created '||to_char(sysdate,'YYYY-MM-DD HH24:MI:SS')||'.</p></BODY></HTML>';
+  return l_clob;
+end;
+  
+  
+function qry2csv
+( p_query varchar2
+, p_description varchar2
+, p_add_totals boolean := false
+) return clob is
+l_clob clob;
+l_rows type_table_rows;
+l_col_headings varchar2(2000) := '';
+l_col_aligns varchar2(2000) := '';
+l_col_totals type_number_table;
+l_column_headings type_string_table;
+l_column_alignments type_string_table;
+l_row varchar2(32767) := '';
+l_separator varchar2(10) := '';
+begin
+  query_to_rows(p_query, l_rows, l_col_headings, l_col_aligns, l_col_totals);
+  if l_rows is null or l_rows.count = 0 or l_rows(1).count = 0 or l_col_headings is null or l_col_aligns is null then
+    l_clob := '"'||p_description||'"'
+    ||chr(10)||'"'||p_query||'"'
+    ||chr(10)||'"Error: no rows or columns"'
+    ||chr(10)||'"Created '||to_char(sysdate,'YYYY-MM-DD HH24:MI:SS')||'"';
+    return l_clob;
+  end if;
+  l_column_headings := csv_to_string_table(l_col_headings);
+  l_column_alignments := csv_to_string_table(l_col_aligns);
+  l_row := '';
+  l_separator := '';
+  for j in 1..l_column_headings.count loop
+    l_row := l_row||l_separator||'"'||l_column_headings(j)||'"';
+    l_separator := ',';
+  end loop;
+  l_clob := l_row||chr(10);
+  for r in 1..l_rows.count loop
+    l_row := '';
+    l_separator := '';
+    for c in 1..l_rows(r).count loop
+      if l_column_alignments(c) = 'R' then
+        l_row := l_row||l_separator||l_rows(r)(c);
+      else
+        l_row := l_row||l_separator||'"'||l_rows(r)(c)||'"';
+      end if;
+      l_separator := ',';
+    end loop;
+    l_clob := l_clob||l_row||chr(10);
+  end loop;
+  if p_add_totals then
+    l_row := '';
+    if l_col_totals(1) is null then
+      l_row := '"TOTAL"';
+    end if;
+    l_separator := '';
+    for j in 1..l_col_totals.count loop
+      l_row := l_row||l_separator||num2str(l_col_totals(j));
+      l_separator := ',';
+    end loop;
+	  l_clob := l_clob||l_row||chr(10);
+	end if;
+  if p_description is not null then
+	  l_clob := l_clob||chr(10)||'"'||p_description||' - Created '||to_char(sysdate,'YYYY-MM-DD HH24:MI:SS')||'"';
+  else
+    l_clob := l_clob||chr(10)||'"Created '||to_char(sysdate,'YYYY-MM-DD HH24:MI:SS')||'"';
+  end if;
+  return l_clob;
+end;
+  
+  
+function qry2xml
+( p_query varchar2
+, p_root_element varchar2
+) return clob is
+l_clob clob;
+l_rows type_table_rows;
+l_col_headings varchar2(2000) := '';
+l_col_aligns varchar2(2000) := '';
+l_col_totals type_number_table;
+l_column_headings type_string_table;
+l_row varchar2(32767) := '';
+begin
+  query_to_rows(p_query, l_rows, l_col_headings, l_col_aligns, l_col_totals);
+  if l_rows is null or l_rows.count = 0 or l_rows(1).count = 0 or l_col_headings is null or l_col_aligns is null then
+    l_clob := '<'||p_root_element||'>'
+    ||chr(10)||'<query>'||p_query||'</query>'
+    ||chr(10)||'<error>no rows or columns</error>'
+    ||chr(10)||'<created>'||to_char(sysdate,'YYYY-MM-DD HH24:MI:SS')||'.</created>'
+    ||chr(10)||'</'||p_root_element||'>';
+    return l_clob;
+  end if;
+  l_column_headings := csv_to_string_table(l_col_headings);
+  l_clob := '<'||p_root_element||'>'||chr(10);
+  for r in 1..l_rows.count loop
+    l_row := '<row';
+    for c in 1..l_rows(r).count loop
+      l_row := l_row||' '||replace(l_column_headings(c),'#','_')||'="'||l_rows(r)(c)||'"';
+    end loop;
+    l_clob := l_clob||l_row||'/>'||chr(10);
+  end loop;
+ 	l_clob := l_clob||'</'||p_root_element||'>'||chr(10);
+  return l_clob;
+end;
+  
+  
+end pdfreports;
+/

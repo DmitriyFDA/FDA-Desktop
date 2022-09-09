@@ -1,0 +1,291 @@
+create or replace PACKAGE ui_browser AS
+Procedure TABLES_VIEWS;
+Procedure SHOW_COMPOSITION ( p_name in varchar2, p_type in varchar2 );
+Procedure SHOW_CONSTRAINT ( p_constr in varchar2 );
+Procedure SHOW_FOREIGN_KEY ( p_constr in varchar2 );
+Procedure SHOW_TRIGGER ( p_name in varchar2 );
+END;
+/
+
+
+
+
+package body ui_browser as
+
+procedure tables_views is
+  cursor c_tv is select tname, tabtype from tab
+    where tname not like 'BIN$%' and tabtype <> 'SYNONYM' order by tname;
+  function tab_link(p_title in varchar2, p_name in varchar2, p_type in varchar2) return varchar2 is
+  v_clause varchar2(100) := chr(38)||'p_max=1000'||chr(38)||'p_where='||chr(38)||'p_order_by=1';
+  begin
+    return '<td align=LEFT>'||p_title
+      ||'<td><INPUT TYPE="Button" VALUE="Contents" onClick="document.location=''inspect_table?p_title='||p_name||chr(38) ||'p_table_name='
+      ||p_name||v_clause||''';">'
+      ||'<td><INPUT TYPE="Button" VALUE="Composition" onClick="document.location=''ui_browser.show_composition?p_name='
+      ||p_name||chr(38)||'p_type='||p_type||''';">'
+      ||'</li><tr>';
+  end;
+begin
+  htp.print(gui.head('Browse', 'Browse Tables and Views'));
+  htp.print('<div class="neutral">');
+  
+  htp.print('<table>');
+  for c_rec in c_tv loop
+    htp.print(tab_link(initcap(c_rec.tabtype)||' '||c_rec.tname, c_rec.tname, c_rec.tabtype));
+  end loop;
+  htp.print('</table>');
+  
+  htp.print(gui.tail);
+end;
+
+
+procedure show_composition ( p_name in varchar2, p_type in varchar2 ) is
+v_text  varchar2(32767) := '';
+v_prec  varchar2(  30) := '';
+v_null  varchar2(  30) := '';
+v_nbsp  varchar2(  30) := chr(38)||'nbsp;';
+v_temp  varchar2(   1) := '';
+cursor c_tcols (p_table in varchar2) is
+  select column_name, data_type, data_length, data_precision, nullable
+  from user_tab_columns
+  where table_name=p_table
+  order by column_id;
+
+  function x_get_constrs (p_name in varchar2) return varchar2 is
+  v_txt varchar2(8000) := '';
+  cursor c_constr_c (p_table in varchar2) is
+    select constraint_name, status, search_condition
+    from user_constraints
+    where table_name = p_table
+    and constraint_type = 'C'
+    and constraint_name not like 'SYS_%'
+    order by 1;
+  cursor c_constr_pu (p_table in varchar2) is
+    select constraint_name, status
+    from user_constraints
+    where table_name = p_table
+    and constraint_type in ('P', 'U')
+    order by constraint_type, constraint_name;
+  cursor c_constr_r (p_table in varchar2) is
+    select constraint_name, status
+    from user_constraints
+    where table_name = p_table
+    and constraint_type = 'R'
+    order by 1;
+  cursor c_triggers (p_table in varchar2) is
+    select trigger_name, status
+    from user_triggers
+    where table_name = p_table
+    order by 1;
+  cursor c_idx(p_table in varchar2) is
+    select index_name, status
+    from user_indexes
+    where table_name=p_table
+    order by index_name;
+  cursor c_cols(p_table in varchar2, p_index in varchar2) is
+    select column_name
+    from user_ind_columns
+    where table_name=p_table
+    and index_name=p_index
+    order by column_position;
+  begin
+    v_txt := '<br><b>Value Constraints:</b><br>';
+    for c_rec in c_constr_c(p_name) loop
+      v_txt := v_txt||'<li><a href="ui_browser.show_constraint?p_constr='||c_rec.constraint_name
+                    ||'">'||c_rec.constraint_name||'</a> is '||c_rec.status||'<br>';
+    end loop;
+    v_txt := v_txt||'<br><b>Primary and Unique Key Constraints:</b><br>';
+    for c_rec in c_constr_pu(p_name) loop
+      v_txt := v_txt||'<li>'||c_rec.constraint_name||' is '||c_rec.status||'<br>';
+    end loop;
+    v_txt := v_txt||'<br><b>Indexes:</b><br>';
+    for c_rec1 in c_idx(p_name) loop
+      v_txt := v_txt||'<li>'||c_rec1.index_name||' on (';
+      for c_rec2 in c_cols(p_name, c_rec1.index_name) loop
+        v_txt := v_txt||c_rec2.column_name||', ';
+      end loop;
+      v_txt := substr(v_txt, 1, length(v_txt)-2)||') is '||c_rec1.status||'<br>';
+    end loop;
+    v_txt := v_txt||'<br><b>Foreign Key Constraints:</b><br>';
+    for c_rec in c_constr_r(p_name) loop
+      v_txt := v_txt||'<li><a href="ui_browser.show_foreign_key?p_constr='||c_rec.constraint_name
+                    ||'">'||c_rec.constraint_name||'</a> is '||c_rec.status||'<br>';
+    end loop;
+    v_txt := v_txt ||'<br><b>Triggers:</b><br>';
+    for c_rec in c_triggers(p_name) loop
+      v_txt := v_txt||'<li><a href="ui_browser.show_trigger?p_name='||c_rec.trigger_name
+                    ||'">'||c_rec.trigger_name||'</a> is '||c_rec.status||'<br>';
+    end loop;
+    return v_txt;
+  end;
+
+begin
+  if upper(ltrim(rtrim(p_type))) = 'TABLE' then
+    htp.print(gui.head('Browse > Table Composition > '||p_name, 'Table Composition '||p_name));
+    htp.print('<div class="neutral">');
+
+    
+      begin
+
+        htp.print('</p><b><u>Table '||p_name||'</u>');
+        select temporary into v_temp
+        from user_tables
+        where table_name = p_name;
+        if v_temp = 'Y' then
+          htp.print('(Temporary)');
+        end if;
+        htp.print('</b><br>');
+
+        htp.print('<table>');
+        for c_rec in c_tcols(p_name) loop
+          v_prec := nvl(ltrim(to_char(c_rec.data_length)), ' ');
+          if c_rec.data_type = 'NUMBER' then
+            if c_rec.data_precision is not null then
+              v_prec := ltrim(to_char(c_rec.data_precision));
+            end if;
+          elsif c_rec.data_type = 'DATE' then
+            v_prec := ' ';
+          else
+            null;
+          end if;
+          if v_prec <> ' ' then
+            v_prec := '('||v_prec||')';
+          end if;
+          v_null := ' ';
+          if c_rec.nullable = 'N' then
+            v_null := 'NOT NULL';
+          end if;
+
+          htp.print('<tr><td>'||c_rec.column_name
+                    ||'<td valign="TOP">'||v_nbsp||v_nbsp||'<td>'||v_null
+                    ||'<td valign="TOP">'||v_nbsp||v_nbsp||'<td>'||c_rec.data_type||v_prec );
+        end loop;
+        htp.print('</table>');
+        htp.print(x_get_constrs(p_name));
+      exception
+        when others then
+          v_text := v_text||'<br>'||sqlerrm;
+      end;
+      htp.print('<br>'||v_text);
+    
+
+  elsif upper(ltrim(rtrim(p_type))) = 'VIEW' then
+    htp.print(gui.head('Browse > View Composition > '||p_name, 'View Composition '||p_name));
+    htp.print('<div class="neutral">');
+
+    
+      htp.print('<br><b><u>View '||p_name||'</u></b><br>');
+      begin
+        select text into v_text
+        from user_views
+        where view_name = p_name;
+        v_text := replace(v_text, chr(10), '<br>');
+        v_text := replace(v_text, '  ', v_nbsp||v_nbsp);
+      exception
+        when others then
+          v_text := v_text||'<br>'||sqlerrm;
+      end;
+      htp.print('<br>'||v_text||'; <br>');
+    
+  else
+    htp.print(gui.head('Browse > Table/View Composition ???', 'Table/View Composition ???'));
+    htp.print('<div class="neutral">');
+    htp.print('<br>p_name = '||p_name);
+    htp.print('<br>p_type = '||p_type);
+    htp.print('<br>');
+  end if;
+  htp.print('<br>');
+  htp.print(gui.tail);
+end;
+
+
+procedure show_constraint ( p_constr in varchar2 ) is
+v_txt   varchar2(8000) := '';
+v_nbsp  varchar2(  30) := chr(38)||'nbsp;';
+begin
+  htp.print(gui.head('Browse > Table Composition > Show Constraint', 'Show Constraint'));
+  htp.print('<div class="neutral">');
+
+  
+    htp.print('<br><b>Constraint '||p_constr||'</b><br>');
+    begin
+      select search_condition into v_txt
+      from user_constraints
+      where constraint_name = p_constr;
+      v_txt := replace(v_txt, chr(10), '<br>');
+      v_txt := replace(v_txt, '  ', v_nbsp||v_nbsp);
+    exception
+      when others then
+        v_txt := sqlerrm;
+    end;
+    htp.print('<br>'||v_txt||'<br><br>');
+  
+  htp.print(gui.tail);
+end;
+
+
+procedure show_foreign_key ( p_constr in varchar2 ) is
+v_txt varchar2(8000) := '';
+cursor c_refs(p_fk in varchar2) is
+  select a.table_name||'.'||a.column_name||' references '||b.table_name||'.'||b.column_name as ref
+  from user_cons_columns b,
+       (select * from user_cons_columns where constraint_name = p_fk) a
+  where b.constraint_name =
+         (select r_constraint_name from user_constraints where constraint_name = p_fk)
+    and a.position = b.position
+  order by a.position;
+
+begin
+  htp.print(gui.head('Browse > Table Composition > Show FK Constraint', 'Show Foreign Key Constraint'));
+  htp.print('<div class="neutral">');
+
+  
+    htp.print('<br><b>Constraint '||p_constr||'</b><br>');
+    begin
+      for c_rec in c_refs(p_constr) loop
+        v_txt := v_txt||'<br>'||c_rec.ref;
+      end loop;
+    exception
+      when others then
+        v_txt := sqlerrm;
+    end;
+    htp.print(v_txt||'<br><br>');
+  
+  htp.print(gui.tail);
+end;
+
+
+procedure show_trigger ( p_name in varchar2 ) is
+v_txt   varchar2(16000) := '';
+v_nbsp  varchar2(   30) := chr(38)||'nbsp;';
+begin
+  htp.print(gui.head('Browse > Table Composition > Show Trigger', 'Show Trigger'));
+  htp.print('<div class="neutral">');
+
+  
+    htp.print('<br><b>Trigger '||p_name||'</b>');
+    begin
+      select trigger_type||' '||triggering_event
+      into v_txt
+      from user_triggers
+      where trigger_name = p_name;
+      htp.print(' ('||v_txt||')<br>');
+
+      select trigger_body into v_txt
+      from user_triggers
+      where trigger_name = p_name;
+      v_txt := replace(v_txt, chr(10), '<br>');
+      v_txt := replace(v_txt, '  ', v_nbsp||v_nbsp);
+    exception
+      when others then
+        v_txt := v_txt||'<br>'||sqlerrm;
+    end;
+    htp.print('<br>'||v_txt||'<br><br>');
+  
+  htp.print(gui.tail);
+end;
+
+
+
+end;
+/

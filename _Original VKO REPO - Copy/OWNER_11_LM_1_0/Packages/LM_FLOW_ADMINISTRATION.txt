@@ -1,0 +1,6518 @@
+create or replace PACKAGE LM_FLOW_ADMINISTRATION IS
+
+   g_con_package CONSTANT lm_constant.st_proc_name := 'LM_FLOW_ADMINISTRATION';
+
+   TYPE g_rt_route IS RECORD
+   ( lnk_id_cust            lm_links.id_cust%TYPE
+   , haa_id_cust_downstream lm_handling_areas.id_cust%TYPE
+   , hsm_id_cust            lm_haa_access_status_dom.id_cust%TYPE
+   , ind_override_status    lm_constant.st_rt_value
+   );
+
+   TYPE g_it_route IS TABLE OF g_rt_route
+      INDEX BY BINARY_INTEGER;
+
+/* FAN_001 : Send routing table message. */
+PROCEDURE SEND_ROUTING_TABLE
+ (I_AREA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ ,I_ZONE_ID_CUST IN LM_ZONES_V.ID_CUST%TYPE
+ ,I_NODE_IDENTIFIER_WITHIN_SCT IN LM_NODES.IDENTIFIER_WITHIN_SCT%TYPE
+ ,I_ROUTING_TABLE_TYPE IN LM_ROUTING_TABLES_V.RTE_TYPE%TYPE
+ ,I_IT_DESTINATIONS IN lm_common.G_IT_PON_ID_CUST
+ );
+/* FAN_002 Handle a SegmentStatusReport message */
+PROCEDURE HDL_SEGMENT_STATUS_REPORT;
+/* FAN_003 Retrieve message attributes of SegmentStatusReport message */
+PROCEDURE GET_MESSAGE_ATTRIBUTES
+ (I_IT_SST IN Lm_Interface.G_IT_IMA
+ ,O_EVENT_TIME OUT LM_TECHNICAL_SEGMENT_STATUSES.TIME_ACTIVATED%TYPE
+ ,O_AREA_ID_CUST OUT LM_AREAS_V.ID_CUST%TYPE
+ ,O_LST_ID_CUST OUT LM_LOGICAL_SEGMENTS.ID_CUST%TYPE
+ ,O_IT_STATUS OUT NT_SSM_ID_CUST
+ ,O_IMS_ID OUT LM_IFC_MESSAGES.ID%TYPE
+ );
+/* FAN_004 Determine if a segment status is active or not */
+FUNCTION SEGMENT_STATUS_ACTIVE
+ (I_SSM_ID_CUST IN LM_SEGMENT_STATUS_DOM.ID_CUST%TYPE
+ ,I_IT_SSM_ID_CUST IN NT_SSM_ID_CUST
+ )
+ RETURN BOOLEAN;
+/* FAN_005 update logical and technical segment statuses */
+PROCEDURE UPDATE_SEGMENT_STATUS
+ (I_EVENT_TIME IN LM_LOGICAL_SEGMENT_STATUSES.TIME_ACTIVATED%TYPE
+ ,I_LST_ID IN LM_LOGICAL_SEGMENTS.ID%TYPE
+ ,I_TST_ID IN LM_TECHNICAL_SEGMENTS.ID%TYPE
+ ,I_RT_SSM IN LM_SEGMENT_STATUS_DOM%ROWTYPE
+ ,I_ACTIVE IN BOOLEAN
+ ,O_LSS_MODIFIED OUT BOOLEAN
+ );
+/* FAN_006: Process route influence rules */
+PROCEDURE PROCESS_ROUTE_INFLUENCE_RULES;
+/* FAN_007: Update outdated Route Segment Usage availabilities */
+PROCEDURE UPDATE_ROUTE_SEGMENT_USAGES;
+/* FAN_008: Determine Routing preference values */
+PROCEDURE DETERMINE_ROUTING_PREFERENCES;
+/* FAN_009: Update Routing tables */
+PROCEDURE UPDATE_ROUTING_TABLES;
+/* FAN_010: Refresh_Node_Routing_table */
+PROCEDURE REFRESH_NODE_ROUTING_TABLE
+ (I_NDE_ID IN LM_NODES.ID%TYPE
+ ,I_NDE_IDENTIFIER_WITHIN_SCT IN LM_NODES.IDENTIFIER_WITHIN_SCT%TYPE
+ ,I_ZNE_ID_CUST IN LM_ZONES_V.ID_CUST%TYPE
+ ,I_ARA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ ,I_RT_RME IN LM_ROUTE_MODES%ROWTYPE
+ );
+/* FAN_011 : Send handling area translation table message. */
+PROCEDURE SEND_HANDLING_AREA_TABLE
+ (I_AREA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ ,I_ZONE_ID_CUST IN LM_ZONES_V.ID_CUST%TYPE
+ ,I_NODE_IDENTIFIER_WITHIN_SCT IN LM_NODES.IDENTIFIER_WITHIN_SCT%TYPE
+ );
+/* FAN_012: Send a SegmentStatusReport message */
+PROCEDURE SEND_SEGMENT_STATUS_REP_JOB;
+/* FAN_016: Process route infl of segment status (wrapper to call procs) */
+PROCEDURE PROCESS_SEGM_STATUS_ROUTE_INFL;
+/* FAN_018: Process the influence capacity values */
+PROCEDURE PROCESS_INFL_CAPACITY_VALUES;
+/* FAN_019: Process the capacity rules related to capacity groups. */
+PROCEDURE PROCESS_CAPACITY_RULES;
+/* FAN_020: Send CapacityInstruction messages to system components */
+PROCEDURE SEND_CAPACITY_INSTRUCTION;
+/* FAN_021: DET_AREA_HEALTHINESS */
+PROCEDURE DET_AREA_HEALTHINESS;
+/* FAN_022: EVAL_HEALTHINESS_OF_AREA */
+PROCEDURE EVAL_HEALTHINESS_OF_AREA
+ (I_AREA_ID_CUST IN LM_AREAS_V.ID_CUST%TYPE
+ );
+/* FAN_023 Process status OPERATIONAL of a LOGICAL_SEGMENT */
+PROCEDURE PROCESS_STATUS_OPERATIONAL
+ (I_LST_ID IN LM_LOGICAL_SEGMENTS.ID%TYPE
+ ,I_EVENT_TIME IN LM_LOGICAL_SEGMENT_STATUSES.TIME_ACTIVATED%TYPE
+ );
+/* FAN_024: Send a SegmentStatusReport message */
+PROCEDURE SEND_SEGMENT_STATUS_REPORT
+  (I_NT_LST_ID IN NT_ID_COLL
+  );
+/* FAN_025: Update outdated station availabilities */
+PROCEDURE UPDATE_STATIONS;
+
+/* FAN_034 Evaluate downstream process healthiness */
+PROCEDURE EVAL_HEALTHINESS_DOWNSTREAM
+ (I_PTY_ID_CUST IN LM_PARTIES.ID_CUST%TYPE
+ );
+/* FAN_038 Handle a HandlingAreaStatusReport message */
+PROCEDURE HDL_HAA_ACCESS_STATUS_REPORT;
+/* FAN_039 Retrieve message attributes of HandlingAreaStatusReport message */
+PROCEDURE GET_MESSAGE_ATTRIBUTES_HSS
+ (i_it_hst               IN     lm_interface.g_it_ima
+ ,o_event_time              OUT lm_haa_access_statuses.time_activated%TYPE
+ ,o_source_process_id       OUT lm_parties.id_cust%TYPE
+ ,o_it_route                OUT lm_flow_administration.g_it_route
+ ,o_ims_id                  OUT lm_ifc_messages.id%TYPE
+ );
+/* FAN_040: Update outdated handling area access availabilities */
+PROCEDURE UPDATE_HANDLING_AREA_ACCESSES;
+/* FAN_041 Send HandlingAreaStatusReport messages for incoming links*/
+PROCEDURE SEND_HAA_ACCESS_STATUS_REP_IN;
+/* FAN_042 Handle a HandlingAreaStatusOverride message */
+PROCEDURE HDL_HAA_ACCESS_STATUS_OVERRIDE;
+/* FAN_043 Retrieve message attributes of HandlingAreaStatusOverride message */
+PROCEDURE GET_MESSAGE_ATTRIBUTES_OVR
+ (i_it_ovr               IN     lm_interface.g_it_ima
+ ,o_event_time              OUT lm_haa_access_statuses.time_activated%TYPE
+ ,o_it_route                OUT lm_flow_administration.g_it_route
+ ,o_ims_id                  OUT lm_ifc_messages.id%TYPE
+ );
+/* FAN_044 Process override of Handling Area Access Status */
+PROCEDURE PROCESS_HAS_STATUS_OVERRIDE
+ (i_has_id               IN     lm_handling_area_accesses.id%TYPE
+ ,i_event_time           IN     lm_haa_access_statuses.time_activated%TYPE
+ ,i_rt_route             IN     lm_flow_administration.g_rt_route
+ ,i_ims_id               IN     lm_ifc_messages.id%TYPE
+ );
+/* FAN_046 Handle downstream process healthiness for handling area accesses */
+PROCEDURE HDL_DOWNSTREAM_HEALTH_HAS
+ (i_pty_id      IN lm_parties.id%TYPE
+ ,i_ind_healthy IN BOOLEAN
+ );
+/* FAN_047 Send an InfluenceRuleOverviewReport message for active rules*/
+PROCEDURE send_rule_active_rep_job;
+/* FAN_048 process healthiness for a station */
+PROCEDURE SET_STATION_UNHEALTHY
+ (i_stn_id         IN     lm_stations.id%TYPE
+ ,i_event_time     IN     lm_station_availabilities.event_time%TYPE
+ ,o_ind_reevaluate    OUT BOOLEAN
+ );
+/* FAN_049 Re-evaluate the destinations for a package */
+PROCEDURE REEVALUATE_PAE_DESTINATION
+ (i_stn_id               IN     lm_stations.id%TYPE
+ ,i_type_of_reevaluation IN     VARCHAR2
+ ,io_nt_tin_processed    IN OUT nt_id_coll
+ );
+/* FAN_050 Send HandlingAreaStatusReport messages for outgoing links*/
+PROCEDURE SEND_HAA_ACCESS_STATUS_REP_OUT;
+/* FAN_051 Send an InfluenceRuleOverviewReport message for (de)activated rules*/
+PROCEDURE send_rule_changed;
+
+END LM_FLOW_ADMINISTRATION;
+/
+
+
+
+
+package body lm_flow_administration is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+g_route_influence_timestamp lm_constant.st_timestamp;
+
+
+exc_resource_busy           exception;
+pragma exception_init(exc_resource_busy, -51);
+
+
+procedure send_routing_table
+ (i_area_id_cust               in lm_areas_v.id_cust%type
+ ,i_zone_id_cust               in lm_zones_v.id_cust%type
+ ,i_node_identifier_within_sct in lm_nodes.identifier_within_sct%type
+ ,i_routing_table_type         in lm_routing_tables_v.rte_type%type
+ ,i_it_destinations            in lm_common.g_it_pon_id_cust
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.send_routing_table';
+   
+   
+   cursor c_routing_entries
+    (i_area_id_cust in lm_areas_v.id_cust%type
+    ,i_zone_id_cust in lm_zones_v.id_cust%type
+    ,i_node_identifier_within_sct in lm_nodes.identifier_within_sct%type
+    ,i_route_table_type in lm_routing_tables_v.rte_type%type
+    )
+   is
+   select xmlelement
+          ( "RoutingTable"
+          , xmlelement( "RoutingTableType", i_route_table_type)
+          , xmlagg
+            ( xmlelement
+              ( "TEntry"
+              , xmlelement( "Destination", pon.id_cust)
+                
+                
+              , xmlagg( case rey.preference
+                        when 0
+                        then
+                           null
+                        else
+                           xmlelement( "DEntry"
+                                     , xmlconcat
+                                       (xmlelement( "Direction", rey.direction)
+                                       ,xmlelement( "Preference", rey.preference)
+                                       )
+                                     )
+                        end
+                        order by rey.direction
+                        
+                        
+                       )
+              )
+            )
+          ) routingtable
+   from   lm_areas_v ara
+   ,      lm_zones_v zne
+   ,      lm_nodes nde
+   ,      lm_routing_tables_v rte
+   ,      lm_routing_entries_v rey
+   ,      lm_physical_destinations pon
+   where  ara.id_cust = i_area_id_cust
+   and    ara.area_id = zne.area_id
+   and    zne.id_cust = i_zone_id_cust
+   and    zne.zone_id = nde.sct_id
+   and    rte.nde_id = nde.id
+   and    rey.rte_id = rte.id
+   and    rey.pon_id = pon.id
+   and    nde.identifier_within_sct = i_node_identifier_within_sct
+   and    rte.rte_type = i_route_table_type
+   group by pon.id_cust;
+   
+   
+   cursor c_sel_routing_entries
+    (i_area_id_cust in lm_areas_v.id_cust%type
+    ,i_zone_id_cust in lm_zones_v.id_cust%type
+    ,i_identifier_within_sct in lm_nodes.identifier_within_sct%type
+    ,i_route_table_type in lm_routing_tables_v.rte_type%type
+    ,i_destination1 in lm_physical_destinations.id_cust%type
+    ,i_destination2 in lm_physical_destinations.id_cust%type
+    ,i_destination3 in lm_physical_destinations.id_cust%type
+    ,i_destination4 in lm_physical_destinations.id_cust%type
+    ,i_destination5 in lm_physical_destinations.id_cust%type
+    )
+   is
+   select /*+ cardinality(pon 1) */
+          xmlagg
+          ( xmlelement
+            ( "TEntry"
+            , xmlelement( "Destination", pon.id_cust)
+            , (xmlagg( case rey.preference
+                         when 0
+                         then
+                            null
+                          else
+                            xmlelement( "DEntry"
+                                      , xmlconcat
+                                        (xmlelement( "Direction", rey.direction)
+                                        ,xmlelement( "Preference", rey.preference)
+                                        )
+                                      )
+                         end
+              order by direction
+              
+              
+
+                     )
+              )
+            )
+          ) tentrylist
+   from   lm_routing_tables_v rte
+   ,      lm_routing_entries_v rey
+   ,      lm_physical_destinations pon
+   where  rte.nde_id = ( select nde.id
+                         from lm_nodes nde
+                         where nde.sct_id = ( select zne.zone_id
+                                              from lm_areas_v ara
+                                              ,    lm_zones_v zne
+                                              where ara.id_cust = i_area_id_cust
+                                              and zne.id_cust = i_zone_id_cust
+                                              and ara.area_id = zne.area_id
+                                            )
+                         and nde.identifier_within_sct = i_identifier_within_sct
+                       )
+   and rte.rte_type = i_route_table_type
+   and rey.rte_id = rte.id
+   and rey.pon_id = pon.id
+   and pon.id_cust in (i_destination1, i_destination2, i_destination3, i_destination4, i_destination5)
+   group by id_cust;
+   
+   
+   cursor c_rme
+    (i_routing_table_type in lm_route_modes.name%type
+    )
+   is
+   select rme.name
+   from   lm_route_modes rme
+   where  rme.name like nvl( i_routing_table_type, '%')
+   order by name;
+
+   l_destination1 lm_physical_destinations.id_cust%type;
+   l_destination2 lm_physical_destinations.id_cust%type;
+   l_destination3 lm_physical_destinations.id_cust%type;
+   l_destination4 lm_physical_destinations.id_cust%type;
+   l_destination5 lm_physical_destinations.id_cust%type;
+   l_send_routingtable_update boolean := true;
+   l_ims_id lm_ifc_messages.id%type;
+   l_routingtablelist xmltype;
+   l_tentrylist       xmltype;
+   l_message          xmltype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   select xmlelement("PhysicalLocation"
+                     ,xmlconcat
+                        ( xmlelement( "AreaID", i_area_id_cust)
+                        , xmlelement( "ZoneID", i_zone_id_cust)
+                        , xmlelement( "EquipmentID", i_node_identifier_within_sct)
+                        )
+                    )
+   into   l_message
+   from   dual;
+
+   
+   
+   if     i_it_destinations.count > 0
+      and i_routing_table_type is not null
+   then
+      for i in 1 .. i_it_destinations.count
+      loop
+         if i = 1
+         then
+            l_destination1  := i_it_destinations( 1 );
+         elsif i = 2
+         then
+            l_destination2  := i_it_destinations( 2 );
+         elsif i = 3
+         then
+            l_destination3  := i_it_destinations( 3 );
+         elsif i = 4
+         then
+            l_destination4  := i_it_destinations( 4 );
+         elsif i = 5
+         then
+            l_destination5  := i_it_destinations( 5 );
+         end if;
+      end loop;
+
+      
+      open c_sel_routing_entries( i_area_id_cust               => i_area_id_cust
+                                , i_zone_id_cust               => i_zone_id_cust
+                                , i_identifier_within_sct      => i_node_identifier_within_sct
+                                , i_route_table_type           => i_routing_table_type
+                                , i_destination1               => l_destination1
+                                , i_destination2               => l_destination2
+                                , i_destination3               => l_destination3
+                                , i_destination4               => l_destination4
+                                , i_destination5               => l_destination5
+                                );
+
+      fetch c_sel_routing_entries
+      into  l_tentrylist;
+      close c_sel_routing_entries;
+
+      
+      select xmlconcat
+             ( l_message 
+             , xmlelement
+               ( "RoutingTable"
+               , xmlelement( "RoutingTableType", i_routing_table_type)
+               , l_tentrylist
+               )
+             )
+      into   l_message
+      from   dual;
+    else
+      
+      for r_rme in c_rme( i_routing_table_type)
+      loop
+         
+         open c_routing_entries( i_area_id_cust               => i_area_id_cust
+                               , i_zone_id_cust               => i_zone_id_cust
+                               , i_node_identifier_within_sct => i_node_identifier_within_sct
+                               , i_route_table_type           => r_rme.name
+                               );
+
+         fetch c_routing_entries
+         into  l_routingtablelist;
+
+         close c_routing_entries;
+
+         
+         if l_routingtablelist is not null
+         then
+            select xmlconcat
+                   ( l_message
+                   , l_routingtablelist
+                   )
+            into   l_message
+            from   dual;
+         end if;
+      end loop;
+   end if;
+
+   
+   
+   if l_message.existsnode('//TEntry') = 0
+   then
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_routingentrymissing
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_additional_data        => 'Area: '||i_area_id_cust||
+                                                          ', Zone: '||i_zone_id_cust||
+                                                          ', Node: '||i_node_identifier_within_sct||
+                                                          ', Table type: '||i_routing_table_type
+                            );
+      l_send_routingtable_update  := false;
+   end if;
+
+   
+   if l_send_routingtable_update
+   then
+      
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'RoutingTableUpdate'
+                 , i_message         => l_message
+                 , i_event_time      => lm_common.default_timestamp
+                 , i_pty_id_cust     => null
+                 , i_pty_instance_id => null
+                 , i_sct_id_cust     => i_area_id_cust
+                );
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_routing_table;
+
+procedure hdl_segment_status_report
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.HDL_SEGMENT_STATUS_REPORT';
+
+   
+   cursor c_get_ssm
+   is
+   select ssm.*
+   from   lm_segment_status_dom ssm
+   where  ssm.id <> lm_constant.g_con_ssm_unhealthy;
+
+   l_event_time   lm_technical_segment_statuses.time_activated%type;
+   l_area_id_cust lm_areas_v.id_cust%type;
+   l_lst_id_cust  lm_logical_segments.id_cust%type;
+   l_rt_lst       lm_logical_segments%rowtype;
+   l_rt_tst       lm_technical_segments%rowtype;
+   l_area_id      lm_areas_v.area_id%type;
+   l_found        boolean;
+   l_active       boolean;
+   l_it_status    nt_ssm_id_cust;
+   l_ims_id       lm_ifc_messages.id%type;
+   l_lss_modified boolean;
+   l_send_message boolean := false;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   lm_flow_administration.get_message_attributes( i_it_sst            => lm_interface.g_it_message_content
+                                                , o_event_time        => l_event_time
+                                                , o_area_id_cust      => l_area_id_cust
+                                                , o_lst_id_cust       => l_lst_id_cust
+                                                , o_it_status         => l_it_status
+                                                , o_ims_id            => l_ims_id
+                                                );
+
+   
+   if l_it_status.count = 0
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_nosegmentstatusfound
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_additional_data        => 'Message id: ' || l_ims_id
+                         );
+   end if;
+
+   
+   l_found    := lm_lst_tapi_pck.lst_select_row_upd_uk1( i_lst_id_cust      => l_lst_id_cust
+                                                       , o_rt_lst           => l_rt_lst
+                                                       );
+
+   if not l_found
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_selectreturnednorecords
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_additional_data        => 'lm_logical_segments.lst_id_cust: ' || l_lst_id_cust
+                         );
+   end if;
+
+   
+   lm_topology_administration.chk_area_zone_section( i_area_id_cust         => l_area_id_cust
+                                                   , i_zone_id_cust         => null
+                                                   , i_section_id_cust      => null
+                                                   );
+   
+   l_area_id  := lm_topology_administration.get_sct_id( i_area_id_cust         => l_area_id_cust
+                                                      , i_zone_id_cust         => null
+                                                      , i_section_id_cust      => null
+                                                      );
+   
+   l_found    := lm_tst_tapi_pck.tst_select_row_uk2( i_tst_sct_id      => l_area_id
+                                                   , i_tst_lst_id      => l_rt_lst.id
+                                                   , o_rt_tst          => l_rt_tst
+                                                   );
+   if not l_found
+   then
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_selectreturnednorecords
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_error
+                         , i_additional_data        => 'lm_technical_segments.lst_id: ' || l_rt_lst.id ||
+                                                       '; lm_technical_segments.sct_id: ' || l_area_id
+                         );
+   end if;
+
+   
+   for l_rt_ssm in c_get_ssm
+   loop
+      
+      
+      l_active  := lm_flow_administration.segment_status_active( i_ssm_id_cust         => l_rt_ssm.id_cust
+                                                               , i_it_ssm_id_cust      => l_it_status
+                                                               );
+      
+      lm_flow_administration.update_segment_status( i_event_time      => l_event_time
+                                                  , i_lst_id          => l_rt_lst.id
+                                                  , i_tst_id          => l_rt_tst.id
+                                                  , i_rt_ssm          => l_rt_ssm
+                                                  , i_active          => l_active
+                                                  , o_lss_modified    => l_lss_modified
+                                                  );
+      l_send_message := l_send_message or l_lss_modified;
+   end loop;
+
+   
+   lm_flow_administration.process_status_operational( i_lst_id => l_rt_lst.id
+                                                    , i_event_time => l_event_time
+                                                    );
+   
+   
+   if  l_send_message
+   then
+      lm_flow_administration.send_segment_status_report(i_nt_lst_id => nt_id_coll(l_rt_lst.id));
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_get_ssm%isopen
+      then
+         close c_get_ssm;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_segment_status_report;
+
+
+procedure get_message_attributes
+ (i_it_sst in lm_interface.g_it_ima
+ ,o_event_time out lm_technical_segment_statuses.time_activated%type
+ ,o_area_id_cust out lm_areas_v.id_cust%type
+ ,o_lst_id_cust out lm_logical_segments.id_cust%type
+ ,o_it_status out nt_ssm_id_cust
+ ,o_ims_id out lm_ifc_messages.id%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package||'.GET_MESSAGE_ATTRIBUTES';
+   l_status_counter number := 0;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   o_it_status := nt_ssm_id_cust();
+
+   
+   for idx_sst in i_it_sst.first .. i_it_sst.last
+   loop
+      case i_it_sst( idx_sst ).attribute
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp      => i_it_sst( idx_sst ).value );
+         when 'AreaID'
+         then
+            o_area_id_cust  := i_it_sst( idx_sst ).value;
+         when 'SegmentID'
+         then
+            o_lst_id_cust  := i_it_sst( idx_sst ).value;
+         when 'Status'
+         then
+            l_status_counter                 := l_status_counter + 1;
+            o_it_status.extend;
+            o_it_status( l_status_counter )  := i_it_sst( idx_sst ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_sst( idx_sst ).value;
+         else
+            
+            if i_it_sst( idx_sst ).attribute not in ( 'Header/MessageTime'
+                                                    , 'Header/Source/ProcessID'
+                                                    , 'Header/Source/InstanceID'
+                                                    , 'Header/Target/ProcessID'
+                                                    , 'Header/Target/InstanceID'
+                                                    , 'Header/OperatorID'
+                                                    )
+            then
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: SegmentStatusReport; Attribute: '''
+                                                                   || i_it_sst( idx_sst ).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_sst( idx_sst ).value
+                                                                   || ''''
+                                     );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes;
+
+function segment_status_active
+ (i_ssm_id_cust in lm_segment_status_dom.id_cust%type
+ ,i_it_ssm_id_cust in nt_ssm_id_cust
+ )
+ return boolean
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.SEGMENT_STATUS_ACTIVE';
+
+l_retval boolean := false;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   if i_it_ssm_id_cust.count > 0
+   then
+      for idx_ssm in 1 .. i_it_ssm_id_cust.count
+      loop
+         if i_it_ssm_id_cust( idx_ssm ) = i_ssm_id_cust
+         then
+            
+            l_retval := true;
+            exit;
+         end if;
+      end loop;
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   return l_retval;
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end segment_status_active;
+
+procedure update_segment_status
+ (i_event_time in lm_logical_segment_statuses.time_activated%type
+ ,i_lst_id in lm_logical_segments.id%type
+ ,i_tst_id in lm_technical_segments.id%type
+ ,i_rt_ssm in lm_segment_status_dom%rowtype
+ ,i_active in boolean
+ ,o_lss_modified out boolean
+ )
+ is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.UPDATE_SEGMENT_STATUS';
+
+   
+   cursor c_lss_to_deactivate
+    (i_lst_id in lm_logical_segment_statuses.lst_id%type
+    ,i_ssm_id in lm_logical_segment_statuses.ssm_id%type
+    )
+   is
+   select ldev.*
+   from   lm_lss_to_deactivate_v ldev
+   where  ldev.lst_id = i_lst_id
+   and    ldev.ssm_id = i_ssm_id;
+
+   
+   cursor c_realise_logical_segment
+    (i_tss_id in lm_technical_segment_statuses.id%type
+    )
+   is
+   select larv.*
+   from   lm_tss_active_to_realise_v larv
+   where  larv.tss_id = i_tss_id;
+
+   l_rt_tss          lm_technical_segment_statuses%rowtype;
+   l_tss_activated   boolean := false;
+   l_rt_ldev         c_lss_to_deactivate%rowtype;
+   l_rt_lss          lm_logical_segment_statuses%rowtype;
+   l_rt_larv         lm_tss_active_to_realise_v%rowtype;
+   l_tss_deactivated boolean := false;
+   l_found           boolean;
+   l_retval          number;
+   l_lss_modified    boolean := false;
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   l_found  := lm_tss_tapi_pck.tss_select_row_uk1( i_tss_ssm_id      => i_rt_ssm.id
+                                                 , i_tss_tst_id      => i_tst_id
+                                                 , o_rt_tss          => l_rt_tss
+                                                 );
+   
+   case
+      when     l_found
+           and i_event_time < l_rt_tss.event_time
+      then
+         
+         viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_obsoletesegmentstatus
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_info_arguments         => i_rt_ssm.id_cust
+                                                          || '##' || i_tst_id
+                                                          || '##' || i_lst_id
+                                                          || '##' || lm_common.timestamp_to_varchar( i_timestamp => l_rt_tss.event_time )
+                                                          || '##' || lm_common.timestamp_to_varchar( i_timestamp => i_event_time )
+                            , i_additional_data        =>    'Ssm_id: '
+                                                          || i_rt_ssm.id
+                                                          || '; event time: '
+                                                          || lm_common.timestamp_to_varchar( i_timestamp      => i_event_time )
+                                                          || '; tss: '
+                                                          || i_tst_id
+                            );
+      when     i_active
+           and l_found
+           and l_rt_tss.time_deactivated is not null
+      then
+         
+         
+         
+         
+         l_rt_tss.time_activated    := i_event_time;
+         l_rt_tss.time_deactivated  := null;
+         l_rt_tss.event_time        := i_event_time;
+         l_retval                   := lm_tss_tapi_pck.tss_update_row( i_tss_id       => l_rt_tss.id
+                                                                     , io_rt_tss      => l_rt_tss
+                                                                     );
+         l_tss_activated            := true;
+      when     i_active
+           and not l_found
+      then
+         
+         
+         
+         l_rt_tss.ssm_id          := i_rt_ssm.id;
+         l_rt_tss.tst_id          := i_tst_id;
+         l_rt_tss.time_activated  := i_event_time;
+         l_rt_tss.event_time      := i_event_time;
+         lm_tss_tapi_pck.tss_insert_row( io_rt_tss      => l_rt_tss );
+         l_tss_activated          := true;
+      when     not i_active
+           and l_found
+           and l_rt_tss.time_deactivated is null
+      then
+         
+         
+         
+         
+         l_rt_tss.time_deactivated  := i_event_time;
+         l_rt_tss.event_time        := i_event_time;
+         l_retval                   := lm_tss_tapi_pck.tss_update_row( i_tss_id       => l_rt_tss.id
+                                                                     , io_rt_tss      => l_rt_tss
+                                                                     );
+         l_tss_deactivated           := true;
+      else
+         
+         if l_found
+         then
+            l_rt_tss.event_time  := i_event_time;
+            l_retval             := lm_tss_tapi_pck.tss_update_row( i_tss_id       => l_rt_tss.id
+                                                                  , io_rt_tss      => l_rt_tss
+                                                                  );
+         end if;
+   end case;
+
+   
+   case
+      when     i_rt_ssm.id != lm_constant.g_con_ssm_operational
+           and l_tss_activated
+      then
+         
+         
+         
+         open c_realise_logical_segment( i_tss_id      => l_rt_tss.id );
+
+         fetch c_realise_logical_segment
+         into  l_rt_larv;
+
+         l_found  := c_realise_logical_segment%found;
+
+         close c_realise_logical_segment;
+
+         if l_found
+         then
+            
+            l_rt_lss.ssm_id          := l_rt_larv.ssm_id;
+            l_rt_lss.lst_id          := l_rt_larv.lst_id;
+            l_rt_lss.time_activated  := i_event_time;
+            lm_lss_tapi_pck.lss_insert_row( io_rt_lss      => l_rt_lss );
+            l_lss_modified           := true;
+         end if;
+      when     i_rt_ssm.id != lm_constant.g_con_ssm_operational
+           and l_tss_deactivated
+      then
+         
+         
+         
+         open c_lss_to_deactivate( i_lst_id      => i_lst_id
+                                 , i_ssm_id      => i_rt_ssm.id
+                                 );
+
+         fetch c_lss_to_deactivate
+         into  l_rt_ldev;
+
+         l_found  := c_lss_to_deactivate%found;
+
+         close c_lss_to_deactivate;
+
+         if l_found
+         then
+            
+            l_found                    := lm_lss_tapi_pck.lss_select_row( i_lss_id      => l_rt_ldev.lss_id
+                                                                        , o_rt_lss      => l_rt_lss
+                                                                        );
+            l_rt_lss.time_deactivated  := i_event_time;
+            l_retval                   := lm_lss_tapi_pck.lss_update_row( i_lss_id       => l_rt_lss.id
+                                                                        , io_rt_lss      => l_rt_lss
+                                                                        );
+            l_lss_modified             := true;
+         end if;
+      else
+         
+         null;
+   end case;
+
+   
+   o_lss_modified := l_lss_modified;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_realise_logical_segment%isopen
+      then
+         close c_realise_logical_segment;
+      end if;
+
+      if c_lss_to_deactivate%isopen
+      then
+         close c_lss_to_deactivate;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end update_segment_status;
+
+procedure process_route_influence_rules
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.process_route_influence_rules';
+
+
+l_route_infl_timestamp_fmt varchar2(240);
+
+l_rt_rie lm_route_influences%rowtype;
+
+l_rt_ray lm_rse_availabilities%rowtype;
+
+l_rt_say lm_station_availabilities%rowtype;
+l_rt_hay lm_haa_access_availabilities%rowtype;
+l_upd_rec_count pls_integer;
+
+l_execution_phase varchar2(40);
+
+l_rec_processing varchar2(40);
+
+
+cursor c_route_infl_to_deactivate
+ is
+select /*+ OPT_PARAM('_optimizer_use_feedback' 'FALSE') */ rdev.rie_id
+     , rdev.lss_id
+     , rdev.hss_id
+     , rdev.rre_id
+     , rdev.time_activated
+     , rdev.time_reported
+     , rdev.rse_id
+     , rdev.stn_id
+     , rdev.has_id
+from   lm_rie_to_deactivate_v rdev
+;
+
+cursor c_route_infl_to_realise
+ is
+select rtrv.rre_id
+     , rtrv.lss_id
+     , rtrv.hss_id
+     , rtrv.rse_id
+     , rtrv.stn_id
+     , rtrv.has_id
+from   lm_rie_to_realise_v rtrv
+;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+pragma autonomous_transaction;
+begin
+   
+   
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   lm_flow_administration.g_route_influence_timestamp      := nvl( lm_flow_administration.g_route_influence_timestamp
+                                                                 , lm_common.default_timestamp
+                                                                 );
+   l_route_infl_timestamp_fmt :=
+       lm_common.timestamp_to_varchar( i_timestamp      => lm_flow_administration.g_route_influence_timestamp );
+   
+   
+   
+   <<rie_deactivate_loop>>
+   for rec_rdev in c_route_infl_to_deactivate
+   loop
+      if rec_rdev.rse_id is not null
+      then
+         
+         
+         
+         
+         
+         
+         l_rec_processing := 'LM_ROUTE_SEGMENT_USAGES';
+         lm_rse_tapi_pck.rse_lock_row_nowait( i_rse_id      => rec_rdev.rse_id );
+         
+         
+         
+         
+         
+
+         
+         
+         
+         if lm_ray_tapi_pck.ray_select_row( i_ray_rse_id => rec_rdev.rse_id
+                                          , o_rt_ray     => l_rt_ray
+                                          )
+         then
+            
+            if l_rt_ray.ind_dirty = lm_constant.g_con_yesno_no
+            then
+               l_rt_ray.ind_dirty  := lm_constant.g_con_yesno_yes;
+               
+               l_upd_rec_count     := lm_ray_tapi_pck.ray_update_row( i_ray_rse_id      => l_rt_ray.rse_id
+                                                                    , io_rt_ray         => l_rt_ray
+                                                                    );
+            end if;
+            
+         else   
+            l_rt_ray.rse_id            := rec_rdev.rse_id;
+            l_rt_ray.ind_dirty         := lm_constant.g_con_yesno_yes;
+            l_rt_ray.ind_available     := lm_constant.g_con_yesno_yes;
+            l_rt_ray.timestamp_change  := lm_flow_administration.g_route_influence_timestamp;
+            
+            lm_ray_tapi_pck.ray_insert_row( io_rt_ray      => l_rt_ray );
+            
+         end if;
+      elsif rec_rdev.stn_id is not null
+      then
+         
+         
+         
+         
+         
+         l_rec_processing := 'LM_STATIONS';
+         lm_stn_tapi_pck.stn_lock_row_nowait( i_stn_id      => rec_rdev.stn_id );
+         
+         
+         
+         
+
+         
+         if lm_say_tapi_pck.say_select_row( i_say_stn_id => rec_rdev.stn_id
+                                          , o_rt_say     => l_rt_say
+                                          )
+         then
+            
+            if l_rt_say.ind_dirty = lm_constant.g_con_yesno_no
+            then
+               l_rt_say.ind_dirty  := lm_constant.g_con_yesno_yes;
+               
+               l_upd_rec_count     := lm_say_tapi_pck.say_update_row( i_say_stn_id      => l_rt_say.stn_id
+                                                                    , io_rt_say         => l_rt_say
+                                                                    );
+            end if;
+            
+         else   
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_nostationavailability
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         => rec_rdev.stn_id
+                               , i_additional_data        => 'This is a configuration error.'
+                               );
+            
+         end if;
+
+      else 
+         
+         
+         
+         
+         
+         l_rec_processing := 'LM_HANDLING_AREA_ACCESSES';
+         lm_has_tapi_pck.has_lock_row_nowait( i_has_id      => rec_rdev.has_id );
+         
+         
+         
+         
+
+         
+         if lm_hay_tapi_pck.hay_select_row( i_hay_has_id => rec_rdev.has_id
+                                          , o_rt_hay     => l_rt_hay
+                                          )
+         then
+            
+            if l_rt_hay.ind_dirty = lm_constant.g_con_yesno_no
+            then
+               l_rt_hay.ind_dirty  := lm_constant.g_con_yesno_yes;
+               
+               l_upd_rec_count     := lm_hay_tapi_pck.hay_update_row( i_hay_has_id      => l_rt_hay.has_id
+                                                                    , io_rt_hay         => l_rt_hay
+                                                                    );
+            end if;
+            
+         else   
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_nohaaccessavailability
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         => rec_rdev.has_id
+                               , i_additional_data        => 'This is a configuration error.'
+                               );
+            
+         end if;
+      end if; 
+      
+      
+      
+      l_rt_rie.id                := rec_rdev.rie_id;
+      l_rt_rie.rre_id            := rec_rdev.rre_id;
+      l_rt_rie.lss_id            := rec_rdev.lss_id;
+      l_rt_rie.hss_id            := rec_rdev.hss_id;
+      l_rt_rie.time_activated    := rec_rdev.time_activated;
+      l_rt_rie.time_deactivated  := lm_flow_administration.g_route_influence_timestamp;
+      l_rt_rie.time_reported     := rec_rdev.time_reported;
+      
+      l_upd_rec_count            := lm_rie_tapi_pck.rie_update_row( i_rie_id       => rec_rdev.rie_id
+                                                                  , io_rt_rie      => l_rt_rie
+                                                                  );
+   
+   end loop rie_deactivate_loop;
+
+   l_execution_phase                                   := '"Activate new ROUTE INFLUENCES"';
+
+   
+   <<rie_activate_loop>>
+   for rec_rtrv in c_route_infl_to_realise
+   loop
+      if rec_rtrv.rse_id is not null
+      then
+         
+         
+         
+         
+         
+         l_rec_processing := 'LM_ROUTE_SEGMENT_USAGES';
+         lm_rse_tapi_pck.rse_lock_row_nowait( i_rse_id      => rec_rtrv.rse_id );
+         
+         
+         
+         
+         
+
+         
+         
+         
+         if lm_ray_tapi_pck.ray_select_row( i_ray_rse_id => rec_rtrv.rse_id
+                                          , o_rt_ray     => l_rt_ray
+                                          )
+         then
+            
+            if l_rt_ray.ind_dirty = lm_constant.g_con_yesno_no
+            then
+               l_rt_ray.ind_dirty  := lm_constant.g_con_yesno_yes;
+               
+               l_upd_rec_count     := lm_ray_tapi_pck.ray_update_row( i_ray_rse_id      => l_rt_ray.rse_id
+                                                                    , io_rt_ray         => l_rt_ray
+                                                                    );
+            end if;
+            
+         else   
+            l_rt_ray.rse_id            := rec_rtrv.rse_id;
+            l_rt_ray.ind_dirty         := lm_constant.g_con_yesno_yes;
+            l_rt_ray.ind_available     := lm_constant.g_con_yesno_no;
+            l_rt_ray.timestamp_change  := lm_flow_administration.g_route_influence_timestamp;
+            
+            lm_ray_tapi_pck.ray_insert_row( io_rt_ray      => l_rt_ray );
+            
+         end if;
+      elsif rec_rtrv.stn_id is not null
+      then
+         
+         
+         
+         
+         
+         l_rec_processing := 'LM_STATIONS';
+         lm_stn_tapi_pck.stn_lock_row_nowait( i_stn_id      => rec_rtrv.stn_id );
+         
+         
+         
+         
+         
+         if lm_say_tapi_pck.say_select_row( i_say_stn_id => rec_rtrv.stn_id
+                                          , o_rt_say     => l_rt_say
+                                          )
+         then
+            
+            if l_rt_say.ind_dirty = lm_constant.g_con_yesno_no
+            then
+               l_rt_say.ind_dirty  := lm_constant.g_con_yesno_yes;
+               
+               l_upd_rec_count     := lm_say_tapi_pck.say_update_row( i_say_stn_id      => l_rt_say.stn_id
+                                                                    , io_rt_say         => l_rt_say
+                                                                    );
+            end if;
+            
+         else   
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_nostationavailability
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         => rec_rtrv.stn_id
+                               , i_additional_data        => 'This is a configuration error.'
+                               );
+            
+         end if;
+      else 
+         
+         
+         
+         
+         
+         l_rec_processing := 'LM_HANDLING_AREA_ACCESSES';
+         lm_has_tapi_pck.has_lock_row_nowait( i_has_id      => rec_rtrv.has_id );
+         
+         
+         
+         
+         
+         if lm_hay_tapi_pck.hay_select_row( i_hay_has_id      => rec_rtrv.has_id
+                                          , o_rt_hay          => l_rt_hay
+                                          )
+         then
+            
+            if l_rt_hay.ind_dirty = lm_constant.g_con_yesno_no
+            then
+               l_rt_hay.ind_dirty  := lm_constant.g_con_yesno_yes;
+               
+               l_upd_rec_count     := lm_hay_tapi_pck.hay_update_row( i_hay_has_id => l_rt_hay.has_id
+                                                                    , io_rt_hay    => l_rt_hay
+                                                                    );
+            end if;
+            
+         else   
+            viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_nohaaccessavailability
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_error
+                               , i_info_arguments         => rec_rtrv.has_id
+                               , i_additional_data        => 'This is a configuration error.'
+                               );
+            
+         end if;
+      end if; 
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      l_rt_rie.id                := null;
+      l_rt_rie.rre_id            := rec_rtrv.rre_id;
+      l_rt_rie.lss_id            := rec_rtrv.lss_id;
+      l_rt_rie.hss_id            := rec_rtrv.hss_id;
+      l_rt_rie.time_activated    := lm_flow_administration.g_route_influence_timestamp;
+      l_rt_rie.time_deactivated  := null;
+      l_rt_rie.time_reported     := null;
+      
+      lm_rie_tapi_pck.rie_insert_row( io_rt_rie      => l_rt_rie );
+   
+   
+   end loop rie_activate_loop;
+
+   
+   
+   
+   
+   
+   l_execution_phase := '"Update ROUTE SEGMENT USAGES"';
+   lm_flow_administration.update_route_segment_usages;
+
+   
+   
+   
+   l_execution_phase := '"Update STATIONS"';
+   lm_flow_administration.update_stations;
+   
+   
+   
+   
+   l_execution_phase := '"Update HANDLING AREA ACCESSES"';
+   lm_flow_administration.update_handling_area_accesses;
+   
+   
+   commit;
+   
+   
+   
+   
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+exception
+   when viu_constant.exc_lockfailed
+   then
+      
+      
+      
+      rollback;   
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_lockfailed
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_info_arguments         => l_rec_processing
+                            , i_additional_data        => l_rec_processing
+                                                          || ' record(s) locked by another process'
+                                                          || ' and NOWAIT specified (lock conflict) '
+                                                          || ' during execution phase '
+                                                          || l_execution_phase
+                                                          || '. Start time = '
+                                                          || l_route_infl_timestamp_fmt
+                                                          || 'End time = '
+                                                          || to_char( lm_common.default_timestamp
+                                                                    , lm_constant.g_con_cmn_timestamp_format
+                                                                    )
+                            );
+      
+      lm_flow_administration.g_route_influence_timestamp  := null;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   
+   
+   when viu_constant.exc_nostationavailability
+   then
+      rollback;
+      
+      lm_flow_administration.g_route_influence_timestamp  := null;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      viu_info.handle_info;
+   
+   when viu_constant.exc_nohaaccessavailability
+   then
+      rollback;
+      
+      lm_flow_administration.g_route_influence_timestamp  := null;
+      
+      viu_module.leave_module( i_module      => l_con_proc_name );
+      viu_info.handle_info;
+   
+   when others
+   then
+      rollback;   
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    sqlerrm
+                                                    || ' (exception during execution phase '
+                                                    || l_execution_phase
+                                                    || ')'
+                                                    || '. Start time = '
+                                                    || l_route_infl_timestamp_fmt
+                             );
+      
+      lm_flow_administration.g_route_influence_timestamp  := null;
+
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end process_route_influence_rules;
+
+procedure update_route_segment_usages
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.update_route_segment_usages';
+
+
+l_route_infl_timestamp lm_constant.st_timestamp;
+
+l_route_infl_timestamp_fmt varchar2(240);
+
+l_rt_ray lm_rse_availabilities%rowtype;
+
+l_upd_rec_count pls_integer;
+
+l_update_ray boolean := false;
+
+
+cursor c_rse_dirty_availability_upd
+ is
+select        *
+from          lm_rse_dirty_availability_v
+for update of rse_id nowait
+;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   
+   l_route_infl_timestamp      := nvl( lm_flow_administration.g_route_influence_timestamp
+                                     , lm_common.default_timestamp
+                                     );
+   l_route_infl_timestamp_fmt  := lm_common.timestamp_to_varchar( i_timestamp      => l_route_infl_timestamp );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   <<rse_dirty_loop>>
+   for rec_rsiv in c_rse_dirty_availability_upd
+   
+   
+   
+   loop
+
+      
+
+
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      if     rec_rsiv.ind_active_route_influence = lm_constant.g_con_yesno_yes
+         and rec_rsiv.ind_available              = lm_constant.g_con_yesno_yes
+      then   
+             
+         l_rt_ray.rse_id            := rec_rsiv.rse_id;
+         l_rt_ray.ind_available     := lm_constant.g_con_yesno_no;  
+         l_rt_ray.ind_dirty         := lm_constant.g_con_yesno_yes; 
+         l_rt_ray.timestamp_change  := l_route_infl_timestamp;
+         
+         l_update_ray := true;
+         
+      elsif     rec_rsiv.ind_active_route_influence is null
+            and rec_rsiv.ind_available              = lm_constant.g_con_yesno_no
+      then   
+             
+         l_rt_ray.rse_id            := rec_rsiv.rse_id;
+         l_rt_ray.ind_available     := lm_constant.g_con_yesno_yes; 
+         l_rt_ray.ind_dirty         := lm_constant.g_con_yesno_yes; 
+         l_rt_ray.timestamp_change  := l_route_infl_timestamp;
+         
+         l_update_ray := true;
+         
+      end if;
+
+      if l_update_ray
+      then
+         
+         l_upd_rec_count  := lm_ray_tapi_pck.ray_update_row( i_ray_rse_id      => l_rt_ray.rse_id
+                                                           , io_rt_ray         => l_rt_ray
+                                                           );
+         
+         l_update_ray := false;
+      end if;
+         
+
+   end loop rse_dirty_loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when exc_resource_busy
+   
+   
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    'LM_ROUTE_SEGMENT_USAGE record(s) locked by another process'
+                                                    || ' and NOWAIT specified (lock conflict) '
+                             );
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_lockfailed
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_warning
+                         , i_info_arguments         => lm_rse_tapi_pck.g_con_table_name
+                         , i_additional_data        =>    'LM_ROUTE_SEGMENT_USAGE record(s) locked by another process'
+                                                       || ' and NOWAIT specified (lock conflict) '
+                         );
+   
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end update_route_segment_usages;
+
+procedure determine_routing_preferences
+ is
+
+
+cursor c_rsev_substitutes
+ (i_rme_id in lm_route_segment_usages_v.rme_id%type
+ ,i_drp_id in lm_route_segment_usages_v.drp_id%type
+ ,i_ras_id in lm_route_segment_usages_v.ras_id%type
+ ,i_nde_id_start_node in lm_route_segments.nde_id_start_node%type
+ ,i_skip_dirties in varchar2
+ )
+ is
+select     rsev.id rse_id
+         , rde.rse_id rde_rse_id
+         , rde.ind_dirty rde_ind_dirty
+         , rde.value preference
+from       lm_route_segment_usages_v rsev
+         , lm_rse_determined_preferences rde
+         , lm_rse_availabilities ray
+         , lm_route_segments rst
+where      rsev.rst_id = rst.id
+and        ray.rse_id = rsev.id
+and        rde.rse_id(+) = rsev.id   
+
+and        rsev.rme_id = i_rme_id   
+and        rsev.drp_id = i_drp_id
+and        rsev.ras_id = i_ras_id
+and        rst.nde_id_start_node = i_nde_id_start_node
+and        ray.ind_available = lm_constant.g_con_yesno_yes
+
+and        (    ray.ind_dirty = lm_constant.g_con_yesno_no
+             or i_skip_dirties = lm_constant.g_con_yesno_no
+             
+             
+           )
+for update nowait
+;
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.determine_routing_preferences';
+
+
+l_route_infl_timestamp lm_constant.st_timestamp;
+
+l_route_infl_timestamp_fmt varchar2(240);
+
+l_rt_rsev c_rsev_substitutes%rowtype;
+
+l_upd_rec_count pls_integer;
+
+l_ray_initialised_count pls_integer := 0;
+
+l_rde_initialised_count pls_integer := 0;
+
+l_rt_ray lm_rse_availabilities%rowtype;
+
+l_rt_rde lm_rse_determined_preferences%rowtype;
+
+l_rt_rde_subst lm_rse_determined_preferences%rowtype;
+l_found boolean;
+
+
+cursor c_rsev_dirty
+ is
+select        rsev.id rse_id
+            , rsev.drp_id
+            , rsev.rst_id
+            , rsev.ras_id
+            , rsev.rme_id
+            , rst.nde_id_start_node
+            , ray.ind_available
+            , ray.ind_dirty ray_ind_dirty
+            , ray.rse_id ray_rse_id
+            , ray.timestamp_change ray_timestamp_change
+            , rde.rse_id rde_rse_id
+            , rde.ind_dirty rde_ind_dirty
+            , rde.value preference
+from          lm_route_segment_usages_v rsev
+            , lm_route_segments rst
+            , lm_rse_availabilities ray
+            , lm_rse_determined_preferences rde
+where         ray.rse_id(+) = rsev.id
+and           rde.rse_id(+) = rsev.id
+and           rsev.rst_id = rst.id
+and           nvl( ray.ind_dirty, lm_constant.g_con_yesno_yes
+                 ) = lm_constant.g_con_yesno_yes
+
+order by      ray.ind_dirty desc
+            
+,             case rsev.ras_id
+                 when lm_constant.g_con_ras_name_option
+                    then 0
+                 when lm_constant.g_con_ras_name_favourite
+                    then 1
+                 when lm_constant.g_con_ras_name_substitute_favo
+                    then 2
+              
+              
+              end
+for update of rsev.id nowait   
+;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+pragma autonomous_transaction;
+begin
+   
+   
+   
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   l_route_infl_timestamp      := nvl( lm_flow_administration.g_route_influence_timestamp
+                                     , lm_common.default_timestamp
+                                     );
+   l_route_infl_timestamp_fmt  := lm_common.timestamp_to_varchar( i_timestamp      => l_route_infl_timestamp );
+
+   
+   
+   
+   
+
+   
+   <<determ_pref_loop>>
+   for rec_rsev in c_rsev_dirty
+   loop
+      
+      
+      
+      
+      
+
+      
+      
+      l_rt_ray.rse_id     := rec_rsev.rse_id;
+      
+      
+      
+      l_rt_rde.rse_id     := rec_rsev.rse_id;
+      l_rt_rde.ind_dirty  := nvl( rec_rsev.rde_ind_dirty
+                                , lm_constant.g_con_yesno_yes
+                                );
+
+      
+      
+      if rec_rsev.ray_rse_id is null   
+      then
+         
+         
+         
+         
+         l_rt_ray.ind_available     := lm_constant.g_con_yesno_yes;
+         l_rt_ray.timestamp_change  := l_route_infl_timestamp;
+
+         
+
+         
+         
+         
+         
+         if rec_rsev.ras_id = lm_constant.g_con_ras_name_option
+         then
+            l_rt_rde.value  := lm_constant.g_con_rey_preference_alternat;
+         
+         
+         
+         
+         
+         elsif rec_rsev.ras_id = lm_constant.g_con_ras_name_favourite
+         then
+            l_rt_rde.value  := lm_constant.g_con_rey_preference_preferred;
+         
+         
+         
+         
+         
+         elsif rec_rsev.ras_id = lm_constant.g_con_ras_name_substitute_favo
+         then
+            l_rt_rde.value  := lm_constant.g_con_rey_preference_no_route;
+         end if;
+      
+      
+      else   
+         
+
+         
+         
+         
+         
+         l_rt_ray.ind_available     := rec_rsev.ind_available;
+         l_rt_ray.timestamp_change  := rec_rsev.ray_timestamp_change;
+
+         
+         
+         
+         
+         
+         if rec_rsev.ras_id = lm_constant.g_con_ras_name_option
+         then
+            
+            
+            
+            
+            
+            
+            if rec_rsev.ind_available = lm_constant.g_con_yesno_no
+            then
+               l_rt_rde.value  := lm_constant.g_con_rey_preference_alt_block;
+            
+            
+            else   
+               l_rt_rde.value  := lm_constant.g_con_rey_preference_alternat;
+            end if;
+         
+         
+         
+         
+         
+         
+         elsif rec_rsev.ras_id = lm_constant.g_con_ras_name_favourite
+         then
+            
+            
+            
+            
+            
+            
+            if rec_rsev.ind_available = lm_constant.g_con_yesno_no
+            then
+               l_rt_rde.value  := lm_constant.g_con_rey_preference_pre_block;
+            
+            
+            
+            else   
+               l_rt_rde.value  := lm_constant.g_con_rey_preference_preferred;
+            end if;
+
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            <<determ_subst_pref>>
+            for rec_rsev_subst in c_rsev_substitutes( i_rme_id                 => rec_rsev.rme_id
+                                                    , i_drp_id                 => rec_rsev.drp_id
+                                                    , i_ras_id                 => lm_constant.g_con_ras_name_substitute_favo
+                                                    , i_nde_id_start_node      => rec_rsev.nde_id_start_node
+                                                    , i_skip_dirties           => lm_constant.g_con_yesno_yes
+                                                    )
+            loop
+               l_rt_rde_subst.rse_id  := rec_rsev_subst.rse_id;
+
+               
+               
+               
+               
+               
+               if rec_rsev.ind_available = lm_constant.g_con_yesno_yes
+               then
+                  l_rt_rde_subst.value  := lm_constant.g_con_rey_preference_no_route;
+               else
+                  
+                  
+                  
+                  l_rt_rde_subst.value  := lm_constant.g_con_rey_preference_preferred;
+               end if;
+
+               if l_rt_rde_subst.value = rec_rsev_subst.preference
+               then   
+                  null;
+               else
+                  
+                  
+                  
+                  l_rt_rde_subst.ind_dirty  := lm_constant.g_con_yesno_yes;
+
+                  
+                  
+                  if rec_rsev_subst.rde_rse_id is null
+                  then   
+                         
+                     lm_rde_tapi_pck.rde_insert_row( io_rt_rde      => l_rt_rde_subst );
+                     
+                     
+                     l_rde_initialised_count  := l_rde_initialised_count + 1;
+                  
+                  
+                  else   
+                     l_upd_rec_count  := lm_rde_tapi_pck.rde_update_row( i_rde_rse_id      => l_rt_rde_subst.rse_id
+                                                                       , io_rt_rde         => l_rt_rde_subst
+                                                                       );
+                  end if;
+               end if;
+            end loop determ_subst_pref;
+         
+         
+         
+         
+         
+         
+         elsif rec_rsev.ras_id = lm_constant.g_con_ras_name_substitute_favo
+         then
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            
+            open c_rsev_substitutes( i_rme_id                 => rec_rsev.rme_id
+                                   , i_drp_id                 => rec_rsev.drp_id
+                                   , i_ras_id                 => lm_constant.g_con_ras_name_favourite
+                                   , i_nde_id_start_node      => rec_rsev.nde_id_start_node
+                                   , i_skip_dirties           => lm_constant.g_con_yesno_no
+                                   );
+
+            fetch c_rsev_substitutes
+            into  l_rt_rsev;
+
+            l_found  := c_rsev_substitutes%found;
+
+            close c_rsev_substitutes;
+
+            if l_found 
+            then
+               
+               
+               
+               
+               l_rt_rde.value  := lm_constant.g_con_rey_preference_no_route;
+            else
+               if rec_rsev.ind_available = lm_constant.g_con_yesno_no
+               then
+                  
+                  
+                  l_rt_rde.value  := lm_constant.g_con_rey_preference_pre_block;
+               else
+                  
+                  
+                  l_rt_rde.value  := lm_constant.g_con_rey_preference_preferred;
+               end if;
+            end if;
+         end if;
+      
+      
+      
+      
+      end if;
+
+      
+      
+      
+      l_rt_ray.ind_dirty  := lm_constant.g_con_yesno_no;
+
+      if rec_rsev.ray_rse_id is null
+      then   
+             
+         lm_ray_tapi_pck.ray_insert_row( io_rt_ray      => l_rt_ray );
+         
+         
+         
+         l_ray_initialised_count  := l_ray_initialised_count + 1;
+      else   
+         l_upd_rec_count  := lm_ray_tapi_pck.ray_update_row( i_ray_rse_id      => l_rt_ray.rse_id
+                                                           , io_rt_ray         => l_rt_ray
+                                                           );
+      end if;
+
+      if l_rt_rde.value = rec_rsev.preference
+      then   
+         null;
+      else
+         
+         
+         l_rt_rde.ind_dirty  := lm_constant.g_con_yesno_yes;
+
+         
+         if rec_rsev.rde_rse_id is null
+         then   
+                
+            lm_rde_tapi_pck.rde_insert_row( l_rt_rde );
+            
+            
+            l_rde_initialised_count  := l_rde_initialised_count + 1;
+         else   
+            l_upd_rec_count  := lm_rde_tapi_pck.rde_update_row( i_rde_rse_id      => l_rt_rde.rse_id
+                                                              , io_rt_rde         => l_rt_rde
+                                                              );
+         end if;
+      end if;
+   
+   
+   end loop determ_pref_loop;
+
+   
+   
+   
+   if    l_ray_initialised_count > 0
+      or l_rde_initialised_count > 0
+   then
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_rseinitialised
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_notification
+                            , i_info_arguments         =>    to_char( l_ray_initialised_count )
+                                                          || ' RSE AVAILABILITIES / '
+                                                          || to_char( l_rde_initialised_count )
+                                                          || ' RSE DETERMINED PREFERENCES inserted'
+                            , i_additional_data        =>    'Uninitialised ROUTE SEGMENT USAGES found and initialised'
+                                                          || ' (start time = '
+                                                          || l_route_infl_timestamp_fmt
+                                                          || ')'
+                            , i_autonomous             => false
+                            );
+   end if;
+
+   
+   commit;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+
+exception
+   
+   when exc_resource_busy
+   
+   
+   then
+      rollback;   
+      if c_rsev_substitutes%isopen
+      then
+         close c_rsev_substitutes;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    'LM_ROUTE_SEGMENT_USAGE record(s) locked by another process'
+                                                    || ' and NOWAIT specified (lock conflict) '
+                             );
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_lockfailed
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_warning
+                         , i_info_arguments         => lm_rse_tapi_pck.g_con_table_name
+                         , i_additional_data        =>    'LM_ROUTE_SEGMENT_USAGE record(s) locked by another process'
+                                                       || ' and NOWAIT specified (lock conflict) '
+                         );
+   
+   
+   when others
+   then
+      rollback;   
+      if c_rsev_substitutes%isopen
+      then
+         close c_rsev_substitutes;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+
+
+end determine_routing_preferences;
+
+procedure update_routing_tables
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.update_routing_tables';
+
+
+l_route_infl_timestamp lm_constant.st_timestamp;
+
+l_route_infl_timestamp_fmt varchar2(240);
+
+
+cursor c_route_modes
+ is
+select   *
+from     lm_route_modes rme
+order by case rme.id
+            when lm_constant.g_con_rme_name_systempri
+               then 1
+            when lm_constant.g_con_rme_name_system
+               then 2
+            when lm_constant.g_con_rme_name_default
+               then 3
+         
+         end
+;
+
+cursor c_nde_dirty_preference
+ (i_rme_id in lm_route_modes.id%type
+ )
+ is
+select   ndtv.id                      nde_id
+       , ndtv.identifier_within_sct
+       , znev.id_cust zne_id_cust
+       , arav.id_cust ara_id_cust
+from     lm_nodes_divert_v ndtv
+       , lm_areas_v arav
+       , lm_zones_v znev
+where    ndtv.sct_id = znev.zone_id
+and      znev.area_id = arav.area_id
+and      exists(
+            select ''
+            from   lm_route_segments rst
+                 , lm_route_segment_usages_v rsev
+                 , lm_rse_determined_preferences rde
+            where  rst.nde_id_start_node = ndtv.id
+            and    rsev.rst_id = rst.id
+            and    rsev.rme_id = i_rme_id
+            and    rde.rse_id = rsev.id
+            and    rde.ind_dirty = lm_constant.g_con_yesno_yes )
+order by ndtv.id
+;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   l_route_infl_timestamp      := nvl( lm_flow_administration.g_route_influence_timestamp
+                                     , lm_common.default_timestamp
+                                     );
+   l_route_infl_timestamp_fmt  := lm_common.timestamp_to_varchar( i_timestamp      => l_route_infl_timestamp );
+
+   
+   
+   lm_in_time_delivery.mark_routes;
+
+   
+   
+   
+   
+   
+   
+   
+   
+   <<loop_rme>>
+   for rec_rme in c_route_modes
+   loop
+
+      <<loop_nodes>>
+      for rec_nde in c_nde_dirty_preference( i_rme_id      => rec_rme.id )
+      loop
+         
+         
+         lm_flow_administration.refresh_node_routing_table( i_nde_id                         => rec_nde.nde_id
+                                                          , i_nde_identifier_within_sct      => rec_nde.identifier_within_sct
+                                                          , i_zne_id_cust                    => rec_nde.zne_id_cust
+                                                          , i_ara_id_cust                    => rec_nde.ara_id_cust
+                                                          , i_rt_rme                         => rec_rme
+                                                          );
+      end loop loop_nodes;
+   
+   end loop loop_rme;
+
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end update_routing_tables;
+
+procedure refresh_node_routing_table
+ (i_nde_id                    in lm_nodes.id%type
+ ,i_nde_identifier_within_sct in lm_nodes.identifier_within_sct%type
+ ,i_zne_id_cust               in lm_zones_v.id_cust%type
+ ,i_ara_id_cust               in lm_areas_v.id_cust%type
+ ,i_rt_rme                    in lm_route_modes%rowtype
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.REFRESH_NODE_ROUTING_TABLE';
+
+   
+   cursor c_dirty_routing_entries
+    (i_nde_id_start_node in lm_nodes.id%type
+    ,i_rme_id in lm_route_modes.id%type
+    )
+    is
+   
+   select deyv.rey_id
+   ,      deyv.rte_id
+   ,      deyv.rse_id
+   ,      deyv.rst_id
+   ,      deyv.current_preference
+   ,      deyv.pon_id
+   ,      deyv.pon_id_cust
+   ,      deyv.direction
+   ,      deyv.must_be_preference
+   from   lm_determ_routing_entries_v  deyv
+   where  deyv.nde_id_start_node = i_nde_id_start_node
+   and    deyv.rme_id            = i_rme_id
+   and    deyv.ind_dirty         = lm_constant.g_con_yesno_yes
+   order by
+     deyv.pon_id
+   , deyv.direction
+   , deyv.rse_id;
+   
+   
+   cursor c_dirty_routing_entries_xml
+    (i_nde_id_start_node in lm_nodes.id%type
+    ,i_rme_id in lm_route_modes.id%type
+    )
+    is
+   
+   
+   
+   
+   select xmlagg                       
+          ( xmlelement
+            ( "TEntry"
+            , xmlelement( "Destination", pon_id_cust)
+            , xmlagg                   
+              ( case preference        
+                when 0                 
+                then                   
+                   null                
+                else
+                   xmlelement
+                   ( "DEntry"
+                   , xmlconcat
+                     ( xmlelement( "Direction", direction)
+                     , xmlelement( "Preference", preference)
+                     )
+                   )
+                end
+                order by direction
+                
+                
+              )
+            )
+          )
+   from  (
+          
+          
+          
+          select pon.pon_id                pon_id
+          ,      pon.pon_id_cust           pon_id_cust
+          ,      rst.direction_start_node  direction
+          ,      rey.preference            preference
+          from   (select distinct deyv.pon_id_cust
+                  ,      deyv.pon_id
+                  ,      deyv.nde_id_start_node
+                  ,      deyv.rme_id
+                  from   lm_determ_routing_entries_v  deyv
+                  where  deyv.nde_id_start_node = i_nde_id_start_node
+                  and    deyv.rme_id            = i_rme_id
+                  and    deyv.ind_dirty         = lm_constant.g_con_yesno_yes
+                 )                  pon
+          ,      lm_route_segments  rst
+          ,      lm_routing_tables  rte
+          ,      lm_routing_entries rey
+          where  rte.nde_id = pon.nde_id_start_node
+          and    rte.rme_id = pon.rme_id
+          and    rey.rte_id = rte.id
+          and    rey.pon_id = pon.pon_id
+          and    rst.id = rey.rst_id
+         )
+   group by pon_id, pon_id_cust; 
+                                 
+
+   
+   cursor c_rde_dirty
+    (i_nde_id in lm_nodes.id%type
+    ,i_rme_id in lm_route_modes.id%type
+    )
+    is
+   select rde.*
+   from lm_route_segment_usages_v rsev
+       ,lm_rse_determined_preferences rde
+       ,lm_route_segments rst
+   where rsev.rst_id              = rst.id
+     and rde.rse_id               = rsev.id
+     and rde.ind_dirty            = lm_constant.g_con_yesno_yes
+     and rst.nde_id_start_node    = i_nde_id
+     and rsev.rme_id              = i_rme_id;
+
+   l_ims_id      lm_ifc_messages.id%type;
+   l_rt_rte      lm_routing_tables%rowtype;
+   l_rt_rey      lm_routing_entries%rowtype;
+   
+   l_rt_rey_init lm_routing_entries%rowtype;
+   l_rt_rde      lm_rse_determined_preferences%rowtype;
+   l_message     xmltype;
+   l_tentrylist  xmltype;
+   l_bool        boolean;
+   l_num         number;
+   l_rse_id      lm_route_segment_usages.id%type;
+
+   pragma autonomous_transaction;
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   
+   
+   
+   <<dirty_entry_loop>>
+   for rec_deyv in c_dirty_routing_entries( i_nde_id_start_node      => i_nde_id
+                                          , i_rme_id                 => i_rt_rme.id
+                                          )
+   loop
+      
+      
+      
+      l_rse_id           := rec_deyv.rse_id;   
+      lm_rse_tapi_pck.rse_lock_row_nowait( i_rse_id      => l_rse_id );
+
+      
+      
+      l_rt_rey             := l_rt_rey_init;
+      
+      l_rt_rey.rst_id      := rec_deyv.rst_id;
+      l_rt_rey.pon_id      := rec_deyv.pon_id;
+      l_rt_rey.preference  := rec_deyv.must_be_preference;
+      
+      
+      
+      if rec_deyv.rey_id is null
+      then
+         
+         
+         
+         
+         
+
+         
+         
+         
+         
+         
+         l_bool               := lm_rte_tapi_pck.rte_select_row_uk1( i_rte_nde_id      => i_nde_id
+                                                                   , i_rte_rme_id      => i_rt_rme.id
+                                                                   , o_rt_rte          => l_rt_rte
+                                                                   );
+         l_rt_rey.rte_id      := l_rt_rte.id;
+         
+         
+         
+         viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_routingentrymissing
+                               , i_calling_procedure      => l_con_proc_name
+                               , i_severity               => viu_info.c_severity_warning
+                               , i_additional_data        =>    'NODE (Zone ID Cust, Equipment ID) = ("'
+                                                             || i_zne_id_cust
+                                                             || '", "'
+                                                             || i_nde_identifier_within_sct
+                                                             || '") Phys.dest ID cust = "'
+                                                             || rec_deyv.pon_id_cust
+                                                             || '" Determined preference = "'
+                                                             || l_rt_rey.preference
+                                                             || '" RTE_ID = "'
+                                                             || to_char( l_rt_rey.rte_id )
+                                                             || '" RST_ID = "'
+                                                             || to_char( l_rt_rey.rst_id )
+                                                             || '" PON_ID = "'
+                                                             || to_char( l_rt_rey.pon_id )
+                                                             || '"'
+                               );
+         
+         lm_rey_tapi_pck.rey_insert_row( io_rt_rey      => l_rt_rey );
+         
+         
+      else 
+         
+         
+         
+         
+         
+         l_rt_rey.id      := rec_deyv.rey_id;
+         l_rt_rey.rte_id  := rec_deyv.rte_id;
+         
+         
+         l_num  := lm_rey_tapi_pck.rey_update_row( i_rey_id       => rec_deyv.rey_id
+                                                 , io_rt_rey      => l_rt_rey
+                                                 );
+      end if;
+      
+   end loop dirty_entry_loop;
+
+   
+   
+   open c_dirty_routing_entries_xml( i_nde_id_start_node => i_nde_id
+                                   , i_rme_id            => i_rt_rme.id
+                                   );
+
+   fetch c_dirty_routing_entries_xml
+   into  l_tentrylist;
+
+   close c_dirty_routing_entries_xml;
+   
+
+   
+   
+   
+   
+   
+   
+   select xmlconcat
+            ( xmlelement( "PhysicalLocation"
+                        , xmlconcat
+                           ( xmlelement( "AreaID", i_ara_id_cust)
+                           , xmlelement( "ZoneID", i_zne_id_cust)
+                           , xmlelement( "EquipmentID", i_nde_identifier_within_sct)
+                           )
+                         )
+            , xmlelement
+              ( "RoutingTable"
+              , xmlelement( "RoutingTableType", i_rt_rme.name)
+              , l_tentrylist
+              )
+            )
+   into   l_message
+   from   dual;
+  
+   
+   l_ims_id := lm_interface.prepare_and_send_message
+              ( i_imd_name        => 'RoutingTableUpdate'
+              , i_message         => l_message
+              , i_event_time      => lm_common.default_timestamp
+              , i_pty_id_cust     => null
+              , i_pty_instance_id => null
+              , i_sct_id_cust     => i_ara_id_cust
+             );
+   
+   
+   
+   
+   
+   
+   
+   <<reset_rde_dirty_loop>>
+   for r_rde in c_rde_dirty(  i_nde_id => i_nde_id
+                            , i_rme_id => i_rt_rme.id
+                           )
+   loop
+         
+         l_bool              := lm_rde_tapi_pck.rde_select_row( i_rde_rse_id      => r_rde.rse_id
+                                                              , o_rt_rde          => l_rt_rde
+                                                              );
+         
+         l_rt_rde.ind_dirty  := lm_constant.g_con_yesno_no;
+         l_num               := lm_rde_tapi_pck.rde_update_row( i_rde_rse_id      => r_rde.rse_id
+                                                              , io_rt_rde         => l_rt_rde
+                                                              );
+   end loop reset_rde_dirty_loop;
+   
+   
+   commit;
+   
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   
+   when viu_constant.exc_lockfailed
+   then
+      
+      rollback;
+      
+      
+              
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_lockfailed
+                            , i_calling_procedure      => l_con_proc_name
+                            , i_severity               => viu_info.c_severity_warning
+                            , i_info_arguments         => lm_rse_tapi_pck.g_con_table_name
+                            , i_additional_data        =>    'LM_ROUTE_SEGMENT_USAGE record(s) locked by another process'
+                                                          || ' and NOWAIT specified (lock conflict). ID = "'
+                                                          || to_char( l_rse_id )
+                                                          || '" NODE (Zone ID Cust, Equipment ID) = ("'
+                                                          || i_zne_id_cust
+                                                          || '", "'
+                                                          || i_nde_identifier_within_sct
+                                                          || '") Area ID cust = "'
+                                                          || i_ara_id_cust
+                                                          || '" Routing table type = "'
+                                                          || i_rt_rme.name
+                                                          || '"'
+                            );
+      viu_module.leave_module( i_module      => l_con_proc_name );
+   when others
+   then
+      
+      rollback;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end refresh_node_routing_table;
+
+procedure send_handling_area_table
+ (i_area_id_cust in lm_areas_v.id_cust%type
+ ,i_zone_id_cust in lm_zones_v.id_cust%type
+ ,i_node_identifier_within_sct in lm_nodes.identifier_within_sct%type
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.send_handling_area_table';
+
+   l_message                xmltype;
+   l_handlingareatablelist  xmltype;
+   l_ims_id                 lm_ifc_messages.id%type;
+
+   cursor c_haa_pon
+   is
+   
+   select xmlagg
+          ( xmlelement
+            ( "HandlingAreaTable"
+            , xmlelement( "DestinationHandlingArea", haa.id_cust)
+            , xmlagg
+              ( xmlforest(pon.id_cust as "Destination")
+                order by pon.id_cust
+                
+                
+              )
+            )
+          order by haa.id_cust
+          
+          
+          ) handlingareatablelist
+   from   lm_physical_destinations  pon
+   ,      lm_station_reachabilities sry
+   ,      lm_handling_areas         haa
+   ,      lm_handling_area_stations han
+   where  han.haa_id = haa.id
+   and    han.stn_id = sry.stn_id
+   and    sry.mom_id = lm_constant.g_con_mom_mom_mode_normal
+   and    sry.pon_id = pon.id
+   group by haa.id_cust;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   open c_haa_pon;
+   fetch c_haa_pon
+   into  l_handlingareatablelist;
+   close c_haa_pon;
+
+   if l_handlingareatablelist is not null
+   then
+      
+      select xmlconcat
+             ( xmlelement( "PhysicalLocation"
+                           , xmlconcat
+                                (xmlelement( "AreaID"     , i_area_id_cust)
+                                ,xmlelement( "ZoneID"     , i_zone_id_cust)
+                                ,xmlelement( "EquipmentID", i_node_identifier_within_sct)
+                                )
+                           )
+               ,l_handlingareatablelist
+             )
+      into   l_message
+      from   dual;
+
+      
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'HandlingAreaTableUpdate'
+                 , i_message         => l_message
+                 , i_event_time      => lm_common.default_timestamp
+                 , i_pty_id_cust     => null
+                 , i_pty_instance_id => null
+                 , i_sct_id_cust     => i_area_id_cust
+                );
+                  
+   end if;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_haa_pon%isopen
+      then
+         close c_haa_pon;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_handling_area_table;
+
+procedure send_segment_status_rep_job
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.send_segment_status_rep_job';
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   lm_flow_administration.send_segment_status_report(i_nt_lst_id => nt_id_coll());
+
+   commit;  
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when lm_constant.exc_internal_error
+   then
+      
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      
+
+
+
+
+
+
+
+      
+      lm_common.abort_application_fatal;
+      
+   when others
+   then
+      rollback;
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.handle_info;
+end send_segment_status_rep_job;
+
+
+procedure process_segm_status_route_infl
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.Process_Segm_status_Route_Infl';
+
+   l_execution_phase          varchar2(60);  
+   l_route_infl_timestamp_fmt varchar2(240); 
+   
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+
+   
+   
+   
+   
+   
+   lm_flow_administration.g_route_influence_timestamp  := lm_common.default_timestamp;
+   l_execution_phase                                   := '"Process Route Influence Rules"';
+   
+   lm_flow_administration.process_route_influence_rules;
+   
+   l_execution_phase                                   := '"Determine Routing preferences"';
+   
+   
+   
+   lm_flow_administration.determine_routing_preferences;
+   
+   
+   l_execution_phase                                   := '"Update ROUTING TABLES"';
+   
+   
+   
+   
+   lm_flow_administration.update_routing_tables;
+   
+   l_execution_phase                                   := '"Handle STATION AVAILABILITY"';
+   
+   
+   
+   lm_topology_administration.process_stn_availability_infl
+          (i_route_influence_timestamp =>    lm_flow_administration.g_route_influence_timestamp);
+   
+   l_execution_phase                                   := '"Handle HANDLING AREA ACCESS AVAILABILITY"';
+   
+   
+   
+   lm_topology_administration.process_has_availability_infl
+          (i_route_influence_timestamp =>    lm_flow_administration.g_route_influence_timestamp);
+   
+   l_execution_phase                                   := '"Broadcast HandlingAreaStatus incoming links"';
+   
+   lm_flow_administration.send_rule_changed;
+   
+   l_execution_phase                                   := '"Send (de)activated rule information"';
+   
+   lm_flow_administration.send_haa_access_status_rep_in;
+   
+   l_execution_phase                                   := '"Broadcast HandlingAreaStatus outgoing links"';
+   
+   lm_flow_administration.send_haa_access_status_rep_out;
+   
+   
+   
+   lm_flow_administration.g_route_influence_timestamp  := null;
+
+   commit;  
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when lm_constant.exc_internal_error
+   then
+
+      
+      lm_flow_administration.g_route_influence_timestamp  := null;
+      
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      
+
+
+
+
+
+
+
+
+
+      
+      lm_common.abort_application_fatal;
+      
+
+   when others
+   then
+      rollback;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    sqlerrm
+                                                    || ' (exception during execution phase '
+                                                    || l_execution_phase
+                                                    || ')'
+                                                    || '. Start time = '
+                                                    || l_route_infl_timestamp_fmt
+                             );
+      
+      lm_flow_administration.g_route_influence_timestamp  := null;
+      
+      
+      
+      viu_info.handle_info( i_calling_procedure      => l_con_proc_name );
+end;
+
+
+procedure process_infl_capacity_values
+is
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.PROCESS_INFL_CAPACITY_VALUES';
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   lm_flow_administration.process_capacity_rules;
+   
+   lm_flow_administration.send_capacity_instruction;
+
+   
+   commit;  
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when lm_constant.exc_internal_error
+   then
+
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      
+
+
+
+
+
+
+
+
+
+      
+      lm_common.abort_application_fatal;
+      
+
+   when others
+   then
+      
+      viu_info.handle_info;
+      
+      rollback;
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+end process_infl_capacity_values;
+
+
+procedure process_capacity_rules
+is
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.PROCESS_CAPACITY_RULES';
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   cursor c_get_capacity_groups
+   is
+      select cgp.*
+      from   lm_capacity_groups cgp;
+
+   
+   cursor c_pae_by_capacity_group(i_cgp_id in lm_capacity_groups.id%type)
+   is
+      
+      
+      
+      select count( pae.pid ) capacity
+      from   lm_segment_group_members sgr
+      ,      lm_logical_segments lst
+      ,      lm_route_segments rst
+      ,      lm_packages pae
+      where  sgr.lst_id        = lst.id
+      and    lst.id            = rst.lst_id
+      and    rst.id            = pae.rst_id
+      and    sgr.cgp_id        = i_cgp_id
+      and    pae.pss_id        = lm_constant.g_con_pss_name_open
+      ;
+
+   
+   cursor c_get_inactive_cap_rule
+    (i_cgp_id in lm_capacity_rules.cgp_id%type
+    ,i_capacity in integer
+    )
+   is
+      select crev.id cre_id
+      from   lm_capacity_rules_v crev
+      where  crev.cgp_id          = i_cgp_id
+      and    crev.level_activate <= i_capacity
+      and    not exists( select ''
+                         from   lm_cie_active_v ciev
+                         where  ciev.cre_id = crev.id
+                       );
+
+   
+   cursor c_get_active_cap_rule
+    (i_cgp_id in lm_capacity_rules.cgp_id%type
+    ,i_capacity in integer
+    )
+   is
+      select cie.id cie_id
+      ,      crev.id cre_id
+      ,      cie.time_activated cie_time_activated
+      from   lm_capacity_rules_v crev
+      ,      lm_capacity_influences cie
+      where  cie.cre_id             = crev.id
+      and    crev.cgp_id            = i_cgp_id
+      and    crev.level_deactivate >= i_capacity
+      
+
+      and    nvl2( cie.time_deactivated
+                 , null
+                 , cie.cre_id
+                 ) is not null
+      and    exists( select ''
+                     from   lm_cie_active_v ciev
+                     where  ciev.cre_id = crev.id
+                   );
+
+   l_capacity                   lm_capacity_influence_rules_v.value%type;
+   l_rows_updated               number;
+   l_rt_cie                     lm_capacity_influences%rowtype;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   for rec_get_capacity_groups in c_get_capacity_groups
+   loop
+      
+      
+      open c_pae_by_capacity_group( i_cgp_id => rec_get_capacity_groups.id);
+      fetch c_pae_by_capacity_group
+      into  l_capacity;
+      close c_pae_by_capacity_group;
+
+      
+      
+      
+      
+      for rec_get_inactive_cap_rule in c_get_inactive_cap_rule( i_cgp_id        => rec_get_capacity_groups.id
+                                                              , i_capacity      => l_capacity
+                                                              )
+      loop
+         l_rt_cie.id                := null;
+         l_rt_cie.cre_id            := rec_get_inactive_cap_rule.cre_id;
+         l_rt_cie.time_activated    := lm_common.default_timestamp;
+         l_rt_cie.time_deactivated  := null;
+         
+         lm_cie_tapi_pck.cie_insert_row( io_rt_cie      => l_rt_cie );
+      end loop;
+
+      
+      
+      
+      
+      for rec_get_active_cap_rule in c_get_active_cap_rule( i_cgp_id        => rec_get_capacity_groups.id
+                                                          , i_capacity      => l_capacity
+                                                          )
+      loop
+         l_rt_cie.id                := rec_get_active_cap_rule.cie_id;
+         l_rt_cie.cre_id            := rec_get_active_cap_rule.cre_id;
+         l_rt_cie.time_activated    := rec_get_active_cap_rule.cie_time_activated;
+         l_rt_cie.time_deactivated  := lm_common.default_timestamp;
+         
+         l_rows_updated             := lm_cie_tapi_pck.cie_update_row( i_cie_id       => rec_get_active_cap_rule.cie_id
+                                                                     , io_rt_cie      => l_rt_cie
+                                                                     );
+      end loop;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_pae_by_capacity_group%isopen
+      then
+         close c_pae_by_capacity_group;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end process_capacity_rules;
+
+
+procedure send_capacity_instruction
+is
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.send_capacity_instruction';
+
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   
+   cursor c_sct_capacity
+   is
+      select ilv.areaid sct_id_cust
+      ,      xmlconcat
+             ( xmlelement( "PhysicalLocation"
+                         , xmlconcat
+                           ( xmlelement( "AreaID", ilv.areaid )
+                           , xmlelement( "ZoneID", ilv.zoneid )
+                           , nvl2( ilv.equipmentid
+                                 , xmlelement( "EquipmentID", ilv.equipmentid )
+                                 , null
+                                 )
+                           )
+                         )
+             , xmlelement( "Capacity", ilv.capacity )
+             )  capacityinstr
+      from   ( select 
+
+
+
+
+
+
+
+
+
+                      lm_topology_administration.get_area_id_cust(sct.id, sct.sct_type) areaid
+               ,      case sct.sct_type
+                         when lm_constant.g_con_sct_type_zne
+                            then sct.id_cust
+                         when lm_constant.g_con_sct_type_sen
+                            then (select id_cust from lm_system_components where id=sct.sct_id_section_zone)
+                         else null
+                      end zoneid
+               ,      case sct.sct_type
+                         when lm_constant.g_con_sct_type_sen
+                            then sct.id_cust
+                         else null
+                      end equipmentid
+               ,      
+
+
+                      nvl2( ciev.id
+                          , cirv.value
+                          , sct.default_capacity
+                          ) capacity
+               ,      rank() over (partition by cirv.sct_id order by cirv.value, cirv.cre_id) rank
+               from   lm_capacity_influence_rules_v cirv
+               ,      lm_capacity_rules_v           crev
+               ,      lm_cie_active_v               ciev
+               ,      lm_system_components          sct
+               where  cirv.cre_id = crev.id
+               and    cirv.sct_id = sct.id
+               and    crev.id = ciev.cre_id (+)  
+             ) ilv
+      where ilv.rank=1
+      ;
+   
+   l_ims_id    lm_ifc_messages.id%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   
+   
+   
+
+   for rec_sct_capacity in c_sct_capacity
+   loop
+      
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'CapacityInstruction'
+                 , i_message         => rec_sct_capacity.capacityinstr
+                 , i_event_time      => lm_common.default_timestamp
+                 , i_pty_id_cust     => null
+                 , i_pty_instance_id => null
+                 , i_sct_id_cust     => rec_sct_capacity.sct_id_cust
+                );
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_capacity_instruction;
+
+procedure det_area_healthiness
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.DET_AREA_HEALTHINESS';
+ 
+   
+   cursor c_areas
+   is
+   select id_cust area_id_cust
+   from   lm_areas_v;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   for l_rt_area in c_areas
+   loop
+      eval_healthiness_of_area( i_area_id_cust => l_rt_area.area_id_cust);
+      commit;  
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when lm_constant.exc_internal_error
+   then
+
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+      
+
+
+
+
+
+
+
+
+
+      
+      lm_common.abort_application_fatal;
+      
+
+   when others
+   then
+      
+      viu_info.handle_info;
+      
+      rollback;
+      
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+
+end det_area_healthiness;
+
+procedure eval_healthiness_of_area
+ (i_area_id_cust in lm_areas_v.id_cust%type
+ )
+ is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name      constant lm_constant.st_proc_name := g_con_package||'.EVAL_HEALTHINESS_OF_AREA';
+
+   l_ref_time           timestamp;
+   l_area_unhealthy     boolean;
+   l_rt_ssm             lm_segment_status_dom%rowtype;
+   l_lss_modified       boolean;
+   l_ind_reevaluate     boolean;
+   l_nt_stn_id_report   nt_stn_id  := nt_stn_id();
+   l_nt_lst_id_report   nt_id_coll := nt_id_coll();
+   l_nt_stn_id_eval     nt_stn_id  := nt_stn_id();
+   l_nt_tin_processed   nt_id_coll := nt_id_coll();
+
+   
+   cursor c_get_segments_of_area
+    (i_area_id_cust lm_areas_v.id_cust%type
+    )
+   is
+   select ara.id_cust area_id
+        , tst.id tst_id
+        , lst.id lst_id
+   from   lm_areas_v ara
+        , lm_technical_segments tst
+        , lm_logical_segments lst
+   where  ara.area_id = tst.sct_id
+   and    tst.lst_id = lst.id
+   and    ara.id_cust = i_area_id_cust;
+
+   
+
+
+
+
+   cursor c_non_unhealthy_stations
+     (i_area_id_cust lm_areas_v.id_cust%type
+     )
+   is
+   select sry.stn_id stn_id
+   from   lm_physical_destinations pon
+   ,      (select zne.id
+           from   lm_system_components ara
+           ,      lm_system_components zne
+           where  zne.sct_id_zone_area = ara.id
+           and    ara.id_cust = i_area_id_cust
+           union
+           select sen.id
+           from   lm_system_components ara
+           ,      lm_system_components zne
+           ,      lm_system_components sen
+           where  zne.sct_id_zone_area = ara.id
+           and    sen.sct_id_section_zone = zne.id
+           and    ara.id_cust = i_area_id_cust
+          ) sct
+   ,      (select max(pon.id) pon_id
+           ,      stn.id stn_id
+           from   lm_physical_destinations pon
+           ,      lm_station_reachabilities sry
+           ,      lm_station_availabilities say
+           ,      lm_stations stn
+           where  sry.pon_id = pon.id
+           and    sry.stn_id = stn.id
+           and    say.stn_id = stn.id
+           and    say.ssd_id <> lm_constant.g_con_ssd_id_unhealthy
+           and    stn.ind_availability_reporting = lm_constant.g_con_yesno_yes
+           group by stn.id
+           having count(stn.id) = 1
+          ) sry
+   where pon.sct_id = sct.id
+   and   sry.pon_id = pon.id;
+
+   
+   cursor c_get_area_ssm
+   is
+   select ssm.*
+   from   lm_segment_status_dom ssm
+   where  ssm.id = lm_constant.g_con_ssm_unhealthy;
+   
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   l_ref_time                   := lm_common.default_timestamp;
+
+   l_area_unhealthy := not lm_lifesign.determine_area_healthiness
+        (i_area_id_cust     => i_area_id_cust);
+
+   open c_get_area_ssm;
+
+   fetch c_get_area_ssm
+   into  l_rt_ssm;
+
+   close c_get_area_ssm;
+
+   for rec_get_segments_of_area in c_get_segments_of_area (i_area_id_cust)
+   loop
+      update_segment_status( i_event_time =>    l_ref_time
+                           , i_lst_id =>        rec_get_segments_of_area.lst_id
+                           , i_tst_id =>        rec_get_segments_of_area.tst_id
+                           , i_rt_ssm =>        l_rt_ssm
+                           , i_active =>        l_area_unhealthy
+                           , o_lss_modified =>  l_lss_modified
+                           );
+
+      if l_lss_modified
+      then
+         
+         l_nt_lst_id_report.extend(1);
+         l_nt_lst_id_report( l_nt_lst_id_report.count ) := rec_get_segments_of_area.lst_id;
+      end if;
+      
+      
+      lm_flow_administration.process_status_operational( i_lst_id => rec_get_segments_of_area.lst_id
+                                                       , i_event_time => l_ref_time
+                                                       );
+   end loop;
+
+   if l_area_unhealthy
+   then
+      for rec_stn in c_non_unhealthy_stations(i_area_id_cust => i_area_id_cust)
+      loop
+         
+         l_nt_stn_id_report.extend(1);
+         l_nt_stn_id_report( l_nt_stn_id_report.count ) := rec_stn.stn_id;
+         
+         lm_flow_administration.set_station_unhealthy
+                                ( i_stn_id         => rec_stn.stn_id
+                                , i_event_time     => l_ref_time
+                                , o_ind_reevaluate => l_ind_reevaluate
+                                );
+         if l_ind_reevaluate
+         then
+            
+            
+            
+            l_nt_stn_id_eval.extend(1);
+            l_nt_stn_id_eval( l_nt_stn_id_eval.count ) := rec_stn.stn_id;
+         end if;
+      end loop;
+   end if;
+
+   
+   
+   
+   
+   if l_nt_stn_id_eval is not empty
+   then
+      for i in 1..l_nt_stn_id_eval.count
+      loop
+         
+
+
+
+
+         lm_flow_administration.reevaluate_pae_destination( i_stn_id            => l_nt_stn_id_eval(i)
+                                                          , i_type_of_reevaluation => lm_constant.g_con_eval_type_all
+                                                          , io_nt_tin_processed => l_nt_tin_processed
+                                                          );
+      end loop;
+   end if;
+
+   if l_nt_lst_id_report is not empty
+   then
+      
+      lm_flow_administration.send_segment_status_report(i_nt_lst_id => l_nt_lst_id_report);
+   end if;
+
+   if l_nt_stn_id_report is not empty
+   then
+      
+      lm_availability_report.send_node_availability_report( i_nt_stn_id => l_nt_stn_id_report);
+   end if;
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+exception
+   when others
+   then
+      if c_get_area_ssm%isopen
+      then
+         close c_get_area_ssm;
+      end if;
+
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      
+      viu_info.raise_info (i_calling_procedure =>    l_con_proc_name);
+end eval_healthiness_of_area;
+
+procedure process_status_operational
+ (i_lst_id in lm_logical_segments.id%type
+ ,i_event_time in lm_logical_segment_statuses.time_activated%type
+ )
+ is
+
+
+cursor c_get_segment_status_info
+ (i_lst_id in lm_logical_segments.id%type
+ )
+ is
+select
+   ( 
+     select count(*)
+     from   lm_technical_segments tst
+     where  tst.lst_id = i_lst_id
+   ) tst_count
+,  ( 
+     select count(*)
+     from   lm_tss_active_details_v tad
+     where  tad.lst_id = i_lst_id
+     and    ssm_id <> lm_constant.g_con_ssm_operational
+   ) tss_not_operational_count
+,  ( 
+     select count(*)
+     from   lm_tss_active_details_v
+     where  lst_id = i_lst_id
+     and    ssm_id = lm_constant.g_con_ssm_operational
+   ) tss_operational_count
+,  ( 
+     select id
+     from   lm_logical_segment_statuses lss
+     where  lss.lst_id = i_lst_id
+     and    ssm_id = lm_constant.g_con_ssm_operational
+     and    time_deactivated is null
+   ) operational_lss_id
+from dual
+;
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package||'.PROCESS_STATUS_OPERATIONAL';
+
+l_rt_ssi c_get_segment_status_info%rowtype;
+l_rt_lss lm_logical_segment_statuses%rowtype;
+l_found boolean;
+l_retval number;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module ( i_module => l_con_proc_name );
+
+   
+   open c_get_segment_status_info( i_lst_id => i_lst_id );
+   fetch c_get_segment_status_info into l_rt_ssi;
+   close c_get_segment_status_info;
+
+   
+   
+   
+   if l_rt_ssi.tss_operational_count = l_rt_ssi.tst_count 
+      and l_rt_ssi.tss_not_operational_count = 0 
+      and l_rt_ssi.operational_lss_id is null 
+   then
+      
+      l_rt_lss.ssm_id           := lm_constant.g_con_ssm_operational;
+      l_rt_lss.lst_id           := i_lst_id;
+      l_rt_lss.time_activated   := i_event_time;
+      l_rt_lss.time_deactivated := null;
+      lm_lss_tapi_pck.lss_insert_row( io_rt_lss      => l_rt_lss );
+   elsif ( l_rt_ssi.tss_operational_count < l_rt_ssi.tst_count 
+           or l_rt_ssi.tss_not_operational_count > 0 
+         )
+      and l_rt_ssi.operational_lss_id is not null 
+   then
+      
+      l_found                    := lm_lss_tapi_pck.lss_select_row( i_lss_id      => l_rt_ssi.operational_lss_id
+                                                                  , o_rt_lss      => l_rt_lss
+                                                                  );
+      l_rt_lss.time_deactivated  := i_event_time;
+      l_retval                   := lm_lss_tapi_pck.lss_update_row( i_lss_id       => l_rt_lss.id
+                                                                  , io_rt_lss      => l_rt_lss
+                                                                  );
+   end if;
+
+   viu_module.leave_module ( i_module => l_con_proc_name );
+exception
+   when others
+   then
+      if c_get_segment_status_info%isopen
+      then
+         close c_get_segment_status_info;
+      end if;
+
+      viu_module.leave_module ( i_module => l_con_proc_name
+                              , i_debug_info => sqlerrm
+                              );
+      
+      viu_info.raise_info ( i_calling_procedure => l_con_proc_name );
+end process_status_operational;
+
+procedure send_segment_status_report
+ (i_nt_lst_id in nt_id_coll
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.send_segment_status_report';
+
+   
+   cursor c_lss_lst_status
+   (i_nt_lst_id in nt_id_coll
+   )
+   is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   select lsav.lst_id
+   ,      lsav.id_cust_lst
+   ,      lsav.id_cust_ssm
+   ,      lsav.severity_level
+   ,      lm_common.timestamp_to_varchar(
+             nvl( (select max(lss1.time_deactivated)
+                   from   lm_logical_segment_statuses lss1
+                   ,      lm_segment_status_dom       ssm1
+                   where  lss1.ssm_id = ssm1.id
+                   and    lss1.lst_id = lsav.lst_id
+                   and    ssm1.severity_level > lsav.severity_level
+                   and    lss1.time_deactivated > lsav.time_activated
+                  )
+                , lsav.time_activated)
+             ) time_activated_report
+   from  (select lss.time_activated
+          ,      lss.ssm_id
+          ,      lst.id_cust id_cust_lst
+          ,      ssm.id_cust id_cust_ssm
+          ,      ssm.severity_level
+          ,      lst.id lst_id
+          ,      rank() over (partition by lst.id_cust order by ssm.severity_level desc) sev_rank
+          from   lm_logical_segment_statuses lss
+          ,      lm_logical_segments         lst
+          ,      lm_segment_status_dom       ssm
+          where  lss.lst_id           =  lst.id
+          and    lss.ssm_id           =  ssm.id
+          and    (case when time_deactivated is null then lst_id end) is not null 
+          and    (   (i_nt_lst_id is empty )           
+                  or (lst.id  member of (i_nt_lst_id)) 
+                 )
+         ) lsav     
+   where  lsav.sev_rank = 1
+   order by lsav.lst_id; 
+                         
+
+   l_message                 xmltype;
+   l_ims_id                  lm_ifc_messages.id%type;
+   l_msg_part                nt_xml;
+   l_idx                     binary_integer;
+   l_event_time              timestamp;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   l_event_time := lm_common.default_timestamp;
+
+   
+   l_msg_part := nt_xml();
+   l_idx := 0;
+   for rec_lss_lst_status in c_lss_lst_status(i_nt_lst_id => i_nt_lst_id)
+   loop
+      
+      l_msg_part.extend;
+      l_idx := l_idx + 1;
+      select xmlelement
+             ( "SegmentStatusEntryList"
+             , xmlforest
+               ( rec_lss_lst_status.time_activated_report as "StatusChangeTime"
+               , rec_lss_lst_status.id_cust_lst as "SegmentID"
+               , rec_lss_lst_status.id_cust_ssm as "Status"
+               )
+             )
+      into l_msg_part(l_idx)
+      from dual;
+   end loop;
+   
+   if l_msg_part.count > 0
+   then
+      
+      select xmlagg(lst.column_value)
+      into   l_message
+      from   table(l_msg_part) lst;
+      
+      
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'SegmentStatusOverviewReport'
+                 , i_message         => l_message
+                 , i_event_time      => l_event_time
+                 , i_pty_id_cust     => lm_common.get_parameter_value( lm_constant.g_con_pve_operational_dashb)
+                 , i_pty_instance_id => null
+                 , i_sct_id_cust     => null
+                );
+                                                       
+   end if;
+   
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+
+exception
+   when others
+   then
+      if c_lss_lst_status%isopen
+      then
+         close c_lss_lst_status;
+      end if;
+
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+      
+end send_segment_status_report;
+
+
+procedure update_stations
+ is
+
+l_con_proc_name constant lm_constant.st_proc_name := g_con_package || '.update_stations';
+
+
+l_route_infl_timestamp lm_constant.st_timestamp;
+
+l_route_infl_timestamp_fmt varchar2(240);
+
+l_rt_say lm_station_availabilities%rowtype;
+
+l_upd_rec_count pls_integer;
+
+l_update_say boolean := false;
+l_say_found boolean;
+
+
+cursor c_stn_dirty_availability_upd
+ is
+select stn_id
+,      ind_available_derived
+,      ind_active_route_influence
+from   lm_stn_route_influence_v
+where  ind_say_dirty = lm_constant.g_con_yesno_yes
+for update of stn_id nowait
+;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   
+   l_route_infl_timestamp      := nvl( lm_flow_administration.g_route_influence_timestamp
+                                     , lm_common.default_timestamp
+                                     );
+   l_route_infl_timestamp_fmt  := lm_common.timestamp_to_varchar( i_timestamp      => l_route_infl_timestamp );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   <<say_dirty_loop>>
+   for rec_sriv in c_stn_dirty_availability_upd
+   
+   
+   
+   loop
+      
+      
+      
+      l_say_found := lm_say_tapi_pck.say_select_row( i_say_stn_id => rec_sriv.stn_id
+                                                   , o_rt_say     => l_rt_say
+                                                   );
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      if     rec_sriv.ind_active_route_influence = lm_constant.g_con_yesno_yes
+         and rec_sriv.ind_available_derived      = lm_constant.g_con_yesno_yes
+      then   
+             
+         l_rt_say.ind_available_derived := lm_constant.g_con_yesno_no;  
+         l_rt_say.timestamp_change      := l_route_infl_timestamp;
+         
+         l_update_say := true;
+         
+      elsif     rec_sriv.ind_active_route_influence is null
+            and rec_sriv.ind_available_derived   = lm_constant.g_con_yesno_no
+      then   
+             
+         l_rt_say.ind_available_derived := lm_constant.g_con_yesno_yes; 
+         l_rt_say.timestamp_change      := l_route_infl_timestamp;
+         
+         l_update_say := true;
+         
+      else
+         
+         
+         
+         
+         
+         
+         
+         
+         l_rt_say.ind_dirty             := lm_constant.g_con_yesno_no;     
+         
+         l_update_say := true;
+         
+      end if;
+
+      if l_update_say
+      then
+         
+         l_upd_rec_count  := lm_say_tapi_pck.say_update_row( i_say_stn_id      => l_rt_say.stn_id
+                                                           , io_rt_say         => l_rt_say
+                                                           );
+         
+         l_update_say := false;
+      end if;
+         
+
+   end loop say_dirty_loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when exc_resource_busy
+   
+   
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    'LM_STATION record(s) locked by another process'
+                                                    || ' and NOWAIT specified (lock conflict) '
+                             );
+      
+      viu_info.raise_info( i_ifo_nr                 => viu_constant.c_ifo_lockfailed
+                         , i_calling_procedure      => l_con_proc_name
+                         , i_severity               => viu_info.c_severity_warning
+                         , i_info_arguments         => lm_stn_tapi_pck.g_con_table_name
+                         , i_additional_data        =>    'LM_STATION record(s) locked by another process'
+                                                       || ' and NOWAIT specified (lock conflict) '
+                         );
+   
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end update_stations;
+
+
+procedure eval_healthiness_downstream
+ (i_pty_id_cust in lm_parties.id_cust%type
+ )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name        constant lm_constant.st_proc_name := g_con_package
+                                                            || '.eval_healthiness_downstream';
+
+   l_rt_lpy                        lm_lifesign_parties%rowtype;
+   v_healthy                       boolean;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+
+
+   lm_lifesign.get_lifesign_party( i_pty_id_cust => i_pty_id_cust
+                                 , i_instance_id => null
+                                 , o_rt_lpy      => l_rt_lpy);
+
+   
+   v_healthy := lm_lifesign.determine_lpy_healthiness( i_lpy_id => l_rt_lpy.id);
+
+   
+   lm_flow_administration.hdl_downstream_health_has( i_pty_id      => l_rt_lpy.pty_id
+                                                   , i_ind_healthy => v_healthy
+                                                   );
+
+   commit;  
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when lm_constant.exc_internal_error
+   then
+      
+
+
+
+
+
+
+
+      lm_common.abort_application_fatal;
+   when others
+   then
+      rollback;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    sqlerrm
+                             );
+      
+      viu_info.handle_info;
+end eval_healthiness_downstream;
+
+procedure hdl_haa_access_status_report
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name               constant lm_constant.st_proc_name := g_con_package
+                                                              || '.HDL_HAA_ACCESS_STATUS_REPORT';
+
+   
+   cursor c_haa_current
+   is
+   select haa.*
+   from   lm_handling_areas haa
+   where  ind_current = lm_constant.g_con_yesno_yes;
+
+   
+   cursor c_hss_active( i_has_id in lm_handling_area_accesses.id%type)
+   is
+   select hsav.*
+   from   lm_hss_active_v hsav
+   where  hsav.has_id = i_has_id
+   ;
+
+   l_event_time                           lm_haa_access_statuses.time_activated%type;
+   l_source_process_id                    lm_parties.id_cust%type;
+   l_rt_lpy                               lm_lifesign_parties%rowtype;
+   l_it_route                             lm_flow_administration.g_it_route;
+   l_ims_id                               lm_ifc_messages.id%type;
+   l_continue                             boolean;
+   l_found                                boolean;
+   l_rt_haa_current                       lm_handling_areas%rowtype;
+   l_rt_lnk                               lm_links%rowtype;
+   l_rt_haa_downstream                    lm_handling_areas%rowtype;
+   l_rt_has                               lm_handling_area_accesses%rowtype;
+   l_rt_hss_active                        c_hss_active%rowtype;
+   l_rt_hss                               lm_haa_access_statuses%rowtype;
+   l_rt_hsm                               lm_haa_access_status_dom%rowtype;
+   l_upd_rec_count                        number;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   lm_flow_administration.get_message_attributes_hss
+                          ( i_it_hst            => lm_interface.g_it_message_content
+                          , o_event_time        => l_event_time
+                          , o_source_process_id => l_source_process_id
+                          , o_it_route          => l_it_route
+                          , o_ims_id            => l_ims_id
+                          );
+
+   
+   
+   
+   lm_lifesign.get_lifesign_party( i_pty_id_cust => l_source_process_id
+                                 , i_instance_id => null
+                                 , o_rt_lpy      => l_rt_lpy
+                                 );
+   if not lm_lifesign.determine_lpy_healthiness( i_lpy_id => l_rt_lpy.id)
+   then
+      
+      viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_communicationerror
+                            , i_calling_procedure => l_con_proc_name
+                            , i_severity          => viu_info.c_severity_warning
+                            , i_info_arguments    => l_source_process_id
+                            , i_additional_data   => 'Incoming HandlingAreaStatusreport is ignored'
+                                                  || '; message id: ' || l_ims_id
+                            );
+   else
+      
+      
+      
+      open c_haa_current;
+      fetch c_haa_current into l_rt_haa_current;
+      close c_haa_current;
+
+      for idx_route in l_it_route.first .. l_it_route.last
+      loop
+         l_continue := true;
+         
+         l_found := lm_lnk_tapi_pck.lnk_select_row_uk2( i_lnk_id_cust => l_it_route(idx_route).lnk_id_cust
+                                                      , o_rt_lnk      => l_rt_lnk
+                                                      );
+
+         if not l_found or l_rt_lnk.haa_id_upstream <> l_rt_haa_current.id
+         then
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_invalidlink
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_info_arguments    => l_it_route(idx_route).lnk_id_cust
+                                  , i_additional_data   => 'Link does either not exist or is not defined with current handling area upstream'
+                                                        || ';Message id: ' || l_ims_id
+                                  );
+            l_continue := false;
+         end if;
+
+         if l_continue
+         then
+            
+            l_found := lm_haa_tapi_pck.haa_select_row_uk1( i_haa_id_cust => l_it_route(idx_route).haa_id_cust_downstream
+                                                         , o_rt_haa      => l_rt_haa_downstream
+                                                         );
+
+            
+            l_found := lm_has_tapi_pck.has_select_row_upd_uk1( i_has_lnk_id => l_rt_lnk.id
+                                                             , i_has_haa_id => l_rt_haa_downstream.id
+                                                             , o_rt_has     => l_rt_has
+                                                             );
+            if not l_found
+            then
+               
+               
+               viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_nohandlingareaaccess
+                                     , i_calling_procedure  => l_con_proc_name
+                                     , i_severity           => viu_info.c_severity_warning
+                                     , i_info_arguments     => l_it_route(idx_route).lnk_id_cust || '##'
+                                                               || l_it_route(idx_route).haa_id_cust_downstream
+                                     , i_additional_data    => 'Message id: ' || l_ims_id
+                                     );
+               l_continue := false;
+            end if;
+         end if;
+
+         if l_continue
+         then
+            
+            if not lm_hsm_tapi_pck.hsm_select_row_uk1( i_hsm_id_cust => l_it_route(idx_route).hsm_id_cust
+                                                     , o_rt_hsm      => l_rt_hsm
+                                                     )
+            then
+               
+               viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_invalidhaaccessstatus
+                                     , i_calling_procedure  => l_con_proc_name
+                                     , i_severity           => viu_info.c_severity_warning
+                                     , i_info_arguments     => l_it_route(idx_route).hsm_id_cust
+                                     , i_additional_data    => 'Message id: ' || l_ims_id
+                                     );
+               l_continue := false;
+            end if;
+         end if;
+
+         if l_continue
+         then
+            
+            open c_hss_active( i_has_id => l_rt_has.id);
+            fetch c_hss_active into l_rt_hss_active;
+
+            
+            if c_hss_active%found
+            then
+               if l_event_time < l_rt_hss_active.time_activated
+               then
+                  
+                  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_obsoletehastatusreport
+                                        , i_calling_procedure => l_con_proc_name
+                                        , i_severity          => viu_info.c_severity_warning
+                                        , i_info_arguments    => l_it_route(idx_route).lnk_id_cust || '##'
+                                                              || l_it_route(idx_route).haa_id_cust_downstream
+                                        , i_additional_data   => 'Message id: ' || l_ims_id
+                                        );
+                  l_continue := false;
+               elsif l_rt_hss_active.hsm_id = l_rt_hsm.id
+               then
+                  
+                  l_continue := false;
+
+               else
+                  
+                  if lm_hss_tapi_pck.hss_select_row( i_hss_id => l_rt_hss_active.hss_id
+                                                   , o_rt_hss => l_rt_hss
+                                                   )
+                  then
+                     l_rt_hss.time_deactivated := l_event_time;
+                     l_upd_rec_count := lm_hss_tapi_pck.hss_update_row ( i_hss_id => l_rt_hss.id
+                                                                       , io_rt_hss => l_rt_hss
+                                                                       );
+                  end if;
+               end if;
+            end if; 
+            close c_hss_active;
+
+            if l_continue
+            then
+               
+               l_rt_hss                := null; 
+               l_rt_hss.has_id         := l_rt_has.id;
+               l_rt_hss.hsm_id         := l_rt_hsm.id;
+               l_rt_hss.time_activated := l_event_time;
+
+               lm_hss_tapi_pck.hss_insert_row( io_rt_hss => l_rt_hss);
+            end if;
+         end if;
+
+      end loop;
+
+   end if; 
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_haa_current%isopen
+      then
+         close c_haa_current;
+      end if;
+
+      if c_hss_active%isopen
+      then
+         close c_hss_active;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_haa_access_status_report;
+
+procedure get_message_attributes_hss
+ (i_it_hst               in     lm_interface.g_it_ima
+ ,o_event_time              out lm_haa_access_statuses.time_activated%type
+ ,o_source_process_id       out lm_parties.id_cust%type
+ ,o_it_route                out lm_flow_administration.g_it_route
+ ,o_ims_id                  out lm_ifc_messages.id%type
+ )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package
+                                                      || '.GET_MESSAGE_ATTRIBUTES_HSS';
+
+   l_route_counter           number := 0;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   for idx_hst in i_it_hst.first .. i_it_hst.last
+   loop
+      case i_it_hst( idx_hst ).attribute
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp => i_it_hst( idx_hst ).value );
+         when 'Header/Source/ProcessID'
+         then
+            o_source_process_id := i_it_hst( idx_hst ).value;
+         when 'Route/LinkID'
+         then
+            l_route_counter := l_route_counter + 1;
+            o_it_route( l_route_counter).lnk_id_cust := i_it_hst( idx_hst ).value;
+         when 'Route/DownstreamHandlingAreaID'
+         then
+            o_it_route( l_route_counter).haa_id_cust_downstream := i_it_hst( idx_hst ).value;
+         when 'Route/Status'
+         then
+            o_it_route( l_route_counter).hsm_id_cust := i_it_hst( idx_hst ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_hst( idx_hst ).value;
+         else
+            
+            if i_it_hst( idx_hst ).attribute not in ( 'Header/MessageTime'
+                                                    , 'Header/Source/InstanceID'
+                                                    , 'Header/Target/ProcessID'
+                                                    , 'Header/Target/InstanceID'
+                                                    , 'Header/OperatorID'
+                                                    , 'UpstreamHandlingAreaID'
+                                                    )
+            then
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: HandlingAreaStatusReport; Attribute: '''
+                                                                   || i_it_hst( idx_hst ).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_hst( idx_hst ).value
+                                                                   || ''''
+                                     );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes_hss;
+
+procedure update_handling_area_accesses
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+
+   l_con_proc_name         constant lm_constant.st_proc_name := g_con_package
+                                                      || '.update_handling_area_accesses';
+
+   l_route_infl_timestamp           lm_constant.st_timestamp;
+   l_route_infl_timestamp_fmt       varchar2(240);
+   l_rt_hay                         lm_haa_access_availabilities%rowtype;
+   l_upd_rec_count                  pls_integer;
+   l_update_hay                     boolean := false;
+   l_hay_found                      boolean;
+
+   
+   cursor c_has_dirty_availability_upd
+   is
+   select has_id
+   ,      ind_available
+   ,      ind_active_route_influence
+   from   lm_has_route_influence_v
+   where  ind_hay_dirty = lm_constant.g_con_yesno_yes
+   for update of has_id nowait
+   ;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   
+   
+   l_route_infl_timestamp      := nvl( lm_flow_administration.g_route_influence_timestamp
+                                     , lm_common.default_timestamp
+                                     );
+   l_route_infl_timestamp_fmt  := lm_common.timestamp_to_varchar( i_timestamp      => l_route_infl_timestamp );
+
+   
+   
+   
+   
+   
+   
+   
+   
+   <<hay_dirty_loop>>
+   for rec_has in c_has_dirty_availability_upd
+   
+   
+   
+   loop
+
+      
+      
+      
+      l_hay_found := lm_hay_tapi_pck.hay_select_row( i_hay_has_id => rec_has.has_id
+                                                   , o_rt_hay     => l_rt_hay
+                                                   );
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      
+      if     rec_has.ind_active_route_influence = lm_constant.g_con_yesno_yes
+         and rec_has.ind_available              = lm_constant.g_con_yesno_yes
+      then   
+             
+         l_rt_hay.ind_available    := lm_constant.g_con_yesno_no;  
+         l_rt_hay.timestamp_change := l_route_infl_timestamp;
+         
+         l_update_hay := true;
+         
+      elsif     rec_has.ind_active_route_influence is null
+            and rec_has.ind_available              = lm_constant.g_con_yesno_no
+      then   
+             
+         l_rt_hay.ind_available    := lm_constant.g_con_yesno_yes; 
+         l_rt_hay.timestamp_change := l_route_infl_timestamp;
+         
+         l_update_hay := true;
+         
+      else
+         
+         
+         
+         
+         
+         
+         
+         
+         l_rt_hay.ind_dirty := lm_constant.g_con_yesno_no;     
+         
+         l_update_hay := true;
+         
+      end if;
+
+      if l_update_hay
+      then
+         
+         l_upd_rec_count  := lm_hay_tapi_pck.hay_update_row( i_hay_has_id => l_rt_hay.has_id
+                                                           , io_rt_hay    => l_rt_hay
+                                                           );
+         
+         l_update_hay := false;
+      end if;
+   end loop hay_dirty_loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when exc_resource_busy
+   
+   
+   then
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => 'LM_HANDLING_AREA_ACCESSES record(s) locked by another process'
+                                            || ' and NOWAIT specified (lock conflict) '
+                             );
+      
+      viu_info.raise_info( i_ifo_nr            => viu_constant.c_ifo_lockfailed
+                         , i_calling_procedure => l_con_proc_name
+                         , i_severity          => viu_info.c_severity_warning
+                         , i_info_arguments    => lm_has_tapi_pck.g_con_table_name
+                         , i_additional_data   => 'LM_HANDLING_AREA_ACCESSES record(s) locked by another process'
+                                               || ' and NOWAIT specified (lock conflict) '
+                         );
+   
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end update_handling_area_accesses;
+
+
+procedure send_haa_access_status_rep_in
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name        constant lm_constant.st_proc_name := g_con_package
+                                                            || '.SEND_HAA_ACCESS_STATUS_REP_IN';
+
+   
+   cursor c_link_parties
+   is
+   select 
+
+
+
+
+
+          pty.id_cust
+          ,xmlconcat
+          ( xmlelement( "UpstreamHandlingAreaID", haa_up.id_cust)
+          , xmlagg
+            ( xmlelement
+              ( "Route"
+              , xmlelement( "LinkID", lnk.id_cust)
+              , xmlelement( "DownstreamHandlingAreaID", haa_acc.id_cust)
+              , xmlelement( "Status", hsav.hsm_id_cust)
+              )
+              order by lnk.id_cust, haa_acc.id_cust
+              
+            )
+          )              message
+   from   lm_parties                pty
+   ,      lm_links                  lnk
+   ,      lm_handling_areas         haa_up
+   ,      lm_handling_area_accesses has
+   ,      lm_handling_areas         haa_acc
+   ,      lm_hss_active_details_v   hsav
+   where  lnk.pty_id          = pty.id
+   and    lnk.haa_id_upstream = haa_up.id
+   and    haa_up.ind_current  is null     
+   and    has.lnk_id          = lnk.id
+   and    has.haa_id          = haa_acc.id
+   and    hsav.has_id         = has.id
+   group by pty.id
+   ,        pty.id_cust
+   ,        haa_up.id_cust
+   order by pty.id
+   
+   ;
+
+   l_event_time  timestamp;
+   l_ims_id      lm_ifc_messages.id%type;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   
+   l_event_time := lm_common.default_timestamp;
+   
+   
+   for l_rt_pty in c_link_parties
+   loop
+      
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'HandlingAreaStatusReport'
+                 , i_message         => l_rt_pty.message
+                 , i_event_time      => l_event_time
+                 , i_pty_id_cust     => l_rt_pty.id_cust
+                 , i_pty_instance_id => null
+                 , i_sct_id_cust     => null
+                );
+   end loop;
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_haa_access_status_rep_in;
+
+
+procedure hdl_haa_access_status_override
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name     constant lm_constant.st_proc_name := g_con_package
+                                                         || '.HDL_HAA_ACCESS_STATUS_OVERRIDE';
+
+   
+   cursor c_haa_current
+   is
+   select haa.*
+   from   lm_handling_areas haa
+   where  ind_current = lm_constant.g_con_yesno_yes;
+
+   l_event_time                           lm_haa_access_statuses.time_activated%type;
+   l_it_route                             lm_flow_administration.g_it_route;
+   l_ims_id                               lm_ifc_messages.id%type;
+   l_continue                             boolean;
+   l_found                                boolean;
+   l_rt_haa_current                       lm_handling_areas%rowtype;
+   l_rt_lnk                               lm_links%rowtype;
+   l_rt_haa_downstream                    lm_handling_areas%rowtype;
+   l_rt_has                               lm_handling_area_accesses%rowtype;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   lm_flow_administration.get_message_attributes_ovr
+                          ( i_it_ovr              => lm_interface.g_it_message_content
+                          ,o_event_time           => l_event_time
+                          ,o_it_route             => l_it_route
+                          ,o_ims_id               => l_ims_id
+                          );
+
+   
+   
+   open c_haa_current;
+   fetch c_haa_current into l_rt_haa_current;
+   close c_haa_current;
+
+   for idx_route in l_it_route.first .. l_it_route.last
+   loop
+      l_continue := true;
+      
+      l_found := lm_lnk_tapi_pck.lnk_select_row_uk2( i_lnk_id_cust => l_it_route(idx_route).lnk_id_cust
+                                                   , o_rt_lnk      => l_rt_lnk
+                                                   );
+
+      if not l_found or l_rt_lnk.haa_id_downstream <> l_rt_haa_current.id
+      then
+         
+         viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_invalidlink
+                               , i_calling_procedure => l_con_proc_name
+                               , i_severity          => viu_info.c_severity_warning
+                               , i_info_arguments    => l_it_route(idx_route).lnk_id_cust
+                               , i_additional_data   => 'Link does either not exist or is not defined with current handling area downstream'
+                                                     || ';Message id: ' || l_ims_id
+                               );
+         l_continue := false;
+      end if;
+
+      if l_continue
+      then
+         
+         l_found := lm_haa_tapi_pck.haa_select_row_uk1( i_haa_id_cust => l_it_route(idx_route).haa_id_cust_downstream
+                                                      , o_rt_haa      => l_rt_haa_downstream
+                                                      );
+
+         
+         l_found := lm_has_tapi_pck.has_select_row_uk1( i_has_lnk_id => l_rt_lnk.id
+                                                      , i_has_haa_id => l_rt_haa_downstream.id
+                                                      , o_rt_has     => l_rt_has
+                                                      );
+         if not l_found
+         then
+            
+            
+            viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_nohandlingareaaccess
+                                  , i_calling_procedure  => l_con_proc_name
+                                  , i_severity           => viu_info.c_severity_warning
+                                  , i_info_arguments     => l_it_route(idx_route).lnk_id_cust || '##'
+                                                            || l_it_route(idx_route).haa_id_cust_downstream
+                                  , i_additional_data    => 'Message id: ' || l_ims_id
+                                  );
+            l_continue := false;
+         end if;
+      end if;
+
+      if l_continue
+      then
+         
+         
+         
+         begin
+            lm_flow_administration.process_has_status_override
+                                   ( i_has_id     => l_rt_has.id
+                                   , i_event_time => l_event_time
+                                   , i_rt_route   => l_it_route(idx_route)
+                                   , i_ims_id     => l_ims_id
+                                   );
+         exception
+            when others
+            then
+               viu_info.handle_info;
+         end;
+
+      end if;
+
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_haa_current%isopen
+      then
+         close c_haa_current;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end hdl_haa_access_status_override;
+
+
+procedure get_message_attributes_ovr
+ (i_it_ovr                   in lm_interface.g_it_ima
+ ,o_event_time              out lm_haa_access_statuses.time_activated%type
+ ,o_it_route                out lm_flow_administration.g_it_route
+ ,o_ims_id                  out lm_ifc_messages.id%type
+ )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package
+                                                      || '.GET_MESSAGE_ATTRIBUTES_OVR';
+
+   l_route_counter           number := 0;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   for idx_ovr in i_it_ovr.first .. i_it_ovr.last
+   loop
+      case i_it_ovr( idx_ovr ).attribute
+         when 'EventTime'
+         then
+            o_event_time  := lm_common.varchar_to_timestamp( i_timestamp => i_it_ovr( idx_ovr ).value );
+         when 'Route/LinkID'
+         then
+            l_route_counter := l_route_counter + 1;
+            o_it_route( l_route_counter).lnk_id_cust := i_it_ovr( idx_ovr ).value;
+         when 'Route/DownstreamHandlingAreaID'
+         then
+            o_it_route( l_route_counter).haa_id_cust_downstream := i_it_ovr( idx_ovr ).value;
+         when 'Route/Override'
+         then
+            o_it_route( l_route_counter).ind_override_status := i_it_ovr( idx_ovr ).value;
+         when lm_constant.g_con_ifc_ims_id_attribute
+         then
+            o_ims_id  := i_it_ovr( idx_ovr ).value;
+         else
+            
+            if i_it_ovr( idx_ovr ).attribute not in ( 'Header/MessageTime'
+                                                    , 'Header/Source/ProcessID'
+                                                    , 'Header/Source/InstanceID'
+                                                    , 'Header/Target/ProcessID'
+                                                    , 'Header/Target/InstanceID'
+                                                    , 'Header/OperatorID'
+                                                    , 'UpstreamHandlingAreaID'
+                                                    )
+            then
+               
+               viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_messageattributeerror
+                                     , i_calling_procedure      => l_con_proc_name
+                                     , i_severity               => viu_info.c_severity_warning
+                                     , i_additional_data        =>    'Message: HandlingAreaStatusOverride; Attribute: '''
+                                                                   || i_it_ovr( idx_ovr ).attribute
+                                                                   || '''; Value: '''
+                                                                   || i_it_ovr( idx_ovr ).value
+                                                                   || ''''
+                                     );
+            end if;
+      end case;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end get_message_attributes_ovr;
+
+procedure process_has_status_override
+ (i_has_id               in     lm_handling_area_accesses.id%type
+ ,i_event_time           in     lm_haa_access_statuses.time_activated%type
+ ,i_rt_route             in     lm_flow_administration.g_rt_route
+ ,i_ims_id               in     lm_ifc_messages.id%type
+ )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name  constant lm_constant.st_proc_name := g_con_package
+                                                      || '.PROCESS_HAS_STATUS_OVERRIDE';
+
+   
+   cursor c_hss_active( i_has_id in lm_handling_area_accesses.id%type)
+   is
+   select hsav.*
+   from   lm_hss_active_details_v hsav
+   where  hsav.has_id = i_has_id
+   ;
+
+   l_rt_has                  lm_handling_area_accesses%rowtype;
+   l_rt_hss_active           c_hss_active%rowtype;
+   l_rt_hss                  lm_haa_access_statuses%rowtype;
+   l_upd_rec_count           number;
+
+   pragma autonomous_transaction;
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   
+   if lm_has_tapi_pck.has_select_row_upd( i_has_id => i_has_id
+                                        , o_rt_has => l_rt_has
+                                        )
+   then
+      
+      open c_hss_active( i_has_id => l_rt_has.id);
+      fetch c_hss_active into l_rt_hss_active;
+
+      
+      if c_hss_active%found
+      then
+         if i_event_time < l_rt_hss_active.time_activated
+         then
+            
+            viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_obsoletehastatusoverride
+                                  , i_calling_procedure => l_con_proc_name
+                                  , i_severity          => viu_info.c_severity_warning
+                                  , i_info_arguments    => i_rt_route.lnk_id_cust || '##'
+                                                        || i_rt_route.haa_id_cust_downstream
+                                  , i_additional_data   => 'Message id: ' || i_ims_id
+                                                        || '; Event time='
+                                                        || lm_common.timestamp_to_varchar(i_event_time)
+                                                        || '; Current status activation time='
+                                                        || lm_common.timestamp_to_varchar(l_rt_hss_active.time_activated)
+                                  );
+         else
+            
+            if ( l_rt_hss_active.hsm_id = lm_constant.g_con_hsm_blocked
+                 and
+                 i_rt_route.ind_override_status = lm_constant.g_con_mae_override_yes
+               )
+               or
+               ( l_rt_hss_active.hsm_id = lm_constant.g_con_hsm_override
+                 and
+                 i_rt_route.ind_override_status = lm_constant.g_con_mae_override_no
+               )
+            then
+               
+               
+               
+               if lm_hss_tapi_pck.hss_select_row( i_hss_id => l_rt_hss_active.hss_id
+                                                , o_rt_hss => l_rt_hss
+                                                )
+               then
+                  l_rt_hss.time_deactivated := i_event_time;
+                  l_upd_rec_count := lm_hss_tapi_pck.hss_update_row ( i_hss_id  => l_rt_hss.id
+                                                                    , io_rt_hss => l_rt_hss
+                                                                    );
+               end if;
+
+               
+               
+               
+               
+               
+               l_rt_hss                := null; 
+               l_rt_hss.has_id         := l_rt_has.id;
+               l_rt_hss.time_activated := i_event_time;
+               if i_rt_route.ind_override_status = lm_constant.g_con_mae_override_yes
+               then
+                  l_rt_hss.hsm_id      := lm_constant.g_con_hsm_override;
+               else
+                  l_rt_hss.hsm_id      := lm_constant.g_con_hsm_blocked;
+               end if;
+               lm_hss_tapi_pck.hss_insert_row( io_rt_hss => l_rt_hss);
+            else
+               
+               
+               
+               viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_hastatusoverrideignored
+                                     , i_calling_procedure => l_con_proc_name
+                                     , i_severity          => viu_info.c_severity_notification
+                                     , i_info_arguments    => i_rt_route.ind_override_status    || '##'
+                                                           || i_rt_route.lnk_id_cust            || '##'
+                                                           || i_rt_route.haa_id_cust_downstream || '##'
+                                                           || l_rt_hss_active.hsm_id_cust
+                                     , i_additional_data   => 'Message id: ' || i_ims_id
+                                     );
+
+            end if;
+         end if; 
+
+      end if;
+   end if;
+
+   
+   commit;  
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+
+exception
+   when others
+   then
+      if c_hss_active%isopen
+      then
+         close c_hss_active;
+      end if;
+
+      rollback;  
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end process_has_status_override;
+
+
+procedure hdl_downstream_health_has
+ (i_pty_id      in lm_parties.id%type
+ ,i_ind_healthy in boolean
+ )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name      constant lm_constant.st_proc_name := g_con_package
+                                                          ||'.hdl_downstream_health_has';
+
+   
+
+
+   cursor c_downstream_has( i_pty_id in lm_parties.id%type)
+   is
+   select has.id
+   from   lm_links                  lnk
+   ,      lm_handling_areas         haa
+   ,      lm_handling_area_accesses has
+   where  lnk.haa_id_upstream = haa.id
+   and    haa.ind_current     = lm_constant.g_con_yesno_yes
+   and    lnk.pty_id          = i_pty_id
+   and    has.lnk_id          = lnk.id
+   for update of has.id nowait
+   ;
+
+   
+   cursor c_hss_active( i_has_id in lm_handling_area_accesses.id%type)
+   is
+   select hsav.*
+   from   lm_hss_active_v hsav
+   where  hsav.has_id = i_has_id
+   ;
+
+   l_current_time                timestamp := lm_common.default_timestamp;
+   l_rec_hss_active              c_hss_active%rowtype;
+   l_rt_hss                      lm_haa_access_statuses%rowtype;
+   l_upd_rec_count               pls_integer;
+   l_insert_hss                  boolean := false;
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+
+   if i_ind_healthy
+   then
+      
+      
+      null;
+   else
+      
+      
+      for l_rec_downstream_has in c_downstream_has( i_pty_id => i_pty_id)
+      loop
+         
+         open c_hss_active( i_has_id => l_rec_downstream_has.id);
+         fetch c_hss_active into l_rec_hss_active;
+
+         
+         
+         
+         if c_hss_active%found
+         then
+            if l_rec_hss_active.hsm_id <> lm_constant.g_con_hsm_unhealthy
+            then
+               
+               if lm_hss_tapi_pck.hss_select_row( i_hss_id => l_rec_hss_active.hss_id
+                                                , o_rt_hss => l_rt_hss
+                                                )
+                  
+               then
+                  
+                  l_rt_hss.time_deactivated := l_current_time;
+                  l_upd_rec_count := lm_hss_tapi_pck.hss_update_row ( i_hss_id  => l_rt_hss.id
+                                                                    , io_rt_hss => l_rt_hss
+                                                                    );
+
+                  l_insert_hss := true;
+               end if;
+            end if;
+         else
+            l_insert_hss := true;
+         end if; 
+         close c_hss_active;
+
+         if l_insert_hss
+         then
+            l_insert_hss := false;
+            
+            l_rt_hss                := null; 
+            l_rt_hss.has_id         := l_rec_downstream_has.id;
+            l_rt_hss.hsm_id         := lm_constant.g_con_hsm_unhealthy;
+            l_rt_hss.time_activated := l_current_time;
+
+            lm_hss_tapi_pck.hss_insert_row( io_rt_hss => l_rt_hss);
+         end if;
+      end loop;
+   end if; 
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_hss_active%isopen
+      then
+         close c_hss_active;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      =>    sqlerrm
+                             );
+      
+      viu_info.raise_info ( i_calling_procedure => l_con_proc_name );
+end hdl_downstream_health_has
+;
+
+procedure send_rule_active_rep_job
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name     constant lm_constant.st_proc_name := g_con_package
+                                                         || '.send_rule_active_rep_job';
+
+   l_nt_influence_rules         nt_xml;
+   l_idx                        binary_integer;
+   l_message                    xmltype;
+   l_ims_id                     lm_ifc_messages.id%type;
+
+   
+
+   
+   
+   
+   
+   
+   
+
+   cursor c_rie_active
+   is
+   select xmlelement
+          ( "InfluenceRule"
+          , xmlelement( "InfluenceRuleID"
+                      , rre.id_external
+                      )
+          , xmlelement( "StatusChangeTime"
+                      , lm_common.timestamp_to_varchar( i_timestamp => max(rie.time_activated) )
+                      )
+          , xmlelement( "Active"
+                      , lm_constant.g_con_truefalse_true
+                      )
+          ) xml_influence_rule
+          from     lm_rie_active_v           rie
+          ,        lm_route_influence_rules  rre
+          where    rie.rre_id = rre.id
+          group by rre.id_external
+          order by rre.id_external
+   ;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   select xmlelement
+           ( "ReportContent"
+           , lm_constant.g_con_msg_repcontent_all
+           )
+   into l_message
+   from dual;
+
+   
+   l_nt_influence_rules := nt_xml();
+   l_idx := 0;
+   for l_rec_rie_active in c_rie_active
+   loop
+      
+      
+      l_nt_influence_rules.extend;
+      l_idx := l_idx + 1;
+      l_nt_influence_rules(l_idx) := l_rec_rie_active.xml_influence_rule;
+
+   end loop;
+
+   
+   if l_nt_influence_rules.count > 0
+   then
+
+      
+      select xmlconcat( l_message
+                      ,( select xmlagg(nt_influence_rules.column_value)
+                         from   table(l_nt_influence_rules) nt_influence_rules
+                       )
+                      )
+      into   l_message
+      from   dual;
+
+   end if;
+
+   
+   l_ims_id := lm_interface.prepare_and_send_message
+              ( i_imd_name        => 'InfluenceRuleOverviewReport'
+              , i_message         => l_message
+              , i_event_time      => lm_common.default_timestamp
+              , i_pty_id_cust     => lm_common.get_parameter_value(lm_constant.g_con_pve_operational_dashb)
+              , i_pty_instance_id => null
+              , i_sct_id_cust     => null
+             );
+   
+   commit;  
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+
+exception
+   when lm_constant.exc_internal_error
+   then
+      
+      viu_module.leave_module (i_module =>        l_con_proc_name, i_debug_info => sqlerrm);
+      
+
+
+
+
+
+
+
+
+      
+      lm_common.abort_application_fatal;
+   
+   when others
+   then
+      rollback;
+      viu_module.leave_module( i_module     => l_con_proc_name
+                             , i_debug_info => sqlerrm);
+      viu_info.handle_info;
+end send_rule_active_rep_job;
+
+
+procedure set_station_unhealthy
+ (i_stn_id         in     lm_stations.id%type
+ ,i_event_time     in     lm_station_availabilities.event_time%type
+ ,o_ind_reevaluate    out boolean
+ )
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name   constant lm_constant.st_proc_name := g_con_package
+                                                          || '.SET_STATION_UNHEALTHY';
+
+   
+
+   cursor c_son(i_say_stn_id in lm_scope_of_operation.say_stn_id%type)
+   is
+   select son.id
+   from   lm_scope_of_operation son
+   where  son.say_stn_id = i_say_stn_id;
+
+   l_say_updated     number;
+   l_found           boolean;
+   l_rt_say          lm_station_availabilities%rowtype;
+   l_rt_sah          lm_stn_availabilities_history%rowtype;
+   
+   pragma autonomous_transaction;
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   o_ind_reevaluate := false;
+
+   lm_stn_tapi_pck.stn_lock_row(i_stn_id);
+   
+   if lm_say_tapi_pck.say_select_row( i_say_stn_id => i_stn_id
+                                    , o_rt_say     => l_rt_say
+                                    )
+   then
+      
+      
+      
+      
+      
+      
+      
+      if     l_rt_say.ssd_id            != lm_constant.g_con_ssd_id_not_available
+         and (    l_rt_say.sod_id is null
+               or l_rt_say.sod_id = lm_constant.g_con_sod_id_logged_on
+             )
+      then
+         
+         
+         
+         o_ind_reevaluate := true;
+      end if;
+      
+      l_rt_say.ssd_id            := lm_constant.g_con_ssd_id_unhealthy;
+      l_rt_say.sod_id            := null;  
+      l_rt_say.function_mode     := null;  
+      l_rt_say.event_time        := i_event_time;
+      l_say_updated              := lm_say_tapi_pck.say_update_row( i_say_stn_id => l_rt_say.stn_id
+                                                                  , io_rt_say    => l_rt_say
+                                                                  );
+
+      for r_son in c_son(l_rt_say.stn_id)
+      loop
+         
+         l_found := lm_son_tapi_pck.son_delete_row(i_son_id  => r_son.id);
+      end loop;
+      
+      
+
+
+      l_rt_sah.id                     := null;
+      l_rt_sah.stn_id                 := l_rt_say.stn_id;
+      l_rt_sah.ssd_id                 := l_rt_say.ssd_id;
+      l_rt_sah.ind_available_derived  := l_rt_say.ind_available_derived;
+      l_rt_sah.reason                 := lm_constant.g_con_sah_rsn_area_unhealthy;
+      l_rt_sah.event_time             := i_event_time;
+      l_rt_sah.sod_id                 := l_rt_say.sod_id;
+      l_rt_sah.function_mode          := l_rt_say.function_mode;
+      l_rt_sah.scope_of_operation     := null;
+      lm_sah_tapi_pck.sah_insert_row( io_rt_sah => l_rt_sah );
+      
+   end if;
+
+   commit;  
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      rollback;  
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end set_station_unhealthy;
+
+
+procedure reevaluate_pae_destination
+(i_stn_id               in     lm_stations.id%type
+,i_type_of_reevaluation in     varchar2
+,io_nt_tin_processed    in out nt_id_coll
+)
+is
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   l_con_proc_name constant lm_constant.st_proc_name := g_con_package
+                                                   || '.REEVALUATE_PAE_DESTINATION';
+
+   cursor c_active_tin_by_station
+      (i_stn_id in lm_stations.id%type
+      ,i_eval_type in varchar2
+       )
+   is
+   
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   select /*+ index(tin lm_tin_i4) */
+          pae.pid
+   ,      tin.id tin_id
+   ,      tin.handler
+   ,      pae.rst_id
+   from   lm_determined_stations     dsn
+   ,      lm_task_instructions       tin
+   ,      lm_packages                pae
+   where  dsn.tin_id             = tin.id
+   and    pae.pid                = tin.pid
+   and    tin.pss_id             in( lm_constant.g_con_pss_name_open, lm_constant.g_con_pss_name_suspect )
+   and    dsn.stn_id             = i_stn_id
+   and    dsn.ind_final_expected = lm_constant.g_con_yesno_no
+   and    ( i_eval_type <> lm_constant.g_con_eval_type_scope
+           
+           
+            or
+            ( i_eval_type = lm_constant.g_con_eval_type_scope
+              and
+              ( not exists (select ''
+                            from   lm_scope_of_operation son
+                            where  son.say_stn_id = dsn.stn_id
+                            and    son.id_cust = tin.handler
+                           )
+                or
+                tin.handler is null
+              )
+            )
+          )
+   order by pae.pid 
+                    
+   ;
+   
+   l_reevaluate boolean;
+   l_spy_found  boolean;
+   l_dummy      boolean;
+   
+   l_rt_spy     lm_station_proximities%rowtype;
+   
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   for rec_active_tin_by_station in c_active_tin_by_station( i_stn_id    => i_stn_id
+                                                           , i_eval_type => i_type_of_reevaluation)
+   loop
+      
+      
+      begin
+         
+         if rec_active_tin_by_station.tin_id not member of io_nt_tin_processed
+         then
+            l_reevaluate := true;
+            if rec_active_tin_by_station.rst_id is not null
+            then
+               
+               
+               
+               
+               
+               
+               
+               
+               
+               l_spy_found := lm_spy_tapi_pck.spy_select_row( i_spy_stn_id => i_stn_id
+                                                            , i_spy_rst_id => rec_active_tin_by_station.rst_id
+                                                            , o_rt_spy     => l_rt_spy
+                                                            );
+               if l_spy_found
+                  and
+                  ( l_rt_spy.ind_restrict_to_logoff_req = lm_constant.g_con_yesno_no
+                    or
+                    ( l_rt_spy.ind_restrict_to_logoff_req = lm_constant.g_con_yesno_yes
+                      and
+                      i_type_of_reevaluation              = lm_constant.g_con_eval_type_partial
+                    )
+                  )
+               then
+                  
+                  l_reevaluate := false;
+               end if;
+            end if;
+            if l_reevaluate
+            then
+               
+               
+               
+               
+               
+               io_nt_tin_processed.extend(1);
+               io_nt_tin_processed( io_nt_tin_processed.count ) := rec_active_tin_by_station.tin_id;
+               lm_topology_administration.evaluate_task_instr_for_pck( i_pid                     => rec_active_tin_by_station.pid
+                                                                     , i_tin_id                  => rec_active_tin_by_station.tin_id
+                                                                     , i_nt_exclude_stations     => nt_stn_id()
+                                                                     , o_new_determined_stations => l_dummy
+                                                                     );
+            end if;
+         end if;
+      exception
+        when others
+        then
+            viu_info.handle_info;
+      end;
+   end loop;
+
+   viu_module.leave_module( i_module      => l_con_proc_name );
+exception
+   when others
+   then
+      if c_active_tin_by_station%isopen
+      then
+         close c_active_tin_by_station;
+      end if;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end reevaluate_pae_destination;
+
+
+procedure send_haa_access_status_rep_out
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name        constant lm_constant.st_proc_name := g_con_package
+                                                            || '.SEND_HAA_ACCESS_STATUS_REP_OUT';
+
+   cursor c_lnk
+   is
+   select '1'
+   from   lm_handling_areas haa_cur
+         ,lm_links lnk
+   where  lnk.haa_id_upstream = haa_cur.id
+   and    haa_cur.ind_current = lm_constant.g_con_yesno_yes;
+    
+   r_lnk       c_lnk%rowtype;
+   l_message   xmltype;
+   l_ims_id    lm_ifc_messages.id%type;
+      
+
+begin
+   viu_module.enter_module( i_module      => l_con_proc_name );
+   
+   open c_lnk;
+   fetch c_lnk
+   into r_lnk;
+   if c_lnk%notfound
+   then
+      close c_lnk;
+      
+   else
+      close c_lnk;
+      begin
+         select 
+
+
+
+
+
+                xmlconcat
+                  (  xmlelement( "UpstreamHandlingAreaID", haa_cur.id_cust)
+                   , xmlagg
+                     ( xmlelement
+                       ( "Route"
+                       , xmlelement( "LinkID", lnk.id_cust)
+                       , xmlelement( "DownstreamHandlingAreaID", haa_down.id_cust)
+                       , xmlelement( "Status", hsav.hsm_id_cust)
+                       )
+                       order by lnk.id_cust, haa_down.id_cust
+                       
+                     )
+                   )
+         into   l_message
+         from   lm_handling_areas haa_cur
+               ,lm_links lnk
+               ,lm_handling_area_accesses has
+               ,lm_handling_areas haa_down
+               ,lm_hss_active_details_v hsav
+         where  lnk.haa_id_upstream = haa_cur.id
+         and    has.lnk_id          = lnk.id
+         and    has.haa_id          = haa_down.id
+         and    hsav.has_id         = has.id
+         and    haa_cur.ind_current = lm_constant.g_con_yesno_yes
+         group by haa_cur.id_cust;
+
+                                                         
+         
+         l_ims_id := lm_interface.prepare_and_send_message
+                    ( i_imd_name        => 'HandlingAreaStatusReport'
+                    , i_message         => l_message
+                    , i_event_time      => lm_common.default_timestamp
+                    , i_pty_id_cust     => lm_common.get_parameter_value( lm_constant.g_con_pve_operational_dashb)
+                    , i_pty_instance_id => null
+                    , i_sct_id_cust     => null
+                   );
+                                                         
+      exception
+         when no_data_found then
+            
+            
+            
+            viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_nooutgoinglinkstatfound
+                                  , i_calling_procedure      => l_con_proc_name
+                                  , i_severity               => viu_info.c_severity_notification
+                                  , i_info_arguments         => 'No outgoing links with active status.'
+                                  );
+      end;
+                                                             
+   end if;
+   viu_module.leave_module( i_module      => l_con_proc_name );
+   
+exception
+   when others
+   then
+      if c_lnk%isopen
+      then
+         close c_lnk;
+      end if;
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm);
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_haa_access_status_rep_out;
+
+
+procedure send_rule_changed
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+is
+   l_con_proc_name     constant lm_constant.st_proc_name := g_con_package
+                                                         || '.send_rule_changed';
+
+   l_nt_influence_rules         nt_xml;
+   l_idx                        binary_integer;
+   l_message                    xmltype;
+   l_ims_id                     lm_ifc_messages.id%type;
+
+   
+   
+
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   
+   cursor c_rie_changed
+   is
+   select xmlelement
+          ( "InfluenceRule"
+          , xmlelement( "InfluenceRuleID"
+                      , rre_id_external
+                      )
+          , xmlelement( "StatusChangeTime"
+                      , lm_common.timestamp_to_varchar( i_timestamp => nvl(time_deactivated, time_activated))
+                      )
+          , xmlelement( "Active"
+                      , case
+                           when time_deactivated is null
+                           then lm_constant.g_con_truefalse_true
+                           else lm_constant.g_con_truefalse_false
+                        end
+                      )
+         ) xml_influence_rule
+   ,     nvl(time_deactivated, time_activated) status_change_time
+   ,     rie_coll
+   from  (select   rre.id_external                       rre_id_external
+          ,        max(rie.time_activated)               time_activated
+          ,        max(rie.time_deactivated)
+                     keep (dense_rank first
+                           order by rie.time_deactivated
+                           desc nulls first)             time_deactivated
+          ,        cast (collect (rie.id) as nt_id_coll) rie_coll
+          from     lm_route_influences                   rie
+          ,        lm_route_influence_rules              rre
+          where    rie.rre_id = rre.id
+          and      (
+                   case nvl(rie.time_deactivated, rie.time_activated)
+                      when nvl(rie.time_reported, rie.time_deactivated)
+                      then null
+                      else nvl(rie.time_deactivated, rie.time_activated)
+                   end
+                   ) is not null
+          group by rre.id_external
+          order by rre.id_external
+         )
+   ;
+
+   pragma autonomous_transaction;
+
+begin
+   viu_module.enter_module (i_module =>    l_con_proc_name);
+
+   
+   l_nt_influence_rules := nt_xml();
+   l_idx := 0;
+   for l_rec_rie_changed in c_rie_changed
+   loop
+      
+      
+      l_nt_influence_rules.extend;
+      l_idx := l_idx + 1;
+      l_nt_influence_rules(l_idx) := l_rec_rie_changed.xml_influence_rule;
+
+      
+      forall idx in 1 .. l_rec_rie_changed.rie_coll.count
+      update lm_route_influences
+      set    time_reported = l_rec_rie_changed.status_change_time
+      where  id = l_rec_rie_changed.rie_coll(idx)
+      ;
+
+   end loop;
+
+   
+   if l_nt_influence_rules.count > 0
+   then
+
+      
+      select xmlconcat( xmlelement ( "ReportContent"
+                                   , lm_constant.g_con_msg_repcontent_changed
+                                   )
+                      ,( select xmlagg(nt_influence_rules.column_value)
+                         from   table(l_nt_influence_rules) nt_influence_rules
+                       )
+                      )
+      into   l_message
+      from   dual;
+
+      l_ims_id := lm_interface.prepare_and_send_message
+                 ( i_imd_name        => 'InfluenceRuleOverviewReport'
+                 , i_message         => l_message
+                 , i_event_time      => lm_common.default_timestamp
+                 , i_pty_id_cust     => lm_common.get_parameter_value(lm_constant.g_con_pve_operational_dashb)
+                 , i_pty_instance_id => null
+                 , i_sct_id_cust     => null
+                );
+
+      end if;
+   
+   
+   commit;
+
+   viu_module.leave_module (i_module =>    l_con_proc_name);
+
+exception
+   when others
+   then
+
+      
+      rollback;
+
+      viu_module.leave_module( i_module          => l_con_proc_name
+                             , i_debug_info      => sqlerrm
+                             );
+      viu_info.raise_info( i_calling_procedure      => l_con_proc_name );
+end send_rule_changed;
+
+end lm_flow_administration;
+/

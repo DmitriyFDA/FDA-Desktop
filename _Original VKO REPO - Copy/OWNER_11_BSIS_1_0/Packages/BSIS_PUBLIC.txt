@@ -1,0 +1,93 @@
+create or replace PACKAGE bsis_public
+AUTHID DEFINER
+AS
+/******************************************************************************
+   NAME:       bsis_public
+   PURPOSE:
+
+   REVISIONS:
+   Date        Author           Description
+   ----------  ---------------  -----------------------------------------------
+   23-11-2020  nlmv2            vbss-169: Moved globals to BSIS_CONSTANT
+******************************************************************************/
+   FUNCTION determine_lpckey
+    (i_lpc           IN  VARCHAR2
+    ,i_lpc_ext       IN  VARCHAR2
+    ,i_flight        IN  VARCHAR2
+    ,i_has_outflight IN  BOOLEAN
+    ,i_has_inflight  IN  BOOLEAN
+    ) RETURN VARCHAR2;
+   --
+END bsis_public;
+/
+
+
+
+
+package body bsis_public as
+
+   
+   g_con_package      constant varchar2(14) := 'bsis_public';
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   function determine_lpckey
+    (i_lpc           in  varchar2
+    ,i_lpc_ext       in  varchar2
+    ,i_flight        in  varchar2
+    ,i_has_outflight in  boolean
+    ,i_has_inflight  in  boolean
+    ) return varchar2
+   is
+      l_con_proc     constant cmn_constant.st_proc_name := g_con_package || '.determine_lpckey';
+      l_lpckey       varchar2(35);
+   begin
+     if i_lpc is null
+     then
+       l_lpckey := null;
+     else
+       l_lpckey := i_lpc_ext || i_lpc;
+     end if;
+
+     if bsis_baggage_data_mgr.is_store_duplicate_lpn and l_lpckey is not null
+     then
+       if i_has_outflight then
+         l_lpckey := 'O' || l_lpckey;
+       elsif i_has_inflight then
+         l_lpckey := 'I' || l_lpckey;
+       else
+         l_lpckey := 'X' || l_lpckey;
+       end if;
+
+       if (i_has_outflight or i_has_inflight)
+       then
+         l_lpckey := l_lpckey || '_' || i_flight;
+       end if;
+     end if;
+
+     return l_lpckey;
+
+   end determine_lpckey;
+   
+end bsis_public;
+/

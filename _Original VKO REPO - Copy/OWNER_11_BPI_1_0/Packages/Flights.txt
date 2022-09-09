@@ -1,0 +1,1682 @@
+create or replace PACKAGE Flights
+IS
+   g_con_package CONSTANT VARCHAR2(30) := 'Flights';
+
+   FUNCTION retrieve_sort_enduserid(p_allocatedsort VARCHAR2) RETURN VARCHAR2 DETERMINISTIC;
+
+   FUNCTION flightnr(i_flight IN VARCHAR2) RETURN VARCHAR2 DETERMINISTIC;
+
+   FUNCTION get_flight_plan(i_process_plan_name VARCHAR2) RETURN fact_flight_plans%ROWTYPE;
+
+   PROCEDURE get_flight_data( i_airline                  IN  fact_flight_summaries.airline%TYPE
+                            , i_flightnumber             IN  fact_flight_summaries.flightnr%TYPE
+                            , i_flightdate               IN  fact_flight_summaries.flightdate%TYPE
+                            , i_dt_reference             IN  TIMESTAMP := NULL
+                            , i_arrivalordeparture       IN  fact_flight_summaries.arrivalordeparture%TYPE
+                            , o_flightnr                 OUT fact_flight_summaries.flightnr%TYPE
+                            , o_flightdate               OUT fact_flight_summaries.flightdate%TYPE
+                            , o_st                       OUT fact_flight_summaries.std%TYPE
+                            , o_flighttype               OUT fact_flight_summaries.haul%TYPE
+                            , o_internationalordomestic  OUT fact_flight_summaries.internationalordomestic%TYPE
+                            );
+   PROCEDURE get_flight_data( i_flightnr                 IN  fact_flight_summaries.flightnr%TYPE
+                            , i_dt_reference             IN  TIMESTAMP := NULL
+                            , i_scheduled_flight_time    IN  TIMESTAMP := NULL   -- PRODUCT_TBD: Future
+                            , o_arrivalordeparture       OUT fact_flight_summaries.arrivalordeparture%TYPE
+                            , o_flightdate               OUT fact_flight_summaries.flightdate%TYPE
+                            , o_st                       OUT fact_flight_summaries.std%TYPE
+                            , o_airline                  OUT fact_flight_summaries.airline%TYPE
+                            , o_flighttype               OUT fact_flight_summaries.haul%TYPE
+                            , o_internationalordomestic  OUT fact_flight_summaries.internationalordomestic%TYPE
+                            );
+   PROCEDURE summarize_flight_data;
+   PROCEDURE summarize_flight_plans;
+   PROCEDURE summarize_data_and_plans;
+   PROCEDURE update_summaries;
+   PROCEDURE agg_bsmflightinfo;
+   PROCEDURE summarize_flightschedules;
+   PROCEDURE summarize;
+   PROCEDURE summarize_flight_data_vibes;
+   PROCEDURE summarize_flight_plans_vibes;
+END Flights;
+/
+
+
+
+
+package body flights
+is
+
+procedure notify(p_con_proc_name varchar2, p_msg varchar2, p_parm varchar2) is
+l_parm viu_info_logs.info_arguments%type := p_parm;
+begin
+  if trim(l_parm) is null then
+    l_parm := to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6');
+  end if;
+  viu_info.operator_info( i_ifo_nr => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure => p_con_proc_name
+                        , i_severity => viu_info.c_severity_notification
+                        , i_info_arguments => l_parm
+                        , i_additional_data => p_msg);
+end;
+
+function retrieve_sort_enduserid(p_allocatedsort varchar2) return varchar2 deterministic is
+
+l_enduserid varchar2(50) := '';
+l_allocatedsortids varchar2(200) := '';
+begin
+  for c_rec in (select val from table(csv.vals(p_allocatedsort))) loop
+      select end_user_id into l_enduserid from dim_node_area_zone_equipment where station_id = to_number(c_rec.val) and rownum = 1;
+        if(l_allocatedsortids is null) then
+            l_allocatedsortids := l_enduserid;
+        else
+          l_allocatedsortids := l_allocatedsortids ||','|| l_enduserid;
+    end if;
+  end loop;
+  return l_allocatedsortids;
+end;
+
+
+
+
+
+function flightnr(i_flight in varchar2)
+   return varchar2 deterministic
+is
+   l_airline  fact_flight_summaries.airline%type;
+   l_flightnr fact_flight_summaries.flightnr%type;
+   l_suffix   varchar2(1);
+begin
+   l_airline  := regexp_replace(i_flight, '^([0-9A-Z]{2}[A-Z]?)?([0-9]{3,4})([A-Z])?$', '\1');
+   l_flightnr := regexp_replace(i_flight, '^([0-9A-Z]{2}[A-Z]?)?([0-9]{3,4})([A-Z])?$', '\2');
+   l_suffix   := regexp_substr(i_flight, '[A-Z]$');
+
+   return substr(l_airline||lpad(l_flightnr, 4, '0')||l_suffix, 1, 10);
+end;
+   
+
+function get_flight_plan(i_process_plan_name varchar2)
+   return fact_flight_plans%rowtype
+is
+   l_flight_plan fact_flight_plans%rowtype := null;
+begin
+   begin
+      select *
+      into   l_flight_plan
+      from   ( select *
+               from   fact_flight_plans
+               where  process_plan_name = i_process_plan_name
+               order  by updatets desc
+             )
+      where rownum = 1;
+   exception
+      when others then null;
+   end;
+
+   return l_flight_plan;
+end;
+
+procedure get_flight_data( i_airline                  in  fact_flight_summaries.airline%type
+                         , i_flightnumber             in  fact_flight_summaries.flightnr%type
+                         , i_flightdate               in  fact_flight_summaries.flightdate%type
+                         , i_dt_reference             in  timestamp := null
+                         , i_arrivalordeparture       in  fact_flight_summaries.arrivalordeparture%type
+                         , o_flightnr                 out fact_flight_summaries.flightnr%type
+                         , o_flightdate               out fact_flight_summaries.flightdate%type
+                         , o_st                       out fact_flight_summaries.std%type
+                         , o_flighttype               out fact_flight_summaries.haul%type
+                         , o_internationalordomestic  out fact_flight_summaries.internationalordomestic%type
+                         )
+is
+   l_flightdate   fact_flight_summaries.flightdate%type := i_flightdate;
+
+   l_dt_reference timestamp(9);
+   l_day          integer;
+begin
+   if l_flightdate like '--%'
+   then
+      
+      l_day := to_number(ltrim(l_flightdate, '-'));
+      l_dt_reference := nvl(i_dt_reference, sys_extract_utc(systimestamp));
+      if extract(day from l_dt_reference) > l_day + 26
+      then
+         l_flightdate := to_char(l_dt_reference + numtodsinterval(5, 'DAY'), 'yyyy-mm-')
+                         ||to_char(l_day, 'FM09');
+      else
+         l_flightdate := to_char(l_dt_reference, 'yyyy-mm-') ||to_char(l_day, 'FM09');
+      end if;
+   end if;
+
+   select fsy.flightnr
+   ,      fsy.flightdate
+   ,      fsy.std
+   ,      fsy.haul
+   ,      fsy.internationalordomestic
+   into   o_flightnr
+   ,      o_flightdate
+   ,      o_st
+   ,      o_flighttype
+   ,      o_internationalordomestic
+   from   fact_flight_summaries fsy
+   where  fsy.flightnr = flightnr(i_airline||i_flightnumber)   
+   and    fsy.flightdate = l_flightdate
+   and    fsy.arrivalordeparture = i_arrivalordeparture
+   and    rownum = 1  
+   ;
+
+exception
+   when others then
+      o_flightnr   := flightnr(i_airline||i_flightnumber);
+end;
+
+procedure get_flight_data( i_flightnr                 in  fact_flight_summaries.flightnr%type
+                         , i_dt_reference             in  timestamp := null
+                         , i_scheduled_flight_time    in  timestamp := null
+                         , o_arrivalordeparture       out fact_flight_summaries.arrivalordeparture%type
+                         , o_flightdate               out fact_flight_summaries.flightdate%type
+                         , o_st                       out fact_flight_summaries.std%type
+                         , o_airline                  out fact_flight_summaries.airline%type
+                         , o_flighttype               out fact_flight_summaries.haul%type
+                         , o_internationalordomestic  out fact_flight_summaries.internationalordomestic%type
+                         )
+is
+begin
+   select distinct
+          fsy.arrivalordeparture
+   ,      fsy.flightdate
+   ,      fsy.std
+   ,      fsy.airline
+   ,      fsy.haul
+   ,      fsy.internationalordomestic
+   into   o_arrivalordeparture
+   ,      o_flightdate
+   ,      o_st
+   ,      o_airline
+   ,      o_flighttype
+   ,      o_internationalordomestic
+   from   fact_flight_summaries fsy
+   where  fsy.flightnr = flightnr(i_flightnr) 
+   and    fsy.flightdate = to_char(nvl(i_scheduled_flight_time, i_dt_reference), 'yyyy-mm-dd')
+   ;
+
+exception
+   when others then
+      null;   
+end;
+
+procedure summarize_flight_data is
+l_con_proc constant varchar2(61) := g_con_package||'.SUMMARIZE_FLIGHT_DATA';
+l_max_id number := 0;
+l_maxrecs number;
+l_curr_id number := 0;
+l_count number := 0;
+l_msg varchar2(4000);
+l_flightnr varchar2(10);
+l_flightdate varchar2(12);
+l_arrdep varchar2(2);
+l_conf_rec metric_config%rowtype;
+nid number(5);
+nresult number(1);
+
+
+cursor c_flights(c_id number, c_maxrecs number) is
+select /*+ FIRST_ROWS(5000) */ * from
+( select /*+ INDEX_ASC(WC_FLIGHTDATARECORDMESSAGE WC_FLIGHTDATARECORDMESSAGE_PK) */
+    key, eventts, airline
+	,substr(substr(l_airportcode, instr(l_airportcode, ',', -1)+1),instr(l_airportcode,'=')+1,3)as airportcode,
+	arrivalordeparture, changeindicator, date_, dayofweek
+  , estimateddatetime, flightnumber, handler, handlingarea, haul, geopoliticalclassification
+  , requiredexplosivesscreeninglev, scheduledayofweek, scheduleddatetime, terminalcode
+  from wc_flightdatarecordmessage
+  where key > c_id
+  order by key
+) where rownum <= c_maxrecs;
+
+
+cursor c_arr_process(c_id number, c_maxrecs number) is
+select  * from (
+select /*+ INDEX_ASC(WC_FLIGHTUPDATEMESSAGE WC_FLIGHTUPDATEMESSAGE_PK) */
+    key,
+    processname,
+    airline,
+    flightnumber,
+    date_,
+    firstbagdatetime,
+    lastbagdatetime,
+    arrivalordeparture,
+    flightinformationremark
+  from wc_flightupdatemessage
+  where key > c_id
+  and (firstbagdatetime is not null or flightinformationremark is not null)
+  order by key
+) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                            , i_calling_procedure  => l_con_proc
+                            , i_severity           => viu_info.c_severity_notification
+                            , i_info_arguments     => null
+                            , i_additional_data    => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.' );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_flight_data;
+
+        viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure      => l_con_proc
+                              , i_severity               => viu_info.c_severity_notification
+                              , i_info_arguments         => null
+                              , i_additional_data        => l_con_proc||' STARTED. Processing flights with ID greater than '||to_char(l_max_id) );
+        for c_rec in c_flights(l_max_id, l_maxrecs) loop
+          l_curr_id := c_rec.key;
+          
+          l_flightnr := flightnr(substr(trim(c_rec.airline)||trim(c_rec.flightnumber),1,10));
+          l_flightdate :=  substr(trim(c_rec.date_),1,10); 
+          l_arrdep := substr(trim(c_rec.arrivalordeparture),1,1); 
+          if l_flightdate is null then
+            l_flightdate := substr(trim(c_rec.scheduleddatetime),1,10); 
+          end if;
+          if l_flightdate is not null and l_flightnr is not null then
+            if c_rec.changeindicator = 'DEL' then
+              delete from fact_flight_data where flightnr = l_flightnr and flightdate = l_flightdate and arrivalordeparture = l_arrdep;
+                else
+              begin
+                insert into fact_flight_data
+                ( id
+                , eventts
+                , insertts
+                , updatets
+                , flightnr
+                , flightdate
+                , arrivalordeparture
+                , flightdayofweek
+                , changeindicator
+                , internationalordomestic
+                , haul
+                , airport
+                , std
+                , etd
+                , handler
+                , handlingterminal
+                , handlingarea
+                , requiredexplosivesscreeninglev
+                )
+                values
+                ( c_rec.key 
+                , c_rec.eventts 
+                , sys_extract_utc(systimestamp) 
+                , sys_extract_utc(systimestamp) 
+                , l_flightnr 
+                , l_flightdate 
+                , l_arrdep 
+                , c_rec.scheduledayofweek
+                , c_rec.changeindicator
+                , c_rec.geopoliticalclassification
+                , c_rec.haul
+                , c_rec.airportcode
+                , period.xmldt2ts(c_rec.scheduleddatetime, null) 
+                , period.xmldt2ts(c_rec.estimateddatetime, null) 
+                , c_rec.handler
+                , c_rec.terminalcode
+                , c_rec.handlingarea
+                , c_rec.requiredexplosivesscreeninglev
+                );
+              exception when dup_val_on_index then
+                update fact_flight_data
+                set id                     = c_rec.key
+               
+                , updatets                 = sys_extract_utc(systimestamp)
+                , flightdayofweek          = c_rec.scheduledayofweek
+                , changeindicator          = c_rec.changeindicator
+                , internationalordomestic  = c_rec.geopoliticalclassification
+                , haul                     = c_rec.haul
+                , airport                  = c_rec.airportcode
+                , std                      = period.xmldt2ts(c_rec.scheduleddatetime, null)
+                , etd                      = period.xmldt2ts(c_rec.estimateddatetime, null)
+                , handler                  = c_rec.handler
+                , handlingterminal         = c_rec.terminalcode
+                , handlingarea             = c_rec.handlingarea
+                , requiredexplosivesscreeninglev = c_rec.requiredexplosivesscreeninglev
+                where flightnr = l_flightnr and flightdate = l_flightdate and arrivalordeparture = l_arrdep;
+                    end;
+            end if;
+            commit;
+            l_count := l_count + 1;
+          end if;
+        end loop;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc||' finished successfully. Processed '||to_char(l_count)||' flights.'
+                         );
+      exception when others then
+        l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)
+        ||', FLIGHTNR:'||l_flightnr||', FLIGHTDATE:'||l_flightdate||', ARRIVALORDEPARTURE:'||l_arrdep
+        ||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_flight_processes;
+
+        viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure      => l_con_proc
+                              , i_severity               => viu_info.c_severity_notification
+                              , i_info_arguments         => null
+                              , i_additional_data        => l_con_proc||' STARTED. Processing arrival processes with ID greater than '||to_char(l_max_id) );
+
+        l_count:=0;
+
+        for c_rec in c_arr_process(l_max_id, l_maxrecs) loop
+          l_curr_id := c_rec.key;
+          l_flightnr := flightnr(substr(trim(c_rec.airline)||trim(c_rec.flightnumber),1,10));
+          l_flightdate :=  substr(trim(c_rec.date_),1,10); 
+          l_arrdep := substr(trim(c_rec.arrivalordeparture),1,1); 
+
+             if c_rec.firstbagdatetime is not null then
+               begin
+                insert into fact_flight_processes
+                ( id
+                , insertts
+                , updatets
+                , processname
+                , airline
+                , flightnr
+                , flightdate
+                , firstbagdatetime
+                , lastbagdatetime
+                , arrivalordeparture
+                )
+                values
+                ( c_rec.key 
+                , sys_extract_utc(systimestamp) 
+                , sys_extract_utc(systimestamp) 
+                , c_rec.processname
+                , c_rec.airline
+                , l_flightnr
+                , l_flightdate
+                , period.xmldt2ts(c_rec.firstbagdatetime, null)
+                , period.xmldt2ts(c_rec.lastbagdatetime, null)
+                , l_arrdep
+                );
+              exception when dup_val_on_index then
+                update fact_flight_processes
+                set id                     = c_rec.key
+                , updatets                 = sys_extract_utc(systimestamp)
+                , firstbagdatetime         = period.xmldt2ts(c_rec.firstbagdatetime, null)
+                , lastbagdatetime          = period.xmldt2ts(c_rec.lastbagdatetime, null)
+                where
+                 processname = c_rec.processname
+                 and flightnr = l_flightnr
+                 and flightdate = l_flightdate
+                 and arrivalordeparture = l_arrdep;
+               end;
+
+            l_count := l_count + 1;
+            
+            if upper(c_rec.processname) in ('RECLAIM') then
+              update fact_flight_data set
+               updatets                 = sys_extract_utc(systimestamp)
+               , firstbagdatetime       = period.xmldt2ts(c_rec.firstbagdatetime, null)
+               , lastbagdatetime        = period.xmldt2ts(c_rec.lastbagdatetime, null)
+              where flightnr = l_flightnr and flightdate = l_flightdate and arrivalordeparture=l_arrdep;
+
+             end if;
+            end if;
+            
+            if c_rec.flightinformationremark is not null then
+                update fact_flight_data set
+                  updatets                  = sys_extract_utc(systimestamp)
+                  , flightinformationremark =c_rec.flightinformationremark
+                where flightnr = l_flightnr and flightdate = l_flightdate and arrivalordeparture=l_arrdep;
+
+            end if;
+
+          commit;
+        end loop;
+
+
+        if l_count >= l_conf_rec.max_measurements then
+           metrics.unfinished( i_proc => l_con_proc);
+        end if;
+
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc||' finished successfully. Processed '||to_char(l_count)||' flightupdate processes.'
+                         );
+      exception when others then
+        l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)
+        ||', FLIGHTNR:'||l_flightnr||', FLIGHTDATE:'||l_flightdate
+        ||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+
+
+
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+    bpi_log.raise_fatal_error(l_con_proc, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+
+
+
+function empty_fp_rec return fact_flight_plans%rowtype is
+l_fp_rec fact_flight_plans%rowtype;
+begin
+  l_fp_rec.id := null;
+  l_fp_rec.eventts := null;
+  l_fp_rec.insertts := null;
+  l_fp_rec.updatets := null;
+  l_fp_rec.flightnr := null;
+  l_fp_rec.flightdate := null;
+  l_fp_rec.arrivalordeparture := null;
+  l_fp_rec.common_process_definition_name := null;
+  l_fp_rec.process_plan_name := null;
+  l_fp_rec.process_definition_name := null;
+  l_fp_rec.segregation := null;
+  l_fp_rec.phase := null;
+  l_fp_rec.open_dt := null;
+  l_fp_rec.close_dt := null;
+  l_fp_rec.allocated_sort := null;
+  return l_fp_rec;
+end;
+
+procedure ins_upd_fp_rec(i_fp_rec fact_flight_plans%rowtype, io_ins_count in out number) is
+begin
+  if i_fp_rec.flightnr is not null and i_fp_rec.flightdate is not null then
+    begin
+      insert into fact_flight_plans
+      ( id
+      , eventts
+      , insertts
+      , updatets
+      , flightnr
+      , flightdate
+      , arrivalordeparture
+      , airline
+      , airport
+      , std
+      , etd
+      , common_process_definition_name
+      , process_plan_name
+      , process_definition_name
+      , segregation
+      , phase
+      , open_dt
+      , close_dt
+      , allocated_sort
+      , handler
+      , handlingarea
+      , aircrafttypecode
+      )
+      values
+      ( i_fp_rec.id
+      , i_fp_rec.eventts
+      , i_fp_rec.insertts
+      , i_fp_rec.updatets
+      , i_fp_rec.flightnr
+      , i_fp_rec.flightdate
+      , i_fp_rec.arrivalordeparture
+      , i_fp_rec.airline
+      , i_fp_rec.airport
+      , i_fp_rec.std
+      , i_fp_rec.etd
+      , i_fp_rec.common_process_definition_name
+      , i_fp_rec.process_plan_name
+      , i_fp_rec.process_definition_name
+      , i_fp_rec.segregation
+      , i_fp_rec.phase
+      , i_fp_rec.open_dt
+      , i_fp_rec.close_dt
+      , i_fp_rec.allocated_sort
+      , i_fp_rec.handler
+      , i_fp_rec.handlingarea
+      , i_fp_rec.aircrafttypecode
+      );
+      io_ins_count := io_ins_count + 1;
+    exception when dup_val_on_index then
+      update fact_flight_plans
+      set id = i_fp_rec.id
+        , updatets = sys_extract_utc(systimestamp)
+        , airline = nvl(i_fp_rec.airline, airline)
+        , airport = nvl(i_fp_rec.airport, airport)
+        , std = nvl(i_fp_rec.std, std)
+        , etd = nvl(i_fp_rec.etd, etd)
+        , common_process_definition_name= nvl(i_fp_rec.common_process_definition_name, common_process_definition_name)
+        , process_plan_name= nvl(i_fp_rec.process_plan_name, process_plan_name)
+        , process_definition_name= nvl(i_fp_rec.process_definition_name, process_definition_name)
+        , segregation= nvl(i_fp_rec.segregation, segregation)
+        , phase= nvl(i_fp_rec.phase, phase)
+        , open_dt= nvl(i_fp_rec.open_dt, open_dt)
+        , close_dt= nvl(i_fp_rec.close_dt, close_dt)
+        , allocated_sort= nvl(i_fp_rec.allocated_sort, allocated_sort)
+        , handler = nvl(i_fp_rec.handler, handler)
+        , handlingarea = nvl(i_fp_rec.handlingarea, handlingarea)
+        , aircrafttypecode = nvl(i_fp_rec.aircrafttypecode, aircrafttypecode)
+      where flightnr = i_fp_rec.flightnr and flightdate = i_fp_rec.flightdate and arrivalordeparture = i_fp_rec.arrivalordeparture
+      and process_definition_name = i_fp_rec.process_definition_name and segregation = i_fp_rec.segregation and phase = i_fp_rec.phase;
+    end;
+  end if;
+end;
+
+
+procedure summarize_flight_plans is
+l_con_proc constant varchar2(61) := g_con_package||'.SUMMARIZE_FLIGHT_PLANS';
+l_max_id number := 0;
+l_maxrecs number;
+l_count number := 0;
+l_fp_insert_count number := 0;
+l_msg varchar2(4000);
+l_conf_rec metric_config%rowtype;
+l_fp_rec fact_flight_plans%rowtype;
+
+cursor c_flight_plans(c_id number, c_maxrecs number) is
+select a.idevent, a.key, a.seg_num, c.pos as phase_num, a.key + (((a.seg_num*100) +  c.pos)/10000) as new_key
+, eventts
+, flightnr(trim(a.airline)||trim(a.flightnumber)) as flightnr
+, substr(a.date_,1,10) as flightdate
+, case when a.commonprocessdefinitionname='RECLAIM' then 'A' else 'D' end as arrivalordeparture
+, a.processdefinitionname
+, nvl(csv.get_first_tag_value_after(a.segregationactivity, 'ProductName', null),'*') as segregation
+, substr(c.val,21) as phase
+, a.scheduleddatetime, a.estimateddatetime
+, a.airline, a.airport, a.commonprocessdefinitionname, a.name
+, csv.get_first_tag_value_after(a.segregationactivity, 'Activation', c.val) as open_dt
+, csv.get_first_tag_value_after(a.segregationactivity, 'Expiration', c.val) as close_dt
+, csv.get_all_tag_values_between(a.segregationactivity, 'ResourceID', c.val, 'PhaseDefinitionName=') as allocated_sort
+, csv.distincted(a.handler) as handler, a.handlingarea, a.aircrafttypecode
+from (
+select /*+ FIRST_ROWS(5000) INDEX_ASC(w WC_PROCESSPLANMESSAGE_PK) */
+w.idevent, w.key, b.pos as seg_num, w.eventts, w.airline, w.flightnumber
+, w.date_, w.scheduleddatetime, w.estimateddatetime
+, w.airport, w.commonprocessdefinitionname, w.name, w.processdefinitionname
+, w.handler, w.handlingarea, w.aircrafttypecode
+, replace(b.val, chr(127), ',') as segregationactivity
+from wc_processplanmessage w
+, table(csv.vals(replace(replace(l_activity,',',chr(127)), 'ACTIVITY_NAME=', ','))) b
+where w.key > c_id and rownum <= c_maxrecs
+and ((w.commonprocessdefinitionname in ('FLIGHT_BUILD','DEGRADED_FLIGHT_BUILD') and b.val like '%FamilyName=SEGREGATION%')
+   or w.commonprocessdefinitionname in ('RECLAIM','DEGRADED_RECLAIM'))
+   and w.targetprocessid like 'PDM%'
+) a
+, table(csv.vals(segregationactivity)) c
+where c.val like 'PhaseDefinitionName=%';
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr         => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_flight_plans;
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc||' STARTED. Processing flight plans with ID greater than '||to_char(l_max_id)
+                         );
+
+        for c_rec in c_flight_plans(l_max_id, l_maxrecs) loop
+          l_fp_rec := empty_fp_rec;
+          l_fp_rec.id := c_rec.new_key;
+          l_fp_rec.eventts := c_rec.eventts;
+          l_fp_rec.insertts := sys_extract_utc(systimestamp);
+          l_fp_rec.updatets := sys_extract_utc(systimestamp);
+          l_fp_rec.flightnr := substr(c_rec.flightnr,1,10); 
+          l_fp_rec.flightdate := substr(c_rec.flightdate,1,10); 
+          l_fp_rec.arrivalordeparture := substr(trim(c_rec.arrivalordeparture),1,1); 
+          l_fp_rec.process_definition_name := substr(trim(c_rec.processdefinitionname),1,64); 
+          l_fp_rec.segregation := substr(trim(c_rec.segregation),1,20); 
+          l_fp_rec.phase := substr(trim(c_rec.phase),1,20); 
+          l_fp_rec.airline := c_rec.airline;
+          l_fp_rec.airport := c_rec.airport;
+          l_fp_rec.std := period.xmldt2ts(c_rec.scheduleddatetime, null);
+          l_fp_rec.etd := period.xmldt2ts(c_rec.estimateddatetime, null);
+          l_fp_rec.common_process_definition_name := c_rec.commonprocessdefinitionname;
+          l_fp_rec.process_plan_name := substr(trim(c_rec.name),1,16); 
+          l_fp_rec.open_dt := period.xmldt2ts(c_rec.open_dt, null);
+          l_fp_rec.close_dt := period.xmldt2ts(c_rec.close_dt, null);
+          l_fp_rec.aircrafttypecode := c_rec.aircrafttypecode;
+          l_fp_rec.allocated_sort := c_rec.allocated_sort;
+		  l_fp_rec.handler := c_rec.handler;
+		  l_fp_rec.handlingarea := c_rec.handlingarea;
+
+          ins_upd_fp_rec(l_fp_rec, l_fp_insert_count);
+
+          l_count := l_count + 1;
+        end loop;
+
+
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr                 => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure      => l_con_proc
+                              , i_severity               => viu_info.c_severity_notification
+                              , i_info_arguments         => null
+                              , i_additional_data        => l_con_proc||' finished successfully. Processed '
+                                ||to_char(l_count)||' process plans, '||to_char(l_fp_insert_count) ||' flight plans inserted.' );
+      exception when others then
+        l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_fp_rec.id)
+        ||', FLIGHTNR:'||l_fp_rec.flightnr||', FLIGHTDATE:'||l_fp_rec.flightdate||', ARRIVALORDEPARTURE:'||l_fp_rec.arrivalordeparture
+        ||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+    bpi_log.raise_fatal_error(l_con_proc, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+
+
+procedure summarize_data_and_plans
+is
+  l_con_proc           constant varchar2(61) := g_con_package||'.SUMMARIZE_DATA_AND_PLANS';
+  l_max_updts_fplans   timestamp;
+  l_max_updts_fdata    timestamp;
+  l_maxrecs            number;
+  l_curr_id            number := 0;
+  l_curr_flight        varchar2(100) := '?';
+  l_count              number := 0;
+  l_msg                varchar2(4000);
+  l_conf_rec           metric_config%rowtype;
+  l_systimestamp       timestamp;
+  
+  l_early_build        cmn_parameter_values.value%type := 'Early Batch Build';
+  l_intime_build       cmn_parameter_values.value%type := 'Planned Build';
+  l_expedite_build     cmn_parameter_values.value%type := 'Expedite Build';
+  l_toolate_build      cmn_parameter_values.value%type := 'Too Late';
+  l_project_type       cmn_parameter_values.value%type := 'Major';
+
+
+
+
+
+
+
+  cursor c_flight_plans(b_updatets timestamp)
+  is
+  select /*+ INDEX_ASC(fact_flight_plans idx_factflightplans_u) */
+         max(id)                          as id
+  ,      max(eventts)                     as eventts
+  ,      flightnr
+  ,      flightdate                       
+  ,      arrivalordeparture               
+  ,      nvl(segregation, '*')            as segregation
+  ,      max(airline)                     as airline
+  ,      max(airport)                     as airport
+  ,      min(open_dt)                     as firstbagdatetime_plan
+  ,      max(close_dt)                    as lastbagdatetime_plan
+  ,      max(std)                         as std
+  ,      max(etd)                         as etd
+  ,      min(case when process_definition_name = l_early_build and phase = 'PREPARE' then open_dt  end) as early_open_dt
+  ,      max(case when process_definition_name = l_early_build and phase = 'PREPARE' then close_dt end) as early_close_dt
+  ,      listagg(case when process_definition_name = l_early_build and phase = 'PREPARE' then allocated_sort end, ',') within group (order by 1) as early_allocated_sort
+  ,      min(case when process_definition_name = l_intime_build and phase = 'EXECUTE' and l_project_type <> 'Normal' then open_dt end) as intime_open_dt
+  ,      max(case when process_definition_name = l_intime_build and phase = 'EXECUTE' and l_project_type <> 'Normal' then close_dt end) as intime_close_dt
+  ,      listagg(case when process_definition_name = l_intime_build and phase = 'EXECUTE' then allocated_sort end, ',') within group (order by 1) as intime_allocated_sort
+  ,      min(case when process_definition_name = l_expedite_build and phase = 'EXECUTE' then open_dt end) as expedite_open_dt
+  ,      max(case when process_definition_name = l_expedite_build and phase = 'EXECUTE' then close_dt end) as expedite_close_dt
+  ,      listagg(case when process_definition_name = l_expedite_build and phase = 'EXECUTE' then allocated_sort end, ',') within group (order by 1) as expedite_allocated_sort
+  ,      min(case when process_definition_name = l_toolate_build and phase = 'EXECUTE' then open_dt end) as toolate_open_dt
+  ,      max(case when process_definition_name = l_toolate_build and phase = 'EXECUTE' then close_dt end) as toolate_close_dt
+  ,      listagg(case when process_definition_name = l_toolate_build and phase = 'EXECUTE' then allocated_sort end, ',') within group (order by 1) as toolate_allocated_sort
+  ,      max(handler)                     as handler
+  ,      max(handlingarea)                as handlingarea
+  ,      aircrafttypecode
+  from   fact_flight_plans
+  where  updatets > b_updatets
+  group by flightnr
+  ,        flightdate
+  ,        arrivalordeparture
+  ,        segregation
+  ,        aircrafttypecode;
+  
+  cursor c_flight_data(b_updatets timestamp)
+  is
+  select /*+ INDEX_ASC(fact_flight_data idx_factflightdata_u) */
+         id
+  ,      eventts
+  ,      flightnr
+  ,      flightdate 
+  ,      arrivalordeparture 
+  ,      flightdayofweek
+  ,      internationalordomestic
+  ,      haul
+  ,      airport
+  ,      firstbagdatetime as firstbagdatetime_data
+  ,      lastbagdatetime as lastbagdatetime_data
+  ,      handler
+  ,      handlingterminal
+  ,      handlingarea
+  ,      requiredexplosivesscreeninglev
+  ,      flightinformationremark
+  from   fact_flight_data
+  where  updatets > b_updatets;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr             => viu_constant.c_ifo_bpidebuginfo
+                            , i_calling_procedure  => l_con_proc
+                            , i_severity           => viu_info.c_severity_notification
+                            , i_info_arguments     => null
+                            , i_additional_data    => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.'
+                            );
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+
+      
+      begin
+        l_early_build    := cmn_common.get_parameter_value('EARLY_BUILD');
+      exception when others then
+        l_early_build    := 'Early Batch Build';
+        l_msg := 'Parameter EARLY_BUILD is incorrect. Reverting to default value of "'||l_early_build||'". '||sqlerrm;
+        notify(l_con_proc, l_msg, l_early_build);
+      end;
+      begin
+        l_intime_build    := cmn_common.get_parameter_value('INTIME_BUILD');
+      exception when others then
+        l_intime_build    := 'Planned Build';
+        l_msg := 'Parameter INTIME_BUILD is incorrect. Reverting to default value of "'||l_intime_build||'". '||sqlerrm;
+        notify(l_con_proc, l_msg, l_intime_build);
+      end;
+      begin
+        l_expedite_build    := cmn_common.get_parameter_value('EXPEDITE_BUILD');
+      exception when others then
+        l_expedite_build    := 'Expedite Build';
+        l_msg := 'Parameter EXPEDITE_BUILD is incorrect. Reverting to default value of "'||l_expedite_build||'". '||sqlerrm;
+        notify(l_con_proc, l_msg, l_expedite_build);
+      end;
+      begin
+        l_toolate_build    := cmn_common.get_parameter_value('TOOLATE_BUILD');
+      exception when others then
+        l_toolate_build    := 'Too Late';
+        l_msg := 'Parameter TOOLATE_BUILD is incorrect. Reverting to default value of "'||l_toolate_build||'". '||sqlerrm;
+        notify(l_con_proc, l_msg, l_toolate_build);
+      end;
+      begin
+        l_project_type    := cmn_common.get_parameter_value('PROJECT_TYPE');
+      exception when others then
+        l_project_type    := 'Major';
+        l_msg := 'Parameter PROJECT_TYPE is incorrect. Reverting to default value of "'||l_project_type||'". '||sqlerrm;
+        notify(l_con_proc, l_msg, l_project_type);
+      end;
+
+      begin
+        
+        select nvl(max(updatets_flight_plans), to_timestamp('01-01-2000','dd-mm-yyyy')) into l_max_updts_fplans from fact_flight_summaries;
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure => l_con_proc
+                              , i_severity          => viu_info.c_severity_notification
+                              , i_info_arguments    => null
+                              , i_additional_data   => l_con_proc||' STARTED. Processing flights with UPDATETS greater than '||to_char(l_max_updts_fplans)
+                              );
+                              
+        for c_rec in c_flight_plans(l_max_updts_fplans)
+        loop
+          l_curr_id := c_rec.id;
+          
+          l_curr_flight := 'FLIGHTNR:'||c_rec.flightnr||', FLIGHTDATE:'||c_rec.flightdate||', ARRIVALORDEPARTURE:'||c_rec.arrivalordeparture||', SEGREGATION:'||c_rec.segregation;
+
+          l_systimestamp := sys_extract_utc(systimestamp);
+          begin
+            insert into fact_flight_summaries
+            ( id
+            , eventts
+            , insertts
+            , updatets
+            , updatets_flight_plans
+            , flightnr
+            , flightdate
+            , arrivalordeparture
+            , segregation
+            , airline
+            , airport
+            , firstbagdatetime_plan
+            , lastbagdatetime_plan
+            , std
+            , etd
+            , early_open_dt
+            , early_close_dt
+            , early_allocated_sort
+            , intime_open_dt
+            , intime_close_dt
+            , intime_allocated_sort
+            , expedite_open_dt
+            , expedite_close_dt
+            , expedite_allocated_sort
+            , toolate_open_dt
+            , toolate_close_dt
+            , toolate_allocated_sort
+            , handler
+            , handlingarea
+            , aircrafttypecode
+            )
+            values
+            ( c_rec.id
+            , to_timestamp(c_rec.flightdate, 'yyyy-mm-dd')
+            , l_systimestamp 
+            , l_systimestamp 
+            , l_systimestamp 
+            , c_rec.flightnr
+            , c_rec.flightdate
+            , c_rec.arrivalordeparture
+            , c_rec.segregation
+            , c_rec.airline
+            , c_rec.airport
+            , c_rec.firstbagdatetime_plan
+            , c_rec.lastbagdatetime_plan
+            , c_rec.std
+            , c_rec.etd
+            , c_rec.early_open_dt
+            , c_rec.early_close_dt
+            , c_rec.early_allocated_sort
+            , c_rec.intime_open_dt
+            , c_rec.intime_close_dt
+            , c_rec.intime_allocated_sort
+            , c_rec.expedite_open_dt
+            , c_rec.expedite_close_dt
+            , c_rec.expedite_allocated_sort
+            , c_rec.toolate_open_dt
+            , c_rec.toolate_close_dt
+            , c_rec.toolate_allocated_sort
+            , c_rec.handler
+            , c_rec.handlingarea
+            , c_rec.aircrafttypecode
+            );
+
+          exception
+            when dup_val_on_index then
+              
+              begin
+                l_systimestamp := sys_extract_utc(systimestamp);
+                
+                update fact_flight_summaries
+                set    id                      = c_rec.id
+                ,      updatets                = l_systimestamp
+                ,      updatets_flight_plans   = l_systimestamp
+                ,      airline                 = nvl(c_rec.airline                , airline                )
+                ,      airport                 = nvl(c_rec.airport                , airport                )
+                ,      firstbagdatetime_plan   = nvl(c_rec.firstbagdatetime_plan  , firstbagdatetime_plan  )
+                ,      lastbagdatetime_plan    = nvl(c_rec.lastbagdatetime_plan   , lastbagdatetime_plan   )
+                ,      std                     = nvl(c_rec.std                    , std                    )
+                ,      etd                     = nvl(c_rec.etd                    , etd                    )
+                ,      early_open_dt           = nvl(c_rec.early_open_dt          , early_open_dt          )
+                ,      early_close_dt          = nvl(c_rec.early_close_dt         , early_close_dt         )
+                ,      early_allocated_sort    = nvl(c_rec.early_allocated_sort   , early_allocated_sort   )
+                ,      intime_open_dt          = nvl(c_rec.intime_open_dt         , intime_open_dt         )
+                ,      intime_close_dt         = nvl(c_rec.intime_close_dt        , intime_close_dt        )
+                ,      intime_allocated_sort   = nvl(c_rec.intime_allocated_sort  , intime_allocated_sort  )
+                ,      expedite_open_dt        = nvl(c_rec.expedite_open_dt       , expedite_open_dt       )
+                ,      expedite_close_dt       = nvl(c_rec.expedite_close_dt      , expedite_close_dt      )
+                ,      expedite_allocated_sort = nvl(c_rec.expedite_allocated_sort, expedite_allocated_sort)
+                ,      toolate_open_dt         = nvl(c_rec.toolate_open_dt        , toolate_open_dt        )
+                ,      toolate_close_dt        = nvl(c_rec.toolate_close_dt       , toolate_close_dt       )
+                ,      toolate_allocated_sort  = nvl(c_rec.toolate_allocated_sort , toolate_allocated_sort )
+                ,      handler                 = nvl(c_rec.handler                , handler                )
+                ,      handlingarea            = nvl(c_rec.handlingarea           , handlingarea           )
+                ,      aircrafttypecode        = nvl(c_rec.aircrafttypecode       , aircrafttypecode       )
+                where  flightnr                = c_rec.flightnr
+                and    flightdate              = c_rec.flightdate
+                and    arrivalordeparture      = c_rec.arrivalordeparture
+                and    segregation             = c_rec.segregation
+                ;
+  
+              exception
+                when others then
+                  l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)||', '||l_curr_flight ||chr(10)||', ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+                  viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                                        , i_calling_procedure => l_con_proc
+                                        , i_severity          => viu_info.c_severity_error
+                                        , i_info_arguments    => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                                        , i_additional_data   => l_msg
+                                        );
+              end;
+          end;
+          
+          l_count := l_count + 1;
+          
+          if mod(l_count, l_maxrecs) = 0
+          then
+             commit;
+          end if;
+        end loop;
+        
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc);
+        end if;
+
+        select nvl(max(updatets_flight_data), to_timestamp('01-01-2000','dd-mm-yyyy')) into l_max_updts_fdata from fact_flight_summaries;
+
+        for c_rec in c_flight_data(l_max_updts_fdata)
+        loop
+          l_curr_id := c_rec.id;
+          
+          
+          
+          l_curr_flight := 'FLIGHTNR:'||c_rec.flightnr||', FLIGHTDATE:'||c_rec.flightdate||', ARRIVALORDEPARTURE:'||c_rec.arrivalordeparture ||',INTERNATIONALORDOMESTIC:'||c_rec.internationalordomestic;
+
+          begin
+            l_systimestamp := sys_extract_utc(systimestamp);
+            
+            update fact_flight_summaries
+            set    updatets                       = l_systimestamp
+            ,      updatets_flight_data           = l_systimestamp
+            ,      flightdayofweek                = nvl(c_rec.flightdayofweek               , flightdayofweek               )
+            ,      internationalordomestic        = nvl(c_rec.internationalordomestic       , internationalordomestic       )
+            ,      haul                           = nvl(c_rec.haul                          , haul                          )
+            ,      airport                        = nvl(c_rec.airport                       , airport                       )
+            ,      firstbagdatetime_data          = nvl(c_rec.firstbagdatetime_data         , firstbagdatetime_data         )
+            ,      lastbagdatetime_data           = nvl(c_rec.lastbagdatetime_data          , lastbagdatetime_data          )
+            ,      handler                        = nvl(c_rec.handler                       , handler                       )
+            ,      handlingterminal               = nvl(c_rec.handlingterminal              , handlingterminal              )
+            ,      handlingarea                   = nvl(c_rec.handlingarea                  , handlingarea                  )
+            ,      requiredexplosivesscreeninglev = nvl(c_rec.requiredexplosivesscreeninglev, requiredexplosivesscreeninglev)
+            ,      flightinformationremark        = nvl(c_rec.flightinformationremark       , flightinformationremark)
+            where  flightnr                       = c_rec.flightnr
+            and    flightdate                     = c_rec.flightdate
+            and    arrivalordeparture             = c_rec.arrivalordeparture
+            ;
+
+          exception
+            when others then
+              l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)||', '||l_curr_flight ||chr(10)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+              viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                                    , i_calling_procedure => l_con_proc
+                                    , i_severity          => viu_info.c_severity_error
+                                    , i_info_arguments    => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                                    , i_additional_data   => l_msg
+                                    );
+          end;
+        end loop;
+        
+        commit;
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                              , i_calling_procedure => l_con_proc
+                              , i_severity          => viu_info.c_severity_notification
+                              , i_info_arguments    => null
+                              , i_additional_data   => l_con_proc||' finished successfully. Processed flights '||to_char(l_count)||' flights.'
+                              );
+
+      exception
+        when others then
+          l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)||', '||l_curr_flight||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+          
+          viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                                , i_calling_procedure => l_con_proc
+                                , i_severity          => viu_info.c_severity_error
+                                , i_info_arguments    => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                                , i_additional_data   => l_msg
+                                );
+      end;
+    end if;
+  exception
+    when others then
+      l_msg := substr(l_con_proc||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+      bpi_log.raise_fatal_error(l_con_proc, l_msg);
+  end;
+  
+  flights.update_summaries;
+  
+  bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+
+
+
+procedure update_summaries
+is
+   l_con_proc constant varchar2(61) := g_con_package||'.UPDATE_SUMMARIES';
+
+   l_conf_rec                   metric_config%rowtype;
+   l_firstbagdatetime_bags      timestamp;
+   l_lastbagdatetime_bags       timestamp;
+   l_latest_bsm_dt              timestamp;
+   l_total_number_of_bags       number;
+   l_total_number_ist_ok        number;
+   l_total_number_ist_w1        number;
+   l_total_number_ist_w2        number;
+   l_total_number_ist_w3        number;
+   l_total_number_screen_latest number;
+   l_total_number_early         number;
+   l_total_number_ontime        number;
+   l_total_number_late          number;
+   l_total_number_expedite      number;
+   l_total_number_missed        number;
+   l_total_bags_without_bsm     number;
+   l_total_number_too_early     number;
+   l_total_number_in_time       number;
+   l_total_number_time_critical number;
+   l_onwardflights              varchar2(4000);
+   l_msg                        varchar2(4000);
+   l_parm                       varchar2(1000);
+   l_project_type               cmn_parameter_values.value%type := 'Major';
+   l_days_back                  interval day(9) to second(6) := numtodsinterval(2, 'DAY');
+
+   cursor c_flights(c_ts_days_back timestamp)
+   is
+      select /*+ INDEX_ASC(fact_flight_summaries idx_factflightsums_std) */
+             id
+      ,      flightnr
+      ,      flightdate
+      ,      arrivalordeparture
+      ,      segregation
+      from   fact_flight_summaries
+      where  std > c_ts_days_back
+      and    std < sys_extract_utc(systimestamp)
+      order by std;
+begin
+  bpi_trace.enter_module( i_module => l_con_proc );
+
+  begin
+    
+    begin
+      l_parm := cmn_common.get_parameter_value('Flights_update_window');
+      l_days_back := numtodsinterval(to_number(l_parm), 'DAY');
+    exception when others then
+      l_days_back := numtodsinterval(2, 'DAY');
+      l_msg := 'Parameter Flights_update_window is incorrect. Reverting to default value of 2 days. '||sqlerrm;
+      notify(l_con_proc, l_msg, l_project_type);
+    end;
+    begin
+      l_project_type    := cmn_common.get_parameter_value('PROJECT_TYPE');
+    exception when others then
+      l_project_type    := 'Major';
+      l_msg := 'Parameter PROJECT_TYPE is incorrect. Reverting to default value of "'||l_project_type||'". '||sqlerrm;
+      notify(l_con_proc, l_msg, l_project_type);
+    end;
+
+    begin
+      for c_rec in c_flights(sys_extract_utc(systimestamp) - l_days_back) loop
+
+        
+        begin
+          select bsmcount, updatets, l_onwardflightinformation
+          into l_total_number_of_bags, l_latest_bsm_dt, l_onwardflights
+          from fact_bsmflightinfo
+          where flightnr = c_rec.flightnr and flightdate = c_rec.flightdate and arrivalordeparture = c_rec.arrivalordeparture;
+        exception when no_data_found then
+          l_total_number_of_bags := -1;
+        end;
+        if l_total_number_of_bags >= 0 then
+          update fact_flight_summaries
+          set number_of_bsms_received = l_total_number_of_bags
+          , latest_bsm_dt = l_latest_bsm_dt
+          , onwardflights = nvl(trim(substr(l_onwardflights, 1, 200)),'-')
+          , updatets = sys_extract_utc(systimestamp)
+          where id = c_rec.id;
+        end if;
+
+        
+        begin
+          select /*+ INDEX_ASC(FACT_BAG_SUMMARIES IDX_FACT_BAGSUM_FLIGHT) */
+          min(final_status_dt), max(final_status_dt)
+          into l_firstbagdatetime_bags, l_lastbagdatetime_bags
+          from fact_bag_summaries
+          where flightnr = c_rec.flightnr
+          and to_char(scheduled_flight_time, 'YYYY-MM-DD') = c_rec.flightdate
+          and segregation = c_rec.segregation
+          and final_status = 'DEREGISTERPACKAGE,END-OF-TRACING';
+        exception when no_data_found then
+          l_total_number_of_bags := -1;
+        end;
+        if l_total_number_of_bags >= 0 then
+          update fact_flight_summaries
+          set firstbagdatetime_bags = l_firstbagdatetime_bags
+          , lastbagdatetime_bags = l_lastbagdatetime_bags
+          , updatets = sys_extract_utc(systimestamp)
+          where id = c_rec.id;
+        end if;
+
+        
+        
+        begin
+          select /*+ INDEX_ASC(FACT_BAG_SUMMARIES IDX_FACT_BAGSUM_FLIGHT) */
+                 count(*)                                                
+          ,      count(case when ind_in_system_time_ok = 'Y' then 1 end) 
+          ,      count(case when ind_in_system_time_w1 = 'Y' then 1 end) 
+          ,      count(case when ind_in_system_time_w2 = 'Y' then 1 end) 
+          ,      count(case when ind_in_system_time_w3 = 'Y' then 1 end) 
+          ,      count(nodeid_screen_latest)                             
+          ,      count(case when outtimeliness = 'EARLY' then 1 end)
+          ,      count(case when outtimeliness = 'ONTIME' then 1 end)
+          ,      count(case when outtimeliness = 'LATE' then 1 end)
+          ,      count(case when outtimeliness = 'EXPEDITE' then 1 end)
+          ,      count(case when outtimeliness = 'MISSED' then 1 end)
+          ,      count(case when bsm_received_dt is null then 1 end)
+          
+          ,      count(case when outtimeliness = 'TOO EARLY' then 1 end)
+          ,      count(case when outtimeliness = 'IN TIME' then 1 end)
+          ,      count(case when outtimeliness = 'TIME CRITICAL' then 1 end)
+          
+          into   l_total_number_of_bags
+          ,      l_total_number_ist_ok
+          ,      l_total_number_ist_w1
+          ,      l_total_number_ist_w2
+          ,      l_total_number_ist_w3
+          ,      l_total_number_screen_latest
+          ,      l_total_number_early
+          ,      l_total_number_ontime
+          ,      l_total_number_late
+          ,      l_total_number_expedite
+          ,      l_total_number_missed
+          ,      l_total_bags_without_bsm
+          ,      l_total_number_too_early
+          ,      l_total_number_in_time
+          ,      l_total_number_time_critical
+          from   fact_bag_summaries
+          where  flightnr = c_rec.flightnr
+          and    ( segregation = c_rec.segregation or l_project_type = 'Normal')
+          and    to_char(scheduled_flight_time, 'YYYY-MM-DD') = c_rec.flightdate;
+
+          if l_total_number_of_bags > 0
+          then
+            if l_project_type = 'Normal'
+            then
+               l_total_number_early := l_total_number_early + l_total_number_too_early;
+               l_total_number_ontime := l_total_number_in_time;
+               l_total_number_late := l_total_number_time_critical;
+            end if;
+  
+            update fact_flight_summaries
+            set    total_number_of_bags = l_total_number_of_bags
+            ,      total_number_ist_ok = l_total_number_ist_ok
+            ,      total_number_ist_w1 = l_total_number_ist_w1
+            ,      total_number_ist_w2 = l_total_number_ist_w2
+            ,      total_number_ist_w3 = l_total_number_ist_w3
+            ,      total_number_screen_latest = l_total_number_screen_latest
+            ,      total_number_early = l_total_number_early
+            ,      total_number_ontime = l_total_number_ontime
+            ,      total_number_late = l_total_number_late
+            ,      total_number_expedite = l_total_number_expedite
+            ,      total_number_missed = l_total_number_missed
+            ,      bags_without_bsm = l_total_bags_without_bsm
+            ,      updatets = sys_extract_utc(systimestamp)
+            where  id = c_rec.id;
+          end if;
+        exception
+          when no_data_found then null;
+        end;
+
+      end loop;
+      commit;
+    end;
+
+  exception when others then
+    l_msg := substr(l_con_proc||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+    rollback;
+    bpi_log.raise_fatal_error(l_con_proc, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+procedure agg_bsmflightinfo is
+   l_con_proc constant varchar2(61) := g_con_package||'.AGG_BSMFLIGHTINFO';
+   l_max_id number := 0;
+   l_curr_id number := 0;
+   l_count number := 0;
+   l_conf_rec metric_config%rowtype;
+   l_maxrecs number;
+   l_msg viu_info_logs.additional_data%type;
+   l_ts timestamp;
+   
+   cursor c_metrics (c_id  number)
+   is
+      select   max(key)                                                as id
+      ,        flightnr
+      ,        fdate                                                   as flightdate
+      ,        arrivalordeparture
+      ,        max(l_onwardflightinformation)                          as l_onwardflightinformation
+      ,        sum(case when (status = 'BSM_DEL') then -1 else 1 end)  as bsmcount
+      from   ( select   /*+ INDEX_ASC(WC_PACKAGEDATA WC_PACKAGEDATA_PK) */
+                        max(key)+0.1                                              as key
+               ,        lpc
+               ,        bag_message_id                                            as status
+               ,        flightnr(substr(trim(arvairline)||trim(arvflight),1,10))  as flightnr
+               ,        substr(trim(arvflightdate),1,12)                          as fdate
+               ,        'A'                                                       as arrivalordeparture
+               ,        max(l_onwardflightinformation)                            as l_onwardflightinformation
+               from     wc_packagedata
+               where    key           > c_id
+               and      arvairline    is not null
+               and      arvflight     is not null
+               and      arvflightdate is not null
+               and      lpc           is not null
+               and      upper(updatedindicator) = 'TRUE'
+               group by lpc
+               ,        bag_message_id
+               ,        flightnr(substr(trim(arvairline)||trim(arvflight),1,10))
+               ,        substr(trim(arvflightdate),1,12)
+               union
+               select   /*+ INDEX_ASC(WC_PACKAGEDATA WC_PACKAGEDATA_PK) */
+                        max(key)+0.2                                              as key
+               ,        lpc
+               ,        bag_message_id                                            as status
+               ,        flightnr(substr(trim(depairline)||trim(depflight),1,10))  as flightnr
+               ,        substr(trim(depflightdate),1,12)                          as fdate
+               ,        'D'                                                       as arrivalordeparture
+               ,        max(l_onwardflightinformation)                            as l_onwardflightinformation
+               from     wc_packagedata
+               where    key           > c_id
+               and      depairline    is not null
+               and      depflight     is not null
+               and      depflightdate is not null
+               and      lpc           is not null
+               and      upper(updatedindicator) = 'TRUE'
+               group by lpc
+               ,        bag_message_id
+               ,        flightnr(substr(trim(depairline)||trim(depflight),1,10))
+               ,        substr(trim(depflightdate),1,12)
+             )
+      group by flightnr
+      ,        fdate
+      ,        arrivalordeparture
+      ;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc);
+    exception
+      when others then l_conf_rec.status := 0;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( viu_constant.c_ifo_bpidebuginfo, l_con_proc, viu_info.c_severity_warning, null
+                            , l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.. (STATUS <> 1).' );
+    else
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_bsmflightinfo;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                           , i_calling_procedure      => l_con_proc
+                           , i_severity               => viu_info.c_severity_notification
+                           , i_info_arguments         => null
+                           , i_additional_data        => l_con_proc||' STARTED. Processing PackageData with ID greater than '||to_char(l_max_id)
+                           );
+
+        for c_rec in c_metrics(l_max_id) loop
+          l_curr_id := c_rec.id;
+          l_ts := to_timestamp(c_rec.flightdate,'YYYY-MM-DD');
+          begin
+            insert into fact_bsmflightinfo
+            ( id
+            , eventts
+            , insertts
+            , updatets
+            , flightnr
+            , flightdate
+            , arrivalordeparture
+            , l_onwardflightinformation
+            , bsmcount )
+            values
+            ( c_rec.id
+            , l_ts
+            , sys_extract_utc(systimestamp)
+            , sys_extract_utc(systimestamp)
+            , c_rec.flightnr
+            , c_rec.flightdate
+            , c_rec.arrivalordeparture
+            , c_rec.l_onwardflightinformation
+            , c_rec.bsmcount );
+          exception when dup_val_on_index then
+            
+            
+            update fact_bsmflightinfo
+            set id = c_rec.id
+            , updatets = sys_extract_utc(systimestamp)
+            , l_onwardflightinformation = c_rec.l_onwardflightinformation
+            , bsmcount = bsmcount + c_rec.bsmcount
+            where flightnr = c_rec.flightnr
+            and flightdate = c_rec.flightdate
+            and arrivalordeparture = c_rec.arrivalordeparture
+            and id < c_rec.id;
+            if sql%rowcount <> 1 then
+              bpi_log.raise_fatal_error(l_con_proc,'UPDATE FACT_BSMFLIGHTINFO FAILED. FLIGHTNR='||c_rec.flightnr
+              ||',FLIGHTDATE='||c_rec.flightdate||',ID='||to_char(c_rec.id));
+            end if;
+          end;
+          commit;
+          l_count := l_count + 1;
+        end loop;
+
+        viu_info.operator_info( i_ifo_nr       => viu_constant.c_ifo_bpidebuginfo
+                           , i_calling_procedure      => l_con_proc
+                           , i_severity               => viu_info.c_severity_notification
+                           , i_info_arguments         => null
+                           , i_additional_data        => l_con_proc||' finished successfully. Processed '||to_char(l_count)||' rows.'
+                           );
+      exception when others then
+        l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)||', EVENTTS:'||to_char(l_ts)
+        ||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+        rollback;
+        bpi_log.raise_fatal_error(l_con_proc, l_msg);
+      end;
+    end if;
+  exception when others then
+    l_msg := substr(l_con_proc||', ERROR on ID: '||to_char(l_curr_id)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,4000);
+    viu_info.operator_info(viu_constant.c_ifo_bpidebuginfo,l_con_proc, viu_info.c_severity_error, null, l_msg);
+  end;
+
+  bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+procedure summarize_flightschedules is
+l_con_proc constant varchar2(61) := g_con_package||'.SUMMARIZE_FLIGHTSCHEDULES';
+
+l_max_id number;
+l_maxrecs number;
+l_curr_id number := 0;
+l_curr_flight varchar2(100) := '?';
+l_count number := 0;
+l_msg varchar2(4000);
+l_conf_rec metric_config%rowtype;
+l_project_type cmn_parameter_values.value%type := 'Major';
+
+
+cursor c_flights(c_id number, c_maxrecs number) is
+select /*+ FIRST_ROWS(5000) */ * from
+( select key as id
+  , eventts
+  , flightnr(trim(airline)||trim(flightnumber)) as flightnr
+  , scheduleddate as flightdate
+  , deparr as arrivalordeparture
+  , nvl(csv.get_first_tag_value_after(l_subsortation, 'Class', null), '*') as segregation
+  , airline
+  , intdom as internationalordomestic
+  , period.xmldt2ts(chuteopendatetime, null) as firstbagdatetime_plan
+  , period.xmldt2ts(chuteclosedatetime, null) as lastbagdatetime_plan
+  , period.xmldt2ts(scheduleddatetime, null) as std
+  , period.xmldt2ts(estimateddatetime, null) as etd
+  , csv.get_first_tag_value_after(l_subsortation, 'Destination', null) as destination
+  , csv.get_all_tag_values_between(l_subsortation, 'Chute', null, null) as chute_allocations
+  , requiredexplosivesscreeninglev
+  from wc_flightschedule w
+  where key > c_id
+  and changeindicator <> 'DEL'
+  order by key
+) where rownum <= c_maxrecs;
+
+begin
+  bpi_trace.enter_module( i_module => l_con_proc );
+
+  begin
+    begin
+      select * into l_conf_rec from metric_config where upper(metric_procedure) = upper(l_con_proc);
+    exception when others then
+      l_conf_rec.status := 0;
+    end;
+
+    
+    if l_conf_rec.status != 1 then
+      viu_info.operator_info( i_ifo_nr         => viu_constant.c_ifo_bpidebuginfo
+                        , i_calling_procedure  => l_con_proc
+                        , i_severity           => viu_info.c_severity_notification
+                        , i_info_arguments     => null
+                        , i_additional_data    => l_con_proc||' NOT CONFIGURED TO RUN. Check METRIC_CONFIG.STATUS.');
+    else
+      l_maxrecs := l_conf_rec.max_measurements;
+
+      
+      begin
+        l_project_type    := cmn_common.get_parameter_value('PROJECT_TYPE');
+      exception when others then
+        l_project_type    := 'Major';
+        l_msg := 'Parameter PROJECT_TYPE is incorrect. Reverting to default value of "'||l_project_type||'". '||sqlerrm;
+        notify(l_con_proc, l_msg, l_project_type);
+      end;
+
+      begin
+        select nvl(max(id), 0) into l_max_id from fact_flight_summaries;
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc||' STARTED. Processing flights with ID greater than '||to_char(l_max_id)
+                         );
+        for c_rec in c_flights(l_max_id, l_maxrecs) loop
+          l_curr_id := c_rec.id;
+          
+          l_curr_flight := 'FLIGHTNR:'||c_rec.flightnr||', FLIGHTDATE:'||c_rec.flightdate||', ARRIVALORDEPARTURE:'||c_rec.arrivalordeparture||', SEGREGATION:'||c_rec.segregation;
+
+
+          begin
+            insert into fact_flight_summaries
+            ( id
+            , eventts
+            , insertts
+            , updatets
+            , flightnr
+            , flightdate
+            , arrivalordeparture
+            , segregation
+            , airline
+            , internationalordomestic
+            , firstbagdatetime_plan
+            , lastbagdatetime_plan
+            , intime_open_dt
+            , intime_close_dt
+            , std
+            , etd
+            , destination
+            , chute_allocations
+            , requiredexplosivesscreeninglev
+            )
+            values
+            ( c_rec.id
+              
+              
+              
+            , case                          
+                when l_project_type = 'Normal' then
+                  c_rec.eventts
+                else
+                  to_timestamp(c_rec.flightdate, 'YYYY-MM-DD')
+              end
+            , sys_extract_utc(systimestamp) 
+            , sys_extract_utc(systimestamp) 
+            , c_rec.flightnr
+            , c_rec.flightdate
+            , c_rec.arrivalordeparture
+            , c_rec.segregation
+            , c_rec.airline
+            , c_rec.internationalordomestic
+            , c_rec.firstbagdatetime_plan
+            , c_rec.lastbagdatetime_plan
+            , case when l_project_type = 'Normal' then c_rec.firstbagdatetime_plan end
+            , case when l_project_type = 'Normal' then c_rec.lastbagdatetime_plan end
+            , c_rec.std
+            , c_rec.etd
+            , c_rec.destination
+            , c_rec.chute_allocations
+            , c_rec.requiredexplosivesscreeninglev
+            );
+          exception when dup_val_on_index then
+
+            begin
+              update fact_flight_summaries
+              set updatets = sys_extract_utc(systimestamp)
+                , airline = c_rec.airline
+                , internationalordomestic = c_rec.internationalordomestic
+                , firstbagdatetime_plan = c_rec.firstbagdatetime_plan
+                , lastbagdatetime_plan = c_rec.lastbagdatetime_plan
+                , std = c_rec.std
+                , etd = c_rec.etd
+                , destination = c_rec.destination
+                , chute_allocations = c_rec.chute_allocations
+                , requiredexplosivesscreeninglev = c_rec.requiredexplosivesscreeninglev
+              where flightnr = c_rec.flightnr and flightdate = c_rec.flightdate
+              and arrivalordeparture = c_rec.arrivalordeparture and segregation = c_rec.segregation;
+
+            exception when others then
+            l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)||', '||l_curr_flight ||chr(10)||', '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+            viu_info.operator_info( i_ifo_nr     => viu_constant.c_ifo_bpidebuginfo
+                      , i_calling_procedure      => l_con_proc
+                      , i_severity               => viu_info.c_severity_error
+                      , i_info_arguments         => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                      , i_additional_data        => l_msg
+                      );
+            end;
+          end;
+          l_count := l_count + 1;
+        end loop;
+        commit;
+
+        if l_count >= l_conf_rec.max_measurements
+        then
+           metrics.unfinished( i_proc => l_con_proc);
+        end if;
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_notification
+                         , i_info_arguments         => null
+                         , i_additional_data        => l_con_proc||' finished successfully. Processed '||to_char(l_count)||' flights.'
+                         );
+
+      exception when others then
+        l_msg := substr(l_con_proc||' ERROR on ID: '||to_char(l_curr_id)||', '||l_curr_flight
+        ||chr(10)||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+
+        viu_info.operator_info( i_ifo_nr            => viu_constant.c_ifo_bpidebuginfo
+                         , i_calling_procedure      => l_con_proc
+                         , i_severity               => viu_info.c_severity_error
+                         , i_info_arguments         => to_char(sys_extract_utc(systimestamp), 'YYYY-MM-DD HH24:MI:SS.FF6')
+                         , i_additional_data        => l_msg
+                         );
+      end;
+    end if;
+  exception when others then
+     l_msg := substr(l_con_proc||' ERROR: '||sqlerrm||chr(10)||dbms_utility.format_error_backtrace,1,3800);
+     bpi_log.raise_fatal_error(l_con_proc, l_msg);
+
+  end;
+  flights.update_summaries;
+
+  bpi_trace.leave_module( i_module => l_con_proc );
+end;
+
+
+
+
+
+
+procedure summarize is
+l_con_proc constant varchar2(61) := g_con_package||'.SUMMARIZE';
+ l_project_type varchar2(30) := 'Major';
+ l_msg varchar2(4000);
+begin
+
+begin
+  l_project_type    := cmn_common.get_parameter_value('PROJECT_TYPE');
+ exception when others then
+   l_project_type := 'Major';
+   l_msg := 'Parameter PROJECT_TYPE is incorrect. Reverting to default value of "'||l_project_type||'". '||sqlerrm;
+   notify(l_con_proc, l_msg, l_project_type);
+ end;
+
+ if l_project_type = 'Normal' then
+     flights.summarize_flightschedules;
+ else
+   flights.summarize_flight_data;
+   flights.summarize_flight_plans;
+   flights.summarize_data_and_plans;
+
+ end if;
+end;
+
+
+procedure summarize_flight_data_vibes is
+begin
+  null;
+end;
+
+
+procedure summarize_flight_plans_vibes is
+begin
+  flights.summarize_flightschedules;
+end;
+
+
+end flights;
+/
